@@ -1,0 +1,9 @@
+{
+  "name": "JARVIS - Salts Fire and Security",
+  "short_name": "Jarvis",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#02060c",
+  "theme_color": "#02060c",
+  "icons": [{"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml"}]
+}

@@ -187,6 +187,8 @@ class Fixer:
 
     # ------------------------------------------------------------------ engineer agent loop
     async def run_engineer(self, issue: dict[str, Any], ws: Workspace) -> dict[str, Any]:
+        if self.s.effective_llm_backend == "max":
+            return await self._run_engineer_max(issue, ws)
         params = llm.request_params(self.s, self.s.engineer_effort)
         system = ENGINEER_SYSTEM.format(company=self.s.company_name)
         report = (f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
@@ -233,6 +235,40 @@ class Fixer:
                 return finished
             messages.append({"role": "user", "content": results})
         return {"kind": "give_up", "analysis": f"Stopped after {MAX_TURNS} steps without finishing."}
+
+    async def _run_engineer_max(self, issue: dict[str, Any], ws: Workspace) -> dict[str, Any]:
+        """Same job on the Claude subscription: Claude Code's own Read/Edit/Glob/Grep tools, confined to the
+        checkout (no shell, no web). Changes are found by comparing with a pristine copy."""
+        from ..brain.max_backend import parse_structured, run_once
+
+        class Outcome(BaseModel):
+            outcome: Literal["submit", "give_up"]
+            pr_title: str = ""
+            root_cause: str = ""
+            change_summary: str = ""
+            test_notes: str = ""
+            risk: Literal["low", "medium", "high"] = "medium"
+            analysis: str = ""
+            recommended_action: str = ""
+
+        ws.snapshot()
+        system = ENGINEER_SYSTEM.format(company=self.s.company_name).replace("/repo", "the current directory").replace(
+            "Finish by calling `submit_fix`. If there is no safe code fix (it's a data, training or infrastructure\n"
+            "  problem, or you are not confident), call `give_up` with your analysis instead - that is a good outcome too.",
+            "Finish with outcome 'submit' and the PR details once your edits are complete, or outcome 'give_up' "
+            "with your analysis if there is no safe code fix - that is a good outcome too.")
+        prompt = (f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
+                  f"{issue['description']}\n</problem_report>\n\nTriage notes: {issue.get('triage_json') or 'none'}\n\n"
+                  "Find and fix the root cause in this repository.")
+        tools = ["Read", "Edit", "Write", "Glob", "Grep"]
+        result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort, tools=tools,
+                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root))
+        out = parse_structured(result, Outcome)
+        if out.outcome == "submit" and ws.changed_files():
+            return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or f"Fix issue #{issue['id']}",
+                                                         root_cause=out.root_cause, change_summary=out.change_summary,
+                                                         test_notes=out.test_notes, risk=out.risk)}
+        return {"kind": "give_up", "analysis": f"{out.analysis}\n\nRecommended: {out.recommended_action}".strip()}
 
     def _engineer_tool(self, name: str, args: Any, ws: Workspace) -> tuple[str, dict[str, Any] | None]:
         if not isinstance(args, dict):

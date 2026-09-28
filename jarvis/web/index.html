@@ -1,1 +1,149 @@
-<!doctype html><title>index</title>
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>JARVIS · Salts Fire and Security</title>
+  <meta name="theme-color" content="#02060c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/hud.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">J.A.R.V.I.S.<small id="company">SALTS FIRE AND SECURITY</small></div>
+  <div class="pills" id="pills"></div>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="btn-briefing" title="Morning briefing">Briefing</button>
+  <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
+  <div class="clock" id="clock"></div>
+</header>
+
+<main class="hud">
+  <!-- LEFT -->
+  <section class="col left">
+    <div class="panel" id="approvals-panel" hidden>
+      <h2>AWAITING YOUR APPROVAL <span class="count" id="approvals-count"></span></h2>
+      <div id="approvals"></div>
+    </div>
+    <div class="panel">
+      <h2>COMMS <span class="count" id="inbox-count"></span></h2>
+      <ul class="list" id="inbox"><li class="empty">Loading…</li></ul>
+    </div>
+    <div class="panel">
+      <h2>ISSUES &amp; FIXES <span class="count" id="issues-count"></span></h2>
+      <ul class="list" id="issues"></ul>
+    </div>
+    <div class="panel">
+      <h2>ROUTINE TESTS <span class="count" id="tests-count"></span></h2>
+      <ul class="list" id="tests"></ul>
+      <div style="margin-top:8px"><button class="btn" id="btn-run-tests">Run tests now</button></div>
+    </div>
+    <div class="panel">
+      <h2>ALERTS</h2>
+      <ul class="list" id="notifications"></ul>
+    </div>
+  </section>
+
+  <!-- CENTRE -->
+  <section class="col center">
+    <div class="panel">
+      <div class="core-wrap">
+        <canvas id="reactor" width="340" height="340" aria-label="Jarvis status"></canvas>
+        <div>
+          <div class="state" id="state">Online</div>
+          <div class="caption" id="caption">Good to see you. Ask me anything, or tap the microphone.</div>
+          <div class="toolline" id="toolline"></div>
+          <div class="quick" id="quick">
+            <button class="chip-btn" data-q="Give me my briefing">Briefing</button>
+            <button class="chip-btn" data-q="How is the team performing this week? Is anyone falling short?">Team review</button>
+            <button class="chip-btn" data-q="Run a business health check and tell me what to improve">Business health</button>
+            <button class="chip-btn" data-q="What's our cash flow looking like for the next 13 weeks?">Cash flow</button>
+            <button class="chip-btn" data-q="Where is everyone right now?">Where's everyone?</button>
+            <button class="chip-btn" data-q="What stock do we need to reorder?">Stock</button>
+            <button class="chip-btn" data-q="How are our socials and Google ranking doing?">Marketing</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="panel convo-panel">
+      <h2>CONVERSATION <button class="count linkish" id="btn-new-convo">new conversation</button></h2>
+      <div class="conversation" id="conversation"></div>
+      <div class="attachments" id="attachments"></div>
+      <form class="composer" id="composer">
+        <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach">📎</button>
+        <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
+        <textarea id="input" rows="1" placeholder="Ask Jarvis anything… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button type="button" class="mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone">🎙</button>
+        <button type="submit" class="mic" id="btn-send" title="Send" aria-label="Send">➤</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- RIGHT -->
+  <section class="col right">
+    <div class="panel">
+      <h2>OPERATIONS <span class="count" id="ops-date"></span></h2>
+      <div class="kpis" id="ops-kpis"></div>
+      <ul class="list" id="ops" style="margin-top:10px"></ul>
+    </div>
+    <div class="panel">
+      <h2>FLEET <span class="count" id="map-note"></span></h2>
+      <div id="map"></div>
+    </div>
+    <div class="panel">
+      <h2>FINANCE <span class="count" id="finance-source"></span></h2>
+      <div class="kpis" id="finance"></div>
+    </div>
+    <div class="panel">
+      <h2>PRESENCE</h2>
+      <ul class="list" id="presence"></ul>
+    </div>
+    <div class="panel">
+      <h2>COMING UP</h2>
+      <ul class="list" id="deadlines"></ul>
+    </div>
+  </section>
+</main>
+
+<div class="display" id="display" role="dialog" aria-modal="true" aria-labelledby="display-title">
+  <header><h3 id="display-title"></h3><button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
+  <div class="body md" id="display-body"></div>
+</div>
+
+<aside class="drawer" id="drawer" aria-label="Settings">
+  <div style="display:flex;align-items:center"><h2 style="flex:1;font-family:var(--title);letter-spacing:.2em;font-size:14px;color:var(--accent)">SETTINGS</h2>
+    <button class="icon-btn" id="drawer-close" aria-label="Close settings">✕</button></div>
+  <label for="set-listen">Listening</label>
+  <select id="set-listen">
+    <option value="ptt">Tap the mic (or hold Space) to talk</option>
+    <option value="wake">Always listening - say "Jarvis…"</option>
+  </select>
+  <label for="set-speak">Speak replies</label>
+  <select id="set-speak">
+    <option value="voice">When I talk to Jarvis</option>
+    <option value="always">Always</option>
+    <option value="off">Never</option>
+  </select>
+  <label for="set-voice">Voice</label>
+  <select id="set-voice"><option value="">Default (British)</option></select>
+  <label>Connections</label>
+  <div id="connections"></div>
+  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px">
+    <a class="btn" id="btn-sage" href="/auth/sage/start" hidden>Connect Sage</a>
+    <button class="btn" id="btn-test-voice">Test voice</button>
+    <form method="post" action="/logout"><button class="btn stop">Sign out</button></form>
+  </div>
+  <p class="empty" style="margin-top:18px">Staff report problems at <code>/report?key=…</code>. Replies are generated by Claude; figures marked DEMO are sample data until each system is connected.</p>
+</aside>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/hud.js"></script>
+</body>
+</html>

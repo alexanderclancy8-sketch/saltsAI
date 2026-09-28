@@ -69,9 +69,13 @@ class StaffRegister:
 
     def find(self, name: str) -> dict[str, Any] | None:
         name = name.lower().strip()
-        for p in self.people():
-            if name in p["name"].lower() or name == str(p.get("email", "")).lower():
-                return p
+        people = self.people()
+        for test in (lambda p: p["name"].lower() == name or str(p.get("email", "")).lower() == name,
+                     lambda p: p["name"].lower().split()[0] == name,
+                     lambda p: name in p["name"].lower()):
+            hits = [p for p in people if test(p)]
+            if len(hits) == 1:
+                return hits[0]
         return None
 
     def upsert(self, name: str, *, role: str | None = None, type_: str | None = None, email: str | None = None,

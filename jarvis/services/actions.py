@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 class ActionExecutor:
     def __init__(self, db: Database, bus: EventBus, notifier, mail, fixer, fsm=None):
         self.fsm = fsm
+        self.billing = None  # set after construction
         self.db = db
         self.bus = bus
         self.notifier = notifier
@@ -39,6 +40,10 @@ class ActionExecutor:
         if action["kind"] == "email_send":
             await self.mail.send_mail(p["to"], p["subject"], text_to_html(p["body"]), p.get("cc") or None)
             return f"Email sent to {', '.join(p['to'])}"
+        if action["kind"] == "sage_invoices":
+            return await self.billing.create_invoices(p["jobs"])
+        if action["kind"] == "review_requests":
+            return await self.billing.send_review_requests(p["requests"], self.mail)
         if action["kind"] == "fsm_write":
             result = await self.fsm.write(p["method"], p["path"], p.get("body"))
             return f"Salts FSM updated: {str(result)[:300]}"

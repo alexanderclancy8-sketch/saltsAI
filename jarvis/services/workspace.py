@@ -27,6 +27,18 @@ class Workspace:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.originals: dict[str, str | None] = {}
+        self._snapshot: dict[str, str] | None = None
+
+    def snapshot(self) -> None:
+        """Remember every text file's content so edits made by another tool (Claude Code) can be diffed."""
+        snap = {}
+        for p in self._files():
+            if p.stat().st_size <= MAX_FILE_BYTES:
+                try:
+                    snap[self.rel(p)] = p.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+        self._snapshot = snap
 
     # -- paths ------------------------------------------------------------------
     def resolve(self, path: str) -> Path:
@@ -160,6 +172,17 @@ class Workspace:
     # -- results ----------------------------------------------------------------------------
     def changed_files(self) -> dict[str, str | None]:
         changed: dict[str, str | None] = {}
+        if self._snapshot is not None:
+            current = {}
+            for p in self._files():
+                try:
+                    current[self.rel(p)] = p.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+            for rel in set(self._snapshot) | set(current):
+                if self._snapshot.get(rel) != current.get(rel):
+                    changed[rel] = current.get(rel)
+                    self.originals.setdefault(rel, self._snapshot.get(rel))
         for rel, original in self.originals.items():
             target = self.root / rel
             current = target.read_text(encoding="utf-8") if target.exists() else None

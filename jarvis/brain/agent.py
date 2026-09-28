@@ -107,8 +107,8 @@ class JarvisBrain:
                                      "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode})
 
-        effort = self.s.claude_effort if mode == "voice" else self.s.chat_effort
-        params = llm.request_params(self.s, effort, compaction=self.s.claude_compaction)
+        effort = self.s.voice_effort if mode == "voice" else self.s.chat_effort
+        params = llm.request_params(self.s, effort, compaction=self.s.jarvis_compaction)
         reply_parts: list[str] = []
         json_retries = 0
         try:

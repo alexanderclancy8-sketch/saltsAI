@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
     owner_email: str = ""
+    partner_name: str = ""  # business partner / co-director - also receives the regulatory watch
+    partner_email: str = ""
     timezone: str = "Europe/London"
     public_base_url: str = "http://localhost:8000"
 
@@ -48,13 +50,19 @@ class Settings(BaseSettings):
     knowledge_dir: Path = ROOT_DIR / "knowledge"
 
     # --- Claude ---------------------------------------------------------
+    # "max"  = run on your Claude Max/Pro subscription through the Claude Agent SDK (Claude Code), using the
+    #          token from `claude setup-token` in CLAUDE_CODE_OAUTH_TOKEN. No API credits needed.
+    # "api"  = pay-as-you-go Claude API with ANTHROPIC_API_KEY (prompt caching, server-side fallbacks).
+    # "auto" = max if CLAUDE_CODE_OAUTH_TOKEN is set, otherwise api.
+    llm_backend: str = "auto"
+    claude_code_oauth_token: str = ""
     anthropic_api_key: str = ""
-    claude_model: str = "claude-opus-5-5"
-    claude_effort: str = "medium"  # spoken conversation (lower latency)
+    jarvis_model: str = "claude-opus-5-5"
+    voice_effort: str = "medium"  # spoken conversation (lower latency)
     chat_effort: str = "high"  # typed chat - full Claude-quality answers
     engineer_effort: str = "high"  # code fixes
-    claude_fallbacks: bool = True
-    claude_compaction: bool = True
+    jarvis_fallbacks: bool = True
+    jarvis_compaction: bool = True
     web_search_enabled: bool = True  # lets Jarvis search/fetch the web like Claude chat
 
     # --- Microsoft 365 (Graph, app-only) --------------------------------
@@ -100,6 +108,9 @@ class Settings(BaseSettings):
     sage_client_id: str = ""
     sage_client_secret: str = ""
     sage_business_id: str = ""  # only needed if the Sage login has several businesses
+    sage_write_enabled: bool = False  # allow Jarvis to create (approved) sales invoices - needs full_access scope
+    sage_sales_nominal_code: str = "4000"
+    sage_default_tax_rate: str = "GB_STANDARD"
     # Sage 50 (desktop) / anything else: drop CSV exports in this folder instead.
     finance_csv_dir: Path = ROOT_DIR / "finance_data"
     financial_year_end: str = "03-31"  # MM-DD
@@ -138,6 +149,7 @@ class Settings(BaseSettings):
     linkedin_access_token: str = ""
     linkedin_version: str = "202506"
     tiktok_access_token: str = ""
+    google_review_url: str = ""  # your Google Business Profile "ask for reviews" link
     google_places_api_key: str = ""
     google_place_id: str = ""
     google_service_account_file: str = ""  # JSON key of a service account added to Search Console
@@ -173,6 +185,9 @@ class Settings(BaseSettings):
     compliance_check_cron: str = "0 7 * * 1-5"
     staff_review_cron: str = "30 16 * * 5"  # weekly team performance review (Friday 16:30)
     business_review_cron: str = "45 7 1 * *"  # monthly business health report
+    regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
+    billing_check_cron: str = "30 17 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
+    review_requests_cron: str = "40 17 * * 1-5"  # thank-you + Google review requests for the day's jobs
     inbox_check_interval_min: int = 10
     scheduler_enabled: bool = True
 
@@ -184,6 +199,12 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_dir / "jarvis.db"
+
+    @property
+    def effective_llm_backend(self) -> str:
+        if self.llm_backend in ("max", "api"):
+            return self.llm_backend
+        return "max" if self.claude_code_oauth_token else "api"
 
     @property
     def graph_configured(self) -> bool:

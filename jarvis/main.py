@@ -26,6 +26,17 @@ log = logging.getLogger("jarvis")
 WEB = Path(__file__).parent / "web"
 
 
+class ChatIn(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    mode: str = "typed"  # typed | voice
+    attachments: list[dict[str, str]] = []
+
+
+class TTSIn(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    voice_id: str | None = None
+
+
 def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -84,11 +95,6 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return FileResponse(WEB / "report.html")
 
     # ------------------------------------------------------------------ chat
-    class ChatIn(BaseModel):
-        text: str = Field(min_length=1, max_length=20000)
-        mode: str = "typed"  # typed | voice
-        attachments: list[dict[str, str]] = []
-
     @app.post("/api/chat", dependencies=[Depends(owner)])
     async def chat(body: ChatIn, request: Request):
         reply = await J(request).brain.ask(body.text, "voice" if body.mode == "voice" else "typed", body.attachments)
@@ -119,10 +125,6 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return await J(request).tracker.live()
 
     # ------------------------------------------------------------------ voice
-    class TTSIn(BaseModel):
-        text: str = Field(min_length=1, max_length=5000)
-        voice_id: str | None = None
-
     @app.post("/api/tts", dependencies=[Depends(owner)])
     async def tts(body: TTSIn, request: Request):
         try:

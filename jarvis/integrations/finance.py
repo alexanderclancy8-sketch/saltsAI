@@ -89,7 +89,8 @@ class SageFinance:
 
         return self.AUTH_URL + "?" + urlencode({
             "filter": "apiv3.1", "response_type": "code", "client_id": self.s.sage_client_id,
-            "redirect_uri": redirect_uri, "scope": "readonly", "state": state})
+            "redirect_uri": redirect_uri, "scope": "full_access" if self.s.sage_write_enabled else "readonly",
+            "state": state})
 
     async def exchange_code(self, code: str, redirect_uri: str) -> None:
         await self._token_request({"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri})
@@ -163,6 +164,28 @@ class SageFinance:
 
     async def profit_and_loss(self, date_from: date, date_to: date) -> dict[str, Any] | None:
         return None  # v3.1 has no P&L report endpoint; the accountant builds one from invoices
+
+    async def create_sales_invoice(self, *, customer: str, reference: str, net: float, description: str) -> str:
+        """Create a sales invoice (only called after the owner approves it on the display)."""
+        if not self.s.sage_write_enabled:
+            raise RuntimeError("Sage write access is off (SAGE_WRITE_ENABLED=false)")
+        headers = await self._headers()
+        contacts = await self._get_all("/contacts", {"search": customer, "contact_type_id": "CUSTOMER"})
+        contact = next((c for c in contacts if (c.get("name") or c.get("displayed_as", "")).lower() == customer.lower()),
+                       contacts[0] if len(contacts) == 1 else None)
+        if not contact:
+            raise RuntimeError(f"No single Sage customer matches '{customer}'")
+        ledgers = await self._get_all("/ledger_accounts", {"search": self.s.sage_sales_nominal_code})
+        ledger = next((l for l in ledgers if str(l.get("nominal_code")) == self.s.sage_sales_nominal_code), None)
+        if not ledger:
+            raise RuntimeError(f"Sales ledger account {self.s.sage_sales_nominal_code} not found in Sage")
+        body = {"sales_invoice": {
+            "contact_id": contact["id"], "date": date.today().isoformat(), "reference": reference,
+            "invoice_lines": [{"description": description, "ledger_account_id": ledger["id"], "quantity": 1,
+                               "unit_price": round(net, 2), "tax_rate_id": self.s.sage_default_tax_rate}]}}
+        r = await self.http.post(f"{self.API}/sales_invoices", json=body, headers=headers, timeout=60)
+        r.raise_for_status()
+        return r.json().get("invoice_number") or r.json().get("displayed_as") or "created"
 
     async def check(self) -> str:
         r = await self.http.get(f"{self.API}/businesses", headers=await self._headers(), timeout=30)

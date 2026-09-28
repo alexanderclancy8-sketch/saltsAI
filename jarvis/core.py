@@ -25,12 +25,14 @@ from .services.accountant import Accountant
 from .services.accreditations import Accreditations
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
+from .services.billing import Billing
 from .services.briefing import Briefings
 from .services.fixer import Fixer
 from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.regulatory import RegulatoryWatch
 from .services.routine_tests import RoutineTester
 from .services.staff import StaffMonitor
 from .services.stores import Stores
@@ -73,14 +75,22 @@ class Jarvis:
                                     integrations=self._integrations(), notifier=self.notifier, issues=self.issues)
         self.fixer.issues, self.fixer.tester = self.issues, self.tester
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
+        self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
+        self.actions.billing = self.billing
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
         self.advisor = Advisor(s, self.db, self.accountant, self.reviewer, self.staff, self.marketing, self.notifier,
                                self.client, self.bus)
         self.accreditations = Accreditations(s, self.db, self.staff, self.fsm, self.notifier, self.client, self.bus)
         self.stores = Stores(self.db, demo_seed=self.fsm.demo, fsm=self.fsm)
+        self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
-        self.brain = JarvisBrain(self)
+        if s.effective_llm_backend == "max":
+            from .brain.max_backend import MaxBrain
+
+            self.brain = MaxBrain(self)
+        else:
+            self.brain = JarvisBrain(self)
         self.scheduler = None
         self._startup_tasks: set[asyncio.Task] = set()
 
@@ -116,6 +126,8 @@ class Jarvis:
             "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
                                  "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY"),
             "Web search": "on" if s.web_search_enabled else "off",
+            "Claude": ("your Claude Max subscription (Agent SDK)" if s.effective_llm_backend == "max"
+                       else f"Claude API ({s.jarvis_model})"),
         }
 
     async def business_review(self) -> None:
@@ -143,3 +155,15 @@ class Jarvis:
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
         await self.http.aclose()
+
+    async def daily_billing(self) -> None:
+        result = await self.billing.queue_invoices()
+        if result.get("queued"):
+            await self.notifier.notify(f"{result['queued']} completed jobs not invoiced",
+                                       "Draft invoices are waiting for your approval on the display.", level="warning",
+                                       push=True, speak=True)
+
+    async def daily_reviews(self) -> None:
+        result = await self.billing.queue_review_requests()
+        if result.get("queued"):
+            await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.")

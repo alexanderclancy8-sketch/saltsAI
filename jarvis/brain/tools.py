@@ -231,6 +231,11 @@ class VanDayIn(BaseModel):
     date: str | None = Field(None, description="YYYY-MM-DD, default today")
 
 
+class RegWatchIn(BaseModel):
+    focus: str | None = Field(None, description="Optional topic, e.g. 'employment rights changes', 'VAT', "
+                                                "'minimum wage April', 'BS 5839 2025'")
+
+
 class WithinDaysIn(BaseModel):
     within_days: int = 60
 
@@ -542,6 +547,23 @@ async def timesheet_check(j, a: DateOptIn):
     return await j.tracker.timesheet_check(_date.fromisoformat(a.date) if a.date else _date.today())
 
 
+async def regulatory_watch(j, a: RegWatchIn):
+    text = await j.regwatch.briefing(a.focus)
+    return {"shown_on_display": True, "update": text}
+
+
+async def unbilled_jobs(j, a: OfficeIn):
+    return await j.billing.unbilled_jobs(max(1, min(a.days, 120)))
+
+
+async def raise_invoices(j, a: OfficeIn):
+    return await j.billing.queue_invoices(max(1, min(a.days, 120)))
+
+
+async def review_requests(j, a: NoInput):
+    return await j.billing.queue_review_requests()
+
+
 async def staff_overdue_jobs(j, a: NoInput):
     return await j.staff.overdue_jobs()
 
@@ -698,8 +720,10 @@ TOOLS: list[Tool] = [
     Tool("seo_audit", "Audit the website for local SEO: titles, descriptions, headings, structured data, local "
                       "keywords, accreditations, speed, sitemap - with fixes.", UrlIn, seo_audit,
          "Auditing the website"),
-    Tool("business_advice", "Board-level advisory report across finance, team, sales, operations, compliance and "
-                            "marketing with risks, opportunities and a 90-day plan. Shown on the display.",
+    Tool("business_advice", "Business consultant report: board-level review across finance, team, sales, "
+                            "operations, compliance and marketing with risks, opportunities and a 90-day plan, or a "
+                            "consultant deep dive on a focus area (pricing, growth, hiring, efficiency, SWOT, "
+                            "acquisition...). Shown on the display.",
          AdviceIn, business_advice, "Preparing business advice"),
     Tool("accreditations_status", "BAFE, SSAIB, CHAS, NSI etc.: certificates, renewal and audit dates, plus "
                                   "calibration, insurance and policy review dates, soonest first.", NoInput,
@@ -744,6 +768,16 @@ TOOLS: list[Tool] = [
     Tool("timesheet_check", "Compare each engineer's working day from RAM Tracking (set off to home) with their "
                             "Salts FSM timesheet for a date and flag differences.", DateOptIn, timesheet_check,
          "Checking timesheets against the trackers"),
+    Tool("regulatory_watch", "Research current and upcoming UK tax, employment law, company law and fire & "
+                             "security regulation changes that affect the business and its directors, with dates, "
+                             "impact and actions (web-researched, sourced). Shown on the display.", RegWatchIn,
+         regulatory_watch, "Researching tax and law changes"),
+    Tool("unbilled_jobs", "Completed Salts FSM jobs in the last N days that don't appear to have been invoiced in "
+                          "Sage - money being left on the table.", OfficeIn, unbilled_jobs, "Looking for unbilled work"),
+    Tool("raise_invoices", "Draft Sage invoices for completed-but-unbilled jobs and queue them for the owner's "
+                           "approval (created in Sage once approved).", OfficeIn, raise_invoices, "Drafting invoices"),
+    Tool("review_requests", "Prepare thank-you + Google review request emails for today's completed jobs, queued as "
+                            "one approval.", NoInput, review_requests, "Preparing review requests"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",

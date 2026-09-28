@@ -77,7 +77,8 @@ def vat_quarter(today: date, quarter_end_months: list[int], offset: int = 0) -> 
     idx = next(i for i, e in enumerate(ends) if e >= today) + offset
     end = ends[idx]
     start = ends[idx - 1] + timedelta(days=1)
-    due = _add_months(end, 1) + timedelta(days=7)  # 1 month and 7 days after period end (MTD)
+    nxt = _add_months(end.replace(day=1), 1)
+    due = _month_end(nxt.year, nxt.month) + timedelta(days=7)  # 1 calendar month + 7 days after period end
     return start, end, due
 
 

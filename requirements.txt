@@ -1,4 +1,5 @@
 anthropic>=1.9,<2
+claude-agent-sdk>=0.2.161  # Claude Max/Pro subscription backend (bundles Claude Code)
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
