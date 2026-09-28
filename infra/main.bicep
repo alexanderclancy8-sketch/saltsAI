@@ -1,5 +1,6 @@
 // Jarvis on Azure App Service (Linux, UK South) + a storage account for the report archive.
-// Everything gets its own plan and is tagged app=jarvis; nothing here touches other web apps (e.g. Salts FSM).
+// It can share an existing Linux App Service plan (e.g. the one Salts FSM runs on) at no extra cost, or get its
+// own. Everything created here is tagged app=jarvis; other apps on the plan are never touched.
 // Easiest route: `bash infra/deploy.sh` in Azure Cloud Shell, which checks names before creating anything.
 targetScope = 'resourceGroup'
 
@@ -10,6 +11,8 @@ param appName string
 param location string = 'uksouth'
 @description('B1 is enough for one office; P0v3 for more headroom')
 param skuName string = 'B1'
+@description('Resource ID of an existing Linux App Service plan to share (same resource group). Blank = create one.')
+param existingPlanId string = ''
 
 @secure()
 @description('Password for the Jarvis display')
@@ -42,7 +45,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
+resource plan 'Microsoft.Web/serverfarms@2023-12-01' = if (empty(existingPlanId)) {
   name: '${appName}-plan'
   location: location
   tags: tags
@@ -58,7 +61,7 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
   kind: 'app,linux'
   identity: { type: 'SystemAssigned' }
   properties: {
-    serverFarmId: plan.id
+    serverFarmId: empty(existingPlanId) ? plan.id : existingPlanId
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'PYTHON|3.12'

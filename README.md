@@ -121,38 +121,34 @@ Do these in any order; each one replaces demo data as soon as it's set.
 
 ## Deploying to Azure
 
-Jarvis runs as its **own** App Service web app, in its own resource group and plan (about £10 a month on B1).
-Your Salts FSM app is not touched: everything Jarvis creates is tagged `app=jarvis`, and the deploy script and
-the GitHub workflow refuse to upload to any web app without that tag. Jarvis only ever deploys to Salts FSM
-when you approve a specific fix, and only after you've set up the auto-fix settings above.
+Follow **[infra/AZURE_SETUP.md](infra/AZURE_SETUP.md)**. It's written so you can do it yourself in Azure Cloud
+Shell or hand it to Claude Desktop working in Chrome. In short:
 
-1. **Get your Claude token** (to use your Max plan). On your PC, install Claude Code (Windows PowerShell:
-   `irm https://claude.ai/install.ps1 | iex`; Mac: `curl -fsSL https://claude.ai/install.sh | bash`) and run
-   `claude setup-token`. Sign in with your Max account and copy the token it prints (`sk-ant-oat01-...`).
-2. **Open Cloud Shell.** In [portal.azure.com](https://portal.azure.com), click the `>_` icon at the top and
-   choose **Bash**.
-3. **Download Jarvis and run the setup:**
-   ```bash
-   git clone -b claude/jarvis-company-ai-assistant-gaj3mj https://github.com/alexanderclancy8-sketch/saltsAI.git
-   cd saltsAI
-   bash infra/deploy.sh
-   ```
-   It asks for a display password and your Claude token. It creates the resource group `rg-jarvis`, the web app
-   `salts-jarvis` and a storage account in UK South, uploads the code, and prints your Jarvis address and the
-   staff report link. It stops without changing anything if the name or resource group is already in use.
-   To use different names: `APP_NAME=salts-jarvis-2 RG=rg-salts-jarvis bash infra/deploy.sh`.
-4. **Add your other keys.** `cp .env.example jarvis.env`, then `code jarvis.env` to fill in what you have
-   (Microsoft 365, Sage, ElevenLabs, Deepgram and so on). Then run `bash infra/deploy.sh settings jarvis.env`.
-   Blank lines are skipped, so you can add more later and run it again. Delete the file when you're done.
-5. **Open the address** it printed and sign in. The first start takes a few minutes while Azure installs the
-   packages. If it doesn't come up, run `az webapp log tail -g rg-jarvis -n salts-jarvis`.
+```bash
+git clone -b claude/jarvis-company-ai-assistant-gaj3mj https://github.com/alexanderclancy8-sketch/saltsAI.git
+cd saltsAI
+bash infra/deploy.sh
+```
 
-**Updating:** `cd saltsAI && git pull && bash infra/deploy.sh update` uploads the new code and keeps your settings.
-Don't re-run the Bicep template by hand on a live app: it resets the app settings to its own list.
+- **Shares your existing plan.** Azure charges per App Service plan, not per app, so Jarvis can run as a second
+  web app on the Linux B1 plan Salts FSM already uses, at no extra cost. The two apps share the plan's memory
+  and processor. If Salts FSM ever feels slower, move the plan up a size. The script refuses Windows plans,
+  because Jarvis needs Linux.
+- **Never overwrites Salts FSM.** Everything Jarvis creates is tagged `app=jarvis`. The script and the GitHub
+  workflow only upload to, or change settings on, a web app with that tag. Jarvis only ever deploys to Salts FSM
+  when you approve a specific fix, and only after you've set up the auto-fix settings above.
+- **Only management can open it.** Name the Microsoft 365 accounts allowed in (you and your business partner).
+  Azure's built-in Microsoft sign-in then blocks everyone else before they reach Jarvis, and Jarvis checks the
+  same list itself. Staff can still use the `/report` page with its key. Jarvis knows who is talking, so it
+  greets your partner by name. You both share one Jarvis: the same conversation, display and approvals.
+- **Always on.** It runs in Azure, so it doesn't depend on anyone's laptop.
+
+Other commands: `bash infra/deploy.sh update` (new code, keeps settings), `bash infra/deploy.sh settings FILE`
+(copy an env file into the app), `bash infra/deploy.sh signin EMAIL...` (set who can sign in; also renews the
+2-year sign-in secret). Don't re-run the Bicep template by hand on a live app: it resets the app settings.
 
 **Automatic deploys (optional):** once this is merged to `main`, set up the GitHub OIDC secrets described in
-`.github/workflows/deploy-azure.yml` and set the `AZURE_WEBAPP_NAME` variable. After that, every push to `main`
-runs the tests and deploys.
+`.github/workflows/deploy-azure.yml` and set the `AZURE_WEBAPP_NAME` variable.
 
 Run a single instance: the scheduler and the live display state live in the app. Data (the SQLite database,
 uploads and register files) lives in `/home/data`, which survives restarts and redeploys.

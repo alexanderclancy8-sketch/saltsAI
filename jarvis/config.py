@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     jarvis_notes: str = ""
     partner_name: str = ""  # business partner / co-director - also receives the regulatory watch
     partner_email: str = ""
+    # Microsoft 365 accounts let in through Azure's Microsoft sign-in, comma-separated (set by
+    # `bash infra/deploy.sh signin ...`). Everyone listed gets full access, including approvals.
+    manager_emails: str = ""
     timezone: str = "Europe/London"
     public_base_url: str = "http://localhost:8000"
 
@@ -204,6 +207,19 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
 
     # --- Derived ------------------------------------------------------------
+    @property
+    def managers(self) -> set[str]:
+        return {e.strip().lower() for e in self.manager_emails.split(",") if e.strip()}
+
+    def person(self, email: str) -> str:
+        """Friendly name for a signed-in manager."""
+        e = email.lower()
+        if self.owner_email and e == self.owner_email.lower():
+            return self.owner_name
+        if self.partner_email and e == self.partner_email.lower():
+            return self.partner_name or e
+        return e
+
     @property
     def staff_roles_file(self) -> Path:
         return self.data_dir / "staff_roles.yaml"

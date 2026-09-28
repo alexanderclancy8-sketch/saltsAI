@@ -2,13 +2,15 @@
 
 The HUD exposes email, finances and staff data, so it is always protected:
 with JARVIS_OWNER_PASSWORD set, a signed session cookie is required; without
-one, Jarvis only answers requests from the local machine.
+one, Jarvis only answers requests from the local machine. On Azure, managers
+listed in MANAGER_EMAILS can also get in through App Service's Microsoft sign-in.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import time
 
@@ -48,7 +50,23 @@ def _client_host(conn: Request | WebSocket) -> str:
     return conn.client.host if conn.client else ""
 
 
+def signed_in_manager(settings: Settings, conn: Request | WebSocket) -> str | None:
+    """Email of a manager signed in through Azure App Service's Microsoft sign-in, if any.
+
+    App Service removes X-MS-CLIENT-PRINCIPAL-* headers from outside requests and only adds them
+    itself when its authentication is switched on (WEBSITE_AUTH_ENABLED), so they're only trusted then.
+    """
+    if os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() != "true" or not settings.managers:
+        return None
+    if conn.headers.get("x-ms-client-principal-idp", "").lower() not in ("aad", "azureactivedirectory"):
+        return None
+    name = conn.headers.get("x-ms-client-principal-name", "").strip().lower()
+    return name if name in settings.managers else None
+
+
 def is_owner(settings: Settings, conn: Request | WebSocket) -> bool:
+    if signed_in_manager(settings, conn):
+        return True
     if not settings.jarvis_owner_password:
         # Local-only mode. Anything that came through a proxy is treated as remote, so a spoofed
         # X-Forwarded-For can't pass as localhost.

@@ -59,6 +59,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     def owner(request: Request) -> None:
         auth.require_owner(settings, request)
 
+    def speaker(conn: Request | WebSocket) -> str | None:
+        email = auth.signed_in_manager(settings, conn)
+        return settings.person(email) if email else None
+
     # ------------------------------------------------------------------ pages
     @app.get("/healthz")
     async def healthz():
@@ -85,8 +89,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return resp
 
     @app.post("/logout")
-    async def logout():
-        resp = RedirectResponse("/login", status_code=303)
+    async def logout(request: Request):
+        # Microsoft sign-in users are signed out of App Service too, or they'd walk straight back in.
+        target = "/.auth/logout" if auth.signed_in_manager(settings, request) else "/login"
+        resp = RedirectResponse(target, status_code=303)
         resp.delete_cookie(auth.COOKIE)
         return resp
 
@@ -97,7 +103,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # ------------------------------------------------------------------ chat
     @app.post("/api/chat", dependencies=[Depends(owner)])
     async def chat(body: ChatIn, request: Request):
-        reply = await J(request).brain.ask(body.text, "voice" if body.mode == "voice" else "typed", body.attachments)
+        reply = await J(request).brain.ask(body.text, "voice" if body.mode == "voice" else "typed", body.attachments,
+                                           speaker=speaker(request))
         return {"reply": reply}
 
     @app.post("/api/conversation/reset", dependencies=[Depends(owner)])
@@ -178,6 +185,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return
         await ws.accept()
         j: Jarvis = ws.app.state.j
+        who = speaker(ws)
         q = j.bus.subscribe()
         running: set[asyncio.Task] = set()
 
@@ -191,7 +199,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 if msg.get("type") == "chat" and msg.get("text"):
                     task = asyncio.create_task(j.brain.ask(msg["text"][:20000],
                                                            "voice" if msg.get("mode") == "voice" else "typed",
-                                                           msg.get("attachments") or []))
+                                                           msg.get("attachments") or [], speaker=who))
                     running.add(task)
                     task.add_done_callback(running.discard)
                 elif msg.get("type") == "ping":
@@ -214,7 +222,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def decide(action_id: int, decision: str, request: Request):
         j = J(request)
         if decision == "approve":
-            return {"result": await j.actions.approve(action_id)}
+            return {"result": await j.actions.approve(action_id, by=speaker(request))}
         if decision == "deny":
             return {"result": await j.actions.deny(action_id)}
         raise HTTPException(400, "decision must be approve or deny")

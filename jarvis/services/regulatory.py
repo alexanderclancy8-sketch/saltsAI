@@ -43,7 +43,7 @@ class RegulatoryWatch:
         self.actions = None  # set after construction
 
     def _names(self) -> str:
-        return f" and {self.s.partner_name}" if self.s.partner_name else " and his business partner"
+        return f" and {self.s.partner_name}" if self.s.partner_name else " and the business partner"
 
     async def briefing(self, focus: str | None = None, window: str = "month", deliver: bool = False) -> str:
         previous = self.db.get_kv("regwatch_last", "")

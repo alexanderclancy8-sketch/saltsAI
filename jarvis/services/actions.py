@@ -69,16 +69,17 @@ class ActionExecutor:
             await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning")
         self.bus.publish("approvals", self.db.pending_actions())
 
-    async def approve(self, action_id: int) -> str:
+    async def approve(self, action_id: int, by: str | None = None) -> str:
         action = self.db.get_action(action_id)
         if not action or action["status"] != "pending":
             return f"Action #{action_id} is not pending."
         self.db.set_action_status(action_id, "approved")
+        log.info("Action #%s approved by %s", action_id, by or "the owner")
         self.bus.publish("approvals", self.db.pending_actions())
         task = asyncio.create_task(self._run(action))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return f"Approved action #{action_id}: {action['summary']}"
+        return f"Approved action #{action_id}{f' ({by})' if by else ''}: {action['summary']}"
 
     async def deny(self, action_id: int) -> str:
         action = self.db.get_action(action_id)

@@ -91,14 +91,17 @@ class JarvisBrain:
                     "content": f"{type(e).__name__}: {e}"[:2000]}
 
     # ------------------------------------------------------------------ main entry
-    async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None) -> str:
+    async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
+                  speaker: str | None = None) -> str:
         async with self._lock:
-            return await self._turn(text, mode, attachments)
+            return await self._turn(text, mode, attachments, speaker)
 
-    async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None) -> str:
+    async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
+                    speaker: str | None = None) -> str:
         bus, db = self.j.bus, self.j.db
         now = datetime.now(ZoneInfo(self.s.timezone))
-        tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time]"
+        who = f" · from {speaker}" if speaker else ""
+        tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
         content = self._attachment_blocks(attachments) + [{"type": "text", "text": f"{tag}\n{text}"}]
         rollback_to = len(self.messages)
         self.messages.append({"role": "user", "content": content})

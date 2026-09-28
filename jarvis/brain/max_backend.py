@@ -128,16 +128,19 @@ class MaxBrain:
                 continue
         return paths
 
-    async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None) -> str:
+    async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
+                  speaker: str | None = None) -> str:
         async with self._lock:
-            return await self._turn(text, mode, attachments)
+            return await self._turn(text, mode, attachments, speaker)
 
-    async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None) -> str:
+    async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
+                    speaker: str | None = None) -> str:
         from claude_agent_sdk import ResultMessage, StreamEvent, query
 
         bus, db = self.j.bus, self.j.db
         now = datetime.now(ZoneInfo(self.s.timezone))
-        tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time]"
+        who = f" · from {speaker}" if speaker else ""
+        tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
         files = self._save_attachments(attachments)
         note = ("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
         db.add_transcript("user", text)

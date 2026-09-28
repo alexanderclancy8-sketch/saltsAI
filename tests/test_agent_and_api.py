@@ -79,6 +79,25 @@ def test_local_mode_rejects_proxied_requests(settings):
         assert c.get("/api/status", headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 401
 
 
+def test_microsoft_sign_in_lets_managers_in(settings, monkeypatch):
+    settings.jarvis_owner_password = "s3cret"
+    settings.manager_emails = "alex@example.com, Partner@Example.com"
+    settings.owner_email, settings.partner_email, settings.partner_name = "alex@example.com", "partner@example.com", "Sam"
+    j = make(settings, [message([text_block("Morning, Sam.")])])
+    app = create_app(settings, j)
+    partner = {"X-MS-CLIENT-PRINCIPAL-IDP": "aad", "X-MS-CLIENT-PRINCIPAL-NAME": "partner@example.com"}
+    stranger = {"X-MS-CLIENT-PRINCIPAL-IDP": "aad", "X-MS-CLIENT-PRINCIPAL-NAME": "engineer@example.com"}
+    with TestClient(app) as c:
+        # Without App Service sign-in switched on, the headers could be forged, so they count for nothing.
+        assert c.get("/api/status", headers=partner).status_code == 401
+        monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "True")
+        assert c.get("/api/status", headers=stranger).status_code == 401
+        assert c.get("/api/status", headers=partner).status_code == 200
+        assert c.post("/api/chat", json={"text": "Morning"}, headers=partner).json()["reply"] == "Morning, Sam."
+        assert c.post("/logout", headers=partner, follow_redirects=False).headers["location"] == "/.auth/logout"
+    assert j.brain.messages[0]["content"][-1]["text"].split("\n")[0].endswith("· from Sam]")
+
+
 def test_staff_report_needs_key(settings):
     settings.jarvis_owner_password = "pw"
     settings.staff_report_key = "team-key"

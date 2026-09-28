@@ -41,6 +41,6 @@ SSAIB, CHAS and any others, with renewal and audit dates. Jarvis reminds ahead o
 evidence pack.
 
 ## How Alex likes things done
-- Keep him informed early about anything affecting life-safety systems, customers' compliance or cash.
+- Keep Alex informed early about anything affecting life-safety systems, customers' compliance or cash.
 - Updates by Teams during the day; a morning briefing on weekdays.
 - Prefer clear recommendations with the reasoning over long lists of options.
