@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     ms_mailbox: str = ""  # e.g. alex.clancy@saltsfireandsecurity.co.uk
     teams_webhook_url: str = ""  # Teams "Workflows" incoming webhook for updates
     issue_email_tag: str = "[ISSUE]"
+    # Out-of-hours answering service: the address/domain (or a subject word) of their call-report emails
+    ooh_email_from: str = ""
+    ooh_subject_keyword: str = "out of hours"
 
     # --- Salts FSM --------------------------------------------------------
     fsm_base_url: str = ""

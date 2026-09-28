@@ -59,6 +59,14 @@ class Suggestions:
                                              f"£{new:,.0f}, due in {r['days_left']} days?",
                 f"{j.settings.renewal_uplift_pct:g}% uplift; customer health {r['customer_health'] or 'n/a'}.",
                 f"Prepare the renewal letter for contract {r['contract']} for my approval.", 2)
+        ooh = await safe(j.ooh.calls(18))
+        for call in ((ooh or {}).get("needing_a_job") or [])[:3]:
+            add(f"ooh:{call['site']}:{call['time']}",
+                f"Overnight call at {call['site']} ({call['urgency']}) has no job - book a call-out?",
+                f"{call['time']} {call['problem']}. Overnight: {call['handled_overnight'] or 'no action'}.",
+                f"The out-of-hours service took a call at {call['time']} from {call['site']}: {call['problem']}. "
+                f"Who's best placed to attend? Prepare the call-out job in Salts FSM for my approval.",
+                1 if call["urgency"] != "routine" else 2)
         late_actions = j.meetings.overdue()
         if late_actions:
             names = sorted({a["owner"] for a in late_actions})

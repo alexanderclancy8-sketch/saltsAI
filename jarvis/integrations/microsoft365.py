@@ -244,6 +244,15 @@ class DemoMail:
              "is_read": True, "importance": "normal", "has_attachments": True, "link": "",
              "preview": "Please find attached remittance for invoice INV-10421, £2,340.00.",
              "body": "Please find attached remittance for invoice INV-10421, £2,340.00 paid by BACS today."},
+            {"id": "demo-5", "subject": "Out of hours call report (DEMO)", "from_name": "Night Answering Service",
+             "from_email": "reports@example-answering.co.uk", "received": (now - timedelta(hours=9)).isoformat(),
+             "is_read": False, "importance": "normal", "has_attachments": False, "link": "",
+             "preview": "2 calls taken overnight for Salts Fire and Security.",
+             "body": "Calls taken 17:30-08:00:\n\n1) 22:14 - Aire Valley Care Home (Aire Valley Care Ltd). Caller: night "
+                     "manager. Fire panel showing fault on zone 3, buzzer silenced. Advised to monitor, engineer to "
+                     "call back in the morning.\n\n2) 03:40 - Riverside Mill Apartments (Pennine Housing). Caller: "
+                     "resident. Smoke alarm sounding in the corridor, no fire. On-call engineer Tom Wilkinson "
+                     "attended 04:30 and reset the system; faulty detector to be replaced."},
             {"id": "demo-4", "subject": "[ISSUE] Can't attach photos to job sheet (DEMO)", "from_name": "Field Engineer",
              "from_email": "engineer@example.co.uk", "received": (now - timedelta(hours=7)).isoformat(),
              "is_read": False, "importance": "normal", "has_attachments": False, "link": "",

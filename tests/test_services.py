@@ -244,3 +244,23 @@ async def test_meetings_rams_and_questionnaire(tmp_path):
     assert "couldn't find" in await j.documents.rams("NOPE")
     assert await j.documents.questionnaire("Q1. Are you BAFE certified?", "Example Council") == "Certainly, sir."
     await j.http.aclose()
+
+
+async def test_out_of_hours_calls_need_jobs(tmp_path):
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    j.client.beta.messages.parse_result = {"calls": [
+        {"time": "22:14", "site": "Aire Valley Care Home", "customer": "Aire Valley Care Ltd", "caller": "night manager",
+         "problem": "Fault on zone 3", "urgency": "urgent", "handled_overnight": "advised to monitor",
+         "follow_up_needed": True},
+        {"time": "03:40", "site": "Nowhere Towers", "problem": "Smoke alarm sounding", "urgency": "urgent",
+         "handled_overnight": "engineer attended and reset", "follow_up_needed": True}]}
+    data = await j.ooh.calls(18)
+    assert len(data["calls"]) == 2
+    assert [c["site"] for c in data["needing_a_job"]] == ["Nowhere Towers"]  # the care home already has a job
+    sweep = await j.suggestions.sweep(announce=False)
+    assert any(s["key"].startswith("ooh:Nowhere Towers") for s in sweep)
+    await j.http.aclose()

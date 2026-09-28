@@ -30,6 +30,7 @@ from .services.billing import Billing
 from .services.customers import CustomerHealth
 from .services.documents import Documents
 from .services.meetings import Meetings
+from .services.ooh import OutOfHours
 from .services.briefing import Briefings
 from .services.fixer import Fixer
 from .services.issues import IssueService
@@ -99,6 +100,8 @@ class Jarvis:
         self.advisor.j_customers = self.customers
         self.renewals = Renewals(self)
         self.meetings = Meetings(self)
+        self.ooh = OutOfHours(self)
+        self.briefings.ooh = self.ooh
         self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)

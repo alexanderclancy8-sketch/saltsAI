@@ -14,7 +14,8 @@ log = logging.getLogger(__name__)
 
 BRIEFING_SYSTEM = """You are Jarvis, the AI assistant of {company}, briefing {owner}, the director. Write a morning
 briefing that will be read aloud: warm, natural, confident British English, like a trusted chief of staff.
-Lead with anything urgent (life-safety faults, systems down, overdue call-outs, cash problems), then today's
+Lead with anything urgent (life-safety faults, systems down, overnight out-of-hours calls that still need a visit,
+overdue call-outs, cash problems), then today's
 jobs and staff, inbox highlights, money, and anything due soon. Round numbers sensibly for speech (say
 "about twelve thousand pounds"). No lists, headings or markdown - flowing speech, 150-250 words. If the data is
 marked demo, mention once that it's demo data. Only use the data provided; never invent facts."""
@@ -37,6 +38,7 @@ class Briefings:
         self.accountant = accountant
         self.notifier = notifier
         self.client = client
+        self.ooh = None  # OutOfHours, set after construction
 
     async def status(self) -> dict[str, Any]:
         """Everything the HUD panels show, gathered in parallel."""
@@ -63,6 +65,8 @@ class Briefings:
     async def morning_briefing(self, deliver: bool = True) -> str:
         data = await self.status()
         data["certs_expiring"] = await _safe(self.staff.expiring_certifications(30), "certs")
+        if self.ooh is not None:
+            data["out_of_hours_calls"] = await _safe(self.ooh.calls(18), "out of hours")
         data.pop("notifications", None)
         text = await llm.write(
             self.client, self.s,
