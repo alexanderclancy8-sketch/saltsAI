@@ -5,7 +5,7 @@
 #                                             uploads the code and, if you name people, turns on Microsoft sign-in
 #   bash infra/deploy.sh update               upload the latest Jarvis code (settings are kept)
 #   bash infra/deploy.sh settings FILE        copy the filled-in values from an env file (like .env.example) into the app
-#   bash infra/deploy.sh adopt NAME           turn a Linux web app you made by hand in the portal into Jarvis
+#   bash infra/deploy.sh adopt NAME [GROUP]   turn a Linux web app you made by hand in the portal into Jarvis
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
 #
@@ -29,11 +29,12 @@ command -v az >/dev/null || die "the Azure CLI isn't here. Run this in Azure Clo
 
 # Finds the Jarvis web app wherever it lives and points RG at its resource group.
 find_jarvis_app() {
-  local found tag=""
-  found="$(az webapp list --query "[?name=='$APP_NAME'] | [0].[resourceGroup, tags.app]" -o tsv)"
-  [ -n "$found" ] || die "there's no web app called $APP_NAME. Check APP_NAME, or run the first-time setup."
-  IFS=$'\t' read -r RG tag <<<"$found"
-  [ "$tag" = "$TAG" ] || die "$APP_NAME isn't Jarvis (it has no app=jarvis tag), so it's been left alone."
+  # Several apps can share a name (in different resource groups), so look for the one tagged as Jarvis.
+  RG="$(az webapp list --query "[?name=='$APP_NAME' && tags.app=='$TAG'].resourceGroup | [0]" -o tsv)"
+  [ -z "$RG" ] || return 0
+  [ -z "$(az webapp list --query "[?name=='$APP_NAME'].name | [0]" -o tsv)" ] ||
+    die "$APP_NAME isn't Jarvis (it has no app=jarvis tag), so it's been left alone."
+  die "there's no web app called $APP_NAME. Check APP_NAME, or run the first-time setup."
 }
 
 deploy_code() {
@@ -216,26 +217,47 @@ ask_claude() {
 
 # Turns a Linux web app made by hand in the portal into Jarvis.
 adopt() {
-  local linux plan_id host tier others site_id go owner_password claude_token anthropic_key
+  local groups kind site_linux plan_linux plan_kind plan_name plan_id host tier others site_id go
+  local owner_password claude_token anthropic_key
   [ -n "${1:-}" ] || die "give the name of the web app you made, e.g.  bash infra/deploy.sh adopt jarvis-salts"
   APP_NAME="$1"
-  RG="$(az webapp list --query "[?name=='$APP_NAME'].resourceGroup | [0]" -o tsv)"
-  [ -n "$RG" ] || die "there's no web app called $APP_NAME in this subscription."
   [[ "${APP_NAME,,}" != *fsm* ]] || die "$APP_NAME looks like a Salts FSM app, so it's been left alone."
+  if [ -n "${2:-}" ]; then
+    RG="$2"
+  else
+    groups="$(az webapp list --query "[?name=='$APP_NAME'].resourceGroup" -o tsv)"
+    [ -n "$groups" ] || die "there's no web app called $APP_NAME in this subscription."
+    if [ "$(wc -l <<<"$groups")" -gt 1 ]; then
+      echo "There's more than one web app called $APP_NAME:"
+      az webapp list -o table \
+        --query "[?name=='$APP_NAME'].{ResourceGroup:resourceGroup, Kind:kind, Address:defaultHostName}"
+      die "run it again naming the resource group of the one to use, e.g.  bash infra/deploy.sh adopt $APP_NAME rg-jarvis"
+    fi
+    RG="$groups"
+  fi
   # One value per query: an empty field in a multi-value tsv row would shift the rest along.
+  site_id="$(az webapp show -g "$RG" -n "$APP_NAME" --query id -o tsv)"
+  [ -n "$site_id" ] || die "there's no web app called $APP_NAME in resource group $RG."
   plan_id="$(az webapp show -g "$RG" -n "$APP_NAME" --query "appServicePlanId || serverFarmId" -o tsv)"
   host="$(az webapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)"
-  site_id="$(az webapp show -g "$RG" -n "$APP_NAME" --query id -o tsv)"
-  linux="$(az appservice plan show --ids "$plan_id" --query reserved -o tsv)"
+  kind="$(az webapp show -g "$RG" -n "$APP_NAME" --query kind -o tsv)"
+  site_linux="$(az webapp show -g "$RG" -n "$APP_NAME" --query reserved -o tsv)"
+  plan_name="$(az appservice plan show --ids "$plan_id" --query name -o tsv)"
+  plan_kind="$(az appservice plan show --ids "$plan_id" --query kind -o tsv)"
+  plan_linux="$(az appservice plan show --ids "$plan_id" --query reserved -o tsv)"
   tier="$(az appservice plan show --ids "$plan_id" --query sku.tier -o tsv)"
-  [ "${linux,,}" = "true" ] || die "$APP_NAME runs on a Windows plan, and Jarvis needs Linux. In the portal, create a
-new web app with Publish: Code, Runtime stack: Python 3.12 and Operating System: Linux, then adopt that one."
+  if [ "${plan_linux,,}" != "true" ] && [ "${site_linux,,}" != "true" ] && [[ "$kind$plan_kind" != *linux* ]]; then
+    die "$APP_NAME (resource group $RG) looks like Windows to Azure, and Jarvis needs Linux.
+  App kind: '$kind', app Linux flag: '$site_linux', plan: '$plan_name', plan kind: '$plan_kind', plan Linux flag: '$plan_linux'
+If the portal says this app is Linux, send these details to whoever set Jarvis up. Otherwise, create a new web app
+with Publish: Code, Runtime stack: Python 3.12 and Operating System: Linux, then adopt that one."
+  fi
   [[ "$tier" != "Free" && "$tier" != "Shared" ]] || die "$APP_NAME is on a $tier plan, which switches apps off when
 nobody's using them, so Jarvis's briefings, checks and reminders wouldn't run. Move it to a Basic (B1) plan or
 bigger: in the portal open the web app, then 'Scale up (App Service plan)'."
   others="$(az webapp list --query "[?appServicePlanId=='$plan_id' && name!='$APP_NAME'].name" -o tsv | paste -sd ' ' -)"
 
-  echo "This turns the web app $APP_NAME (resource group $RG, $tier plan) into Jarvis:"
+  echo "This turns the web app $APP_NAME (resource group $RG, plan $plan_name, $tier) into Jarvis:"
   echo "  - sets it to Python 3.12 with Jarvis's startup command, WebSockets, Always On and a health check"
   echo "  - adds Jarvis's settings and uploads the Jarvis code, replacing anything already on it"
   [ -z "$others" ] || echo "  - its plan also runs: $others. Those apps aren't changed, but they'll share memory and processor."
@@ -400,7 +422,7 @@ case "${1:-setup}" in
   setup) setup ;;
   update) deploy_code ;;
   settings) push_settings "${2:-}" ;;
-  adopt) adopt "${2:-}" ;;
+  adopt) adopt "${2:-}" "${3:-}" ;;
   signin) shift; enable_signin "$@" ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME|signin EMAIL...]" ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...]" ;;
 esac

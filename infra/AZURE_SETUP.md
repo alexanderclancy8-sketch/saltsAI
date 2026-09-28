@@ -106,7 +106,9 @@ git pull
 bash infra/deploy.sh adopt jarvis-salts
 ```
 
-It checks the app is Linux on a paid plan (B1 or bigger). Then it asks for the password and Claude token,
+If there's more than one web app with that name, it lists them. Run it again with the resource group of the
+right one on the end, e.g. `bash infra/deploy.sh adopt jarvis-salts rg-jarvis`. It checks the app is Linux on a
+paid plan (B1 or bigger). Then it asks for the password and Claude token,
 and asks you to type the app's name to confirm. After that it sets the app up and uploads Jarvis. For
 later commands, put `APP_NAME=jarvis-salts` in front, e.g. `APP_NAME=jarvis-salts bash infra/deploy.sh update`.
 
