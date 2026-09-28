@@ -192,3 +192,15 @@ async def test_end_of_day_wrap_up(settings):
     assert text == "Certainly, sir."  # the scripted stand-in model's reply
     assert any(n["title"] == "End-of-day wrap-up" for n in j.db.recent_notifications())
     await j.http.aclose()
+
+
+async def test_startup_notes_are_remembered_once(settings):
+    settings.jarvis_notes = "Acme Monitoring handle our out-of-hours | Vans park at the office overnight"
+    j = make(settings)
+    facts = [m["fact"] for m in j.db.memories()]
+    assert facts == ["Acme Monitoring handle our out-of-hours", "Vans park at the office overnight"]
+    j2 = Jarvis(settings, db=j.db, client=j.client)  # restart: no duplicates
+    assert len(j2.db.memories()) == 2
+    assert "Acme Monitoring" in j2.brain.system[1]["text"]
+    await j.http.aclose()
+    await j2.http.aclose()

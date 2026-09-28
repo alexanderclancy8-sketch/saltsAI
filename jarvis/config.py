@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
     owner_email: str = ""
+    # Private facts Jarvis should know from day one, separated by "|" (kept in .env, never in the repo).
+    # They are added to its notes the first time it starts; after that just tell Jarvis new things.
+    jarvis_notes: str = ""
     partner_name: str = ""  # business partner / co-director - also receives the regulatory watch
     partner_email: str = ""
     timezone: str = "Europe/London"

@@ -105,6 +105,7 @@ class Jarvis:
         self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
+        self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
 
@@ -113,6 +114,13 @@ class Jarvis:
             self.brain = JarvisBrain(self)
         self.scheduler = None
         self._startup_tasks: set[asyncio.Task] = set()
+
+    def _seed_notes(self) -> None:
+        known = {m["fact"].strip().lower() for m in self.db.memories()}
+        for note in (n.strip() for n in self.settings.jarvis_notes.split("|")):
+            if note and note.lower() not in known:
+                self.db.remember(note)
+                known.add(note.lower())
 
     def _integrations(self) -> dict:
         out = {}
