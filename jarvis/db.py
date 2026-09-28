@@ -120,6 +120,15 @@ CREATE TABLE IF NOT EXISTS suggestions (
     priority INTEGER DEFAULT 2,
     status TEXT NOT NULL DEFAULT 'open'
 );
+CREATE TABLE IF NOT EXISTS action_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    action TEXT NOT NULL,
+    due TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open'
+);
 CREATE TABLE IF NOT EXISTS processed_emails (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
@@ -301,6 +310,19 @@ class Database:
 
     def reopen_suggestion(self, key: str) -> None:
         self.execute("UPDATE suggestions SET status = 'open', updated_at = ? WHERE key = ?", (now_iso(), key))
+
+    # -- meeting action items ---------------------------------------------------------------------
+    def add_action_item(self, source: str, owner: str, action: str, due: str = "") -> int:
+        return self.execute("INSERT INTO action_items (created_at, source, owner, action, due) VALUES (?,?,?,?,?)",
+                            (now_iso(), source, owner, action, due))
+
+    def action_items(self, status: str | None = "open") -> list[dict[str, Any]]:
+        if status:
+            return self.query("SELECT * FROM action_items WHERE status = ? ORDER BY due = '', due, id", (status,))
+        return self.query("SELECT * FROM action_items ORDER BY id DESC LIMIT 200")
+
+    def set_action_item_status(self, item_id: int, status: str) -> None:
+        self.execute("UPDATE action_items SET status = ? WHERE id = ?", (status, item_id))
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:

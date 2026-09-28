@@ -11,7 +11,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
-      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 71 tools │
+      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 79 tools │
       └───┬──────────┬──────────┬──────────┬──────────┬──────────┬───────────┘
       Outlook/   Salts FSM   Sage /    RAM       GitHub →   Socials,
       Teams      (jobs, staff, Sage 50  Tracking  Azure      Google, web
@@ -35,6 +35,8 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
 | **Law & tax watch** | A weekly web-researched update for you and your business partner on UK tax, employment law, company law and fire & security regulation changes, with sources. |
 | **Accreditations** | BAFE, SSAIB, CHAS (and NSI etc.) renewal and audit reminders, and audit-ready evidence packs with draft questionnaire answers. |
 | **Customer health watch** | A 0-100 score for every customer from spend trend, payment behaviour, repeat faults, declined quotes, service visits we're behind on, logged problems, inactivity and lapsed renewals. At-risk customers (especially within 90 days of renewal) are flagged with the reasons and a plan to keep them, and it warns if one customer is too big a share of revenue. |
+| **Renewals & fleet safety** | Renewal letters with the standard uplift prepared 60 days ahead for approval (at-risk customers get "call first" instead). Van MOT, service, insurance and tax, ladder, harness and PAT inspection reminders. Lone-worker checks when an engineer is still on a job long after it should have finished. |
+| **Meetings & paperwork** | Teams meeting transcripts (or pasted notes) become minutes and tracked actions, with chasers suggested when they're overdue. RAMS drafted per job. Tender / PQQ / Constructionline answers drafted from your real accreditation, insurance, policy and competency evidence. |
 | **Marketing** | Follower growth on Facebook, Instagram, LinkedIn and TikTok, Google reviews, Search Console rankings, a website SEO audit and weekly suggestions. Review requests after each job (approved in one tap). |
 
 **Jarvis suggests; you decide.** It never changes anything on its own. A few times a day it looks through
@@ -73,7 +75,9 @@ Do these in any order; each one replaces demo data as soon as it's set.
 
 1. **Microsoft 365 (Outlook + Teams)**
    - In Entra ID, register an app, add a client secret, and grant the *application* permissions `Mail.ReadWrite`,
-     `Mail.Send` and `Reports.Read.All` (for office activity), with admin consent.
+     `Mail.Send`, `Reports.Read.All` (office activity), `Calendars.Read` and `OnlineMeetingTranscript.Read.All`
+     (meeting write-ups), with admin consent. For transcripts also run
+     `New-CsApplicationAccessPolicy -Identity Jarvis -AppIds <id>` and `Grant-CsApplicationAccessPolicy` for your user.
    - Restrict it to your mailbox:
      `New-ApplicationAccessPolicy -AppId <id> -PolicyScopeGroupId <mail-enabled group> -AccessRight RestrictAccess`.
    - To see names in activity reports, turn off *"Display concealed user, group, and site names"* in the M365

@@ -91,6 +91,7 @@ class WrapUp:
             "money": {k: finance.get(k) for k in ("cash_at_bank", "debtors_overdue", "vat_due")}
                      if isinstance(finance, dict) and "error" not in finance else finance,
             "failing_checks": [t["name"] for t in j.db.latest_test_results() if not t["ok"]],
+            "meeting_actions_overdue": [f"{a['owner']}: {a['action']} (due {a['due']})" for a in j.meetings.overdue()][:6],
             "customers_at_risk": [f"{c['customer']} (score {c['score']}): {'; '.join(c['reasons'][:2])}"
                                   for c in (await _safe(j.customers.scores(), "customers")).get("at_risk", [])][:5],
             "tomorrow": tomorrow_view,

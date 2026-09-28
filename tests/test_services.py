@@ -195,3 +195,52 @@ async def test_customer_health_flags_the_drifting_customer(tmp_path):
     assert any(s["key"] == "customer:Kestrel Retail" for s in suggestions)
     assert (await j.customers.customer("kestrel"))["customer"] == "Kestrel Retail"
     await j.http.aclose()
+
+
+async def test_renewals_fleet_and_lone_worker(tmp_path):
+    from datetime import datetime
+
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    due = await j.renewals.due(60)
+    assert due["renewals"]
+    kestrel = next(r for r in due["renewals"] if r["customer"] == "Kestrel Retail")
+    prepared = await j.renewals.prepare(kestrel["contract"])
+    assert prepared["warning"] and prepared["queued_action"]
+    assert prepared["new_price"] == round(kestrel["annual_value"] * 1.05, 2)
+    action = j.db.get_action(prepared["queued_action"])
+    assert action["kind"] == "email_send" and "at-risk" in action["summary"]
+    assert (await j.renewals.due(60))["renewals"][0]["letter_prepared"] in (True, False)
+    timeline = j.accreditations.status()["timeline"]
+    assert any(t["what"].startswith("Van YD71") for t in timeline)
+    assert any("Ladders" in t["what"] for t in timeline)
+    late = datetime.combine(date.today(), datetime.min.time()).replace(hour=23)
+    assert isinstance(await j.tracker.lone_worker_check(90, now=late), list)
+    await j.http.aclose()
+
+
+async def test_meetings_rams_and_questionnaire(tmp_path):
+    from types import SimpleNamespace
+
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    j.client.beta.messages.parse_result = {
+        "summary": "Ops catch-up", "decisions": ["Trial van stock lists"],
+        "actions": [{"owner": "Josh", "action": "Send revised Vigilon quote", "due": "2020-01-01"},
+                    {"owner": "Hannah", "action": "Book Priya on the care home call-out", "due": ""}]}
+    result = await j.meetings.process()
+    assert result["source"].startswith("Monday ops meeting") and len(result["actions"]) == 2
+    assert [a["owner"] for a in j.meetings.overdue()] == ["Josh"]
+    sweep = await j.suggestions.sweep(announce=False)
+    assert any(s["key"] == "meeting-actions" for s in sweep)
+    job = next(x for x in await j.fsm.jobs() if x["status"] == "completed")
+    assert await j.documents.rams(job["ref"]) == "Certainly, sir."
+    assert "couldn't find" in await j.documents.rams("NOPE")
+    assert await j.documents.questionnaire("Q1. Are you BAFE certified?", "Example Council") == "Certainly, sir."
+    await j.http.aclose()

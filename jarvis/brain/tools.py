@@ -252,6 +252,39 @@ class CustomerIn(BaseModel):
     customer: str | None = Field(None, description="One customer (partial name ok); omit for the whole book")
 
 
+class RenewalsIn(BaseModel):
+    days: int = Field(60, description="Look ahead this many days")
+
+
+class PrepareRenewalIn(BaseModel):
+    contract_id: str
+    uplift_pct: float | None = Field(None, description="Price rise %, default from settings (usually 5)")
+
+
+class MeetingIn(BaseModel):
+    meeting: str | None = Field(None, description="Part of a recent Teams meeting's title; omit for the latest")
+    transcript: str | None = Field(None, description="Pasted notes/transcript instead of a Teams meeting")
+    title: str | None = Field(None, description="Name for pasted notes")
+
+
+class ActionItemsIn(BaseModel):
+    status: Literal["open", "done", "all"] = "open"
+
+
+class ActionItemDoneIn(BaseModel):
+    item_id: int
+
+
+class RamsIn(BaseModel):
+    job_ref: str | None = Field(None, description="Salts FSM job reference")
+    description: str | None = Field(None, description="Scope of works if there's no job yet")
+
+
+class QuestionnaireIn(BaseModel):
+    questions: str = Field(description="The questions (copied from the tender / PQQ / attachment)")
+    buyer: str | None = None
+
+
 class WithinDaysIn(BaseModel):
     within_days: int = 60
 
@@ -595,6 +628,39 @@ async def customer_health(j, a: CustomerIn):
     return await j.customers.scores(refresh=True)
 
 
+async def contract_renewals(j, a: RenewalsIn):
+    return await j.renewals.due(max(7, min(a.days, 365)))
+
+
+async def prepare_renewal(j, a: PrepareRenewalIn):
+    return await j.renewals.prepare(a.contract_id, a.uplift_pct)
+
+
+async def lone_worker_check(j, a: NoInput):
+    return await j.tracker.lone_worker_check(j.settings.lone_worker_overrun_min) or "Nobody is overrunning."
+
+
+async def meeting_actions(j, a: MeetingIn):
+    return await j.meetings.process(meeting=a.meeting, transcript=a.transcript, title=a.title)
+
+
+async def action_items(j, a: ActionItemsIn):
+    return j.db.action_items(None if a.status == "all" else a.status)
+
+
+async def action_item_done(j, a: ActionItemDoneIn):
+    j.db.set_action_item_status(a.item_id, "done")
+    return f"Marked action #{a.item_id} done."
+
+
+async def draft_rams(j, a: RamsIn):
+    return {"shown_on_display": True, "rams": await j.documents.rams(a.job_ref, a.description)}
+
+
+async def answer_questionnaire(j, a: QuestionnaireIn):
+    return {"shown_on_display": True, "answers": await j.documents.questionnaire(a.questions, a.buyer)}
+
+
 async def staff_overdue_jobs(j, a: NoInput):
     return await j.staff.overdue_jobs()
 
@@ -830,6 +896,27 @@ TOOLS: list[Tool] = [
                             "and lapsed renewals - who is at risk (especially before renewal), why, and what to do. "
                             "Also flags revenue concentration.", CustomerIn, customer_health,
          "Checking customer health"),
+    Tool("contract_renewals", "Maintenance contracts renewing soon, with value, customer health and whether the "
+                              "renewal letter has been prepared.", RenewalsIn, contract_renewals,
+         "Checking contract renewals"),
+    Tool("prepare_renewal", "Write the renewal letter for a contract with the price uplift and queue it for the "
+                            "owner's approval (warns if the customer is at risk).", PrepareRenewalIn, prepare_renewal,
+         "Preparing the renewal"),
+    Tool("lone_worker_check", "Engineers still on a job well past its booked end - a safety check prompt.", NoInput,
+         lone_worker_check, "Checking on lone workers"),
+    Tool("meeting_actions", "Turn the latest (or a named) Teams meeting's transcript - or pasted notes - into a "
+                            "summary, decisions and tracked action items with owners and due dates.", MeetingIn,
+         meeting_actions, "Writing up the meeting"),
+    Tool("action_items", "Tracked action items from meetings (open, done or all), with owners and due dates.",
+         ActionItemsIn, action_items, "Checking action items"),
+    Tool("action_item_done", "Mark a tracked meeting action as done when the owner says it's finished.",
+         ActionItemDoneIn, action_item_done, "Updating the action list"),
+    Tool("draft_rams", "Draft a risk assessment & method statement (RAMS) for a Salts FSM job or described "
+                       "works, shown on the display.", RamsIn, draft_rams, "Drafting the RAMS"),
+    Tool("answer_questionnaire", "Draft answers to a tender / PQQ / Constructionline / supplier questionnaire from the "
+                                 "company's accreditations, policies, insurance and competency evidence, with gaps "
+                                 "marked. Shown on the display.", QuestionnaireIn, answer_questionnaire,
+         "Answering the questionnaire"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",

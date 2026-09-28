@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     associated_companies: int = 0
     monthly_payroll_estimate: float = 0.0
     monthly_overheads_estimate: float = 0.0
+    renewal_uplift_pct: float = 5.0  # default price rise on contract renewals
+    renewal_notice_days: int = 60  # prepare renewal letters this far ahead
+    lone_worker_overrun_min: int = 90  # safety check when a job runs this long past its booked end
     boe_base_rate: float = 4.0  # Bank of England base rate % - keep current for late-payment interest
     # Targets for the business health check (tune to your own plan)
     target_gross_margin_pct: float = 45.0
@@ -186,6 +189,7 @@ class Settings(BaseSettings):
     business_review_cron: str = "45 7 1 * *"  # monthly business health report
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
+    lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
     wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs

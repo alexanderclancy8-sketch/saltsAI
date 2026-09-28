@@ -60,6 +60,33 @@ calibration:
     serial: "TBC"
     calibrated_until: 2027-02-01
 
+# Vans - MOT, service, insurance and road tax dates
+vehicles:
+  - registration: YD71 SFS
+    driver: Dan Harper
+    mot_due: 2026-11-02
+    service_due: 2026-10-20
+    insurance_due: 2027-01-01
+    tax_due: 2027-03-01
+  - registration: YD72 SFS
+    driver: Priya Shah
+    mot_due: 2027-02-14
+    service_due: 2026-10-08
+    insurance_due: 2027-01-01
+    tax_due: 2027-03-01
+
+# Ladders, access equipment, PAT and tools that need periodic inspection
+equipment:
+  - item: Ladders and steps (all vans)
+    check: inspection due
+    next_due: 2026-10-15
+  - item: Portable appliances (office + vans)
+    check: PAT test due
+    next_due: 2026-12-01
+  - item: Harnesses / fall arrest
+    check: 6-monthly inspection due
+    next_due: 2026-11-20
+
 insurance:
   - type: Public liability
     expires: 2027-01-01

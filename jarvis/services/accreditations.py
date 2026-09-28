@@ -88,6 +88,13 @@ class Accreditations:
             add("calibration due", c["item"], c.get("calibrated_until"), c.get("serial", ""))
         for i in data.get("insurance", []):
             add("insurance renewal", i["type"], i.get("expires"))
+        for v in data.get("vehicles", []):
+            label = f"{v.get('registration')} ({v.get('driver') or 'pool'})"
+            for field, kind in (("mot_due", "MOT due"), ("service_due", "service due"),
+                                ("insurance_due", "insurance renewal"), ("tax_due", "road tax due")):
+                add(kind, f"Van {label}", v.get(field))
+        for e in data.get("equipment", []):
+            add(e.get("check") or "inspection due", e["item"], e.get("next_due"), e.get("holder", ""))
         for p in data.get("policies", []):
             reviewed = _as_date(p.get("last_reviewed"))
             if reviewed:

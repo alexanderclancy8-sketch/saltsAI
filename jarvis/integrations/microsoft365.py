@@ -137,6 +137,47 @@ class GraphMail:
         await self.list_messages(top=1)
         return "Graph mailbox reachable"
 
+    # -- Teams meetings + transcripts ---------------------------------------------------
+    async def recent_meetings(self, days: int = 7) -> list[dict[str, Any]]:
+        """Teams meetings in the owner's calendar. Needs Calendars.Read (application)."""
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        r = await self.http.get(f"{self._mbx}/calendarView", headers=await self._headers(), params={
+            "startDateTime": start.strftime("%Y-%m-%dT%H:%M:%SZ"), "endDateTime": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "$select": "subject,start,end,isOnlineMeeting,onlineMeeting,attendees", "$top": "50",
+            "$orderby": "start/dateTime desc"})
+        r.raise_for_status()
+        out = []
+        for ev in r.json().get("value", []):
+            if ev.get("isOnlineMeeting") and (ev.get("onlineMeeting") or {}).get("joinUrl"):
+                out.append({"subject": ev.get("subject"), "start": (ev.get("start") or {}).get("dateTime"),
+                            "join_url": ev["onlineMeeting"]["joinUrl"],
+                            "attendees": [a["emailAddress"]["address"] for a in ev.get("attendees", [])]})
+        return out
+
+    async def meeting_transcript(self, join_url: str) -> str:
+        """Latest transcript of a Teams meeting. Needs OnlineMeetingTranscript.Read.All plus a Teams
+        application access policy for the app (see README)."""
+        headers = await self._headers()
+        r = await self.http.get(f"{self._mbx}/onlineMeetings", headers=headers,
+                                params={"$filter": f"JoinWebUrl eq '{join_url}'"})
+        r.raise_for_status()
+        meetings = r.json().get("value", [])
+        if not meetings:
+            raise RuntimeError("Meeting not found (was it organised by this mailbox?)")
+        mid = meetings[0]["id"]
+        r = await self.http.get(f"{self._mbx}/onlineMeetings/{mid}/transcripts", headers=headers)
+        r.raise_for_status()
+        transcripts = r.json().get("value", [])
+        if not transcripts:
+            raise RuntimeError("No transcript - was transcription switched on in the meeting?")
+        tid = transcripts[-1]["id"]
+        r = await self.http.get(f"{self._mbx}/onlineMeetings/{mid}/transcripts/{tid}/content",
+                                params={"$format": "text/vtt"}, headers=headers, follow_redirects=True)
+        r.raise_for_status()
+        lines = [ln for ln in r.text.splitlines() if ln and "-->" not in ln and ln != "WEBVTT" and not ln.isdigit()]
+        return _strip("\n".join(lines), limit=150_000)
+
     # -- Microsoft 365 usage reports (activity counts only, never content) ------------
     async def _usage_report(self, report: str, days: int) -> list[dict[str, str]]:
         period = next((p for p in (7, 30, 90, 180) if days <= p), 180)
@@ -240,6 +281,18 @@ class DemoMail:
 
     async def check(self) -> str:
         return "demo inbox"
+
+    async def recent_meetings(self, days: int = 7) -> list[dict[str, Any]]:
+        when = (datetime.now(timezone.utc) - timedelta(days=1)).replace(hour=9, minute=0).isoformat()
+        return [{"subject": "Monday ops meeting (DEMO)", "start": when, "join_url": "demo-meeting",
+                 "attendees": ["hannah.cole@example.co.uk", "josh.pryce@example.co.uk"]}]
+
+    async def meeting_transcript(self, join_url: str) -> str:
+        return ("<v Alex>Right, three things. Josh, can you get the revised Vigilon quote for the Ilkley annexe out by "
+                "Wednesday?\n<v Josh>Yes, I'll send it Wednesday.\n<v Alex>Hannah, the care home call-out from "
+                "yesterday is still unassigned - get someone on it today.\n<v Hannah>I'll book Priya this afternoon.\n"
+                "<v Alex>And Rachel needs to chase Kestrel Retail about that old invoice before Friday.\n"
+                "<v Hannah>I'll let her know. Also we agreed to trial the new van stock lists next month.")
 
     async def activity(self, days: int = 30) -> dict[str, dict[str, Any]]:
         scale = days / 30

@@ -254,3 +254,22 @@ class Tracker:
                 "demo": getattr(self.ram, "demo", False) or getattr(self.fsm, "demo", False),
                 "note": "Tracked day = first journey start to last journey end, so it includes travel from home. "
                         "Check your policy on whether first/last journeys are paid before raising a difference."}
+
+    # ------------------------------------------------------------------ lone-worker safety
+    async def lone_worker_check(self, overrun_min: int = 90, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Jobs still in progress well past their booked end - a prompt to check the engineer is OK."""
+        now = now or datetime.now()
+        if not self.in_working_hours(now) and not self.demo:
+            return []
+        concerns = []
+        for j in await self.fsm.jobs(now.date(), now.date()):
+            if str(j.get("status") or "").lower() not in ("in_progress", "started", "on_site"):
+                continue
+            end = _ts(j.get("scheduled_end"))
+            if not end and _ts(j.get("started_at")):
+                end = _ts(j.get("started_at")) + timedelta(hours=float(j.get("hours") or 3))
+            if end and (now - end).total_seconds() / 60 >= overrun_min:
+                concerns.append({"engineer": j.get("engineer"), "job": j.get("ref"), "site": j.get("site"),
+                                 "booked_end": end.strftime("%H:%M"),
+                                 "overrun_minutes": int((now - end).total_seconds() // 60)})
+        return concerns

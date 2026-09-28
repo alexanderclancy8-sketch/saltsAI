@@ -50,6 +50,22 @@ class Suggestions:
                     f"{cust['customer']} is showing warning signs in the customer health watch. Explain what's going "
                     f"on, recommend how to win them back, and draft an email to arrange a call, for my approval.",
                     1 if cust["status"] == "at risk" else 2)
+        renewals = await safe(j.renewals.due())
+        for r in ((renewals or {}).get("renewals") or []):
+            if r["letter_prepared"] or r["days_left"] < 0 or r["customer_health"] in ("at risk", "watch"):
+                continue  # at-risk customers get the "plan a call" suggestion instead
+            new = r["annual_value"] * (1 + j.settings.renewal_uplift_pct / 100)
+            add(f"renewal:{r['contract']}", f"Send renewal for {r['customer']} ({r['site']}) - £{r['annual_value']:,.0f} → "
+                                             f"£{new:,.0f}, due in {r['days_left']} days?",
+                f"{j.settings.renewal_uplift_pct:g}% uplift; customer health {r['customer_health'] or 'n/a'}.",
+                f"Prepare the renewal letter for contract {r['contract']} for my approval.", 2)
+        late_actions = j.meetings.overdue()
+        if late_actions:
+            names = sorted({a["owner"] for a in late_actions})
+            add("meeting-actions", f"{len(late_actions)} meeting action{'s' if len(late_actions) > 1 else ''} overdue "
+                                   f"({', '.join(names[:3])}) - chase?",
+                "; ".join(f"{a['owner']}: {a['action']}" for a in late_actions[:3]),
+                "Which meeting actions are overdue? Draft friendly chase messages for my approval.", 2)
         conc = (health or {}).get("concentration")
         if conc and conc.get("warning"):
             add("concentration", f"{conc['customer']} is {conc['share_pct']}% of revenue - reduce the dependency?",

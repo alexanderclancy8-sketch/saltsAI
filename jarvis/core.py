@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date
 
 import httpx
 
@@ -27,6 +28,8 @@ from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.billing import Billing
 from .services.customers import CustomerHealth
+from .services.documents import Documents
+from .services.meetings import Meetings
 from .services.briefing import Briefings
 from .services.fixer import Fixer
 from .services.issues import IssueService
@@ -34,6 +37,7 @@ from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
 from .services.regulatory import RegulatoryWatch
+from .services.renewals import Renewals
 from .services.routine_tests import RoutineTester
 from .services.staff import StaffMonitor
 from .services.stores import Stores
@@ -93,6 +97,9 @@ class Jarvis:
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
+        self.renewals = Renewals(self)
+        self.meetings = Meetings(self)
+        self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         if s.effective_llm_backend == "max":
@@ -178,3 +185,14 @@ class Jarvis:
         result = await self.billing.queue_review_requests()
         if result.get("queued"):
             await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.")
+
+    async def lone_worker_sweep(self) -> None:
+        for c in await self.tracker.lone_worker_check(self.settings.lone_worker_overrun_min):
+            key = f"lone:{c['job']}:{date.today().isoformat()}"
+            if self.db.get_kv(key):
+                continue
+            self.db.set_kv(key, "alerted")
+            await self.notifier.notify(
+                f"Safety check: {c['engineer']} is still on job {c['job']}",
+                f"{c['site']} - booked to finish {c['booked_end']}, now {c['overrun_minutes']} minutes over. "
+                "Might be worth a quick call to check they're OK.", level="warning", push=True, speak=True)

@@ -89,6 +89,8 @@ ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "visits_per_year": ("visits_per_year", "visitsPerYear", "visits"),
         "status": ("status", "state"),
         "systems": ("systems", "systemCount", "system_count"),
+        "contact_email": ("contact_email", "contactEmail", "email", "billingEmail", "customerEmail"),
+        "contact_name": ("contact_name", "contactName", "contact"),
     },
     "quote": {
         "id": ("id", "quoteId", "quote_id", "reference", "number"),
@@ -417,6 +419,8 @@ class DemoFSM:
                 "renewal_date": (self.today + timedelta(days=38 if customer == "Kestrel Retail"
                                                         else rng.randint(-10, 330))).isoformat(),
                 "annual_value": rng.choice([380, 520, 760, 1100, 1650, 2400]), "visits_per_year": 2,
+                "contact_email": f"facilities@{customer.lower().replace(' ', '')[:14]}.example.co.uk",
+                "contact_name": "Facilities Manager",
                 "status": "active", "systems": 1 + n % 3,
             })
         self._quotes = [
