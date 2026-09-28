@@ -4,9 +4,10 @@ A step-by-step guide that a person, or Claude Desktop working in Chrome, can fol
 **Azure Cloud Shell**, a terminal inside the Azure portal, so there's nothing to install on a PC. It takes
 about 20 minutes.
 
-**What it builds.** Jarvis runs as its own web app on the App Service plan Salts FSM already uses, so there's
-no second plan to pay for. The Salts FSM app itself isn't touched. Only the people you name can open Jarvis,
-using their Microsoft 365 sign-in. Jarvis runs in Azure, so it works whether or not anyone's laptop is on.
+**What it builds.** Jarvis runs as its own web app on its own small Linux App Service plan (B1, about £10 a
+month), in its own resource group. It can't share the Salts FSM plan because that plan is Windows, and Jarvis
+needs Linux. Salts FSM isn't touched at all. Only the people you name can open Jarvis, using their Microsoft 365
+sign-in. Jarvis runs in Azure, so it works whether or not anyone's laptop is on.
 
 ## What's being created (read this first)
 
@@ -16,16 +17,17 @@ using their Microsoft 365 sign-in. Jarvis runs in Azure, so it works whether or 
 
   | What | Name |
   |---|---|
+  | New resource group | `rg-jarvis` |
+  | New Linux App Service plan (B1) | `salts-jarvis-plan` |
   | New web app | `salts-jarvis` |
   | New storage account | `saltsjarvis...` |
   | Microsoft sign-in registration | "Jarvis (salts-jarvis)" |
 
-  All of them go in the same resource group as the Salts FSM plan. **Don't create a web app, plan or anything
-  else by hand in the portal.** Just run the commands below and answer the questions.
-- The only existing thing it uses is the Salts FSM **App Service plan** (the server both apps run on). It
-  reads the plan but doesn't change it.
-- When it's finished, the resource group holds one extra web app (`salts-jarvis`) next to Salts FSM, plus a
-  storage account.
+  **Don't create a web app, plan or anything else by hand in the portal.** Just run the commands below and
+  answer the questions.
+- It doesn't use or change anything that already exists. Salts FSM, its Windows plan and its resource group
+  are all left exactly as they are.
+- When it's finished, there's one new resource group, `rg-jarvis`, holding everything Jarvis needs.
 
 ## Rules for Claude (if Claude is doing this)
 
@@ -62,14 +64,16 @@ This step creates the new `salts-jarvis` web app. Paste this into Cloud Shell:
 ```bash
 git clone -b claude/jarvis-company-ai-assistant-gaj3mj https://github.com/alexanderclancy8-sketch/saltsAI.git
 cd saltsAI
-bash infra/deploy.sh
+PLAN= bash infra/deploy.sh
 ```
+
+(`PLAN=` with nothing after it means "make a new Linux plan for Jarvis". The Salts FSM plan is Windows, so
+Jarvis can't share it.)
 
 It asks these questions in order:
 
 | Question | Answer |
 |---|---|
-| **Plan to share** | It first shows a table of your plans. Type the name of the plan Salts FSM runs on: the one whose `Apps` count includes Salts FSM, with `Linux` = True and `Size` = B1. **If `Linux` says False, stop and tell the owner**: that plan can't run Jarvis. |
 | **Password for the Jarvis display** (twice) | The owner types a new password. It's a backup way in. |
 | **Claude token** | The owner pastes the `sk-ant-oat01-...` token from step 2. |
 | **Microsoft 365 addresses allowed to sign in** | The owner's and the business partner's work email addresses, separated by a space. |
@@ -82,7 +86,7 @@ Then it builds everything, which takes about 10 minutes. The upload step alone c
 - `Microsoft sign-in is on. Only these people can open Jarvis: ...`
 
 If it stops saying the name is taken, run it again with a different name:
-`APP_NAME=salts-jarvis-hq bash infra/deploy.sh`
+`APP_NAME=salts-jarvis-hq PLAN= bash infra/deploy.sh`
 
 ## 4. Check it works
 

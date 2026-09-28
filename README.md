@@ -130,10 +130,10 @@ cd saltsAI
 bash infra/deploy.sh
 ```
 
-- **Shares your existing plan.** Azure charges per App Service plan, not per app, so Jarvis can run as a second
-  web app on the Linux B1 plan Salts FSM already uses, at no extra cost. The two apps share the plan's memory
-  and processor. If Salts FSM ever feels slower, move the plan up a size. The script refuses Windows plans,
-  because Jarvis needs Linux.
+- **Its plan.** Azure charges per App Service plan, not per app, so Jarvis can run as a second web app on an
+  existing *Linux* plan at no extra cost. It can't share a *Windows* plan (the script refuses one), because
+  Jarvis needs Linux and Azure can't mix the two on one plan. Salts FSM is on Windows, so Jarvis gets its own
+  Linux B1 plan (about £10 a month): run `PLAN= bash infra/deploy.sh`.
 - **Never overwrites Salts FSM.** Everything Jarvis creates is tagged `app=jarvis`. The script and the GitHub
   workflow only upload to, or change settings on, a web app with that tag. Jarvis only ever deploys to Salts FSM
   when you approve a specific fix, and only after you've set up the auto-fix settings above.
