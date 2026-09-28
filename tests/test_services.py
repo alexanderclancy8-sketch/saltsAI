@@ -177,3 +177,21 @@ async def test_remedial_pipeline_flags_stalled_quotes():
     assert any("second chase" in a for a in chased.values()) and any("first chase" in a for a in chased.values())
     assert all(r["age_days"] >= 7 for r in data["needs_chasing"])
     assert data["win_rate_pct"] is not None
+
+
+async def test_customer_health_flags_the_drifting_customer(tmp_path):
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    health = await j.customers.scores()
+    kestrel = next(c for c in health["customers"] if c["customer"] == "Kestrel Retail")
+    assert kestrel["status"] == "at risk" and kestrel["renewal_in_days"] == 38
+    assert any("work down" in r for r in kestrel["reasons"]) and any("overdue" in r for r in kestrel["reasons"])
+    assert kestrel["suggested_actions"][0].startswith("call them before the renewal")
+    assert any(c["status"] == "healthy" for c in health["customers"])
+    suggestions = await j.suggestions.sweep(announce=False)
+    assert any(s["key"] == "customer:Kestrel Retail" for s in suggestions)
+    assert (await j.customers.customer("kestrel"))["customer"] == "Kestrel Retail"
+    await j.http.aclose()

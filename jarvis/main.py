@@ -112,8 +112,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.get("/api/status", dependencies=[Depends(owner)])
     async def status(request: Request):
         j = J(request)
-        data, presence = await asyncio.gather(j.briefings.status(), j.marketing.overview(30))
+        data, presence, customers = await asyncio.gather(j.briefings.status(), j.marketing.overview(30),
+                                                         j.customers.scores())
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
+                    customer_watch=[c for c in customers["customers"] if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name,
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),

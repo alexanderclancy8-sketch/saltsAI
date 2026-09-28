@@ -365,7 +365,7 @@
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
-      renderPresence(st.presence); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSuggestions(); renderSettings(st);
+      renderPresence(st.presence); renderCustomers(st.customer_watch); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSuggestions(); renderSettings(st);
     } catch (e) { console.warn(e); }
   }
 
@@ -436,6 +436,13 @@
       return `<li class="${m && m.change_7d > 0 ? "ok" : ""}">${names[k] || k}: <b>${m ? Math.round(m.current) : "-"}</b>${r ? ` · ${r.current}★` : ""}<span class="sub">${change} this week${p.demo ? " · demo" : ""}</span></li>`;
     });
     $("#presence").innerHTML = rows.join("") || `<li class="empty">Connect socials in settings.</li>`;
+  }
+
+  function renderCustomers(list = []) {
+    $("#customers-count").textContent = list.length ? `${list.length} to watch` : "all healthy";
+    $("#customers").innerHTML = list.length ? list.map((c) => `<li class="${c.status === "at risk" ? "bad" : "warn"}">${esc(c.customer)} · <b>${c.score}</b>
+      <span class="sub">${esc(c.reasons.slice(0, 2).join("; "))}${c.renewal_in_days !== null && c.renewal_in_days <= 90 ? ` · renewal ${c.renewal_in_days < 0 ? "passed" : "in " + c.renewal_in_days + " days"}` : ""}</span></li>`).join("")
+      : `<li class="empty">No customers showing warning signs.</li>`;
   }
 
   function renderDeadlines(deadlines = [], accreditations = []) {

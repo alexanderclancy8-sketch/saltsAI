@@ -11,7 +11,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
-      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 70 tools │
+      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 71 tools │
       └───┬──────────┬──────────┬──────────┬──────────┬──────────┬───────────┘
       Outlook/   Salts FSM   Sage /    RAM       GitHub →   Socials,
       Teams      (jobs, staff, Sage 50  Tracking  Azure      Google, web
@@ -34,6 +34,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
 | **Business consultant** | Business health check against targets, monthly board-style advisory report, and deep dives (pricing, growth, SWOT, hiring, acquisitions) with a 90-day plan. |
 | **Law & tax watch** | A weekly web-researched update for you and your business partner on UK tax, employment law, company law and fire & security regulation changes, with sources. |
 | **Accreditations** | BAFE, SSAIB, CHAS (and NSI etc.) renewal and audit reminders, and audit-ready evidence packs with draft questionnaire answers. |
+| **Customer health watch** | A 0-100 score for every customer from spend trend, payment behaviour, repeat faults, declined quotes, service visits we're behind on, logged problems, inactivity and lapsed renewals. At-risk customers (especially within 90 days of renewal) are flagged with the reasons and a plan to keep them, and it warns if one customer is too big a share of revenue. |
 | **Marketing** | Follower growth on Facebook, Instagram, LinkedIn and TikTok, Google reviews, Search Console rankings, a website SEO audit and weekly suggestions. Review requests after each job (approved in one tap). |
 
 **Jarvis suggests; you decide.** It never changes anything on its own. A few times a day it looks through

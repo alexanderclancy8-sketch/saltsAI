@@ -248,6 +248,10 @@ class RegWatchIn(BaseModel):
                                                 "'minimum wage April', 'BS 5839 2025'")
 
 
+class CustomerIn(BaseModel):
+    customer: str | None = Field(None, description="One customer (partial name ok); omit for the whole book")
+
+
 class WithinDaysIn(BaseModel):
     within_days: int = 60
 
@@ -585,6 +589,12 @@ async def end_of_day_wrap_up(j, a: NoInput):
     return await j.wrapup.run(deliver=False)
 
 
+async def customer_health(j, a: CustomerIn):
+    if a.customer:
+        return await j.customers.customer(a.customer)
+    return await j.customers.scores(refresh=True)
+
+
 async def staff_overdue_jobs(j, a: NoInput):
     return await j.staff.overdue_jobs()
 
@@ -815,6 +825,11 @@ TOOLS: list[Tool] = [
     Tool("end_of_day_wrap_up", "The end-of-day wrap-up: what got done, what slipped, what's awaiting approval, "
                                "and tomorrow's first jobs and risks.", NoInput, end_of_day_wrap_up,
          "Preparing your wrap-up"),
+    Tool("customer_health", "Customer health watch: a 0-100 score per customer from spend trend, overdue debt, "
+                            "repeat call-outs, declined quotes, overdue service visits, logged problems, inactivity "
+                            "and lapsed renewals - who is at risk (especially before renewal), why, and what to do. "
+                            "Also flags revenue concentration.", CustomerIn, customer_health,
+         "Checking customer health"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",

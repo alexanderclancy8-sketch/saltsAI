@@ -53,6 +53,7 @@ class Advisor:
         self.notifier = notifier
         self.client = client
         self.bus = bus
+        self.j_customers = None  # CustomerHealth, set after construction
 
     async def gather(self) -> dict[str, Any]:
         health, team, prod, snapshot, cashflow, credit, socials = await asyncio.gather(
@@ -64,6 +65,10 @@ class Advisor:
             _safe(self.accountant.credit_control(), "credit"),
             _safe(self.marketing.overview(30), "marketing"),
         )
+        customers = await _safe(self.j_customers.scores(), "customers") if self.j_customers else None
+        if isinstance(customers, dict) and "customers" in customers:
+            customers = {"at_risk": customers["at_risk"], "watch": customers["watch"][:8],
+                         "concentration": customers["concentration"]}
         if isinstance(cashflow, dict) and "weeks" in cashflow:
             cashflow = {k: v for k, v in cashflow.items() if k != "weeks"}
         if isinstance(credit, dict) and "actions" in credit:
@@ -71,7 +76,7 @@ class Advisor:
         return {"date": date.today().isoformat(), "business_health": health, "finance_snapshot": snapshot,
                 "cashflow_summary": cashflow, "credit_control": credit, "team_review_30d": team,
                 "engineer_productivity_30d": prod.get("team") if isinstance(prod, dict) else prod,
-                "marketing": socials, "open_issues": len(self.db.list_issues("open", 200)),
+                "marketing": socials, "customer_health": customers, "open_issues": len(self.db.list_issues("open", 200)),
                 "failing_routine_tests": [t for t in self.db.latest_test_results() if not t["ok"]],
                 "deadlines": self.accountant.deadlines()}
 

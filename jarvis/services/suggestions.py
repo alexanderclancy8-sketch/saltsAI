@@ -33,9 +33,28 @@ class Suggestions:
 
         from .remedials import remedial_pipeline
 
-        unbilled, remedials, overdue, credit, certs = await asyncio.gather(
+        unbilled, remedials, overdue, credit, certs, health = await asyncio.gather(
             safe(j.billing.unbilled_jobs(30)), safe(remedial_pipeline(j.fsm)), safe(j.staff.overdue_jobs()),
-            safe(j.accountant.credit_control()), safe(j.staff.expiring_certifications(30)))
+            safe(j.accountant.credit_control()), safe(j.staff.expiring_certifications(30)),
+            safe(j.customers.scores(refresh=True)))
+
+        for cust in ((health or {}).get("customers") or []):
+            renewal = cust.get("renewal_in_days")
+            near_renewal = renewal is not None and renewal <= 90
+            if cust["status"] == "at risk" or (cust["status"] == "watch" and near_renewal):
+                when = (f" before renewal in {renewal} days" if near_renewal and renewal >= 0
+                        else " - contract renewal has passed" if renewal is not None and renewal < 0 else "")
+                add(f"customer:{cust['customer']}",
+                    f"{cust['customer']} looks {cust['status']}{when} (score {cust['score']}) - plan a call?",
+                    "; ".join(cust["reasons"][:3]),
+                    f"{cust['customer']} is showing warning signs in the customer health watch. Explain what's going "
+                    f"on, recommend how to win them back, and draft an email to arrange a call, for my approval.",
+                    1 if cust["status"] == "at risk" else 2)
+        conc = (health or {}).get("concentration")
+        if conc and conc.get("warning"):
+            add("concentration", f"{conc['customer']} is {conc['share_pct']}% of revenue - reduce the dependency?",
+                "Losing one customer that size would hurt.",
+                "We rely heavily on one customer. What's the risk and how should we diversify?", 3)
 
         if unbilled and unbilled["count"]:
             add("unbilled", f"Invoice {unbilled['count']} completed jobs (£{unbilled['net_total']:,.0f} + VAT)?",

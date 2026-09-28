@@ -309,14 +309,21 @@ class DemoFinance:
         suppliers = ["Fire Alarm Wholesale Ltd", "Security Distribution UK", "Van Leasing Co", "Fuel Card Services",
                      "Office Landlord", "Cable & Fixings Direct"]
         self._invoices: list[Invoice] = []
-        for n in range(70):
-            d = self.today - timedelta(days=rng.randint(0, 200))
-            net = rng.choice([185, 240, 320, 450, 760, 1250, 2340, 2890, 4800, 9650])
+        typical = {c: rng.choice([450, 760, 1250, 1600]) for c in customers}
+        for n in range(240):
+            d = self.today - timedelta(days=int(n / 240 * 200))
+            contact = customers[n % len(customers)]
+            net = round(typical[contact] * rng.uniform(0.85, 1.15))
+            if contact == "Kestrel Retail" and (self.today - d).days <= 90:  # demo story: a customer going quiet
+                contact = "Bradford Council"
             paid = d < self.today - timedelta(days=rng.randint(25, 75))
             total = round(net * 1.2, 2)
-            self._invoices.append(Invoice("receivable", f"INV-{10400 + n}", rng.choice(customers), d,
+            self._invoices.append(Invoice("receivable", f"INV-{10400 + n}", contact, d,
                                           d + timedelta(days=30), total, round(net * 0.2, 2),
                                           0.0 if paid else total, "paid" if paid else "authorised"))
+        late = self.today - timedelta(days=105)  # demo story: Kestrel sitting on an old invoice
+        self._invoices.append(Invoice("receivable", "INV-10388", "Kestrel Retail", late, late + timedelta(days=30),
+                                      4056.0, 676.0, 4056.0, "authorised"))
         for n in range(45):
             d = self.today - timedelta(days=rng.randint(0, 200))
             net = rng.choice([95, 180, 420, 650, 1200, 2100, 3400])

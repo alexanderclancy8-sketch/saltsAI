@@ -26,6 +26,7 @@ from .services.accreditations import Accreditations
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.billing import Billing
+from .services.customers import CustomerHealth
 from .services.briefing import Briefings
 from .services.fixer import Fixer
 from .services.issues import IssueService
@@ -90,6 +91,8 @@ class Jarvis:
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
+        self.customers = CustomerHealth(self)
+        self.advisor.j_customers = self.customers
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         if s.effective_llm_backend == "max":

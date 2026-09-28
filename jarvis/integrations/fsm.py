@@ -372,6 +372,8 @@ class DemoFSM:
                     else:
                         site = f"{rng.randint(2, 180)} {rng.choice(streets)} {rng.choice(kinds)}"
                         customer = rng.choice([c for _, c in _SITES])
+                    if customer == "Kestrel Retail" and back <= 90:  # demo story: a customer going quiet
+                        site, customer = _SITES[0]
                     late = rng.random() < (0.3 if name == "Kyle Brennan" else 0.08)
                     started = t + timedelta(minutes=rng.randint(35, 70) if late else rng.randint(0, 15))
                     dur = timedelta(minutes=int(rng.uniform(100, 150)))
@@ -412,7 +414,8 @@ class DemoFSM:
                 })
             self._contracts.append({
                 "id": f"C{300 + n}", "customer": customer, "site": site,
-                "renewal_date": (self.today + timedelta(days=rng.randint(-10, 330))).isoformat(),
+                "renewal_date": (self.today + timedelta(days=38 if customer == "Kestrel Retail"
+                                                        else rng.randint(-10, 330))).isoformat(),
                 "annual_value": rng.choice([380, 520, 760, 1100, 1650, 2400]), "visits_per_year": 2,
                 "status": "active", "systems": 1 + n % 3,
             })
