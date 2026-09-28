@@ -95,6 +95,21 @@ If it says an email address wasn't found, it shows which account and directory A
 for the owner, leave the question blank, and carry on. Jarvis works with the password, and Microsoft sign-in
 can be switched on later.
 
+### If you already made the web app by hand in the portal
+
+Don't run step 3. Turn the web app you made into Jarvis instead, using its name (the first part of its
+address, e.g. `jarvis-salts`):
+
+```bash
+cd ~/saltsAI
+git pull
+bash infra/deploy.sh adopt jarvis-salts
+```
+
+It checks the app is Linux on a paid plan (B1 or bigger). Then it asks for the password and Claude token,
+and asks you to type the app's name to confirm. After that it sets the app up and uploads Jarvis. For
+later commands, put `APP_NAME=jarvis-salts` in front, e.g. `APP_NAME=jarvis-salts bash infra/deploy.sh update`.
+
 ## 4. Check it works
 
 Open the Jarvis address in a new tab. You should get the Microsoft sign-in page, then the Jarvis display. The

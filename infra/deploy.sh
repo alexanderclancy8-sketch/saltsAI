@@ -5,6 +5,7 @@
 #                                             uploads the code and, if you name people, turns on Microsoft sign-in
 #   bash infra/deploy.sh update               upload the latest Jarvis code (settings are kept)
 #   bash infra/deploy.sh settings FILE        copy the filled-in values from an env file (like .env.example) into the app
+#   bash infra/deploy.sh adopt NAME           turn a Linux web app you made by hand in the portal into Jarvis
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
 #
@@ -184,6 +185,81 @@ ask() {
   printf -v "$1" '%s' "$__ans"
 }
 
+# Sets the caller's owner_password.
+ask_password() {
+  local confirm
+  while :; do
+    ask owner_password "Choose a password for the Jarvis display (you won't see it as you type): " secret
+    ask confirm "Type it again: " secret
+    if [ -z "$owner_password" ]; then echo "The password can't be blank."
+    elif [ "$owner_password" != "$confirm" ]; then echo "Those didn't match. Try again."
+    else break; fi
+  done
+}
+
+# Sets the caller's claude_token, or anthropic_key if the token is left blank.
+ask_claude() {
+  anthropic_key=""
+  while :; do
+    ask claude_token "Paste the Claude token from 'claude setup-token' (blank to use an API key instead): " token
+    claude_token="${claude_token//[[:space:]]/}"
+    [ -z "$claude_token" ] || [[ "$claude_token" =~ ^sk-ant-oat[A-Za-z0-9_-]+$ ]] && break
+    echo "That doesn't look like a Claude token (it starts sk-ant-oat01-). Paste it again."
+  done
+  while [ -z "$claude_token" ]; do
+    ask anthropic_key "Paste the Anthropic API key: " token
+    anthropic_key="${anthropic_key//[[:space:]]/}"
+    [[ "$anthropic_key" =~ ^sk-ant-api[A-Za-z0-9_-]+$ ]] && break
+    echo "That doesn't look like an API key (it starts sk-ant-api). Paste it again."
+  done
+}
+
+# Turns a Linux web app made by hand in the portal into Jarvis.
+adopt() {
+  local found kind plan_id host tier others site_id go owner_password claude_token anthropic_key
+  [ -n "${1:-}" ] || die "give the name of the web app you made, e.g.  bash infra/deploy.sh adopt jarvis-salts"
+  APP_NAME="$1"
+  found="$(az webapp list --query "[?name=='$APP_NAME'] | [0].[resourceGroup, kind, appServicePlanId, defaultHostName, id]" -o tsv)"
+  [ -n "$found" ] || die "there's no web app called $APP_NAME in this subscription."
+  IFS=$'\t' read -r RG kind plan_id host site_id <<<"$found"
+  [[ "${APP_NAME,,}" != *fsm* ]] || die "$APP_NAME looks like a Salts FSM app, so it's been left alone."
+  [[ "$kind" == *linux* ]] || die "$APP_NAME is a Windows web app, and Jarvis needs Linux. In the portal, create a
+new web app with Publish: Code, Runtime stack: Python 3.12 and Operating System: Linux, then adopt that one."
+  tier="$(az appservice plan show --ids "$plan_id" --query sku.tier -o tsv)"
+  [[ "$tier" != "Free" && "$tier" != "Shared" ]] || die "$APP_NAME is on a $tier plan, which switches apps off when
+nobody's using them, so Jarvis's briefings, checks and reminders wouldn't run. Move it to a Basic (B1) plan or
+bigger: in the portal open the web app, then 'Scale up (App Service plan)'."
+  others="$(az webapp list --query "[?appServicePlanId=='$plan_id' && name!='$APP_NAME'].name" -o tsv | paste -sd ' ' -)"
+
+  echo "This turns the web app $APP_NAME (resource group $RG, $tier plan) into Jarvis:"
+  echo "  - sets it to Python 3.12 with Jarvis's startup command, WebSockets, Always On and a health check"
+  echo "  - adds Jarvis's settings and uploads the Jarvis code, replacing anything already on it"
+  [ -z "$others" ] || echo "  - its plan also runs: $others. Those apps aren't changed, but they'll share memory and processor."
+  ask_password
+  ask_claude
+  ask go "To confirm, type the web app's name ($APP_NAME): "
+  [ "$go" = "$APP_NAME" ] || die "nothing was changed."
+
+  local staff_key settings
+  staff_key="$(openssl rand -hex 12)"
+  az resource tag --ids "$site_id" --tags app="$TAG" --is-incremental -o none
+  az webapp update -g "$RG" -n "$APP_NAME" --https-only true -o none
+  az webapp config set -g "$RG" -n "$APP_NAME" -o none --linux-fx-version "PYTHON|3.12" \
+    --startup-file "python -m jarvis" --web-sockets-enabled true --always-on true --ftps-state Disabled \
+    --min-tls-version 1.2 --generic-configurations '{"healthCheckPath": "/healthz"}'
+  settings=(SCM_DO_BUILD_DURING_DEPLOYMENT=true WEBSITES_ENABLE_APP_SERVICE_STORAGE=true WEBSITES_PORT=8000
+    DATA_DIR=/home/data "FORWARDED_ALLOW_IPS=*" "PUBLIC_BASE_URL=https://$host"
+    "JARVIS_OWNER_PASSWORD=$owner_password" "JARVIS_SECRET_KEY=$(openssl rand -hex 32)" "STAFF_REPORT_KEY=$staff_key")
+  if [ -n "$claude_token" ]; then settings+=("CLAUDE_CODE_OAUTH_TOKEN=$claude_token"); else settings+=("ANTHROPIC_API_KEY=$anthropic_key"); fi
+  az webapp config appsettings set -g "$RG" -n "$APP_NAME" --settings "${settings[@]}" -o none
+  deploy_code
+
+  echo
+  echo "Jarvis:              https://$host  (password: the one you just chose)"
+  echo "Staff report link:   https://$host/report?key=$staff_key"
+  echo "Add your other keys: fill in a copy of .env.example, then  APP_NAME=$APP_NAME bash infra/deploy.sh settings <that file>"
+}
+
 setup() {
   local existing plan_info plan_id="" plan_rg plan_location plan_linux plan_tier others
   local owner_password confirm claude_token anthropic_key staff_key managers url email
@@ -216,27 +292,8 @@ setup() {
     [ -z "$others" ] || die "resource group $RG already holds other things ($others). Use a new one, e.g.  RG=rg-salts-jarvis bash infra/deploy.sh"
   fi
 
-  while :; do
-    ask owner_password "Choose a password for the Jarvis display (you won't see it as you type): " secret
-    ask confirm "Type it again: " secret
-    if [ -z "$owner_password" ]; then echo "The password can't be blank."
-    elif [ "$owner_password" != "$confirm" ]; then echo "Those didn't match. Try again."
-    else break; fi
-  done
-
-  anthropic_key=""
-  while :; do
-    ask claude_token "Paste the Claude token from 'claude setup-token' (blank to use an API key instead): " token
-    claude_token="${claude_token//[[:space:]]/}"
-    [ -z "$claude_token" ] || [[ "$claude_token" =~ ^sk-ant-oat[A-Za-z0-9_-]+$ ]] && break
-    echo "That doesn't look like a Claude token (it starts sk-ant-oat01-). Paste it again."
-  done
-  while [ -z "$claude_token" ]; do
-    ask anthropic_key "Paste the Anthropic API key: " token
-    anthropic_key="${anthropic_key//[[:space:]]/}"
-    [[ "$anthropic_key" =~ ^sk-ant-api[A-Za-z0-9_-]+$ ]] && break
-    echo "That doesn't look like an API key (it starts sk-ant-api). Paste it again."
-  done
+  ask_password
+  ask_claude
 
   local problem
   while :; do
@@ -339,6 +396,7 @@ case "${1:-setup}" in
   setup) setup ;;
   update) deploy_code ;;
   settings) push_settings "${2:-}" ;;
+  adopt) adopt "${2:-}" ;;
   signin) shift; enable_signin "$@" ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|signin EMAIL...]" ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME|signin EMAIL...]" ;;
 esac
