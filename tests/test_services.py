@@ -299,5 +299,5 @@ def test_out_of_hours_window_covers_the_weekend():
 
     monday = datetime(2026, 9, 28, 7, 45)
     tuesday = datetime(2026, 9, 29, 7, 45)
-    assert since_last_close(monday) == 64 + 1  # since Friday 17:00
-    assert since_last_close(tuesday) == 14 + 1  # since Monday 17:00
+    assert since_last_close(monday) == 63  # Friday 17:00 -> Monday 07:45 is 62.75h, rounded up
+    assert since_last_close(tuesday) == 15  # Monday 17:00 -> Tuesday 07:45 is 14.75h, rounded up
