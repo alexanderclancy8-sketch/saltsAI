@@ -8,6 +8,25 @@ about 20 minutes.
 no second plan to pay for. The Salts FSM app itself isn't touched. Only the people you name can open Jarvis,
 using their Microsoft 365 sign-in. Jarvis runs in Azure, so it works whether or not anyone's laptop is on.
 
+## What's being created (read this first)
+
+- **Jarvis is a brand-new, separate web app.** It doesn't exist yet, and it is **not** Salts FSM. Nothing is
+  being added to, uploaded to or changed in the Salts FSM web app.
+- **The setup script creates everything itself**, in one go:
+
+  | What | Name |
+  |---|---|
+  | New web app | `salts-jarvis` |
+  | New storage account | `saltsjarvis...` |
+  | Microsoft sign-in registration | "Jarvis (salts-jarvis)" |
+
+  All of them go in the same resource group as the Salts FSM plan. **Don't create a web app, plan or anything
+  else by hand in the portal.** Just run the commands below and answer the questions.
+- The only existing thing it uses is the Salts FSM **App Service plan** (the server both apps run on). It
+  reads the plan but doesn't change it.
+- When it's finished, the resource group holds one extra web app (`salts-jarvis`) next to Salts FSM, plus a
+  storage account.
+
 ## Rules for Claude (if Claude is doing this)
 
 - **Never type passwords, tokens or keys yourself.** When a prompt asks for one, stop and ask the owner to
@@ -36,9 +55,9 @@ It shows a link. Open it, and the **owner** signs in with the Claude Max account
 then asks for a code, the owner copies it from the browser and pastes it in. It prints a long token starting
 `sk-ant-oat01-`. The owner keeps it handy for step 3 (it's a secret, so don't save it anywhere shared).
 
-## 3. Set up Jarvis
+## 3. Create and set up the Jarvis web app
 
-Paste this into Cloud Shell:
+This step creates the new `salts-jarvis` web app. Paste this into Cloud Shell:
 
 ```bash
 git clone -b claude/jarvis-company-ai-assistant-gaj3mj https://github.com/alexanderclancy8-sketch/saltsAI.git
