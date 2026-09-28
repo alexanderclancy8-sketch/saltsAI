@@ -286,7 +286,8 @@ class QuestionnaireIn(BaseModel):
 
 
 class HoursIn(BaseModel):
-    hours: int = Field(18, description="Look back this many hours")
+    hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
+                                               "closed (so Monday covers the weekend)")
 
 
 class WithinDaysIn(BaseModel):
@@ -666,7 +667,7 @@ async def answer_questionnaire(j, a: QuestionnaireIn):
 
 
 async def out_of_hours_calls(j, a: HoursIn):
-    return await j.ooh.calls(max(1, min(a.hours, 96)))
+    return await j.ooh.calls(max(1, min(a.hours, 240)) if a.hours else None)
 
 
 async def staff_overdue_jobs(j, a: NoInput):

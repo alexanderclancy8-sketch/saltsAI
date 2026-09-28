@@ -66,7 +66,7 @@ class Briefings:
         data = await self.status()
         data["certs_expiring"] = await _safe(self.staff.expiring_certifications(30), "certs")
         if self.ooh is not None:
-            data["out_of_hours_calls"] = await _safe(self.ooh.calls(18), "out of hours")
+            data["out_of_hours_calls"] = await _safe(self.ooh.calls(), "out of hours")
         data.pop("notifications", None)
         text = await llm.write(
             self.client, self.s,

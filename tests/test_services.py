@@ -290,3 +290,14 @@ async def test_out_of_hours_pdf_reports_are_read(tmp_path):
     sent = j.client.beta.messages.calls[-1]["messages"][0]["content"]
     assert sent[0]["type"] == "document" and sent[0]["source"]["media_type"] == "application/pdf"
     await j.http.aclose()
+
+
+def test_out_of_hours_window_covers_the_weekend():
+    from datetime import datetime
+
+    from jarvis.services.ooh import since_last_close
+
+    monday = datetime(2026, 9, 28, 7, 45)
+    tuesday = datetime(2026, 9, 29, 7, 45)
+    assert since_last_close(monday) == 64 + 1  # since Friday 17:00
+    assert since_last_close(tuesday) == 14 + 1  # since Monday 17:00

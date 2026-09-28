@@ -5,7 +5,7 @@ anything that still needs a job in Salts FSM (suggested, never created without a
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -38,6 +38,15 @@ class CallReport(BaseModel):
     calls: list[Call]
 
 
+def since_last_close(now: datetime | None = None, close: time = time(17, 0)) -> int:
+    """Hours since the office last closed - so Monday morning covers the whole weekend."""
+    now = now or datetime.now()
+    day = now.date() - timedelta(days=1)
+    while day.weekday() >= 5:  # skip back over Saturday and Sunday
+        day -= timedelta(days=1)
+    return max(1, int((now - datetime.combine(day, close)).total_seconds() // 3600) + 1)
+
+
 def _norm(text: Any) -> str:
     return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
 
@@ -53,8 +62,9 @@ class OutOfHours:
         return bool((s.ooh_email_from and s.ooh_email_from.lower() in sender)
                     or (s.ooh_subject_keyword and s.ooh_subject_keyword.lower() in subject))
 
-    async def calls(self, hours: int = 18) -> dict[str, Any]:
+    async def calls(self, hours: int | None = None) -> dict[str, Any]:
         j = self.j
+        hours = hours or since_last_close()
         mailbox = j.settings.ooh_mailbox or None
         messages = [m for m in await j.mail.list_messages(unread_only=False, top=50, since_hours=hours, mailbox=mailbox)
                     if self._is_report(m)]

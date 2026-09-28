@@ -59,7 +59,7 @@ class Suggestions:
                                              f"£{new:,.0f}, due in {r['days_left']} days?",
                 f"{j.settings.renewal_uplift_pct:g}% uplift; customer health {r['customer_health'] or 'n/a'}.",
                 f"Prepare the renewal letter for contract {r['contract']} for my approval.", 2)
-        ooh = await safe(j.ooh.calls(18))
+        ooh = await safe(j.ooh.calls())
         for call in ((ooh or {}).get("needing_a_job") or [])[:3]:
             add(f"ooh:{call['site']}:{call['time']}",
                 f"Overnight call at {call['site']} ({call['urgency']}) has no job - book a call-out?",
