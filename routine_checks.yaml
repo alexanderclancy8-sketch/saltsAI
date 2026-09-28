@@ -1,0 +1,17 @@
+# HTTP smoke tests Jarvis runs against Salts FSM every ROUTINE_TEST_INTERVAL_MIN minutes.
+# `path` is relative to FSM_BASE_URL; use `url` for anything else. Add a check for
+# every page or API the business can't live without.
+http_checks:
+  - name: FSM home page
+    path: /
+    expect_status: 200
+    max_ms: 4000
+  - name: FSM public quote page
+    path: /?public=1
+    expect_status: 200
+    max_ms: 4000
+  # - name: FSM API health
+  #   path: /api/health
+  #   expect_status: 200
+  #   expect_text: ok
+  #   max_ms: 2000
