@@ -216,16 +216,20 @@ ask_claude() {
 
 # Turns a Linux web app made by hand in the portal into Jarvis.
 adopt() {
-  local found kind plan_id host tier others site_id go owner_password claude_token anthropic_key
+  local linux plan_id host tier others site_id go owner_password claude_token anthropic_key
   [ -n "${1:-}" ] || die "give the name of the web app you made, e.g.  bash infra/deploy.sh adopt jarvis-salts"
   APP_NAME="$1"
-  found="$(az webapp list --query "[?name=='$APP_NAME'] | [0].[resourceGroup, kind, appServicePlanId, defaultHostName, id]" -o tsv)"
-  [ -n "$found" ] || die "there's no web app called $APP_NAME in this subscription."
-  IFS=$'\t' read -r RG kind plan_id host site_id <<<"$found"
+  RG="$(az webapp list --query "[?name=='$APP_NAME'].resourceGroup | [0]" -o tsv)"
+  [ -n "$RG" ] || die "there's no web app called $APP_NAME in this subscription."
   [[ "${APP_NAME,,}" != *fsm* ]] || die "$APP_NAME looks like a Salts FSM app, so it's been left alone."
-  [[ "$kind" == *linux* ]] || die "$APP_NAME is a Windows web app, and Jarvis needs Linux. In the portal, create a
-new web app with Publish: Code, Runtime stack: Python 3.12 and Operating System: Linux, then adopt that one."
+  # One value per query: an empty field in a multi-value tsv row would shift the rest along.
+  plan_id="$(az webapp show -g "$RG" -n "$APP_NAME" --query "appServicePlanId || serverFarmId" -o tsv)"
+  host="$(az webapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)"
+  site_id="$(az webapp show -g "$RG" -n "$APP_NAME" --query id -o tsv)"
+  linux="$(az appservice plan show --ids "$plan_id" --query reserved -o tsv)"
   tier="$(az appservice plan show --ids "$plan_id" --query sku.tier -o tsv)"
+  [ "${linux,,}" = "true" ] || die "$APP_NAME runs on a Windows plan, and Jarvis needs Linux. In the portal, create a
+new web app with Publish: Code, Runtime stack: Python 3.12 and Operating System: Linux, then adopt that one."
   [[ "$tier" != "Free" && "$tier" != "Shared" ]] || die "$APP_NAME is on a $tier plan, which switches apps off when
 nobody's using them, so Jarvis's briefings, checks and reminders wouldn't run. Move it to a Basic (B1) plan or
 bigger: in the portal open the web app, then 'Scale up (App Service plan)'."
