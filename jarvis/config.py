@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     issue_email_tag: str = "[ISSUE]"
     # Out-of-hours answering service: the address/domain (or a subject word) of their call-report emails
     ooh_email_from: str = ""
+    ooh_mailbox: str = ""  # mailbox the reports arrive in (e.g. info@...); defaults to MS_MAILBOX
     ooh_subject_keyword: str = "out of hours"
 
     # --- Salts FSM --------------------------------------------------------

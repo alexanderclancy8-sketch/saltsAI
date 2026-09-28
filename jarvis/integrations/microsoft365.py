@@ -73,7 +73,8 @@ class GraphMail:
         return f"{GRAPH}/users/{self.s.ms_mailbox}"
 
     async def list_messages(self, unread_only: bool = False, top: int = 15, since_hours: int | None = None,
-                            folder: str = "inbox") -> list[dict[str, Any]]:
+                            folder: str = "inbox", mailbox: str | None = None) -> list[dict[str, Any]]:
+        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
         filters = []
         if unread_only:
             filters.append("isRead eq false")
@@ -83,7 +84,7 @@ class GraphMail:
         params = {"$top": str(top), "$select": MESSAGE_FIELDS, "$orderby": "receivedDateTime desc"}
         if filters:
             params["$filter"] = " and ".join(filters)
-        r = await self.http.get(f"{self._mbx}/mailFolders/{folder}/messages", params=params,
+        r = await self.http.get(f"{base}/mailFolders/{folder}/messages", params=params,
                                 headers=await self._headers())
         r.raise_for_status()
         return [_summarise(m) for m in r.json().get("value", [])]
@@ -95,9 +96,10 @@ class GraphMail:
         r.raise_for_status()
         return [_summarise(m) for m in r.json().get("value", [])]
 
-    async def get_message(self, message_id: str) -> dict[str, Any]:
+    async def get_message(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
         r = await self.http.get(
-            f"{self._mbx}/messages/{message_id}",
+            f"{base}/messages/{message_id}",
             params={"$select": MESSAGE_FIELDS + ",body,ccRecipients"},
             headers=await self._headers({"Prefer": 'outlook.body-content-type="text"'}),
         )
@@ -262,7 +264,7 @@ class DemoMail:
         ]
 
     async def list_messages(self, unread_only: bool = False, top: int = 15, since_hours: int | None = None,
-                            folder: str = "inbox") -> list[dict[str, Any]]:
+                            folder: str = "inbox", mailbox: str | None = None) -> list[dict[str, Any]]:
         msgs = [m for m in self._messages if not unread_only or not m["is_read"]]
         return [{k: v for k, v in m.items() if k != "body"} for m in msgs[:top]]
 
@@ -271,7 +273,7 @@ class DemoMail:
         hits = [m for m in self._messages if q in (m["subject"] + m["body"]).lower()]
         return [{k: v for k, v in m.items() if k != "body"} for m in hits[:top]]
 
-    async def get_message(self, message_id: str) -> dict[str, Any]:
+    async def get_message(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
         for m in self._messages:
             if m["id"] == message_id:
                 return {**m, "to": [], "cc": []}

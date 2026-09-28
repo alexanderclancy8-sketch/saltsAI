@@ -50,7 +50,8 @@ class OutOfHours:
 
     async def calls(self, hours: int = 18) -> dict[str, Any]:
         j = self.j
-        messages = [m for m in await j.mail.list_messages(unread_only=False, top=25, since_hours=hours)
+        mailbox = j.settings.ooh_mailbox or None
+        messages = [m for m in await j.mail.list_messages(unread_only=False, top=50, since_hours=hours, mailbox=mailbox)
                     if self._is_report(m)]
         if not messages:
             return {"calls": [], "note": "No out-of-hours call reports found"
@@ -64,7 +65,7 @@ class OutOfHours:
             if cached:
                 report = CallReport.model_validate_json(cached)
             else:
-                body = (await j.mail.get_message(m["id"])).get("body", "")
+                body = (await j.mail.get_message(m["id"], mailbox=mailbox)).get("body", "")
                 report = await llm.structured(j.client, j.settings, CallReport,
                                               system=EXTRACT.format(company=j.settings.company_name),
                                               prompt=f"<report>\n{body[:40000]}\n</report>", effort="low")

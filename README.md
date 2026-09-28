@@ -79,7 +79,7 @@ Do these in any order; each one replaces demo data as soon as it's set.
      `Mail.Send`, `Reports.Read.All` (office activity), `Calendars.Read` and `OnlineMeetingTranscript.Read.All`
      (meeting write-ups), with admin consent. For transcripts also run
      `New-CsApplicationAccessPolicy -Identity Jarvis -AppIds <id>` and `Grant-CsApplicationAccessPolicy` for your user.
-   - Restrict it to your mailbox:
+   - Restrict it to your mailbox (plus the shared mailbox your out-of-hours reports arrive in, e.g. info@):
      `New-ApplicationAccessPolicy -AppId <id> -PolicyScopeGroupId <mail-enabled group> -AccessRight RestrictAccess`.
    - To see names in activity reports, turn off *"Display concealed user, group, and site names"* in the M365
      admin centre (Settings → Org settings → Reports).
