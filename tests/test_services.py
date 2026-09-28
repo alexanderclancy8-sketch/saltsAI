@@ -264,3 +264,29 @@ async def test_out_of_hours_calls_need_jobs(tmp_path):
     sweep = await j.suggestions.sweep(announce=False)
     assert any(s["key"].startswith("ooh:Nowhere Towers") for s in sweep)
     await j.http.aclose()
+
+
+async def test_out_of_hours_pdf_reports_are_read(tmp_path):
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, ooh_email_from="monitoring.example",
+                        _env_file=None), client=FakeClient())
+
+    async def pdfs(message_id, mailbox=None, max_bytes=0):
+        return [{"name": "s7812-report.PDF", "data": "JVBERi0xLjQK"}]
+
+    j.mail._messages.append({"id": "demo-pdf", "subject": "Alarm Systems - Daily Report", "from_name": "Monitoring",
+                             "from_email": "vmail@monitoring.example", "received": "2099-01-01T05:00:00+00:00",
+                             "is_read": False, "importance": "normal", "has_attachments": True, "link": "",
+                             "preview": "Please open the attachment", "body": "Please open the attachment to view your report"})
+    j.mail.pdf_attachments = pdfs
+    j.client.beta.messages.parse_result = {"calls": [
+        {"time": "02:10", "site": "Bingley Leisure Centre", "problem": "Signalling path fault (IP)", "urgency": "urgent",
+         "handled_overnight": "none", "follow_up_needed": True}]}
+    data = await j.ooh.calls(24 * 365 * 100)
+    assert any(c["site"] == "Bingley Leisure Centre" for c in data["calls"])
+    sent = j.client.beta.messages.calls[-1]["messages"][0]["content"]
+    assert sent[0]["type"] == "document" and sent[0]["source"]["media_type"] == "application/pdf"
+    await j.http.aclose()

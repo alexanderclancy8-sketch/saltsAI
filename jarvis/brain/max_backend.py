@@ -216,6 +216,10 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                 path = tmp / f"attachment-{n}.{ext}"
                 path.write_bytes(base64.b64decode(block["source"]["data"]))
                 text += f"\n[Attached image: {path} - view it with the Read tool]\n"
+            elif block.get("type") == "document" and block["source"].get("type") == "base64":
+                path = tmp / f"attachment-{n}.pdf"
+                path.write_bytes(base64.b64decode(block["source"]["data"]))
+                text += f"\n[Attached PDF '{block.get('title', '')}': {path} - read it with the Read tool]\n"
     kw: dict[str, Any] = {"system_prompt": system, "effort": effort, "tools": tools or [],
                           "allowed_tools": tools or [], "disallowed_tools": BLOCKED, "max_turns": max_turns}
     if output_schema:

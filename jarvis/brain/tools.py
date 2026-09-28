@@ -925,9 +925,9 @@ TOOLS: list[Tool] = [
                                  "company's accreditations, policies, insurance and competency evidence, with gaps "
                                  "marked. Shown on the display.", QuestionnaireIn, answer_questionnaire,
          "Answering the questionnaire"),
-    Tool("out_of_hours_calls", "Calls the out-of-hours answering service took (from their emailed call reports): "
-                               "site, problem, urgency, what was done overnight, and which still need a job in "
-                               "Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),
+    Tool("out_of_hours_calls", "Overnight events from the out-of-hours / alarm monitoring reports emailed to info@ "
+                               "(including PDF reports): calls taken and alarm faults, comms failures and "
+                               "activations - site, urgency, what was done, and which still need a job in Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",

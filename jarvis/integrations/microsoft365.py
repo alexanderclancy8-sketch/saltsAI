@@ -111,6 +111,21 @@ class GraphMail:
         out["body"] = _strip((msg.get("body") or {}).get("content", ""))
         return out
 
+    async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
+                              max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        """PDF attachments of a message as base64 (e.g. an answering service's call report)."""
+        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
+        r.raise_for_status()
+        out = []
+        for a in r.json().get("value", []):
+            name = a.get("name") or ""
+            is_pdf = name.lower().endswith(".pdf") or "pdf" in (a.get("contentType") or "").lower()
+            if a.get("@odata.type") == "#microsoft.graph.fileAttachment" and is_pdf and a.get("contentBytes") \
+                    and int(a.get("size") or 0) <= max_bytes:
+                out.append({"name": name, "data": a["contentBytes"]})
+        return out
+
     async def mark_read(self, message_id: str) -> None:
         r = await self.http.patch(f"{self._mbx}/messages/{message_id}", json={"isRead": True},
                                   headers=await self._headers())
@@ -278,6 +293,10 @@ class DemoMail:
             if m["id"] == message_id:
                 return {**m, "to": [], "cc": []}
         raise KeyError(f"No message {message_id}")
+
+    async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
+                              max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        return []
 
     async def mark_read(self, message_id: str) -> None:
         for m in self._messages:
