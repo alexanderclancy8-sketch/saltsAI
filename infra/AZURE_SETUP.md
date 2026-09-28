@@ -70,13 +70,15 @@ PLAN= bash infra/deploy.sh
 (`PLAN=` with nothing after it means "make a new Linux plan for Jarvis". The Salts FSM plan is Windows, so
 Jarvis can't share it.)
 
-It asks these questions in order:
+It asks these questions in order. Answer one at a time, and only once each question is showing. Anything
+typed or pasted before a question appears is ignored. If an answer looks wrong, it tells you and asks again.
 
 | Question | Answer |
 |---|---|
 | **Password for the Jarvis display** (twice) | The owner types a new password. It's a backup way in. |
 | **Claude token** | The owner pastes the `sk-ant-oat01-...` token from step 2. |
 | **Microsoft 365 addresses allowed to sign in** | The owner's and the business partner's work email addresses, separated by a space. |
+| **Carry on? (y/n)** | It lists what it's about to create. Check it says a *new* resource group, plan and web app, then type `y`. Nothing is created before this. |
 
 Then it builds everything, which takes about 10 minutes. The upload step alone can sit quietly for around
 5 minutes. At the end it prints:

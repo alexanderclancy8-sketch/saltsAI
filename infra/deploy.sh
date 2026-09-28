@@ -138,6 +138,35 @@ JSON
   echo "Microsoft sign-in is on. Only these people can open Jarvis: $*"
 }
 
+# Text pasted into Cloud Shell can arrive before a question is asked. Throw it away, so a stray line (such as
+# the next command in a guide) is never taken as the answer.
+drain_input() {
+  local junk
+  [ -t 0 ] || return 0
+  while read -r -t 0.2 junk; do :; done
+  return 0
+}
+
+# ask VAR "question" [secret|token] - asks once, trims spaces, stores the answer in VAR. Secrets aren't shown.
+ask() {
+  local __ans
+  drain_input
+  if [ -n "${3:-}" ]; then
+    read -rsp "$2" __ans
+    echo
+    # A long token copied from a wrapped line can arrive in pieces; join them up.
+    local __more=""
+    if [ "$3" = "token" ] && [ -t 0 ]; then
+      while IFS= read -r -t 0.3 __more; do __ans+="$__more"; done
+      __ans+="$__more"
+    fi
+  else
+    read -rp "$2" __ans
+  fi
+  __ans="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$__ans")"
+  printf -v "$1" '%s' "$__ans"
+}
+
 setup() {
   local existing plan_info plan_id="" plan_rg plan_location plan_linux plan_tier others
   local owner_password confirm claude_token anthropic_key staff_key managers url email
@@ -152,7 +181,7 @@ setup() {
     echo "Your App Service plans. Jarvis can share one - Azure charges per plan, not per app:"
     az appservice plan list -o table \
       --query "[].{Plan:name, ResourceGroup:resourceGroup, Size:sku.name, Linux:reserved, Region:location, Apps:numberOfSites}"
-    read -rp "Plan to share (blank = a new B1 plan just for Jarvis, about £10 a month): " PLAN
+    ask PLAN "Plan to share (blank = a new B1 plan just for Jarvis, about £10 a month): "
   fi
   if [ -n "$PLAN" ]; then
     plan_info="$(az appservice plan list --query "[?name=='$PLAN'] | [0].[id, resourceGroup, location, reserved, sku.tier]" -o tsv)"
@@ -170,18 +199,61 @@ setup() {
     [ -z "$others" ] || die "resource group $RG already holds other things ($others). Use a new one, e.g.  RG=rg-salts-jarvis bash infra/deploy.sh"
   fi
 
-  read -rsp "Choose a password for the Jarvis display: " owner_password; echo
-  read -rsp "Type it again: " confirm; echo
-  [ -n "$owner_password" ] && [ "$owner_password" = "$confirm" ] || die "the passwords didn't match."
-  read -rsp "Claude token from 'claude setup-token' (leave blank to use an API key instead): " claude_token; echo
+  while :; do
+    ask owner_password "Choose a password for the Jarvis display (you won't see it as you type): " secret
+    ask confirm "Type it again: " secret
+    if [ -z "$owner_password" ]; then echo "The password can't be blank."
+    elif [ "$owner_password" != "$confirm" ]; then echo "Those didn't match. Try again."
+    else break; fi
+  done
+
   anthropic_key=""
-  if [ -z "$claude_token" ]; then
-    read -rsp "Anthropic API key: " anthropic_key; echo
-    [ -n "$anthropic_key" ] || die "Jarvis needs either the Claude token or an API key."
-  fi
-  read -rp "Microsoft 365 addresses allowed to sign in, e.g. you and your business partner (space-separated, blank = password only): " managers
-  for email in $managers; do user_id "$email" >/dev/null; done  # check them all before creating anything
+  while :; do
+    ask claude_token "Paste the Claude token from 'claude setup-token' (blank to use an API key instead): " token
+    claude_token="${claude_token//[[:space:]]/}"
+    [ -z "$claude_token" ] || [[ "$claude_token" =~ ^sk-ant-oat[A-Za-z0-9_-]+$ ]] && break
+    echo "That doesn't look like a Claude token (it starts sk-ant-oat01-). Paste it again."
+  done
+  while [ -z "$claude_token" ]; do
+    ask anthropic_key "Paste the Anthropic API key: " token
+    anthropic_key="${anthropic_key//[[:space:]]/}"
+    [[ "$anthropic_key" =~ ^sk-ant-api[A-Za-z0-9_-]+$ ]] && break
+    echo "That doesn't look like an API key (it starts sk-ant-api). Paste it again."
+  done
+
+  local problem
+  while :; do
+    ask managers "Microsoft 365 addresses allowed to sign in, e.g. you and your business partner (space-separated, blank = password only): "
+    problem=""
+    for email in $managers; do  # check them all before creating anything
+      if [[ "$email" != ?*@?*.?* ]]; then
+        problem="'$email' isn't an email address."
+      elif [ -z "$(az ad user show --id "$email" --query id -o tsv 2>/dev/null || true)" ]; then
+        problem="$email isn't an account in this Azure directory. Check it's their Microsoft 365 sign-in address.
+(If your Azure subscription was set up under a different Microsoft account from your Microsoft 365, leave this
+blank and use the Jarvis password instead.)"
+      fi
+      [ -z "$problem" ] || break
+    done
+    [ -n "$problem" ] || break
+    echo "$problem"
+    echo "Try again."
+  done
   staff_key="$(openssl rand -hex 12)"
+
+  echo
+  echo "Ready to create:"
+  if [ -n "$plan_id" ]; then
+    echo "  - web app $APP_NAME on the existing plan $PLAN, in resource group $RG"
+  else
+    echo "  - resource group $RG with a new Linux B1 plan ($APP_NAME-plan) and web app $APP_NAME, in $LOCATION"
+  fi
+  echo "  - a storage account for Jarvis's archive"
+  echo "  - sign-in: ${managers:-password only}"
+  echo "Nothing that already exists is changed."
+  local go
+  ask go "Carry on? (y/n): "
+  [[ "$go" =~ ^[Yy] ]] || die "nothing was created."
 
   local params=(appName="$APP_NAME" location="$LOCATION" ownerPassword="$owner_password" staffReportKey="$staff_key")
   if [ -n "$claude_token" ]; then params+=(claudeCodeOauthToken="$claude_token"); else params+=(anthropicApiKey="$anthropic_key"); fi
