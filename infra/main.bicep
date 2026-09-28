@@ -1,8 +1,10 @@
 // Jarvis on Azure App Service (Linux, UK South) + a storage account for the report archive.
-// Deploy:  az group create -n rg-jarvis -l uksouth
-//          az deployment group create -g rg-jarvis -f infra/main.bicep -p appName=salts-jarvis ownerPassword=... ...
+// Everything gets its own plan and is tagged app=jarvis; nothing here touches other web apps (e.g. Salts FSM).
+// Easiest route: `bash infra/deploy.sh` in Azure Cloud Shell, which checks names before creating anything.
 targetScope = 'resourceGroup'
 
+@minLength(3)
+@maxLength(40)
 @description('Globally unique web app name, e.g. salts-jarvis')
 param appName string
 param location string = 'uksouth'
@@ -24,11 +26,13 @@ param claudeCodeOauthToken string = ''
 @description('Claude API key (only if not using the subscription)')
 param anthropicApiKey string = ''
 
-var storageName = toLower(take(replace('${appName}store', '-', ''), 24))
+var storageName = toLower(take('${replace(appName, '-', '')}${uniqueString(resourceGroup().id)}', 24))
+var tags = { app: 'jarvis' }
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageName
   location: location
+  tags: tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
@@ -41,6 +45,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: '${appName}-plan'
   location: location
+  tags: tags
   sku: { name: skuName }
   kind: 'linux'
   properties: { reserved: true }
@@ -49,6 +54,7 @@ resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
 resource app 'Microsoft.Web/sites@2023-12-01' = {
   name: appName
   location: location
+  tags: tags
   kind: 'app,linux'
   identity: { type: 'SystemAssigned' }
   properties: {
@@ -62,7 +68,8 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
       healthCheckPath: '/healthz'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
-      appSettings: [
+      // Optional secrets are only added when given: an empty ANTHROPIC_API_KEY would still be seen by Claude Code.
+      appSettings: concat([
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'true' }
         { name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE', value: 'true' }
         { name: 'WEBSITES_PORT', value: '8000' }
@@ -71,11 +78,14 @@ resource app 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'PUBLIC_BASE_URL', value: 'https://${appName}.azurewebsites.net' }
         { name: 'JARVIS_OWNER_PASSWORD', value: ownerPassword }
         { name: 'JARVIS_SECRET_KEY', value: secretKey }
-        { name: 'STAFF_REPORT_KEY', value: staffReportKey }
-        { name: 'CLAUDE_CODE_OAUTH_TOKEN', value: claudeCodeOauthToken }
-        { name: 'ANTHROPIC_API_KEY', value: anthropicApiKey }
         { name: 'AZURE_STORAGE_CONNECTION_STRING', value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}' }
-      ]
+      ], empty(staffReportKey) ? [] : [
+        { name: 'STAFF_REPORT_KEY', value: staffReportKey }
+      ], empty(claudeCodeOauthToken) ? [] : [
+        { name: 'CLAUDE_CODE_OAUTH_TOKEN', value: claudeCodeOauthToken }
+      ], empty(anthropicApiKey) ? [] : [
+        { name: 'ANTHROPIC_API_KEY', value: anthropicApiKey }
+      ])
     }
   }
 }
