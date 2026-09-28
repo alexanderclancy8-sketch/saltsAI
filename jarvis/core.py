@@ -37,6 +37,7 @@ from .services.routine_tests import RoutineTester
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
+from .services.wrapup import WrapUp
 from .services.tracking import Tracker
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ class Jarvis:
         self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
         self.suggestions = Suggestions(self)
+        self.wrapup = WrapUp(self)
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
 

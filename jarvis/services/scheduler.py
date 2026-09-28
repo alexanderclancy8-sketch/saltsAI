@@ -57,6 +57,9 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("suggestions", j.suggestions.sweep),
                   CronTrigger.from_crontab(s.suggestions_cron, timezone=s.timezone), id="suggestions",
                   max_instances=1, coalesce=True)
+    sched.add_job(_guard("end-of-day wrap-up", j.wrapup.run),
+                  CronTrigger.from_crontab(s.wrapup_cron, timezone=s.timezone), id="wrapup",
+                  max_instances=1, coalesce=True)
     if not getattr(j.mail, "demo", True):
         sched.add_job(_guard("inbox scan", j.issues.scan_inbox), "interval", minutes=s.inbox_check_interval_min,
                       id="inbox_scan", max_instances=1, coalesce=True)

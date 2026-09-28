@@ -282,6 +282,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def briefing(request: Request):
         return {"text": await J(request).briefings.morning_briefing(deliver=False)}
 
+    @app.post("/api/wrapup", dependencies=[Depends(owner)])
+    async def wrapup(request: Request):
+        return {"text": await J(request).wrapup.run(deliver=False)}
+
     # ------------------------------------------------------------------ Sage connect (OAuth)
     @app.get("/auth/sage/start", dependencies=[Depends(owner)])
     async def sage_start(request: Request):

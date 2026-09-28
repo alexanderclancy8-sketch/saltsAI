@@ -186,8 +186,9 @@ class Settings(BaseSettings):
     business_review_cron: str = "45 7 1 * *"  # monthly business health report
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
-    billing_check_cron: str = "30 17 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
-    review_requests_cron: str = "40 17 * * 1-5"  # thank-you + Google review requests for the day's jobs
+    wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)
+    billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
+    review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs
     inbox_check_interval_min: int = 10
     scheduler_enabled: bool = True
 

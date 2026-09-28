@@ -11,7 +11,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
-      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 69 tools │
+      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 70 tools │
       └───┬──────────┬──────────┬──────────┬──────────┬──────────┬───────────┘
       Outlook/   Salts FSM   Sage /    RAM       GitHub →   Socials,
       Teams      (jobs, staff, Sage 50  Tracking  Azure      Google, web
@@ -23,7 +23,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
 | Area | What it does |
 |---|---|
 | **Conversation** | Talk ("Jarvis, …") or type. Full Claude-quality answers to anything, with web search, photo/PDF attachments and a memory of what you tell it. Short, natural spoken replies; detail goes up on the display. |
-| **Email & updates** | Reads, searches and summarises Outlook. Drafts replies. Sends you updates on Teams or email when you ask, plus a spoken morning briefing. |
+| **Email & updates** | Reads, searches and summarises Outlook. Drafts replies. Sends you updates on Teams or email when you ask, a spoken morning briefing, and an end-of-day wrap-up at 5pm (what got done, what slipped, what's waiting on you, tomorrow's first jobs). |
 | **Salts FSM** | Knows the app (knowledge base + live API + source code on GitHub): jobs, engineers, sites, systems, contracts, quotes, service schedules, renewals. Watches the remedial quotes the FSM raises from service visits and chases any that stall. |
 | **Issues → fixes → Azure** | Staff report problems at `/report` or by email with `[ISSUE]` in the subject. Jarvis tells you at once and triages the report. For Salts FSM bugs, its engineering agent writes the fix as a pull request and CI tests it. **You approve** it, then Jarvis merges it, deploys it to Azure, re-runs the smoke tests and tells the reporter it's fixed. |
 | **Routine tests** | Every 15 minutes: Salts FSM uptime, key pages, TLS certificate and every integration. Every morning: fire & security compliance (overdue service visits, lapsed or renewing contracts, overdue call-outs, expiring qualifications). |

@@ -581,6 +581,10 @@ async def suggestions_list(j, a: NoInput):
     return await j.suggestions.sweep(announce=False)
 
 
+async def end_of_day_wrap_up(j, a: NoInput):
+    return await j.wrapup.run(deliver=False)
+
+
 async def staff_overdue_jobs(j, a: NoInput):
     return await j.staff.overdue_jobs()
 
@@ -808,6 +812,9 @@ TOOLS: list[Tool] = [
     Tool("suggestions", "Refresh and list your current proactive suggestions (unbilled work, quotes to chase, "
                         "overdue jobs to assign, debts to chase, stock to reorder, expiring qualifications, audits).",
          NoInput, suggestions_list, "Reviewing suggestions"),
+    Tool("end_of_day_wrap_up", "The end-of-day wrap-up: what got done, what slipped, what's awaiting approval, "
+                               "and tomorrow's first jobs and risks.", NoInput, end_of_day_wrap_up,
+         "Preparing your wrap-up"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",

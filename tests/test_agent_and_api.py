@@ -180,3 +180,15 @@ def test_suggestion_api(settings):
         r = c.post(f"/api/suggestions/{key}/done")
         assert r.status_code == 200 and r.json()["prompt"]
         assert c.post(f"/api/suggestions/{key}/explode").status_code == 400
+
+
+async def test_end_of_day_wrap_up(settings):
+    j = make(settings)
+    data = await j.wrapup.gather()
+    for key in ("today", "slipped_today", "awaiting_approval", "suggestions", "tomorrow", "unread_email"):
+        assert key in data, key
+    assert data["tomorrow"]["jobs"] >= 0 and data["today"]["jobs_today"] > 0
+    text = await j.wrapup.run(deliver=True)
+    assert text == "Certainly, sir."  # the scripted stand-in model's reply
+    assert any(n["title"] == "End-of-day wrap-up" for n in j.db.recent_notifications())
+    await j.http.aclose()
