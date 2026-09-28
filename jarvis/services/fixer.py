@@ -5,7 +5,7 @@
    execution) investigates and makes a minimal fix.
 3. Jarvis commits the change to a new branch and opens a pull request; the FSM
    repo's own CI runs the tests.
-4. The owner approves on the display (or AUTOFIX_AUTO_DEPLOY once CI is green):
+4. The owner approves on the display (nothing is ever deployed without approval):
    Jarvis merges and deploys to Azure (GitHub Actions workflow or Kudu zip deploy),
    then re-runs the routine tests against the live site.
 
@@ -175,7 +175,7 @@ class Fixer:
         self._publish(issue_id)
         action_id = self.db.create_action(
             "deploy_fix", f"Merge PR #{pr['number']} and deploy the fix for issue #{issue_id} "
-                          f"(\"{issue['title']}\") to Azure. Risk: {fix.risk}.",
+                          f"(\"{issue['title']}\") to Azure, then tell {issue['reporter']} it's fixed. Risk: {fix.risk}.",
             {"issue_id": issue_id, "pr_number": pr["number"], "diff": diff[:20000]})
         self.bus.publish("approvals", self.db.pending_actions())
         await self.notifier.notify(
@@ -315,13 +315,6 @@ class Fixer:
         await self.notifier.notify(f"CI {'passed' if state['state'] == 'success' else 'finished'} for the "
                                    f"issue #{issue_id} fix", f"PR #{pr_number} is ready to deploy.", level="info",
                                    speak=True)
-        if self.s.autofix_auto_deploy and state["state"] == "success" and risk == "low":
-            action = self.db.get_action(action_id)
-            if action and action["status"] == "pending":
-                self.db.set_action_status(action_id, "approved", "auto-deploy (low risk, CI green)")
-                result = await self.deploy(issue_id, pr_number)
-                self.db.set_action_status(action_id, "done", result)
-                self.bus.publish("approvals", self.db.pending_actions())
 
     async def deploy(self, issue_id: int, pr_number: int) -> str:
         pr = await self.gh.pr(pr_number)

@@ -11,7 +11,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
-      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 68 tools │
+      │ Brain: Claude (your Max subscription via Agent SDK, or the API) + 69 tools │
       └───┬──────────┬──────────┬──────────┬──────────┬──────────┬───────────┘
       Outlook/   Salts FSM   Sage /    RAM       GitHub →   Socials,
       Teams      (jobs, staff, Sage 50  Tracking  Azure      Google, web
@@ -35,6 +35,11 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
 | **Law & tax watch** | A weekly web-researched update for you and your business partner on UK tax, employment law, company law and fire & security regulation changes, with sources. |
 | **Accreditations** | BAFE, SSAIB, CHAS (and NSI etc.) renewal and audit reminders, and audit-ready evidence packs with draft questionnaire answers. |
 | **Marketing** | Follower growth on Facebook, Instagram, LinkedIn and TikTok, Google reviews, Search Console rankings, a website SEO audit and weekly suggestions. Review requests after each job (approved in one tap). |
+
+**Jarvis suggests; you decide.** It never changes anything on its own. A few times a day it looks through
+everything and puts suggestions on the display, for example "Invoice 14 completed jobs (£8,065)?", "Assign call-out
+J24099 - Priya is nearest?" or "Reorder 4 items from Fire Alarm Wholesale?". "Do it" makes Jarvis prepare the work,
+which then waits for your Approve.
 
 Anything not connected yet runs on clearly labelled **demo data**, so you can try it straight away.
 
@@ -124,10 +129,13 @@ lives in `/home/data`.
 
 ## Safety, privacy and trust
 
-- **You approve anything consequential.** Emails to anyone but you, purchase orders, Sage invoices, review
-  requests, changes to Salts FSM and production deployments are *queued*. They only happen when you tap Approve
-  or say "approve" on the display. The AI itself cannot approve anything, so a malicious email or issue report
-  can't trick it into acting.
+- **Nothing happens without your approval.** Jarvis reads, checks, analyses, advises and suggests freely.
+  Anything that *changes* something is queued as an approval card: emails (other than updates to you), invoices,
+  purchase orders, review requests, stock movements and stocktakes, staff-register and accreditation edits,
+  Salts FSM changes, Azure uploads, starting a code fix, and deployments. It only happens when you tap Approve or say
+  "approve". There is no auto-deploy. The AI itself cannot approve anything, and nor can anything in an email,
+  document or web page. The only things it does without asking are sending *you* the updates and reports you
+  asked for, saving email *drafts* for you to review, and keeping its own notes.
 - The auto-fix engineer can only read and edit a copy of the code, with no shell and no secrets, and every
   change goes through a pull request and CI.
 - **Staff monitoring:** tell staff in writing what is monitored and why (job data, timesheets, vehicle tracking

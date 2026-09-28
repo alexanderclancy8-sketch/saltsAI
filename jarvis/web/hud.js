@@ -8,7 +8,7 @@
   };
   const S = {
     status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB" },
-    ws: null, approvals: [], hudState: "idle", level: 0, targetLevel: 0,
+    ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, attachments: [], greeted: false,
   };
@@ -209,6 +209,7 @@
     const issues = st.issues?.length || 0;
     if (issues) bits.push(`${issues} open issue${issues > 1 ? "s" : ""}`);
     if (S.approvals.length) bits.push(`${S.approvals.length} thing${S.approvals.length > 1 ? "s" : ""} waiting for your approval`);
+    if (S.suggestions.length) bits.push(`${S.suggestions.length} suggestion${S.suggestions.length > 1 ? "s" : ""} for you`);
     const failing = (st.tests || []).filter((t) => !t.ok).length;
     const line = `${part}, ${st.owner || "sir"}. ` + (bits.length ? `You have ${bits.join(", ")}.` : "All quiet on every front.") +
       (failing ? ` ${failing} routine check${failing > 1 ? "s are" : " is"} failing - details on the left.` : " All systems are running normally.");
@@ -339,6 +340,7 @@
         break;
       case "display": openDisplay(d.title, d.markdown); break;
       case "approvals": S.approvals = d; renderApprovals(); break;
+      case "suggestions": S.suggestions = d; renderSuggestions(); break;
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
@@ -359,11 +361,11 @@
   async function refresh() {
     try {
       const st = await (await api("/api/status")).json();
-      S.status = st; S.voice = st.voice || S.voice; S.approvals = st.approvals || [];
+      S.status = st; S.voice = st.voice || S.voice; S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
-      renderPresence(st.presence); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSettings(st);
+      renderPresence(st.presence); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSuggestions(); renderSettings(st);
     } catch (e) { console.warn(e); }
   }
 
@@ -454,6 +456,21 @@
       ${a.kind === "fsm_write" ? `<details class="diff"><summary>Show change</summary><pre>${esc(a.payload.method + " " + a.payload.path + "\n" + JSON.stringify(a.payload.body, null, 2))}</pre></details>` : ""}
       <div class="row"><button class="btn go" data-act="approve" data-id="${a.id}">Approve</button><button class="btn stop" data-act="deny" data-id="${a.id}">Cancel</button></div></div>`).join("");
   }
+  function renderSuggestions() {
+    const list = S.suggestions || [];
+    $("#suggestions-panel").hidden = !list.length;
+    $("#suggestions-count").textContent = list.length ? String(list.length) : "";
+    $("#suggestions").innerHTML = list.map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
+      ${s.detail ? `<span class="sub">${esc(s.detail)}</span>` : ""}
+      <div class="row"><button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button></div></div>`).join("");
+  }
+  $("#suggestions").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-sug]");
+    if (!b) return;
+    const r = await api(`/api/suggestions/${encodeURIComponent(b.dataset.key)}/${b.dataset.sug}`, { method: "POST" });
+    if (b.dataset.sug === "done" && r.ok) send((await r.json()).prompt, S.speakPref === "always" ? "voice" : "typed");
+  });
+
   $("#approvals").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b) decide(b.dataset.id, b.dataset.act); });
   async function decide(id, act) {
     const r = await (await api(`/api/approvals/${id}/${act}`, { method: "POST" })).json();

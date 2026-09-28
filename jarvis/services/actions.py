@@ -23,6 +23,7 @@ class ActionExecutor:
     def __init__(self, db: Database, bus: EventBus, notifier, mail, fixer, fsm=None):
         self.fsm = fsm
         self.billing = None  # set after construction
+        self.j = None  # the Jarvis instance, for running approved tool calls
         self.db = db
         self.bus = bus
         self.notifier = notifier
@@ -37,6 +38,12 @@ class ActionExecutor:
 
     async def _execute(self, action: dict[str, Any]) -> str:
         p = action["payload"]
+        if action["kind"].startswith("tool:"):
+            from ..brain.tools import TOOLS_BY_NAME, serialise
+
+            tool = TOOLS_BY_NAME[p["tool"]]
+            result = await tool.handler(self.j, tool.model.model_validate(p["args"]))
+            return serialise(result)[:600]
         if action["kind"] == "email_send":
             await self.mail.send_mail(p["to"], p["subject"], text_to_html(p["body"]), p.get("cc") or None)
             return f"Email sent to {', '.join(p['to'])}"

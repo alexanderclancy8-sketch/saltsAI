@@ -40,6 +40,7 @@ class RegulatoryWatch:
         self.client = client
         self.bus = bus
         self.mail = mail
+        self.actions = None  # set after construction
 
     def _names(self) -> str:
         return f" and {self.s.partner_name}" if self.s.partner_name else " and his business partner"
@@ -59,14 +60,10 @@ class RegulatoryWatch:
             self.db.set_kv("regwatch_last", text)
         if deliver:
             await self.notifier.notify("Weekly tax & employment law watch", text[:3000], level="info", push=True)
-            if self.s.partner_email and not getattr(self.mail, "demo", True):
-                from ..integrations.microsoft365 import text_to_html
-
-                try:
-                    await self.mail.send_mail([self.s.partner_email], "[Jarvis] Tax & employment law watch",
-                                              text_to_html(text))
-                except Exception as e:  # noqa: BLE001
-                    log.warning("Could not email partner: %s", e)
+            if self.s.partner_email and self.actions is not None:
+                self.actions.queue("email_send", f"Send this week's tax & employment law update to {self.s.partner_name or self.s.partner_email}",
+                                   {"to": [self.s.partner_email], "cc": [], "subject": "[Jarvis] Tax & employment law watch",
+                                    "body": text})
         return text
 
     async def weekly(self) -> None:

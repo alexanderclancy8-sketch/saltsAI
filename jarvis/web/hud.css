@@ -210,3 +210,9 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
   .composer { gap: 6px; }
   .msg { max-width: 100%; }
 }
+
+.suggestion { border: 1px solid rgba(38,217,255,0.35); border-radius: 8px; padding: 8px; margin-bottom: 8px;
+  background: rgba(38,217,255,0.05); font-size: 14px; }
+.suggestion .sub { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.suggestion .row { display: flex; gap: 8px; margin-top: 8px; }
+.suggestion.p1 { border-color: rgba(255,106,61,0.6); }

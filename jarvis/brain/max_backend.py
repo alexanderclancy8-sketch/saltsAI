@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ValidationError
 
 from .prompts import build_system
-from .tools import TOOLS, TOOLS_BY_NAME, serialise
+from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
 SERVER = "jarvis"
@@ -61,7 +61,7 @@ def build_sdk_tools(j) -> list:
             j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "start"})
             try:
                 parsed = _t.model.model_validate(args or {})
-                result = await _t.handler(j, parsed)
+                result = await dispatch(j, _t, parsed)
                 j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "done"})
                 return {"content": [{"type": "text", "text": serialise(result)}]}
             except ValidationError as e:

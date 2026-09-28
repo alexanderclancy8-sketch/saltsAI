@@ -217,6 +217,20 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return {"result": await j.actions.deny(action_id)}
         raise HTTPException(400, "decision must be approve or deny")
 
+    # ------------------------------------------------------------------ suggestions
+    @app.post("/api/suggestions/refresh", dependencies=[Depends(owner)])
+    async def refresh_suggestions(request: Request):
+        return await J(request).suggestions.sweep(announce=False)
+
+    @app.post("/api/suggestions/{key:path}/{decision}", dependencies=[Depends(owner)])
+    async def decide_suggestion(key: str, decision: str, request: Request):
+        if decision not in ("done", "dismissed"):
+            raise HTTPException(400, "decision must be done or dismissed")
+        s = J(request).suggestions.decide(key, decision)
+        if not s:
+            raise HTTPException(404, "No such suggestion")
+        return {"prompt": s["prompt"]}
+
     # ------------------------------------------------------------------ issues
     report_times: dict[str, deque] = defaultdict(deque)
 

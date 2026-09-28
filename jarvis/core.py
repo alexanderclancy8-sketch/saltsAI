@@ -36,6 +36,7 @@ from .services.regulatory import RegulatoryWatch
 from .services.routine_tests import RoutineTester
 from .services.staff import StaffMonitor
 from .services.stores import Stores
+from .services.suggestions import Suggestions
 from .services.tracking import Tracker
 
 log = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ class Jarvis:
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
+        self.actions.j = self
+        self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
         self.advisor = Advisor(s, self.db, self.accountant, self.reviewer, self.staff, self.marketing, self.notifier,
@@ -84,7 +87,9 @@ class Jarvis:
         self.accreditations = Accreditations(s, self.db, self.staff, self.fsm, self.notifier, self.client, self.bus)
         self.stores = Stores(self.db, demo_seed=self.fsm.demo, fsm=self.fsm)
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
+        self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
+        self.suggestions = Suggestions(self)
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
 
@@ -148,6 +153,7 @@ class Jarvis:
         try:
             await self.tester.run("all")
             await self.marketing.snapshot()
+            await self.suggestions.sweep(announce=False)
         except Exception:  # noqa: BLE001
             log.exception("Initial routine test run failed")
 

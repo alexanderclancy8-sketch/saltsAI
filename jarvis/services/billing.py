@@ -36,6 +36,8 @@ class Billing:
             matched = any(ref and ref.lower() in str(i.number).lower() for i in invoices) or any(
                 _norm(i.contact) == _norm(str(jb.get("customer"))) and abs((i.total - i.tax) - net) <= max(1.0, net * 0.01)
                 for i in invoices)
+            if jb.get("invoice_ref"):  # Salts FSM already records the invoice
+                matched = True
             if not matched and not self.db.get_kv(f"invoiced:{ref}"):
                 unbilled.append({"job": ref, "customer": jb.get("customer"), "site": jb.get("site"), "type": jb.get("type"),
                                  "completed": str(jb.get("completed_at") or "")[:10], "net_value": net,

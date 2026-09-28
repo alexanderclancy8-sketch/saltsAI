@@ -20,6 +20,8 @@ class Tool:
     model: type[BaseModel]
     handler: Callable[[Any, Any], Awaitable[Any]]
     label: str  # shown on the display while it runs
+    approval: bool = False  # changes something -> queued as a suggestion for the owner to approve
+    describe: Callable[[Any], str] | None = None  # plain-English summary for the approval card
 
     def definition(self) -> dict[str, Any]:
         schema = self.model.model_json_schema()
@@ -28,6 +30,16 @@ class Tool:
             prop.pop("title", None)
         return {"name": self.name, "description": self.description, "input_schema": schema,
                 "eager_input_streaming": True}
+
+
+async def dispatch(j, tool: Tool, args: BaseModel) -> Any:
+    """Run a read-only tool now; anything that changes something is queued for the owner's approval."""
+    if tool.approval:
+        summary = tool.describe(args) if tool.describe else f"{tool.label}: {args.model_dump_json()}"
+        action_id = j.actions.queue(f"tool:{tool.name}", summary, {"tool": tool.name, "args": args.model_dump()})
+        return (f"Suggested, not done: queued as action #{action_id} ('{summary}'). It will only happen when "
+                f"{j.settings.owner_name} approves it on the display.")
+    return await tool.handler(j, args)
 
 
 def serialise(result: Any) -> str:
@@ -316,13 +328,8 @@ async def email_draft_reply(j, a: DraftIn):
 
 
 async def email_send(j, a: SendIn):
-    owner = (j.settings.owner_email or j.settings.ms_mailbox).lower()
-    recipients = [x.lower() for x in a.to + a.cc]
-    if owner and all(r == owner for r in recipients):
-        await j.mail.send_mail(a.to, a.subject, _html(a.body), a.cc or None)
-        return "Sent to the owner."
-    action_id = j.actions.queue("email_send", f"Send email '{a.subject}' to {', '.join(a.to)}", a.model_dump())
-    return f"Queued as action #{action_id}. It will only be sent once {j.settings.owner_name} approves it on the display."
+    await j.mail.send_mail(a.to, a.subject, _html(a.body), a.cc or None)
+    return f"Email sent to {', '.join(a.to)}."
 
 
 def _html(text: str) -> str:
@@ -425,8 +432,8 @@ async def office_productivity(j, a: OfficeIn):
 
 
 async def fsm_change(j, a: FsmChangeIn):
-    action_id = j.actions.queue("fsm_write", f"Salts FSM: {a.summary}", a.model_dump())
-    return f"Queued as action #{action_id} - it will be applied once {j.settings.owner_name} approves it on the display."
+    result = await j.fsm.write(a.method, a.path, a.body)
+    return f"Salts FSM updated: {str(result)[:300]}"
 
 
 async def business_health(j, a: HealthIn):
@@ -570,6 +577,10 @@ async def remedial_quotes(j, a: NoInput):
     return await remedial_pipeline(j.fsm)
 
 
+async def suggestions_list(j, a: NoInput):
+    return await j.suggestions.sweep(announce=False)
+
+
 async def staff_overdue_jobs(j, a: NoInput):
     return await j.staff.overdue_jobs()
 
@@ -625,7 +636,7 @@ async def issue_fix(j, a: IssueIdIn):
     if not j.fixer.enabled:
         return "Auto-fix isn't configured (needs GITHUB_TOKEN and FSM_REPO)."
     j.issues._spawn(j.fixer.attempt(a.issue_id))
-    return f"The engineering agent has started on issue #{a.issue_id}. I'll report back when a fix is ready."
+    return f"The engineering agent has started on issue #{a.issue_id}. The fix will come back to you as a pull request."
 
 
 async def routine_tests_run(j, a: SuiteIn):
@@ -674,7 +685,8 @@ TOOLS: list[Tool] = [
     Tool("email_draft_reply", "Save a reply to an email as a draft in Outlook for the owner to review and send.",
          DraftIn, email_draft_reply, "Drafting a reply"),
     Tool("email_send", "Send an email from the owner's mailbox. Emails to anyone except the owner are queued for "
-                       "his approval on the display rather than sent immediately.", SendIn, email_send, "Preparing email"),
+                       "his approval on the display rather than sent immediately.", SendIn, email_send, "Preparing email",
+         approval=True, describe=lambda a: f"Send email '{a.subject}' to {', '.join(a.to)}"),
     Tool("send_update_to_owner", "Send the owner an update on Microsoft Teams and/or email. Use when he asks you to "
                                  "send him something or keep him posted.", OwnerUpdateIn, send_update_to_owner,
          "Sending you an update"),
@@ -707,12 +719,14 @@ TOOLS: list[Tool] = [
          "Reviewing team performance"),
     Tool("staff_update_role", "Add or update a staff member's role, duties or expected targets in the register "
                               "when the owner tells you about them.", RoleUpdateIn, staff_update_role,
-         "Updating the staff register"),
+         "Updating the staff register",
+         approval=True, describe=lambda a: f"Update staff register for {a.name}" + (f": role {a.role}" if a.role else "") + (f"; add duties {a.add_duties}" if a.add_duties else "") + (f"; targets {a.expectations}" if a.expectations else "")),
     Tool("office_productivity", "Office staff productivity: quotes raised/value/win rate and jobs booked (Salts "
                                 "FSM) plus Microsoft 365 activity counts (emails sent/received, Teams messages, "
                                 "calls, meetings).", OfficeIn, office_productivity, "Analysing office productivity"),
     Tool("fsm_change", "Create or update something in Salts FSM (book or reassign a job, update a record). Always "
-                       "queued for the owner's approval first.", FsmChangeIn, fsm_change, "Preparing an FSM change"),
+                       "queued for the owner's approval first.", FsmChangeIn, fsm_change, "Preparing an FSM change",
+         approval=True, describe=lambda a: f"Salts FSM: {a.summary}"),
     Tool("business_health", "Business health check: revenue growth, margins, debtor days, overdue debt, cash "
                             "runway, recurring contract revenue, quote win rate, utilisation and unbilled work vs "
                             "targets, with recommended actions.", HealthIn, business_health,
@@ -736,7 +750,8 @@ TOOLS: list[Tool] = [
          accreditations_status, "Checking accreditations"),
     Tool("accreditation_update", "Record accreditation details the owner gives you (certificate number, renewal "
                                  "or audit date, certification body).", AccreditationUpdateIn, accreditation_update,
-         "Updating accreditations"),
+         "Updating accreditations",
+         approval=True, describe=lambda a: f"Update {a.scheme}: " + ", ".join(f"{k}={v}" for k, v in a.model_dump(exclude={"scheme"}).items() if v)),
     Tool("audit_evidence", "Raw evidence for a scheme's audit/renewal from live data: competency, qualifications, "
                            "maintenance compliance, job sample, complaints log, calibration, insurance, policies.",
          SchemeIn, audit_evidence, "Gathering audit evidence"),
@@ -747,11 +762,14 @@ TOOLS: list[Tool] = [
          StockLevelsIn, stock_levels, "Checking stock"),
     Tool("stock_move", "Record a stock movement: goods received, parts used on a job, stores/van transfers, "
                        "returns. Use whenever the owner or an engineer says stock came in, was taken or used.",
-         StockMoveIn, stock_move, "Updating stock"),
+         StockMoveIn, stock_move, "Updating stock",
+         approval=True, describe=lambda a: f"Stock: {a.kind} {a.qty:g} x {a.item}" + (f" from {a.from_location}" if a.from_location else "") + (f" to {a.to_location}" if a.to_location else "") + (f" for job {a.job_ref}" if a.job_ref else "")),
     Tool("stock_stocktake", "Record a stocktake count for a location and report variances (value of shrinkage).",
-         StocktakeIn, stock_stocktake, "Recording the stocktake"),
+         StocktakeIn, stock_stocktake, "Recording the stocktake",
+         approval=True, describe=lambda a: f"Record stocktake at {a.location} ({len(a.counts)} lines) and adjust stock levels"),
     Tool("stock_item_update", "Add a new stock item or change its cost, reorder level, reorder quantity or "
-                              "supplier.", StockItemIn, stock_item_update, "Updating the stock item"),
+                              "supplier.", StockItemIn, stock_item_update, "Updating the stock item",
+         approval=True, describe=lambda a: f"Stock item {a.sku}: " + ", ".join(f"{k}={v}" for k, v in a.model_dump(exclude={"sku"}).items() if v is not None)),
     Tool("stock_reorder", "Items below reorder level grouped by supplier with suggested order quantities and cost.",
          NoInput, stock_reorder, "Building the reorder list"),
     Tool("stock_purchase_order", "Draft a purchase order email to a supplier for everything below reorder level "
@@ -787,6 +805,9 @@ TOOLS: list[Tool] = [
     Tool("remedial_quotes", "Remedial quotes Salts FSM raised from service-visit defects: open pipeline and value, "
                             "which need chasing (7 and 21 days), and win rate.", NoInput, remedial_quotes,
          "Checking remedial quotes"),
+    Tool("suggestions", "Refresh and list your current proactive suggestions (unbilled work, quotes to chase, "
+                        "overdue jobs to assign, debts to chase, stock to reorder, expiring qualifications, audits).",
+         NoInput, suggestions_list, "Reviewing suggestions"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",
@@ -811,7 +832,8 @@ TOOLS: list[Tool] = [
          IssuesIn, issues_list, "Checking reported issues"),
     Tool("issue_report", "Log a new issue on the owner's behalf.", IssueReportIn, issue_report, "Logging the issue"),
     Tool("issue_fix", "Start the engineering agent on an issue: it prepares a code fix as a GitHub pull request "
-                      "(deployment still needs approval).", IssueIdIn, issue_fix, "Starting a fix"),
+                      "(deployment still needs approval).", IssueIdIn, issue_fix, "Starting a fix",
+         approval=True, describe=lambda a: f"Prepare a code fix for issue #{a.issue_id} (opens a pull request for review)"),
     Tool("routine_tests_run", "Run routine tests now: 'system' (Salts FSM uptime, pages, TLS, integrations), "
                               "'compliance' (services overdue, renewals, overdue call-outs, qualifications) or 'all'.",
          SuiteIn, routine_tests_run, "Running routine tests"),
@@ -824,7 +846,8 @@ TOOLS: list[Tool] = [
          "Making a note"),
     Tool("forget", "Delete a remembered fact by its number.", ForgetIn, forget, "Forgetting that"),
     Tool("archive_to_azure", "Upload a report or document to the company's Azure Blob Storage archive.",
-         ArchiveIn, archive_to_azure, "Uploading to Azure"),
+         ArchiveIn, archive_to_azure, "Uploading to Azure",
+         approval=True, describe=lambda a: f"Upload {a.filename} to the Azure archive"),
     Tool("morning_briefing", "Generate the full morning briefing now (email, jobs, staff, money, issues).",
          NoInput, morning_briefing, "Preparing your briefing"),
 ]

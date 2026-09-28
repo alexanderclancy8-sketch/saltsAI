@@ -52,6 +52,7 @@ class IssueService:
         self.client = client
         self.mail = mail
         self.fixer = fixer
+        self.actions = None  # set after construction
         self._tasks: set[asyncio.Task] = set()
         self.upload_dir = settings.data_dir / "issue_uploads"
         self.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -112,8 +113,12 @@ class IssueService:
         self.bus.publish("issue", self.db.get_issue(issue_id))
         await self.notifier.notify(f"Issue #{issue_id} triaged: {t.category.replace('_', ' ')}, {t.severity}",
                                    f"{t.summary}\nNext: " + "; ".join(t.suggested_next_steps[:3]), level="info")
-        if t.software_fixable and self.fixer is not None and self.fixer.enabled:
-            await self.fixer.attempt(issue_id)
+        if t.software_fixable and self.fixer is not None and self.fixer.enabled and self.actions is not None:
+            action_id = self.actions.queue(
+                "tool:issue_fix", f"Prepare a code fix for issue #{issue_id} ('{issue['title']}') - written on a branch "
+                                  "and opened as a pull request for review", {"tool": "issue_fix", "args": {"issue_id": issue_id}})
+            self.db.update_issue(issue_id, notes=f"Code fix suggested (action #{action_id}) - waiting for approval")
+            self.bus.publish("issue", self.db.get_issue(issue_id))
         elif t.category != "software_bug":
             self.db.update_issue(issue_id, status="needs_human")
 

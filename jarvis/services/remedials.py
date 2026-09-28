@@ -12,8 +12,8 @@ FOLLOW_UP_DAYS = (7, 21)  # first chase, second chase
 
 
 def _is_remedial(q: dict[str, Any]) -> bool:
-    text = f"{q.get('type') or ''} {q.get('title') or ''}".lower()
-    return "remedial" in text or bool(q.get("source_job"))
+    return "remedial" in str(q.get("type") or "").lower() or bool(q.get("source_job")) or \
+        str(q.get("title") or "").lower().startswith("remedial")
 
 
 async def remedial_pipeline(fsm, today: date | None = None) -> dict[str, Any]:

@@ -55,6 +55,7 @@ class Briefings:
             "issues": [i for i in self.db.list_issues("open", 20)],
             "tests": self.db.latest_test_results(),
             "approvals": self.db.pending_actions(),
+            "suggestions": self.db.open_suggestions(),
             "notifications": self.db.recent_notifications(15),
             "deadlines": self.accountant.deadlines(),
         }

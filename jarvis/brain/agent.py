@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from . import llm
 from .prompts import build_system
-from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, serialise
+from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
 MAX_STEPS = 25
@@ -81,7 +81,7 @@ class JarvisBrain:
                     "content": json.dumps({"INVALID_INPUT": json.dumps(block.input, default=str),
                                            "errors": e.errors(include_url=False)}, default=str)}
         try:
-            result = await tool.handler(self.j, args)
+            result = await dispatch(self.j, tool, args)
             bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "done"})
             return {"type": "tool_result", "tool_use_id": block.id, "content": serialise(result)}
         except Exception as e:  # noqa: BLE001 - report tool failures back to Claude so it can adapt

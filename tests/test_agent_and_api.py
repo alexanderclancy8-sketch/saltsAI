@@ -51,7 +51,8 @@ async def test_external_email_needs_approval(settings):
                         message([text_block("Queued for your approval, sir.")])])
     await j.brain.ask("email them")
     pending = j.db.pending_actions()
-    assert len(pending) == 1 and pending[0]["kind"] == "email_send"
+    assert len(pending) == 1 and pending[0]["kind"] == "tool:email_send"
+    assert "Queued" in j.brain.messages[2]["content"][0]["content"] or "queued" in j.brain.messages[2]["content"][0]["content"]
     result = await j.actions.approve(pending[0]["id"])
     assert result.startswith("Approved")
     await asyncio.sleep(0.05)
@@ -124,3 +125,58 @@ def test_all_body_endpoints_declare_json_bodies(settings):
     schema = app.openapi()
     for path in ("/api/chat", "/api/tts"):
         assert "requestBody" in schema["paths"][path]["post"], path
+
+
+
+async def test_changes_are_only_suggested_until_approved(settings):
+    j = make(settings, [message([tool_block("stock_move", {"kind": "receive", "item": "BAT-12V7", "qty": 10})], "tool_use"),
+                        message([text_block("I've queued that for your approval, sir.")])])
+    before = next(i for i in j.stores.levels()["items"] if i["sku"] == "BAT-12V7")["stores"]
+    await j.brain.ask("We've had 10 batteries delivered")
+    after_suggest = next(i for i in j.stores.levels()["items"] if i["sku"] == "BAT-12V7")["stores"]
+    assert after_suggest == before  # nothing changed yet
+    action = j.db.pending_actions()[0]
+    assert action["kind"] == "tool:stock_move" and "receive 10" in action["summary"]
+    await j.actions.approve(action["id"])
+    await asyncio.sleep(0.05)
+    assert next(i for i in j.stores.levels()["items"] if i["sku"] == "BAT-12V7")["stores"] == before + 10
+    await j.http.aclose()
+
+
+async def test_software_bug_fix_is_suggested_not_started(settings):
+    j = make(settings)
+    j.fixer.gh = object()  # pretend the FSM repo is connected
+    started = []
+    j.fixer.attempt = lambda issue_id: started.append(issue_id)
+    j.client.beta.messages.parse_result = {
+        "summary": "Photo upload hangs", "category": "software_bug", "severity": "high", "software_fixable": True,
+        "likely_area": "job sheets", "suggested_next_steps": ["fix upload"], "reply_to_reporter": "Thanks"}
+    issue = await j.issues.report(reporter="Sam", title="Photos hang", description="spinner", notify=False, process=False)
+    await j.issues.process(issue["id"])
+    assert started == []
+    action = j.db.pending_actions()[0]
+    assert action["kind"] == "tool:issue_fix" and action["payload"]["args"] == {"issue_id": issue["id"]}
+    await j.http.aclose()
+
+
+async def test_suggestion_sweep_and_snooze(settings):
+    j = make(settings)
+    current = await j.suggestions.sweep(announce=False)
+    keys = {s["key"] for s in current}
+    assert "unbilled" in keys and "remedials" in keys
+    assert all(s["prompt"] for s in current)
+    j.suggestions.decide("unbilled", "dismissed")
+    again = await j.suggestions.sweep(announce=False)
+    assert "unbilled" not in {s["key"] for s in again}  # snoozed until tomorrow
+    await j.http.aclose()
+
+
+def test_suggestion_api(settings):
+    j = make(settings)
+    app = create_app(settings, j)
+    with TestClient(app) as c:
+        items = c.post("/api/suggestions/refresh").json()
+        key = items[0]["key"]
+        r = c.post(f"/api/suggestions/{key}/done")
+        assert r.status_code == 200 and r.json()["prompt"]
+        assert c.post(f"/api/suggestions/{key}/explode").status_code == 400

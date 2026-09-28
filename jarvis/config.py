@@ -87,7 +87,6 @@ class Settings(BaseSettings):
     fsm_default_branch: str = "main"
     fsm_deploy_workflow: str = ""  # e.g. deploy-azure.yml (workflow_dispatch)
     fixer_mode: str = "builtin"  # builtin | claude_action | off
-    autofix_auto_deploy: bool = False
 
     # --- Azure ------------------------------------------------------------
     azure_storage_connection_string: str = ""
@@ -186,6 +185,7 @@ class Settings(BaseSettings):
     staff_review_cron: str = "30 16 * * 5"  # weekly team performance review (Friday 16:30)
     business_review_cron: str = "45 7 1 * *"  # monthly business health report
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
+    suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
     billing_check_cron: str = "30 17 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "40 17 * * 1-5"  # thank-you + Google review requests for the day's jobs
     inbox_check_interval_min: int = 10

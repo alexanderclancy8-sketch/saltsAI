@@ -55,6 +55,7 @@ ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "priority": ("priority", "slaPriority", "sla"),
         "created_by": ("created_by", "createdBy", "bookedBy", "booked_by", "owner", "author"),
         "created_at": ("created_at", "createdAt", "created", "bookedAt"),
+        "invoice_ref": ("invoice_ref", "invoiceRef", "invoiceNumber", "invoice_number", "invoiceNo", "invoiced"),
         "checkin_lat": ("checkin_lat", "checkInLat", "startLat", "start_lat"),
         "checkin_lng": ("checkin_lng", "checkInLng", "startLng", "start_lng"),
     },
@@ -381,7 +382,9 @@ class DemoFSM:
                         "scheduled_start": t.isoformat(), "scheduled_end": (t + timedelta(hours=3)).isoformat(),
                         "started_at": started.isoformat(), "completed_at": (started + dur).isoformat(),
                         "value": rng.choice([185, 240, 320, 450, 760, 1250]), "hours": round(dur.total_seconds() / 3600, 1),
-                        "priority": "PPM" if jtype == "service" else "24h"})
+                        "priority": "PPM" if jtype == "service" else "24h",
+                        # nearly everything is invoiced; a few recent jobs slipped through (demo story)
+                        "invoice_ref": None if back <= 6 and rng.random() < 0.15 else f"INV-{30000 + len(self._jobs)}"})
                     first_start = first_start or started
                     last_end = started + dur
                     t = last_end + timedelta(minutes=rng.randint(25, 45))
@@ -428,7 +431,7 @@ class DemoFSM:
         office = [n for n, _ in _OFFICE]
         for q in self._quotes:
             q["created_by"] = office[len(q["id"]) % 2]
-        titles = ["Annual service renewal", "Replace failed detectors", "EL remedials", "Additional CCTV camera",
+        titles = ["Annual service renewal", "Replace failed detectors", "Emergency lighting upgrade", "Additional CCTV camera",
                   "Access control door add", "Panel battery replacement", "New fire alarm install", "Intruder upgrade"]
         for back in range(1, 61):
             day = self.today - timedelta(days=back)

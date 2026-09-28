@@ -110,6 +110,16 @@ CREATE TABLE IF NOT EXISTS stock_moves (
     job_ref TEXT DEFAULT '',
     note TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS suggestions (
+    key TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    prompt TEXT NOT NULL,
+    priority INTEGER DEFAULT 2,
+    status TEXT NOT NULL DEFAULT 'open'
+);
 CREATE TABLE IF NOT EXISTS processed_emails (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
@@ -265,6 +275,32 @@ class Database:
         return self.query("SELECT m.* FROM metrics m JOIN (SELECT source, metric, MAX(day) AS d FROM metrics "
                           "GROUP BY source, metric) x ON m.source = x.source AND m.metric = x.metric AND m.day = x.d "
                           "ORDER BY m.source, m.metric")
+
+    # -- suggestions ----------------------------------------------------------------------------
+    def open_suggestions(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM suggestions WHERE status = 'open' ORDER BY priority, updated_at DESC")
+
+    def get_suggestion(self, key: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM suggestions WHERE key = ?", (key,))
+
+    def upsert_suggestion(self, key: str, title: str, detail: str, prompt: str, priority: int) -> bool:
+        """Insert or refresh an open suggestion. Returns True if it is new."""
+        existing = self.get_suggestion(key)
+        ts = now_iso()
+        if existing is None:
+            self.execute("INSERT INTO suggestions (key, created_at, updated_at, title, detail, prompt, priority) "
+                         "VALUES (?,?,?,?,?,?,?)", (key, ts, ts, title, detail, prompt, priority))
+            return True
+        if existing["status"] == "open":
+            self.execute("UPDATE suggestions SET title = ?, detail = ?, prompt = ?, priority = ?, updated_at = ? "
+                         "WHERE key = ?", (title, detail, prompt, priority, ts, key))
+        return False
+
+    def set_suggestion_status(self, key: str, status: str) -> None:
+        self.execute("UPDATE suggestions SET status = ?, updated_at = ? WHERE key = ?", (status, now_iso(), key))
+
+    def reopen_suggestion(self, key: str) -> None:
+        self.execute("UPDATE suggestions SET status = 'open', updated_at = ? WHERE key = ?", (now_iso(), key))
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:
