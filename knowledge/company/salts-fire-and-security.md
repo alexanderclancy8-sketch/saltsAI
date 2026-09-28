@@ -31,6 +31,10 @@ margins, key customers, staff matters - in `knowledge/private/` instead, which i
 - **Systems we use:** Salts FSM (our own field service management app on Azure), Microsoft 365 (Outlook,
   Teams, SharePoint), Sage for accounts.
 
+## Signalling / switch-off
+- All PSTN (analogue line) signalling units on maintained systems have already been upgraded, so the BT
+  analogue switch-off is not an open risk or sales campaign for Salts.
+
 ## Accreditations
 Record current certificates in `data/accreditations.yaml` (see `accreditations.example.yaml`): BAFE SP203-1,
 SSAIB, CHAS and any others, with renewal and audit dates. Jarvis reminds ahead of each one and builds the

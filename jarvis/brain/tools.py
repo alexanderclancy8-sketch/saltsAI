@@ -564,6 +564,12 @@ async def review_requests(j, a: NoInput):
     return await j.billing.queue_review_requests()
 
 
+async def remedial_quotes(j, a: NoInput):
+    from ..services.remedials import remedial_pipeline
+
+    return await remedial_pipeline(j.fsm)
+
+
 async def staff_overdue_jobs(j, a: NoInput):
     return await j.staff.overdue_jobs()
 
@@ -778,6 +784,9 @@ TOOLS: list[Tool] = [
                            "approval (created in Sage once approved).", OfficeIn, raise_invoices, "Drafting invoices"),
     Tool("review_requests", "Prepare thank-you + Google review request emails for today's completed jobs, queued as "
                             "one approval.", NoInput, review_requests, "Preparing review requests"),
+    Tool("remedial_quotes", "Remedial quotes Salts FSM raised from service-visit defects: open pipeline and value, "
+                            "which need chasing (7 and 21 days), and win rate.", NoInput, remedial_quotes,
+         "Checking remedial quotes"),
     Tool("staff_overdue_jobs", "Jobs and call-outs that are past their scheduled time and not completed.",
          NoInput, staff_overdue_jobs, "Checking overdue jobs"),
     Tool("staff_certifications", "Engineer qualifications/cards expiring within N days or already expired.",

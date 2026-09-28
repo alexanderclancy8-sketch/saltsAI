@@ -166,3 +166,14 @@ async def test_elevenlabs_request_and_deepgram_url():
     url = voice.deepgram_live_url()
     assert url.startswith("wss://api.deepgram.com/v1/listen?model=nova-3") and "language=en-GB" in url
     assert "keyterm=Jarvis" in url and "interim_results=true" in url
+
+
+async def test_remedial_pipeline_flags_stalled_quotes():
+    from jarvis.services.remedials import remedial_pipeline
+
+    data = await remedial_pipeline(DemoFSM())
+    assert data["open"] and data["open_value"] > 0
+    chased = {r["quote"]: r["action"] for r in data["needs_chasing"]}
+    assert any("second chase" in a for a in chased.values()) and any("first chase" in a for a in chased.values())
+    assert all(r["age_days"] >= 7 for r in data["needs_chasing"])
+    assert data["win_rate_pct"] is not None

@@ -39,5 +39,9 @@ Customers can accept quotes through a public quote link (`?public=1#quote=...`).
 - **Deploys:** merged fixes deploy to Azure through the repo's GitHub Actions workflow (or Kudu zip deploy),
   then the smoke tests re-run.
 
+## Already handled inside Salts FSM
+- **Remedial quotes:** defects found on service visits are raised as remedial quotes in Salts FSM. Jarvis does
+  not create them - it watches the remedial pipeline and chases quotes that stall (`remedial_quotes`).
+
 ## Known quirks / FAQs
 - (Add notes here as you learn them, e.g. "photo uploads fail on slow mobile data - retry on Wi-Fi".)

@@ -98,6 +98,8 @@ ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "status": ("status", "state"),
         "sent_date": ("sent_date", "sentDate", "date", "created", "createdAt"),
         "created_by": ("created_by", "createdBy", "owner", "author", "salesperson", "preparedBy"),
+        "type": ("type", "quoteType", "quote_type", "category", "source"),
+        "source_job": ("source_job", "sourceJob", "jobRef", "job_ref", "fromJob", "job"),
     },
     "location": {
         "engineer": ("engineer", "engineerName", "name", "driver", "user"),
@@ -442,6 +444,19 @@ class DemoFSM:
                         "sent_date": day.isoformat(), "created_by": name})
         for jb in self._jobs:
             jb["created_by"] = rng.choice(["Hannah Cole", "Hannah Cole", "Rachel Gill"])
+
+        # remedial quotes raised from service visits (Salts FSM creates these from the job sheet)
+        defects = ["Replace 3 failed smoke detectors", "Replace standby batteries (2 x 12V 7Ah)",
+                   "Replace faulty sounder on zone 4", "Emergency lighting: 6 fittings failed duration test",
+                   "Replace damaged call point glass/element", "Add detector to new partitioned office"]
+        for n in range(9):
+            site, customer = _SITES[(n * 3) % len(_SITES)]
+            sent = self.today - timedelta(days=[2, 5, 9, 12, 16, 21, 30, 38, 45][n])
+            self._quotes.append({"id": f"RQ{700 + n}", "title": defects[n % len(defects)], "customer": customer,
+                                 "site": site, "value": [145, 210, 260, 320, 395, 480, 185, 540, 230][n],
+                                 "status": ["sent", "sent", "sent", "accepted", "sent", "declined", "sent", "accepted", "sent"][n],
+                                 "sent_date": sent.isoformat(), "created_by": "Hannah Cole", "type": "remedial",
+                                 "source_job": f"J{23100 + n * 7}"})
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         key = path.strip("/").split("/")[0]
