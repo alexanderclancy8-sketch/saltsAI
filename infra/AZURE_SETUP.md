@@ -64,11 +64,12 @@ This step creates the new `salts-jarvis` web app. Paste this into Cloud Shell:
 ```bash
 git clone -b claude/jarvis-company-ai-assistant-gaj3mj https://github.com/alexanderclancy8-sketch/saltsAI.git
 cd saltsAI
-PLAN= bash infra/deploy.sh
+LOCATION=ukwest PLAN= bash infra/deploy.sh
 ```
 
 (`PLAN=` with nothing after it means "make a new Linux plan for Jarvis". The Salts FSM plan is Windows, so
-Jarvis can't share it.)
+Jarvis can't share it. `LOCATION=ukwest` puts Jarvis in the UK West region, because this subscription's
+allowance of B1 plans in UK South is already used by the Salts FSM test app.)
 
 It asks these questions in order. Answer one at a time, and only once each question is showing. Anything
 typed or pasted before a question appears is ignored. If an answer looks wrong, it tells you and asks again.
@@ -88,7 +89,11 @@ Then it builds everything, which takes about 10 minutes. The upload step alone c
 - `Microsoft sign-in is on. Only these people can open Jarvis: ...`
 
 If it stops saying the name is taken, run it again with a different name:
-`APP_NAME=salts-jarvis-hq PLAN= bash infra/deploy.sh`
+`APP_NAME=salts-jarvis-hq LOCATION=ukwest PLAN= bash infra/deploy.sh`
+
+If it says an email address wasn't found, it shows which account and directory Azure is using. Copy that
+for the owner, leave the question blank, and carry on. Jarvis works with the password, and Microsoft sign-in
+can be switched on later.
 
 ## 4. Check it works
 

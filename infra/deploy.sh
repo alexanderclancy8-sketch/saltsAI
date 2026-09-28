@@ -47,14 +47,31 @@ deploy_code() {
   rm -rf "$tmp"
 }
 
+# Why an address can't be used for Microsoft sign-in, or nothing if it can.
+lookup_problem() {
+  local out domains account
+  if [[ "$1" != ?*@?*.?* ]]; then
+    echo "'$1' isn't an email address."
+    return
+  fi
+  if out="$(az ad user show --id "$1" --query id -o tsv 2>&1)" && [ -n "$out" ]; then return; fi
+  domains="$(az rest --method get --url https://graph.microsoft.com/v1.0/organization \
+    --query "value[0].verifiedDomains[].name" -o tsv 2>/dev/null | paste -sd ' ' - || true)"
+  account="$(az account show --query user.name -o tsv 2>/dev/null || true)"
+  echo "$1 wasn't found in the directory your Azure subscription belongs to.
+  Azure said:                $(tail -n1 <<<"$out" | sed 's/^ERROR: //')
+  You're signed in to Azure as: ${account:-unknown}
+  That directory's domains:  ${domains:-unknown}
+If ${1#*@} isn't one of those domains, your Azure subscription is in a different directory from your Microsoft
+365, so Microsoft sign-in can't use your 365 accounts yet. Leave this blank to use the Jarvis password for now."
+}
+
 # Entra object id for a sign-in address, or stop with an explanation.
 user_id() {
-  local id
-  id="$(az ad user show --id "$1" --query id -o tsv 2>/dev/null || true)"
-  [ -n "$id" ] || die "$1 isn't an account in this Azure directory. Check it's their Microsoft 365 sign-in address.
-If your Azure subscription was set up under a different Microsoft account from your Microsoft 365, sign-in can't
-use your 365 accounts - leave the list blank and use the Jarvis password instead."
-  echo "$id"
+  local problem
+  problem="$(lookup_problem "$1")"
+  [ -z "$problem" ] || die "$problem"
+  az ad user show --id "$1" --query id -o tsv
 }
 
 # Makes the assigned users of the sign-in app exactly the given object ids.
@@ -226,13 +243,7 @@ setup() {
     ask managers "Microsoft 365 addresses allowed to sign in, e.g. you and your business partner (space-separated, blank = password only): "
     problem=""
     for email in $managers; do  # check them all before creating anything
-      if [[ "$email" != ?*@?*.?* ]]; then
-        problem="'$email' isn't an email address."
-      elif [ -z "$(az ad user show --id "$email" --query id -o tsv 2>/dev/null || true)" ]; then
-        problem="$email isn't an account in this Azure directory. Check it's their Microsoft 365 sign-in address.
-(If your Azure subscription was set up under a different Microsoft account from your Microsoft 365, leave this
-blank and use the Jarvis password instead.)"
-      fi
+      problem="$(lookup_problem "$email")"
       [ -z "$problem" ] || break
     done
     [ -n "$problem" ] || break
@@ -259,11 +270,22 @@ blank and use the Jarvis password instead.)"
   if [ -n "$claude_token" ]; then params+=(claudeCodeOauthToken="$claude_token"); else params+=(anthropicApiKey="$anthropic_key"); fi
   if [ -n "$plan_id" ]; then
     params+=(existingPlanId="$plan_id")
-  else
+  elif [ "$(az group exists -n "$RG")" != "true" ]; then  # a group left empty by an earlier try is reused
     az group create -n "$RG" -l "$LOCATION" --tags app="$TAG" -o none
   fi
   echo "Creating the web app and storage (a couple of minutes)..."
-  az deployment group create -g "$RG" -n "jarvis-$(date +%Y%m%d%H%M%S)" -f infra/main.bicep -o none -p "${params[@]}"
+  local errors
+  errors="$(mktemp)"
+  if ! az deployment group create -g "$RG" -n "jarvis-$(date +%Y%m%d%H%M%S)" -f infra/main.bicep -o none \
+    -p "${params[@]}" 2>"$errors"; then
+    cat "$errors" >&2
+    grep -q "SubscriptionIsOverQuotaForSku" "$errors" && die "your Azure subscription has no room for another B1 plan in $LOCATION
+(see 'Current Limit' above). Nothing was created. Run it again in another UK region:
+    LOCATION=ukwest PLAN= bash infra/deploy.sh
+or ask Azure for more: in the portal search for 'Quotas', open App Service, and request a higher B1 limit."
+    die "Azure couldn't create Jarvis (details above). Nothing else was changed."
+  fi
+  rm -f "$errors"
   deploy_code
 
   url="https://$(az webapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)"
