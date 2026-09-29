@@ -844,9 +844,16 @@
     }
     if (S.approvals.length === 1 && /^(deny|cancel|don't|do not|no,? (cancel|don't))\b/.test(bare)) { decide(S.approvals[0].id, "deny"); return; }
     if (S.listenMode === "wake") {
+      // The wake word is required on every single utterance now, with no "quick follow-up, skip repeating
+      // Jarvis" exception - that exception was a real, reported source of false triggers: anything heard
+      // during the old 20s follow-up window (including a stray or delayed echo of Jarvis's own voice) got
+      // treated as a genuine command unconditionally, with none of the active-speech echo protection above
+      // applying to it. extendFollowUp()/WAKE_LISTEN_MS still matter for a different reason - keeping the
+      // real microphone open rather than dropping back to the free wake-word-only spotter - just not for
+      // skipping the wake word itself any more.
       const idx = lower.indexOf(wake);
-      if (idx === -1 && Date.now() > S.followUpUntil) { caption("", `(heard: "${text.slice(0, 60)}")`); return; }
-      const cmd = idx >= 0 ? text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "") : text;
+      if (idx === -1) { caption("", `(heard: "${text.slice(0, 60)}")`); return; }
+      const cmd = text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "");
       if (!cmd) { setHud("awaiting"); extendFollowUp(); say("Yes, sir?"); return; }
       send(cmd, "voice");
     } else send(text, "voice");

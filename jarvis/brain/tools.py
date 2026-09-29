@@ -356,6 +356,22 @@ class HRLetterIn(BaseModel):
                                       "what needs to be in the letter. Never invented - only what's given.")
 
 
+class BidAssessmentIn(BaseModel):
+    opportunity: str = Field(description="What's being tendered, e.g. 'Fire alarm maintenance contract, "
+                                         "3x care homes, Leeds'")
+    value: float | None = Field(None, description="Estimated annual or total contract value in GBP, if known")
+    notes: str | None = Field(None, description="Anything relevant: named competition, deadline, why this "
+                                                 "came up, client relationship")
+
+
+class BidDocumentIn(BaseModel):
+    opportunity: str = Field(description="What's being tendered")
+    client: str | None = Field(None, description="The buyer/client name, if known")
+    requirements: str = Field(description="The brief/requirements as given - copy the real tender text where "
+                                          "possible, not a summary")
+    notes: str | None = Field(None, description="Anything to emphasise, pricing constraints, deadline")
+
+
 class HoursIn(BaseModel):
     hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
                                                "closed (so Monday covers the weekend)")
@@ -878,6 +894,15 @@ async def draft_hr_letter(j, a: HRLetterIn):
     return {"shown_on_display": True, "draft": await j.documents.hr_letter(a.kind, a.person, a.details)}
 
 
+async def bid_assessment(j, a: BidAssessmentIn):
+    return {"shown_on_display": True, "assessment": await j.documents.bid_assessment(a.opportunity, a.value, a.notes)}
+
+
+async def bid_document(j, a: BidDocumentIn):
+    return {"shown_on_display": True,
+            "draft": await j.documents.bid_document(a.opportunity, a.client, a.requirements, a.notes)}
+
+
 async def out_of_hours_calls(j, a: HoursIn):
     return await j.ooh.calls(max(1, min(a.hours, 240)) if a.hours else None)
 
@@ -1206,6 +1231,15 @@ TOOLS: list[Tool] = [
                             "facts given - never invented. Shown on the display for the owner to review before "
                             "it's ever sent; flags when a solicitor should look at it first.",
          HRLetterIn, draft_hr_letter, "Drafting the HR letter"),
+    Tool("bid_assessment", "A go/no-go and pricing recommendation for a tender opportunity, grounded in real "
+                           "capacity, cash and quote win-rate data - not guesswork. Use before deciding whether "
+                           "to bid. Shown on the display.", BidAssessmentIn, bid_assessment,
+         "Assessing the opportunity"),
+    Tool("bid_document", "Draft a full tender/proposal document (cover letter, approach, case studies from "
+                         "real comparable jobs, pricing framework, compliance summary) - not just PQQ answers "
+                         "(use answer_questionnaire for that). Use once you've decided to bid. Shown on the "
+                         "display, never submitted by Jarvis.", BidDocumentIn, bid_document,
+         "Drafting the bid document"),
     Tool("out_of_hours_calls", "Overnight events from the out-of-hours / alarm monitoring reports emailed to info@ "
                                "(including PDF reports): calls taken and alarm faults, comms failures and "
                                "activations - site, urgency, what was done, and which still need a job in Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),

@@ -1,14 +1,27 @@
 """Paperwork: risk assessments & method statements (RAMS) per job, tender / pre-qualification questionnaire
-answers drafted from the company's real evidence, and HR documents (job postings, interview questions,
-disciplinary/performance letters) grounded in the staff register and current UK employment law."""
+answers drafted from the company's real evidence, HR documents (job postings, interview questions,
+disciplinary/performance letters), and bid support - a go/no-go + pricing assessment grounded in real
+capacity/cash/win-rate data, and a full narrative proposal document grounded in real evidence and comparable
+past jobs, for tenders bigger than a plain PQQ answer_questionnaire response covers."""
 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
 from typing import Any
 
 from ..brain import llm
+
+log = logging.getLogger(__name__)
+
+
+async def _safe(coro, label: str) -> Any:
+    try:
+        return await coro
+    except Exception as e:  # noqa: BLE001 - one failed data source shouldn't sink the whole draft
+        log.warning("bid_assessment input %s failed: %s", label, e)
+        return {"error": f"{type(e).__name__}: {e}"[:200]}
 
 RAMS_SYSTEM = """You are Jarvis, drafting a Risk Assessment and Method Statement (RAMS) for {company}, a UK fire &
 security contractor. Use the job details and the knowledge extracts provided. Output markdown with:
@@ -58,6 +71,43 @@ structure and tone: factual, proportionate, never pre-judging an outcome that ha
 meeting yet. Output markdown: the letter/document itself, then a short "Before sending" checklist of what
 {owner} should double-check or that a solicitor should review this if the situation could end in dismissal or
 looks legally contentious."""
+
+
+BID_ASSESSMENT_SYSTEM = """You are Jarvis, giving {owner} a candid go/no-go and pricing recommendation for a
+tender opportunity at {company}, a UK fire & security installer/maintainer - using the real business data
+provided (cash position, team capacity/utilisation, quote win rate, customer concentration), not guesswork.
+
+Structure your answer:
+1. **Recommendation**: Bid or don't bid - one clear line, then why.
+2. **Capacity**: Can the team actually deliver this on top of current work, based on the utilisation/workload
+   data given? Flag if it would mean turning away or delaying other work.
+3. **Pricing**: A suggested price range and margin, reasoned from typical UK fire & security margins (label
+   these as typical ranges, not certainties) and the value/scope given - not a single invented number
+   presented as precise.
+4. **Risk**: Customer concentration (would winning this make one client too large a share of revenue?),
+   payment/cash timing, competition if named, anything in the business data that raises a flag.
+5. **If bidding, what to emphasise** - 2-3 concrete points that would make this bid actually win, given our
+   real track record and quote conversion rate.
+Be direct - this is a decision aid, not a cheerleading exercise. Mark anything you don't have real data for
+as an assumption, not a fact."""
+
+BID_DOCUMENT_SYSTEM = """You are Jarvis, drafting a full tender/proposal document for {company}, a UK fire &
+security installer/maintainer, responding to a real opportunity - not just answering a PQQ's individual
+questions (that's a separate tool), but writing the actual submission document.
+
+Use ONLY the real evidence given: accreditations, company documents, and comparable past jobs (as case
+studies - reference real job types/systems/scale, never invented client names or figures). Output markdown:
+1. Cover letter / introduction - who we are, why we're a strong fit for this specific opportunity.
+2. Understanding of requirements - reflect the brief back to show we've actually read it.
+3. Proposed approach / methodology - how we'd deliver this, referencing our real accreditations and
+   competencies.
+4. Relevant experience - 2-4 case studies drawn from the comparable past jobs given, described generically
+   enough to respect client confidentiality (system type, scale, outcome) unless the job data itself names
+   the client.
+5. Pricing summary - a placeholder structure (labour/materials/ongoing maintenance) for {owner} to fill in
+   with real figures, not invented numbers.
+6. Compliance & accreditation summary, and next steps.
+Mark any gap as TO CONFIRM. Never invent a client name, contract value, or accreditation we don't hold."""
 
 
 class Documents:
@@ -127,4 +177,41 @@ class Documents:
                                "knowledge_extracts": knowledge}, default=str)[:40000],
             effort="medium", max_tokens=8000)
         j.bus.publish("display", {"title": f"HR - {kind} ({person})", "markdown": text})
+        return text
+
+    async def bid_assessment(self, opportunity: str, value: float | None, notes: str | None = None) -> str:
+        j = self.j
+        business = await _safe(j.advisor.gather(), "business data")
+        text = await llm.write(
+            j.client, j.settings, system=BID_ASSESSMENT_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name),
+            prompt=json.dumps({"opportunity": opportunity, "estimated_value": value, "notes": notes,
+                               "business_data": business}, default=str)[:60000],
+            effort="high", max_tokens=8000)
+        j.bus.publish("display", {"title": f"Bid assessment - {opportunity}", "markdown": text})
+        return text
+
+    async def bid_document(self, opportunity: str, client: str | None, requirements: str,
+                           notes: str | None = None) -> str:
+        j = self.j
+        evidence = {}
+        for scheme in ("BAFE", "SSAIB", "CHAS"):
+            try:
+                evidence[scheme] = await j.accreditations.gather_evidence(scheme)
+            except Exception as e:  # noqa: BLE001
+                evidence[scheme] = {"error": str(e)[:200]}
+        today = date.today()
+        comparable_jobs = []
+        try:
+            jobs = await j.fsm.jobs(today - timedelta(days=730), today, status="completed")
+            comparable_jobs = jobs[:15]  # a sample - the model picks what's actually relevant as case studies
+        except Exception as e:  # noqa: BLE001
+            comparable_jobs = [{"error": str(e)[:200]}]
+        company = j.kb.core_documents()[:30000]
+        text = await llm.write(
+            j.client, j.settings, system=BID_DOCUMENT_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name),
+            prompt=json.dumps({"opportunity": opportunity, "client": client, "requirements": requirements,
+                               "notes": notes, "company_documents": company, "evidence": evidence,
+                               "comparable_past_jobs": comparable_jobs}, default=str)[:70000],
+            effort="high", max_tokens=16000)
+        j.bus.publish("display", {"title": f"Bid document - {opportunity}", "markdown": text})
         return text

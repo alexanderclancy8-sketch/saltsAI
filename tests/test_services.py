@@ -267,6 +267,27 @@ async def test_meetings_rams_and_questionnaire(tmp_path):
     assert await j.documents.recruitment("Fire alarm service engineer", "FIA card needed") == "Certainly, sir."
     assert await j.documents.hr_letter("written warning confirmation", "Sam", "Late three times this month") \
         == "Certainly, sir."
+    assert await j.documents.bid_assessment("Fire alarm maintenance, 3x care homes", 45000, "Deadline Friday") \
+        == "Certainly, sir."
+    assert await j.documents.bid_document("Fire alarm maintenance, 3x care homes", "Example Council",
+                                          "Must hold BAFE SP203-1") == "Certainly, sir."
+    await j.http.aclose()
+
+
+async def test_bid_tools_are_registered_and_reachable(tmp_path):
+    from jarvis.brain.tools import BidAssessmentIn, BidDocumentIn, TOOLS_BY_NAME, bid_assessment, bid_document
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    assert TOOLS_BY_NAME["bid_assessment"].approval is False  # read/research only, nothing to approve
+    assert TOOLS_BY_NAME["bid_document"].approval is False  # a draft on the display, never sent by Jarvis
+    result = await bid_assessment(j, BidAssessmentIn(opportunity="CCTV upgrade", value=12000, notes=None))
+    assert result["shown_on_display"] is True and result["assessment"] == "Certainly, sir."
+    result = await bid_document(j, BidDocumentIn(opportunity="CCTV upgrade", client="Example Ltd",
+                                                 requirements="8 cameras, ANPR", notes=None))
+    assert result["shown_on_display"] is True and result["draft"] == "Certainly, sir."
     await j.http.aclose()
 
 
