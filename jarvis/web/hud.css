@@ -218,12 +218,18 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .set-field.has-error input, .set-field.has-error select { border-color: var(--crit); }
 .cron-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .cron-picker input[type=time] { width: auto; flex: 0 0 auto; }
+.cron-times { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cron-time-chip { display: inline-flex; align-items: center; gap: 4px; }
+.cron-time-remove { background: none; border: none; color: var(--muted-dim); cursor: pointer; font-size: 12px; padding: 2px; }
+.cron-time-remove:hover { color: var(--crit); }
 .cron-days { display: flex; gap: 4px; flex-wrap: wrap; }
 .cron-day { border: 1px solid var(--line); background: none; color: var(--muted-dim); border-radius: 99px;
   padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: var(--ui); font-weight: 500; transition: border-color .15s, color .15s; }
 .cron-day:hover { border-color: var(--line-strong); color: var(--text); }
 .cron-day.active { border-color: var(--accent); color: var(--accent-text); }
 .cron-presets { display: flex; gap: 12px; margin-top: 6px; }
+.cron-dom { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--muted); }
+.cron-dom input[type=number] { width: 56px !important; flex: 0 0 auto; text-align: center; }
 .set-checkbox { display: flex; align-items: center; gap: 8px; }
 .set-checkbox input { width: auto; }
 .set-checkbox label { margin: 0; }

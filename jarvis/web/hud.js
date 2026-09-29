@@ -20,8 +20,9 @@
   const time = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); };
   const dayMonth = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
 
-  // A schedule setting is stored as a crontab string ("45 7 * * 1-5") but nobody wants to type that - these
-  // convert it to/from a plain time + day-of-week picker for the common "once a day, on some days" case.
+  // A schedule setting is stored as a crontab string ("45 7 * * 1-5", or "5 9,13,16 * * 1-5" for a few times a
+  // day) but nobody wants to type that - these convert it to/from a plain picker: one shared minute-past-the-
+  // hour, a list of hours (almost always just one), and either days-of-the-week or a single day of the month.
   // Day index here is 0=Monday..6=Sunday throughout, matching how the picker lays its buttons out.
   const DOW_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const cronDowToIndex = (tok) => { const n = parseInt(tok, 10); if (Number.isNaN(n)) return null; const m = n % 7; return m === 0 ? 6 : m - 1; };
@@ -30,7 +31,17 @@
     const parts = String(cron || "").trim().split(/\s+/);
     if (parts.length !== 5) return { ok: false };
     const [min, hour, dom, month, dow] = parts;
-    if (month !== "*" || dom !== "*" || !/^\d+$/.test(min) || !/^\d+$/.test(hour)) return { ok: false };
+    if (month !== "*" || !/^\d+$/.test(min)) return { ok: false };
+    const hours = hour.split(",").map((h) => parseInt(h, 10));
+    if (!hours.length || hours.some((h) => Number.isNaN(h))) return { ok: false };
+    const minute = Number(min);
+    if (dom !== "*") {
+      // A day-of-month schedule ("on the 1st of the month at 7:45") - only the simple single-time case is
+      // worth a picker for; the combination of a specific date AND several times a day doesn't happen here.
+      const day = parseInt(dom, 10);
+      if (Number.isNaN(day) || hours.length !== 1 || dow !== "*") return { ok: false };
+      return { ok: true, mode: "dom", minute, hours, day };
+    }
     let days;
     if (dow === "*") days = new Set([0, 1, 2, 3, 4, 5, 6]);
     else {
@@ -41,10 +52,14 @@
         else { const i = cronDowToIndex(tok); if (i === null) return { ok: false }; days.add(i); }
       }
     }
-    return { ok: true, hour: Number(hour), minute: Number(min), days };
+    return { ok: true, mode: "dow", minute, hours, days };
   }
-  const cronFromParts = (hour, minute, days) =>
-    `${minute} ${hour} * * ${days.size === 7 ? "*" : [...days].map(indexToCronDow).sort((a, b) => a - b).join(",")}`;
+  function cronFromParts(minute, hours, extra) {
+    const hourField = [...new Set(hours)].sort((a, b) => a - b).join(",");
+    if (extra.mode === "dom") return `${minute} ${hourField} ${extra.day} * *`;
+    const dowField = extra.days.size === 7 ? "*" : [...extra.days].map(indexToCronDow).sort((a, b) => a - b).join(",");
+    return `${minute} ${hourField} * * ${dowField}`;
+  }
 
   function md(src) {
     const blocks = [];
@@ -958,23 +973,34 @@
         const current = hasEdit ? this.edited[f.key] : (f.value || "");
         const parsed = parseCron(current);
         if (!parsed.ok) {
-          // Doesn't fit "once a day, on some days" (a few times a day, or a day-of-month pattern) - rare
-          // enough among these fields that a plain cron box is a reasonable fallback rather than building a
-          // picker for every possible schedule shape.
+          // Doesn't fit any of the shapes the picker understands - rare enough among these fields that a
+          // plain cron box is a reasonable fallback rather than building a picker for every possible schedule.
           control = `<input type="text" id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "45 7 * * 1-5")}">
-            <div class="field-help">A custom schedule, shown as cron (minute hour day month weekday) because it runs more than once a day or on a specific date.</div>`;
+            <div class="field-help">A custom schedule, shown as cron (minute hour day month weekday).</div>`;
         } else {
-          const timeVal = `${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute).padStart(2, "0")}`;
-          const dayBtns = DOW_SHORT.map((label, i) => `<button type="button" class="cron-day${parsed.days.has(i) ? " active" : ""}" data-field="${f.key}" data-cron-day="${i}">${label}</button>`).join("");
-          control = `<div class="cron-picker">
-            <input type="time" data-field="${f.key}" data-cron-time="1" value="${timeVal}">
-            <div class="cron-days">${dayBtns}</div>
-          </div>
-          <div class="cron-presets">
-            <button type="button" class="linkish" data-field="${f.key}" data-cron-preset="weekdays">Weekdays</button>
-            <button type="button" class="linkish" data-field="${f.key}" data-cron-preset="everyday">Every day</button>
-            <button type="button" class="linkish" data-field="${f.key}" data-cron-preset="weekends">Weekends</button>
-          </div>`;
+          const mm = String(parsed.minute).padStart(2, "0");
+          const timeChips = parsed.hours.map((h, i) => `<span class="cron-time-chip">
+            <input type="time" data-field="${f.key}" data-cron-time="${i}" value="${String(h).padStart(2, "0")}:${mm}">
+            ${parsed.hours.length > 1 ? `<button type="button" class="cron-time-remove" data-field="${f.key}" data-cron-remove-time="${i}" aria-label="Remove this time">✕</button>` : ""}
+          </span>`).join("");
+          const addTimeBtn = `<button type="button" class="linkish" data-field="${f.key}" data-cron-add-time="1">+ Add a time</button>`;
+          if (parsed.mode === "dom") {
+            control = `<div class="cron-picker">
+              ${timeChips}
+              <span class="cron-dom">on day <input type="number" min="1" max="28" data-field="${f.key}" data-cron-dom="1" value="${parsed.day}"> of the month</span>
+            </div>`;
+          } else {
+            const dayBtns = DOW_SHORT.map((label, i) => `<button type="button" class="cron-day${parsed.days.has(i) ? " active" : ""}" data-field="${f.key}" data-cron-day="${i}">${label}</button>`).join("");
+            control = `<div class="cron-picker">
+              <div class="cron-times">${timeChips}${addTimeBtn}</div>
+              <div class="cron-days">${dayBtns}</div>
+            </div>
+            <div class="cron-presets">
+              <button type="button" class="linkish" data-field="${f.key}" data-cron-preset="weekdays">Weekdays</button>
+              <button type="button" class="linkish" data-field="${f.key}" data-cron-preset="everyday">Every day</button>
+              <button type="button" class="linkish" data-field="${f.key}" data-cron-preset="weekends">Weekends</button>
+            </div>`;
+          }
         }
       } else {
         let current = hasEdit ? this.edited[f.key] : (f.value ?? "");
@@ -1061,46 +1087,71 @@
     if (clear) { Settings.cleared.add(clear.dataset.clear); delete Settings.edited[clear.dataset.clear]; Settings.render(); return; }
     const undo = e.target.closest("[data-undo-clear]");
     if (undo) { Settings.cleared.delete(undo.dataset.undoClear); Settings.render(); return; }
+    const cronKey = e.target.closest("[data-field]")?.dataset.field;
+    const cronParsed = () => parseCron(Object.prototype.hasOwnProperty.call(Settings.edited, cronKey) ? Settings.edited[cronKey] : (Settings.field(cronKey)?.value || ""));
+    const applyCron = (minute, hours, extra) => { Settings.edited[cronKey] = cronFromParts(minute, hours, extra); Settings.cleared.delete(cronKey); Settings.render(); Settings.updateSaveBar(); };
     const cronDay = e.target.closest("[data-cron-day]");
     if (cronDay) {
-      const key = cronDay.dataset.field;
-      const current = Object.prototype.hasOwnProperty.call(Settings.edited, key) ? Settings.edited[key] : (Settings.field(key)?.value || "");
-      const parsed = parseCron(current);
-      if (parsed.ok) {
+      const parsed = cronParsed();
+      if (parsed.ok && parsed.mode === "dow") {
         const day = Number(cronDay.dataset.cronDay);
         if (parsed.days.has(day) && parsed.days.size > 1) parsed.days.delete(day); else parsed.days.add(day);
-        Settings.edited[key] = cronFromParts(parsed.hour, parsed.minute, parsed.days);
-        Settings.cleared.delete(key);
-        Settings.render(); Settings.updateSaveBar();
+        applyCron(parsed.minute, parsed.hours, { mode: "dow", days: parsed.days });
       }
       return;
     }
     const cronPreset = e.target.closest("[data-cron-preset]");
     if (cronPreset) {
-      const key = cronPreset.dataset.field;
-      const current = Object.prototype.hasOwnProperty.call(Settings.edited, key) ? Settings.edited[key] : (Settings.field(key)?.value || "");
-      const parsed = parseCron(current);
+      const parsed = cronParsed();
       if (parsed.ok) {
         const preset = cronPreset.dataset.cronPreset;
         const days = preset === "weekdays" ? new Set([0, 1, 2, 3, 4]) : preset === "weekends" ? new Set([5, 6]) : new Set([0, 1, 2, 3, 4, 5, 6]);
-        Settings.edited[key] = cronFromParts(parsed.hour, parsed.minute, days);
-        Settings.cleared.delete(key);
-        Settings.render(); Settings.updateSaveBar();
+        applyCron(parsed.minute, parsed.hours, { mode: "dow", days });
+      }
+      return;
+    }
+    const addTime = e.target.closest("[data-cron-add-time]");
+    if (addTime) {
+      const parsed = cronParsed();
+      if (parsed.ok && parsed.mode === "dow") {
+        const lastHour = Math.max(...parsed.hours);
+        applyCron(parsed.minute, [...parsed.hours, Math.min(lastHour + 1, 23)], { mode: "dow", days: parsed.days });
+      }
+      return;
+    }
+    const removeTime = e.target.closest("[data-cron-remove-time]");
+    if (removeTime) {
+      const parsed = cronParsed();
+      if (parsed.ok && parsed.hours.length > 1) {
+        const hours = parsed.hours.filter((_, i) => i !== Number(removeTime.dataset.cronRemoveTime));
+        applyCron(parsed.minute, hours, parsed.mode === "dom" ? { mode: "dom", day: parsed.day } : { mode: "dow", days: parsed.days });
       }
       return;
     }
   });
+  // Unlike the click-driven cron edits above, typing shouldn't re-render the whole panel (that would steal
+  // focus mid-keystroke) - just update the stored value and the "unsaved changes" bar, same as any other field.
+  const applyCronInput = (key, minute, hours, extra) => { Settings.edited[key] = cronFromParts(minute, hours, extra); Settings.cleared.delete(key); Settings.updateSaveBar(); };
   $("#settings-sections").addEventListener("input", (e) => {
     const el = e.target.closest("[data-field]");
     if (!el) return;
     const key = el.dataset.field;
     const f = Settings.field(key);
     if (!f) return;
-    if (el.dataset.cronTime) {
+    if (el.dataset.cronTime !== undefined) {
       const current = Object.prototype.hasOwnProperty.call(Settings.edited, key) ? Settings.edited[key] : (f.value || "");
       const parsed = parseCron(current);
       const [hh, mm] = el.value.split(":").map(Number);
-      if (!Number.isNaN(hh) && !Number.isNaN(mm)) Settings.edited[key] = cronFromParts(hh, mm, parsed.ok ? parsed.days : new Set([0, 1, 2, 3, 4, 5, 6]));
+      if (parsed.ok && !Number.isNaN(hh) && !Number.isNaN(mm)) {
+        const hours = [...parsed.hours]; hours[Number(el.dataset.cronTime)] = hh;
+        applyCronInput(key, mm, hours, parsed.mode === "dom" ? { mode: "dom", day: parsed.day } : { mode: "dow", days: parsed.days });
+      }
+    }
+    else if (el.dataset.cronDom !== undefined) {
+      const current = Object.prototype.hasOwnProperty.call(Settings.edited, key) ? Settings.edited[key] : (f.value || "");
+      const parsed = parseCron(current);
+      const day = Number(el.value);
+      if (parsed.ok && !Number.isNaN(day)) applyCronInput(key, parsed.minute, parsed.hours, { mode: "dom", day });
     }
     else if (f.kind === "bool") Settings.edited[key] = el.checked;
     else if (f.kind === "number") Settings.edited[key] = el.value === "" ? "" : Number(el.value);
