@@ -162,10 +162,31 @@ async def test_elevenlabs_request_and_deepgram_url():
     assert mime == "audio/mpeg" and audio.startswith(b"ID3")
     assert "/text-to-speech/onwK4e9ZLuTAKqWW03F9/stream" in seen["url"] and "mp3_44100_128" in seen["url"]
     assert seen["key"] == "el-key" and seen["body"]["text"] == "Good evening, sir."
-    assert seen["body"]["model_id"] == "eleven_flash_v2_5"
+    assert seen["body"]["model_id"] == "eleven_multilingual_v2"
     url = voice.deepgram_live_url()
     assert url.startswith("wss://api.deepgram.com/v1/listen?model=nova-3") and "language=en-GB" in url
     assert "keyterm=Jarvis" in url and "interim_results=true" in url
+
+
+async def test_azure_voice_uses_conversational_style():
+    import httpx
+
+    from jarvis.config import Settings
+    from jarvis.integrations.voice import Voice
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"], seen["ssml"] = str(request.url), request.content.decode()
+        return httpx.Response(200, content=b"ID3fake-mp3")
+
+    s = Settings(azure_speech_key="az-key", _env_file=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        stream, mime = await Voice(s, http).tts_stream("Cash is fine & dandy, sir.")
+        assert b"".join([chunk async for chunk in stream]).startswith(b"ID3")
+    assert seen["url"].startswith("https://uksouth.tts.speech.microsoft.com/")
+    assert "<voice name='en-GB-RyanNeural'>" in seen["ssml"]
+    assert "<mstts:express-as style='chat'>" in seen["ssml"] and "fine and dandy" in seen["ssml"]
 
 
 async def test_remedial_pipeline_flags_stalled_quotes():

@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     tts_provider: str = "auto"  # auto | elevenlabs | azure | browser
     elevenlabs_api_key: str = ""
     elevenlabs_voice: str = "daniel"  # preset name from ELEVENLABS_BRITISH_VOICES or a raw voice id
-    elevenlabs_model: str = "eleven_flash_v2_5"
+    elevenlabs_model: str = "eleven_multilingual_v2"  # most natural; eleven_flash_v2_5 answers a little faster
     elevenlabs_stability: float = 0.5
     elevenlabs_similarity: float = 0.8
     elevenlabs_style: float = 0.15
@@ -182,6 +182,7 @@ class Settings(BaseSettings):
     azure_speech_key: str = ""
     azure_speech_region: str = "uksouth"
     azure_tts_voice: str = "en-GB-RyanNeural"
+    azure_tts_style: str = "chat"  # relaxed, conversational delivery; voices without it just ignore it
 
     stt_provider: str = "auto"  # auto | deepgram | whisper | browser
     deepgram_api_key: str = ""

@@ -114,9 +114,16 @@ class Voice:
         return await self._open_stream(req)
 
     async def _azure_tts(self, text: str) -> AsyncIterator[bytes]:
+        def attr(value: str) -> str:
+            return escape(value, {"'": "&apos;"})
+
+        spoken = f"<prosody rate='+4%'>{escape(text)}</prosody>"
+        if self.s.azure_tts_style:
+            spoken = f"<mstts:express-as style='{attr(self.s.azure_tts_style)}'>{spoken}</mstts:express-as>"
         ssml = (
-            "<speak version='1.0' xml:lang='en-GB' xmlns='http://www.w3.org/2001/10/synthesis'>"
-            f"<voice name='{self.s.azure_tts_voice}'><prosody rate='+4%'>{escape(text)}</prosody></voice></speak>"
+            "<speak version='1.0' xml:lang='en-GB' xmlns='http://www.w3.org/2001/10/synthesis' "
+            "xmlns:mstts='https://www.w3.org/2001/mstts'>"
+            f"<voice name='{attr(self.s.azure_tts_voice)}'>{spoken}</voice></speak>"
         )
         req = self.http.build_request(
             "POST", f"https://{self.s.azure_speech_region}.tts.speech.microsoft.com/cognitiveservices/v1",
