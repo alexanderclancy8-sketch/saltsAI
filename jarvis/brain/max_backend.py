@@ -286,10 +286,15 @@ class MaxBrain:
         log.info("%s reply: first words after %s, finished after %.1fs", mode,
                  f"{first_words:.1f}s" if first_words is not None else "-", time.monotonic() - started)
         if result is not None and result.is_error:
-            limit = "limit" in str(result.result or result.errors or "").lower()
+            detail = str(result.result or result.errors or "")
+            limit = "limit" in detail.lower()
+            # The SDK's own error/result text is an internal diagnostic (SDK error codes, stop reasons) meant
+            # for logs, not something to read out to the owner - surfacing it raw once showed up as literally
+            # "Sorry, that didn't work: ['[ede_diagnostic] result_type=user ...']" on the display/voice reply.
+            log.warning("Claude Agent SDK turn returned an error result: %s", detail[:500])
             msg = ("I've hit the usage limit on your Claude plan for now - it resets shortly." if limit
-                   else f"Sorry, that didn't work: {str(result.result or result.errors)[:200]}")
-            bus.publish("error", {"message": msg, "detail": str(result.errors)[:300]})
+                   else "Sorry, that didn't work - please try again.")
+            bus.publish("error", {"message": msg, "detail": detail[:300]})
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
         db.add_transcript("assistant", reply)

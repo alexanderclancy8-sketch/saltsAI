@@ -232,15 +232,12 @@
   }
 
   const speaker = {
-    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, recentText: "", lastSpokeAt: 0,
+    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, lastSpokeAt: 0,
     feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
     flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
     enqueue(sentence) {
       const clean = sentence.replace(/```[\s\S]*?```/g, " ").replace(/[#*_`>|]/g, " ").replace(/\s+/g, " ").trim();
       if (!clean || /^[-\s]+$/.test(clean)) return;
-      // Tracked so a barge-in heard while this plays can be told apart from the mic just picking up Jarvis's
-      // own voice (echo cancellation is never perfect without headphones) - see wordOverlapRatio().
-      this.recentText += " " + clean;
       const item = { text: clean, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
       this.queue.push(item);
       if (!this.active) this.next();
@@ -418,7 +415,6 @@
         setHud("thinking"); toolsSeen = [];
         current = addMessage("assistant", ""); current.querySelector(".md").classList.add("typing");
         current.dataset.raw = "";
-        speaker.recentText = ""; // a fresh reply is starting - forget what the last one said
         break;
       case "delta":
         if (!current) { current = addMessage("assistant", ""); current.dataset.raw = ""; }
@@ -811,27 +807,6 @@
   const STOP_PHRASE_TEST_RE = /\b(stop|quiet|enough|cancel|shut up)\b/;
   const STOP_PHRASE_STRIP_RE = /\b(stop|quiet|enough|cancel|shut up)\b/g;
 
-  // Common words carry no signal for telling a real interruption apart from Jarvis's own voice bleeding into
-  // the mic - "is it done" overlaps "is" and "it" with almost anything Jarvis could have said. Only distinctive
-  // words count towards the match.
-  const STOP_WORDS = new Set(["a", "an", "the", "is", "are", "was", "were", "to", "of", "and", "or", "it", "in",
-    "on", "for", "that", "this", "i", "you", "we", "he", "she", "they", "do", "does", "did", "so", "but", "if",
-    "at", "as", "be", "with", "not", "no", "yes", "sir", "your", "my", "me", "have", "has", "had", "will", "can"]);
-  function contentWords(s) {
-    return s.toLowerCase().replace(/[^a-z0-9\s']/g, " ").split(/\s+/).filter((w) => w && !STOP_WORDS.has(w));
-  }
-  // Is `heard` most likely just the mic picking up what Jarvis itself is saying right now, rather than a real
-  // interruption? Judged by how much of its distinctive content overlaps with Jarvis's own recent speech -
-  // not by word count or a magic stop-word - so a genuine interruption of any length gets through unblocked,
-  // while an actual echo (which shares almost all of its wording) gets quietly ignored instead of looping.
-  function soundsLikeSelfEcho(heard, spoken) {
-    const h = contentWords(heard);
-    if (h.length < 2) return false; // too little distinctive content to judge - fail open, let it through
-    const spokenWords = new Set(contentWords(spoken));
-    const matched = h.filter((w) => spokenWords.has(w)).length;
-    return matched / h.length >= 0.6;
-  }
-
   function utterance(raw) {
     const text = String(raw || "").trim();
     if (!text) return;
@@ -844,7 +819,14 @@
     const justFinishedSpeaking = !speaker.active && Date.now() - speaker.lastSpokeAt < ECHO_GRACE_MS;
     if (speaker.active || justFinishedSpeaking) {
       const isStopPhrase = STOP_PHRASE_TEST_RE.test(lower) || lower.includes(wake);
-      if (!isStopPhrase && soundsLikeSelfEcho(lower, speaker.recentText)) return; // just hearing itself
+      // While actively speaking (or just finished), only actually respond to a stop phrase or the wake word -
+      // anything else heard in this window is presumed to be the mic picking up Jarvis's own voice, not a
+      // real interruption. A word-overlap heuristic used to sit here instead, judging echo by how much heard
+      // text matched Jarvis's recent speech - but speech-to-text often mangles a TTS voice badly enough that
+      // genuine echo scores a *low* match and sails straight through as if it were a real command. Requiring
+      // the wake word or a stop phrase has no such failure mode: it's a strict allowlist, not a similarity
+      // score, so mistranscribed echo is rejected the same as clearly-echoed echo.
+      if (!isStopPhrase) return;
       if (speaker.active) speaker.stop();
       // A bare "stop"/"quiet"/"Jarvis, stop" - nothing left worth answering once the stop words and wake word
       // are stripped out - should just go quiet. Falling through to send() below would forward the word
@@ -871,7 +853,12 @@
   }
 
   mic.addEventListener("click", () => {
-    if (stt.on) stt.stop(true); else { sentry.stop(); stt.start(); }
+    // A tap must always have a real "off" to reach. Before this, tapping while the free wake-word listener
+    // (sentry) was active jumped straight to starting the real microphone instead of stopping - so in
+    // always-listening mode the mic looked permanently lit, since there was never a path back to fully off.
+    if (stt.on) { stt.stop(true); return; }
+    if (sentry.on) { sentry.stop(); return; }
+    stt.start();
   });
 
   // ------------------------------------------------------------------ stop
