@@ -41,6 +41,7 @@ from .services.performance import PerformanceReviewer, StaffRegister
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.routine_tests import RoutineTester
+from .services.security_watch import SecurityWatch
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
@@ -84,6 +85,7 @@ class Jarvis:
         self.tester = RoutineTester(s, self.db, self.http, fsm=self.fsm, staff=self.staff,
                                     integrations=self._integrations(), notifier=self.notifier, issues=self.issues)
         self.fixer.issues, self.fixer.tester = self.issues, self.tester
+        self.security_watch = SecurityWatch(s, self.db, self.bus, self.notifier, self.client, self.github, self.issues)
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
@@ -149,6 +151,8 @@ class Jarvis:
             "Accounts": (f"{self.finance.name}" if not getattr(self.finance, "demo", False)
                          else "DEMO data - connect Sage or add CSV exports"),
             "FSM source / auto-fix": f"{s.fsm_repo} ({s.fixer_mode})" if self.github else "not connected",
+            "Security watch": (f"reviewing {s.fsm_repo} on a schedule" if self.security_watch.enabled
+                               else "not set up (needs the same GitHub connection as auto-fix)"),
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",

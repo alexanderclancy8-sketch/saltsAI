@@ -158,6 +158,16 @@ class FsmChangeIn(BaseModel):
     summary: str = Field(description="Plain-English description of the change for the owner to approve")
 
 
+class LogJobIn(BaseModel):
+    site: str = Field(description="Salts FSM site name, or the site/customer address if it's not in FSM yet")
+    type: Literal["service", "callout", "remedial", "install", "commissioning", "survey"] = "callout"
+    description: str = Field(description="What's wrong or what's needed, e.g. 'Intruder alarm fault - zone 3 tamper'")
+    priority: str = Field("", description="SLA if known, e.g. '4h', '24h', 'PPM' - leave blank if not given")
+    engineer: str = Field("", description="Engineer to assign - leave blank to book it unassigned")
+    scheduled_start: str = Field("", description="When to book it for (ISO date or date+time) - blank = unscheduled")
+    customer: str = Field("", description="Customer name, only if different from the site name")
+
+
 class HealthIn(BaseModel):
     days: int = Field(90, description="Period to assess, in days")
 
@@ -224,6 +234,19 @@ class PurchaseOrderIn(BaseModel):
     supplier: str
     supplier_email: str
     extra_note: str = ""
+
+
+class PurchaseOrderLineIn(BaseModel):
+    item: str = Field(description="Part code, or enough of the name to be unique, e.g. 'PIR-QUAD' or 'smoke detector'")
+    qty: float = Field(gt=0)
+
+
+class LogPurchaseOrderIn(BaseModel):
+    supplier: str
+    supplier_email: str
+    items: list[PurchaseOrderLineIn] = Field(description="What to order and how many of each - any items, not just "
+                                                         "ones below reorder level")
+    note: str = Field("", description="Anything extra for the supplier, e.g. a delivery date or site address")
 
 
 class JobRefIn(BaseModel):
@@ -478,6 +501,25 @@ async def fsm_change(j, a: FsmChangeIn):
     return f"Salts FSM updated: {str(result)[:300]}"
 
 
+async def run_security_review(j, a: NoInput):
+    return j.security_watch.start()
+
+
+async def log_job(j, a: LogJobIn):
+    body: dict[str, Any] = {"site": a.site, "type": a.type, "description": a.description, "created_by": "Jarvis"}
+    for key, value in (("priority", a.priority), ("engineer", a.engineer),
+                       ("scheduled_start", a.scheduled_start), ("customer", a.customer)):
+        if value:
+            body[key] = value
+    summary = f"Log a {a.type} job at {a.site}: {a.description}"
+    if a.engineer:
+        summary += f" - assign to {a.engineer}"
+    if a.scheduled_start:
+        summary += f" for {a.scheduled_start}"
+    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/jobs", "body": body})
+    return {"queued_action": action_id, "job": body, "note": "Queued for approval on the display."}
+
+
 async def business_health(j, a: HealthIn):
     return await j.accountant.health_check(max(30, min(a.days, 365)))
 
@@ -556,6 +598,37 @@ async def stock_purchase_order(j, a: PurchaseOrderIn):
                                 {"to": [a.supplier_email], "cc": [], "subject": f"Purchase order - {j.settings.company_name}",
                                  "body": body})
     return {"queued_action": action_id, "order": order, "note": "Queued for approval on the display."}
+
+
+async def log_purchase_order(j, a: LogPurchaseOrderIn):
+    await j.stores.sync()  # the parts prices Salts FSM holds, refreshed monthly - as current as the business keeps them
+    lines: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    for entry in a.items:
+        try:
+            it = j.stores.resolve_item(entry.item)
+        except ValueError as e:
+            unresolved.append(str(e))
+            continue
+        line_cost = round(entry.qty * it["unit_cost"], 2)
+        lines.append({"sku": it["sku"], "name": it["name"], "qty": entry.qty, "unit_cost": it["unit_cost"],
+                      "line_cost": line_cost})
+    if not lines:
+        return {"error": "None of those items matched anything in the stock records.", "not_ordered": unresolved}
+    total = round(sum(l["line_cost"] for l in lines), 2)
+    body_lines = "\n".join(f"- {l['qty']:g} x {l['name']} ({l['sku']}) @ £{l['unit_cost']:.2f} = £{l['line_cost']:.2f}"
+                           for l in lines)
+    body = (f"Hello,\n\nPlease supply the following for {j.settings.company_name}:\n\n{body_lines}\n\n"
+            f"Order value (ex VAT): £{total:,.2f} - prices are from our own records, please confirm before "
+            f"dispatch.\n{a.note}\n\nKind regards,\n{j.settings.owner_name}\n{j.settings.company_name}")
+    action_id = j.actions.queue("email_send", f"Purchase order to {a.supplier} (£{total:,.2f} ex VAT)",
+                                {"to": [a.supplier_email], "cc": [], "subject": f"Purchase order - {j.settings.company_name}",
+                                 "body": body})
+    result: dict[str, Any] = {"queued_action": action_id, "supplier": a.supplier, "lines": lines,
+                              "total_ex_vat": total, "note": "Queued for approval on the display."}
+    if unresolved:
+        result["not_ordered"] = unresolved
+    return result
 
 
 async def stock_usage(j, a: OfficeIn):
@@ -816,6 +889,15 @@ TOOLS: list[Tool] = [
     Tool("fsm_change", "Create or update something in Salts FSM (book or reassign a job, update a record). Always "
                        "queued for the owner's approval first.", FsmChangeIn, fsm_change, "Preparing an FSM change",
          approval=True, describe=lambda a: f"Salts FSM: {a.summary}"),
+    Tool("run_security_review", "Have the auto-fix engineer review the whole Salts FSM codebase for security "
+                                "vulnerabilities right now, rather than waiting for the weekly scheduled one. "
+                                "Runs in the background and can take a few minutes; findings become issues and "
+                                "the owner's notified, same as the scheduled review.", NoInput, run_security_review,
+         "Starting a security review"),
+    Tool("log_job", "Log a new job in Salts FSM from a plain description - a fault report, call-out or booking. "
+                    "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
+                    "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "
+                    "owner's approval, never booked straight away.", LogJobIn, log_job, "Logging a job"),
     Tool("business_health", "Business health check: revenue growth, margins, debtor days, overdue debt, cash "
                             "runway, recurring contract revenue, quote win rate, utilisation and unbilled work vs "
                             "targets, with recommended actions.", HealthIn, business_health,
@@ -864,6 +946,10 @@ TOOLS: list[Tool] = [
     Tool("stock_purchase_order", "Draft a purchase order email to a supplier for everything below reorder level "
                                  "from them - queued for the owner's approval.", PurchaseOrderIn,
          stock_purchase_order, "Drafting a purchase order"),
+    Tool("log_purchase_order", "Raise a purchase order for specific items and quantities, for any supplier - not "
+                               "just what's below reorder level. Prices come from Salts FSM's own stock records "
+                               "(updated monthly). Queued as an email for the owner's approval, never sent "
+                               "straight away.", LogPurchaseOrderIn, log_purchase_order, "Drafting a purchase order"),
     Tool("stock_usage", "Stock usage over N days: fast movers, weeks of cover, slow/dead stock and its value.",
          OfficeIn, stock_usage, "Analysing stock usage"),
     Tool("stock_job_materials", "Materials issued to a job and their cost (for job costing).", JobRefIn,

@@ -134,6 +134,10 @@ class Stores:
         return self.db.query("SELECT * FROM stock_items WHERE lower(sku) LIKE ? OR lower(name) LIKE ? "
                              "OR lower(category) LIKE ? ORDER BY name", (like, like, like))
 
+    def resolve_item(self, item: str) -> dict[str, Any]:
+        """Public lookup by SKU or name/category text - the current record, including its latest unit cost."""
+        return self._resolve(item)
+
     def _resolve(self, item: str) -> dict[str, Any]:
         exact = self.item(item) or self.item(item.upper())
         if exact:

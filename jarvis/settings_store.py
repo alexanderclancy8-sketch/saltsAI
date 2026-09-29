@@ -294,6 +294,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("staff_review_cron", "Weekly team review", "cron"),
             Field("business_review_cron", "Monthly business review", "cron"),
             Field("regulatory_watch_cron", "Tax and employment-law watch", "cron"),
+            Field("security_watch_cron", "Security review of Salts FSM's code", "cron"),
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
             Field("routine_test_interval_min", "Routine tests every (minutes)", "number", advanced=True),
             Field("inbox_check_interval_min", "Check inbox every (minutes)", "number", advanced=True),

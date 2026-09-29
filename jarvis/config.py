@@ -206,6 +206,7 @@ class Settings(BaseSettings):
     staff_review_cron: str = "30 16 * * 5"  # weekly team performance review (Friday 16:30)
     business_review_cron: str = "45 7 1 * *"  # monthly business health report
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
+    security_watch_cron: str = "0 6 * * 1"  # weekly review of the Salts FSM codebase for vulnerabilities
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
     lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
     wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)

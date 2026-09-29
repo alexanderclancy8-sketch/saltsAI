@@ -48,6 +48,9 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("regulatory watch", j.regwatch.weekly),
                   CronTrigger.from_crontab(s.regulatory_watch_cron, timezone=s.timezone), id="regwatch",
                   max_instances=1, coalesce=True)
+    sched.add_job(_guard("security watch", j.security_watch.run),
+                  CronTrigger.from_crontab(s.security_watch_cron, timezone=s.timezone), id="security_watch",
+                  max_instances=1, coalesce=True)
     sched.add_job(_guard("billing check", j.daily_billing),
                   CronTrigger.from_crontab(s.billing_check_cron, timezone=s.timezone), id="billing",
                   max_instances=1, coalesce=True)
