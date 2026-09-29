@@ -261,15 +261,37 @@ def test_interrupt_endpoint(settings):
         assert r.status_code == 200 and r.json() == {"stopped": False}  # nothing running
 
 
-def test_chat_and_tts_endpoints(settings):
+def test_chat_and_tts_endpoints(settings, monkeypatch):
+    # No ElevenLabs/Azure key configured -> falls back to Piper (free, local, no API), not the browser's own
+    # voice - real synthesis is exercised in test_voice.py; here just prove the endpoint actually returns
+    # audio rather than hitting the network/onnxruntime for a full model download in every test run.
+    import wave
+    from io import BytesIO
+
+    def fake_synthesize(self, model_path, text):
+        buf = BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            wav_file.setnchannels(1); wav_file.setsampwidth(2); wav_file.setframerate(22050)
+            wav_file.writeframes(b"\x00\x00" * 10)
+        return buf.getvalue()
+
+    from pathlib import Path
+
+    monkeypatch.setattr("jarvis.integrations.voice.Voice._ensure_piper_voice",
+                        lambda self, voice, quality: _async_return(Path("fake.onnx")))
+    monkeypatch.setattr("jarvis.integrations.voice.Voice._piper_synthesize", fake_synthesize)
+
     app = create_app(settings, make(settings, [message([text_block("Hello, sir.")])]))
     with TestClient(app) as c:
         r = c.post("/api/chat", json={"text": "hello", "mode": "voice"})
         assert r.status_code == 200 and r.json()["reply"] == "Hello, sir."
-        # no ElevenLabs/Azure key configured -> tells the browser to use its own voice
         r = c.post("/api/tts", json={"text": "Good evening"})
-        assert r.status_code == 503 and r.json()["fallback"] == "browser"
+        assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and r.content.startswith(b"RIFF")
         assert c.post("/api/chat", json={"text": ""}).status_code == 422
+
+
+async def _async_return(value):
+    return value
 
 
 def test_chat_stream_endpoint_streams_the_same_events_the_websocket_does(settings):
