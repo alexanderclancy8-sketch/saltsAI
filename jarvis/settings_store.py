@@ -7,7 +7,6 @@ Secrets are never sent back to the browser - only whether they are set and their
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
@@ -20,6 +19,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from .config import Settings
+from .crypto import fernet
 
 log = logging.getLogger(__name__)
 
@@ -307,6 +307,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("staff_review_cron", "Weekly team review", "cron"),
             Field("business_review_cron", "Monthly business review", "cron"),
             Field("regulatory_watch_cron", "Tax and employment-law watch", "cron"),
+            Field("technical_watch_cron", "Fire & security technical/standards watch", "cron"),
             Field("security_watch_cron", "Security review of Salts FSM's code", "cron"),
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
             Field("self_learning_cron", "Self-reflection (what to remember)", "cron", advanced=True),
@@ -333,13 +334,6 @@ SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _fernet(secret_key: str):
-    from cryptography.fernet import Fernet
-
-    digest = hashlib.sha256(b"jarvis-settings:" + secret_key.encode()).digest()
-    return Fernet(base64.urlsafe_b64encode(digest))
-
-
 def _hint(value: str) -> str:
     return "•••• " + value[-4:] if len(value) >= 12 else "••••"
 
@@ -362,7 +356,7 @@ class SettingsStore:
         from cryptography.fernet import InvalidToken
 
         try:
-            data = json.loads(_fernet(self.s.jarvis_secret_key).decrypt(self.path.read_bytes()))
+            data = json.loads(fernet(self.s.jarvis_secret_key, "jarvis-settings").decrypt(self.path.read_bytes()))
         except (InvalidToken, ValueError) as e:
             log.warning("Saved settings couldn't be read (%s); keeping a copy and starting afresh.", type(e).__name__)
             self.path.replace(self.path.with_suffix(".unreadable"))
@@ -372,7 +366,7 @@ class SettingsStore:
         return {k: v for k, v in data.items() if k in FIELDS}
 
     def _save(self) -> None:
-        token = _fernet(self.s.jarvis_secret_key).encrypt(json.dumps(self.overrides).encode())
+        token = fernet(self.s.jarvis_secret_key, "jarvis-settings").encrypt(json.dumps(self.overrides).encode())
         tmp = self.path.with_suffix(".tmp")
         tmp.write_bytes(token)
         os.chmod(tmp, 0o600)
@@ -415,10 +409,10 @@ class SettingsStore:
         if f.kind == "select" and value not in {v for v, _ in f.options}:
             return None, "Pick one of the options."
         if f.kind == "cron" and value:
-            from apscheduler.triggers.cron import CronTrigger
+            from .cron import cron_trigger
 
             try:
-                CronTrigger.from_crontab(value)
+                cron_trigger(value)
             except ValueError:
                 return None, "Use cron format, e.g. 45 7 * * 1-5"
         if key == "jarvis_owner_password" and len(value) < 8:

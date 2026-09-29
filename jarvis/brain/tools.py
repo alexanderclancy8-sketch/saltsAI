@@ -218,6 +218,19 @@ class AccreditationUpdateIn(BaseModel):
     audit_type: str | None = None
 
 
+class SiteAccessCodeIn(BaseModel):
+    site: str = Field(description="Site or customer name (or part of it) to find recorded engineer/access "
+                                  "codes for, e.g. 'Kestrel Industrial Estate'")
+
+
+class SiteAccessCodeUpdateIn(BaseModel):
+    site: str = Field(description="Site or customer name this code is for")
+    system: str = Field(description="Which system, e.g. 'Fire alarm panel - Kentec Syncro', 'Intruder - Texecom "
+                                    "Premier Elite', 'Access control - Paxton Net2'")
+    code: str = Field(description="The engineer/access code itself")
+    notes: str = Field("", description="Anything useful: who set it, when, where the panel is, etc.")
+
+
 class StockLevelsIn(BaseModel):
     location: str | None = Field(None, description="'Stores' or a van, e.g. 'Van - Dan Harper'")
     search: str | None = Field(None, description="Filter by part code, name or category")
@@ -626,6 +639,16 @@ async def audit_evidence_pack(j, a: SchemeIn):
     return {"shown_on_display": True, "pack": text}
 
 
+async def site_access_code(j, a: SiteAccessCodeIn):
+    found = j.site_access.find(a.site)
+    return {"matches": found} if found else {"matches": [], "note": "Nothing recorded for that site - only "
+                                             "codes for systems Salts installs or maintains are kept here."}
+
+
+async def site_access_code_update(j, a: SiteAccessCodeUpdateIn):
+    return j.site_access.record(a.site, a.system, a.code, a.notes)
+
+
 async def stock_levels(j, a: StockLevelsIn):
     await j.stores.sync()
     data = j.stores.levels(a.location, a.search)
@@ -739,6 +762,11 @@ async def timesheet_check(j, a: DateOptIn):
 
 async def regulatory_watch(j, a: RegWatchIn):
     text = await j.regwatch.briefing(a.focus)
+    return {"shown_on_display": True, "update": text}
+
+
+async def technical_watch(j, a: RegWatchIn):
+    text = await j.regwatch.technical(a.focus)
     return {"shown_on_display": True, "update": text}
 
 
@@ -1026,6 +1054,17 @@ TOOLS: list[Tool] = [
     Tool("audit_evidence_pack", "Write a full audit-ready evidence pack and draft questionnaire answers for BAFE, "
                                 "SSAIB, CHAS etc. Shown on the display.", SchemeIn, audit_evidence_pack,
          "Building the evidence pack"),
+    Tool("site_access_code", "Look up a recorded engineer/access code for a system Salts installs or maintains, "
+                             "by site name - a secure engineer's site-code book, not a general search. Nothing "
+                             "is returned for a site that isn't recorded. For a system Salts does NOT hold the "
+                             "maintenance relationship for, this has nothing and never will - see "
+                             "knowledge/company/system-takeover-access.md for the right process instead.",
+         SiteAccessCodeIn, site_access_code, "Looking up the access code"),
+    Tool("site_access_code_update", "Record or update an engineer/access code for a named site and system - only "
+                                    "for systems Salts installs or maintains, told to you directly by the owner "
+                                    "or a recorded takeover process. Never invent or search for a code.",
+         SiteAccessCodeUpdateIn, site_access_code_update, "Recording the access code", approval=True,
+         describe=lambda a: f"Record access code for {a.site} - {a.system}"),
     Tool("stock_levels", "Stock on hand in the stores and on each van, with value and reorder flags.",
          StockLevelsIn, stock_levels, "Checking stock"),
     Tool("stock_move", "Record a stock movement: goods received, parts used on a job, stores/van transfers, "
@@ -1068,6 +1107,12 @@ TOOLS: list[Tool] = [
                              "security regulation changes that affect the business and its directors, with dates, "
                              "impact and actions (web-researched, sourced). Shown on the display.", RegWatchIn,
          regulatory_watch, "Researching tax and law changes"),
+    Tool("technical_watch", "Deepen fire & security technical expertise: standard revisions and what they mean "
+                            "practically, FIA/BAFE/NSI/SSAIB technical guidance, manufacturer bulletins, "
+                            "installer best practice and common inspection failures (web-researched, sourced - "
+                            "never credentials). Use when asked to research a specific standard/technical topic, "
+                            "or 'what's new in fire and security'. Shown on the display.", RegWatchIn,
+         technical_watch, "Researching fire & security standards"),
     Tool("unbilled_jobs", "Completed Salts FSM jobs in the last N days that don't appear to have been invoiced in "
                           "Sage - money being left on the table.", OfficeIn, unbilled_jobs, "Looking for unbilled work"),
     Tool("raise_invoices", "Draft Sage invoices for completed-but-unbilled jobs and queue them for the owner's "

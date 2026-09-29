@@ -46,6 +46,7 @@ from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
 from .services.self_improve import SelfImprove
 from .services.self_learning import SelfLearning
+from .services.site_access import SiteAccessCodes
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
@@ -119,6 +120,7 @@ class Jarvis:
         self.scheduler = None
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
+        self.site_access = SiteAccessCodes(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain

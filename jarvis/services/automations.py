@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import logging
 
-from apscheduler.triggers.cron import CronTrigger
-
+from ..cron import cron_trigger
 from ..db import now_iso
-from ..humanize import cron_to_english
+from ..humanize import cron_to_english, human_datetime
 
 log = logging.getLogger(__name__)
 MAX_AUTOMATIONS = 25  # generous, but stops a runaway conversation from scheduling hundreds of jobs
@@ -30,7 +29,7 @@ class AutomationService:
 
     def validate_cron(self, cron: str) -> str | None:
         try:
-            CronTrigger.from_crontab(cron, timezone=self.j.settings.timezone)
+            cron_trigger(cron, timezone=self.j.settings.timezone)
         except Exception as e:  # noqa: BLE001
             return str(e)
         return None
@@ -48,7 +47,8 @@ class AutomationService:
                 "schedule": cron_to_english(cron)}
 
     def list_all(self) -> list[dict]:
-        return [{**a, "schedule": cron_to_english(a["cron"])} for a in self.j.db.list_automations()]
+        return [{**a, "schedule": cron_to_english(a["cron"]),
+                 "last_run_at": human_datetime(a["last_run_at"])} for a in self.j.db.list_automations()]
 
     def delete(self, automation_id: int) -> str:
         automation = self.j.db.get_automation(automation_id)
@@ -71,7 +71,7 @@ class AutomationService:
         if not automation["enabled"] or sched is None:
             return
         self._unregister(automation["id"])
-        sched.add_job(self._run_guarded, CronTrigger.from_crontab(automation["cron"], timezone=self.j.settings.timezone),
+        sched.add_job(self._run_guarded, cron_trigger(automation["cron"], timezone=self.j.settings.timezone),
                      id=self._job_id(automation["id"]), args=[automation["id"]], max_instances=1, coalesce=True)
 
     def _unregister(self, automation_id: int) -> None:

@@ -298,6 +298,13 @@
     if (!text && !S.attachments.length) return;
     S.lastMode = mode;
     speaker.stop();
+    // A barge-in (or any new message sent while Jarvis is still mid-reply) must cancel the turn server-side,
+    // not just silence local audio - otherwise the old turn keeps running, its own delta/tool/reply events
+    // still arrive and get rendered and spoken, and this and the new turn's events interleave. stopEverything()
+    // (the Stop button/Esc) always did this; ordinary sends via utterance()/the composer didn't. A harmless
+    // no-op when nothing is actually running - the listen() loop on the backend awaits it before touching the
+    // chat message that follows, so ordering is guaranteed.
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
     S.attachments = []; renderAttachments();
     if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }

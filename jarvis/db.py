@@ -133,6 +133,16 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_access_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    site TEXT NOT NULL,
+    system TEXT NOT NULL,
+    code_encrypted TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    UNIQUE(site, system)
+);
 CREATE TABLE IF NOT EXISTS automations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -353,6 +363,28 @@ class Database:
 
     def set_action_item_status(self, item_id: int, status: str) -> None:
         self.execute("UPDATE action_items SET status = ? WHERE id = ?", (status, item_id))
+
+    # -- site access codes ---------------------------------------------------------------
+    # `code_encrypted` is opaque here - encryption/decryption is the caller's job
+    # (services/site_access.py), this table just stores and returns the ciphertext.
+    def upsert_site_access_code(self, site: str, system: str, code_encrypted: str, notes: str = "") -> int:
+        ts = now_iso()
+        return self.execute(
+            "INSERT INTO site_access_codes (created_at, updated_at, site, system, code_encrypted, notes)"
+            " VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(site, system) DO UPDATE SET"
+            " updated_at = excluded.updated_at, code_encrypted = excluded.code_encrypted, notes = excluded.notes",
+            (ts, ts, site, system, code_encrypted, notes),
+        )
+
+    def list_site_access_codes(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM site_access_codes ORDER BY site, system")
+
+    def find_site_access_codes(self, site: str) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM site_access_codes WHERE site LIKE ? ORDER BY system", (f"%{site}%",))
+
+    def delete_site_access_code(self, record_id: int) -> None:
+        self.execute("DELETE FROM site_access_codes WHERE id = ?", (record_id,))
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:

@@ -22,3 +22,6 @@ build/
 .vscode/
 .idea/
 .DS_Store
+
+# git worktrees (agent sub-sessions) - each is its own linked checkout, never a subtree of this one
+.claude/worktrees/
