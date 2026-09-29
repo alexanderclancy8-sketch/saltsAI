@@ -128,7 +128,7 @@ class JarvisBrain:
         bus.publish("thinking", {"mode": mode})
 
         effort = self.s.voice_effort if mode == "voice" else self.s.chat_effort
-        params = llm.request_params(self.s, effort, compaction=self.s.jarvis_compaction)
+        params = llm.request_params(self.s, effort, compaction=self.s.jarvis_compaction, model=self.s.model_for(mode))
         reply_parts: list[str] = []
         json_retries = 0
         try:

@@ -22,8 +22,8 @@ def make_client(settings: Settings) -> anthropic.AsyncAnthropic | None:
     return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key or None, max_retries=3)
 
 
-def request_params(settings: Settings, effort: str, *, compaction: bool = False) -> dict[str, Any]:
-    params: dict[str, Any] = {"model": settings.jarvis_model, "output_config": {"effort": effort}}
+def request_params(settings: Settings, effort: str, *, compaction: bool = False, model: str | None = None) -> dict[str, Any]:
+    params: dict[str, Any] = {"model": model or settings.jarvis_model, "output_config": {"effort": effort}}
     betas = []
     if settings.jarvis_fallbacks:
         # If a safety classifier declines, the API re-runs the request on Anthropic's recommended fallback model.

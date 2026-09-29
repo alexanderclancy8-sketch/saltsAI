@@ -45,10 +45,10 @@ def sdk_env(settings) -> dict[str, str]:
     return env
 
 
-def base_options(settings, **kw: Any):
+def base_options(settings, *, model: str | None = None, **kw: Any):
     from claude_agent_sdk import ClaudeAgentOptions
 
-    return ClaudeAgentOptions(model=settings.jarvis_model, env=sdk_env(settings), setting_sources=[],
+    return ClaudeAgentOptions(model=model or settings.jarvis_model, env=sdk_env(settings), setting_sources=[],
                               permission_mode="dontAsk", **kw)
 
 
@@ -188,7 +188,7 @@ class MaxBrain:
                 *args, future = job
                 try:
                     if args[0] == "warm":
-                        await self._connected(self.s.voice_effort)
+                        await self._connected(self.s.voice_effort, self.s.model_for("voice"))
                         result = None
                     else:
                         result = await self._turn(*args[1:])
@@ -201,9 +201,9 @@ class MaxBrain:
         finally:
             await self._disconnect()
 
-    async def _connected(self, effort: str):
-        """The running Claude Code client, restarted only if effort, instructions or the conversation changed."""
-        key = (effort, self.system)
+    async def _connected(self, effort: str, model: str):
+        """The running Claude Code client, restarted only if effort, model, instructions or the conversation changed."""
+        key = (effort, model, self.system)
         if self._client is not None and self._client_key == key and not self._fresh_start:
             return self._client
         from claude_agent_sdk import ClaudeSDKClient
@@ -212,14 +212,14 @@ class MaxBrain:
         if self._fresh_start:
             self.session_id, self._fresh_start = None, False
         options = base_options(
-            self.s, system_prompt=self.system, effort=effort,
+            self.s, model=model, system_prompt=self.system, effort=effort,
             tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server},
             allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS, disallowed_tools=BLOCKED,
             include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads))
         started = time.monotonic()
         client = ClaudeSDKClient(options=options)
         await client.connect()
-        log.info("Claude Code started in %.1fs (effort %s)", time.monotonic() - started, effort)
+        log.info("Claude Code started in %.1fs (effort %s, model %s)", time.monotonic() - started, effort, model)
         self._client, self._client_key = client, key
         return client
 
@@ -250,7 +250,8 @@ class MaxBrain:
         parts: list[str] = []
         result = None
         try:
-            client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort)
+            client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
+                                           self.s.model_for(mode))
             await client.query(f"{tag}\n{text}{note}")
             async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):

@@ -646,11 +646,19 @@
       r.lang = S.voice.language || "en-GB"; r.continuous = true; r.interimResults = false;
       r.onresult = (e) => {
         const wake = (S.voice.wake_word || "jarvis").toLowerCase();
+        const wakeRe = new RegExp(`\\b${wake}\\b`);
         for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal && e.results[i][0].transcript.toLowerCase().includes(wake)) {
-            this.heard(e.results[i][0].transcript);
-            return;
-          }
+          const result = e.results[i];
+          if (!result.isFinal) continue;
+          const alt = result[0];
+          const lead = alt.transcript.trim().toLowerCase().split(/\s+/).slice(0, 4).join(" ");
+          // Genuine address starts with the wake word (maybe after "hey"/"ok"/a stray word) - a mention
+          // buried partway into an unrelated sentence is almost always background chatter this free,
+          // general-purpose listener misheard, not someone actually talking to Jarvis.
+          if (!wakeRe.test(lead)) continue;
+          if (alt.confidence > 0 && alt.confidence < 0.5) continue; // Chrome leaves this at 0 when unsupported
+          this.heard(alt.transcript);
+          return;
         }
       };
       r.onerror = (e) => { if (this.on && e.error !== "no-speech" && e.error !== "aborted") { this.on = false; setTimeout(() => this.start(), 2000); } };

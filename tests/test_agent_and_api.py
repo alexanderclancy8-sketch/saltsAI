@@ -24,7 +24,7 @@ async def test_tool_loop_and_history(settings):
     tool_result = j.brain.messages[2]["content"][0]
     assert tool_result["type"] == "tool_result" and "cash_at_bank" in tool_result["content"]
     call = j.client.beta.messages.calls[0]
-    assert call["model"] == "claude-opus-5-5" and call["fallbacks"] == "default"
+    assert call["model"] == "claude-sonnet-5-5" and call["fallbacks"] == "default"  # voice defaults to the quicker model
     assert call["output_config"] == {"effort": "low"}  # spoken turns use the quickest effort
     assert j.brain.messages[0]["content"][-1]["text"].startswith("[spoken")
     await j.http.aclose()
