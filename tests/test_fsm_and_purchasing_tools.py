@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.brain.tools import LogJobIn, LogPurchaseOrderIn, PurchaseOrderLineIn, log_job, log_purchase_order
+from jarvis.brain.tools import (JobRefIn, LogJobIn, LogPurchaseOrderIn, PurchaseOrderLineIn, job_detail, log_job,
+                                log_purchase_order)
 from jarvis.core import Jarvis
 from tests.fakes import FakeClient
 
@@ -110,3 +111,52 @@ async def test_log_purchase_order_does_not_send_email_directly(settings, monkeyp
         items=[PurchaseOrderLineIn(item="BAT-12V7", qty=1)]))
     assert called == []  # queued only - nothing sent until the owner approves
     await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- job_detail ("job 360")
+async def test_job_detail_returns_the_full_picture_not_just_summary_fields(settings):
+    j = make(settings)
+    result = await job_detail(j, JobRefIn(job_ref="J24100"))
+    assert result["id"] == "J24100" and result["ref"] == "J24100"
+    # every demo job has at least been scheduled, whatever its current status is when the test happens to run
+    assert "extra" in result and "status_history" in result["extra"]
+    statuses = [h["status"] for h in result["extra"]["status_history"]]
+    assert "scheduled" in statuses
+    await j.http.aclose()
+
+
+async def test_job_detail_works_by_ref_too(settings):
+    j = make(settings)
+    by_id = await job_detail(j, JobRefIn(job_ref="J24100"))
+    by_ref = await job_detail(j, JobRefIn(job_ref=by_id["ref"]))
+    assert by_id == by_ref
+    await j.http.aclose()
+
+
+async def test_job_detail_raises_a_clear_error_for_an_unknown_job(settings):
+    j = make(settings)
+    with pytest.raises(ValueError, match="J99999"):
+        await job_detail(j, JobRefIn(job_ref="J99999"))
+    await j.http.aclose()
+
+
+async def test_real_fsm_client_calls_the_jobs_detail_path_and_normalises_extras():
+    import httpx
+
+    from jarvis.config import Settings
+    from jarvis.integrations.fsm import FSMClient
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={
+            "jobId": "J24100", "reference": "J24100", "jobStatus": "completed",
+            "materials_used": [{"sku": "BAT-12V7", "qty": 2}], "linked_invoice": "INV-30412"})
+
+    s = Settings(fsm_base_url="https://fsm.example.co.uk", fsm_api_key="test-key", _env_file=None)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await FSMClient(s, http).job_detail("J24100")
+    assert seen["url"] == "https://fsm.example.co.uk/api/jobs/J24100"
+    assert result["id"] == "J24100" and result["status"] == "completed"  # aliased from jobId/jobStatus
+    assert result["extra"] == {"materials_used": [{"sku": "BAT-12V7", "qty": 2}], "linked_invoice": "INV-30412"}

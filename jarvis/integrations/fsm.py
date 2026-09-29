@@ -227,6 +227,13 @@ class FSMClient:
             "status": status, "engineer": engineer}.items() if v}
         return await self._list("jobs", "job", params)
 
+    async def job_detail(self, job_id: str) -> dict[str, Any]:
+        """The full picture for one job - materials used, notes, status history, linked quote/invoice - not
+        just the flat fields the list view has. Anything the FSM API doesn't track for this job simply isn't
+        in the response; normalise() already carries it straight through under "extra"."""
+        raw = await self.get(f"{self.endpoints['jobs']}/{job_id}")
+        return normalise("job", raw)
+
     async def staff(self) -> list[dict[str, Any]]:
         return await self._list("staff", "staff")
 
@@ -511,6 +518,20 @@ class DemoFSM:
             if engineer and (j["engineer"] or "").lower() != engineer.lower():
                 continue
             out.append(dict(j))
+        return out
+
+    async def job_detail(self, job_id: str) -> dict[str, Any]:
+        job = next((j for j in self._jobs if j["id"] == job_id or j["ref"] == job_id), None)
+        if not job:
+            raise ValueError(f"No demo job '{job_id}'")
+        out = dict(job)
+        extra: dict[str, Any] = {"status_history": [{"status": "scheduled", "at": job["scheduled_start"]}]}
+        if job.get("started_at"):
+            extra["status_history"].append({"status": "in_progress", "at": job["started_at"]})
+        if job.get("completed_at"):
+            extra["status_history"].append({"status": "completed", "at": job["completed_at"]})
+            extra["notes"] = [{"at": job["completed_at"], "by": job["engineer"], "text": "Job completed, no issues."}]
+        out["extra"] = extra
         return out
 
     async def staff(self) -> list[dict[str, Any]]:

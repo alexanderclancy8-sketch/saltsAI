@@ -524,6 +524,10 @@ async def fsm_change(j, a: FsmChangeIn):
     return f"Salts FSM updated: {str(result)[:300]}"
 
 
+async def job_detail(j, a: JobRefIn):
+    return await j.fsm.job_detail(a.job_ref)
+
+
 async def run_security_review(j, a: NoInput):
     return j.security_watch.start()
 
@@ -932,6 +936,10 @@ TOOLS: list[Tool] = [
     Tool("fsm_change", "Create or update something in Salts FSM (book or reassign a job, update a record). Always "
                        "queued for the owner's approval first.", FsmChangeIn, fsm_change, "Preparing an FSM change",
          approval=True, describe=lambda a: f"Salts FSM: {a.summary}"),
+    Tool("job_detail", "The full picture for one Salts FSM job by its reference: materials used, notes, status "
+                       "history and linked quote/invoice, not just the summary fields the job list has. Use "
+                       "this whenever someone asks about one specific job in detail, e.g. 'what happened on "
+                       "J24100?' or 'why is this job still open?'.", JobRefIn, job_detail, "Pulling up the job"),
     Tool("run_security_review", "Have the auto-fix engineer review the whole Salts FSM codebase for security "
                                 "vulnerabilities right now, rather than waiting for the weekly scheduled one. "
                                 "Runs in the background and can take a few minutes; findings become issues and "
