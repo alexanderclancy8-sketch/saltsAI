@@ -8,6 +8,7 @@
 #   bash infra/deploy.sh adopt NAME [GROUP]   turn a Linux web app you made by hand in the portal into Jarvis
 #   bash infra/deploy.sh token                replace the Claude token (or API key) Jarvis uses
 #   bash infra/deploy.sh voice                give Jarvis Azure's natural British voice (free tier where available)
+#   bash infra/deploy.sh voicetest            fetch a sample of Jarvis's Azure voice to listen to
 #   bash infra/deploy.sh secret NAME          save one key or password (e.g. ELEVENLABS_API_KEY) without showing it
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
@@ -124,6 +125,34 @@ setup_voice() {
   echo "display in a minute. To try another voice, e.g. Thomas:  VOICE=en-GB-ThomasNeural bash infra/deploy.sh voice"
   echo "(others: en-GB-OliverNeural, en-GB-AlfieNeural, en-GB-ElliotNeural, en-GB-EthanNeural, en-GB-NoahNeural)."
   echo "If an ElevenLabs key is added later, Jarvis uses ElevenLabs instead."
+}
+
+# Asks Azure for a sample of Jarvis's voice using Jarvis's own settings, and saves it to listen to.
+voice_test() {
+  find_jarvis_app
+  local key region voice style out="$HOME/jarvis-voice-test.mp3" code express_open="" express_close=""
+  setting() { az webapp config appsettings list -g "$RG" -n "$APP_NAME" --query "[?name=='$1'].value | [0]" -o tsv; }
+  key="$(setting AZURE_SPEECH_KEY)"
+  [ -n "$key" ] || die "Jarvis has no Azure voice yet. Run:  APP_NAME=$APP_NAME bash infra/deploy.sh voice"
+  region="$(setting AZURE_SPEECH_REGION)"
+  voice="$(setting AZURE_TTS_VOICE)"
+  style="$(setting AZURE_TTS_STYLE)"
+  style="${style:-chat}"
+  if [ "$style" != "none" ]; then
+    express_open="<mstts:express-as style='$style'>"
+    express_close="</mstts:express-as>"
+  fi
+  code="$(curl -s -o "$out" -w '%{http_code}' -X POST "https://${region:-uksouth}.tts.speech.microsoft.com/cognitiveservices/v1" \
+    -H "Ocp-Apim-Subscription-Key: $key" -H "Content-Type: application/ssml+xml" -H "User-Agent: salts-jarvis" \
+    -H "X-Microsoft-OutputFormat: audio-24khz-96kbitrate-mono-mp3" \
+    --data "<speak version='1.0' xml:lang='en-GB' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts'><voice name='${voice:-en-GB-RyanNeural}'>${express_open}Good afternoon. Three jobs finished today, and the Kestrel call-out is booked for nine tomorrow.${express_close}</voice></speak>")"
+  if [ "$code" = "200" ]; then
+    echo "Azure's voice is working (${voice:-en-GB-RyanNeural}, style $style). To hear exactly what Jarvis sounds like:"
+    echo "in Cloud Shell's toolbar click 'Manage files' > 'Download', type  jarvis-voice-test.mp3  and play the file."
+  else
+    echo "Azure refused (HTTP $code): $(head -c 300 "$out")"
+    echo "That's why the display falls back to the browser voice. Send this message to whoever set Jarvis up."
+  fi
 }
 
 # Saves one setting without showing it or leaving it in the shell history, e.g.  secret ELEVENLABS_API_KEY
@@ -530,6 +559,7 @@ case "${1:-setup}" in
   signin) shift; enable_signin "$@" ;;
   token) set_token ;;
   voice) setup_voice ;;
+  voicetest) voice_test ;;
   secret) set_secret "${2:-}" ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|secret NAME]" ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|voicetest|secret NAME]" ;;
 esac

@@ -139,7 +139,12 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         try:
             stream, mime = await J(request).voice.tts_stream(body.text, body.voice_id)
         except VoiceError as e:
+            if settings.effective_tts != "browser":
+                log.warning("TTS failed, browser voice used instead: %s", e)
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
+        except Exception as e:  # noqa: BLE001 - network trouble reaching the voice service
+            log.warning("TTS failed, browser voice used instead: %s", e)
+            return JSONResponse({"fallback": "browser", "detail": f"{type(e).__name__}: {e}"[:300]}, status_code=503)
         return StreamingResponse(stream, media_type=mime)
 
     @app.post("/api/stt", dependencies=[Depends(owner)])

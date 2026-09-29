@@ -142,6 +142,15 @@
   }
   ["click", "keydown", "touchstart"].forEach((ev) => window.addEventListener(ev, () => { ensureAudio(); greet(); }, { once: false, passive: true }));
 
+  // Say when the real voice fails, instead of silently switching to the browser's robotic one.
+  let lastVoiceProblem = 0;
+  function voiceProblem(detail) {
+    console.warn("voice fallback:", detail);
+    if (Date.now() - lastVoiceProblem < 120000) return;
+    lastVoiceProblem = Date.now();
+    toast("Using the browser voice", `The ${S.voice.tts} voice didn't work: ${detail}`, "warning");
+  }
+
   function pickBrowserVoice() {
     const voices = speechSynthesis.getVoices();
     const prefs = ["Daniel", "Google UK English Male", "Microsoft Ryan", "Arthur", "George", "Oliver"];
@@ -163,9 +172,14 @@
     async fetchAudio(text) {
       try {
         const r = await api("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice_id: S.voiceId || null }) });
-        if (!r.ok) return null;
+        if (!r.ok) {
+          let detail = `error ${r.status}`;
+          try { detail = (await r.json()).detail || detail; } catch { /* not JSON */ }
+          voiceProblem(detail);
+          return null;
+        }
         return URL.createObjectURL(await r.blob());
-      } catch { return null; }
+      } catch { voiceProblem("couldn't reach the voice service"); return null; }
     },
     async next() {
       const item = this.queue.shift();
@@ -177,7 +191,7 @@
         player.src = url;
         player.onended = () => { URL.revokeObjectURL(url); this.next(); };
         player.onerror = () => this.next();
-        try { await player.play(); } catch { this.speakBrowser(item.text); }
+        try { await player.play(); } catch { voiceProblem("the browser blocked the audio - click anywhere on the page and try again"); this.speakBrowser(item.text); }
       } else this.speakBrowser(item.text);
     },
     speakBrowser(text) {
