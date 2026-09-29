@@ -717,11 +717,10 @@
     const lower = text.toLowerCase();
     const wake = (S.voice.wake_word || "jarvis").toLowerCase();
     if (speaker.active) {
-      const isStopPhrase = /\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake);
-      // A real interruption is a phrase ("wait, actually...") - a stray word or two while it's talking is
-      // almost always its own voice bleeding back into the mic, even with echo cancellation on.
-      const soundsDeliberate = lower.split(/\s+/).length >= 3;
-      if (isStopPhrase || soundsDeliberate) speaker.stop();
+      // Only a stop-word or the wake word breaks in on its own speech. Anything looser than that risks
+      // treating its own voice, picked up by the mic (echo cancellation is never perfect without
+      // headphones), as a fresh command - which gets replied to, gets heard again, and loops.
+      if (/\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake)) speaker.stop();
       else return;
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
