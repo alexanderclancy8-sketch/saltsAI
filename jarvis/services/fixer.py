@@ -199,7 +199,8 @@ class Fixer:
         for _ in range(MAX_TURNS):
             try:
                 async with self.client.beta.messages.stream(max_tokens=64000, system=system, messages=messages,
-                                                            tools=ENGINEER_TOOLS, **params) as stream:
+                                                            tools=ENGINEER_TOOLS, cache_control={"type": "ephemeral"},
+                                                            **params) as stream:
                     response = await stream.get_final_message()
                 json_retries = 0
             except ValueError:
