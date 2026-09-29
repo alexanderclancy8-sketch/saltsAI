@@ -805,6 +805,11 @@
   }
 
   const ECHO_GRACE_MS = 1500;  // how long past the end of speech the mic might still be hearing its tail
+  // Two separate regex objects, deliberately - a single /g-flagged RegExp used with both .test() and .replace()
+  // shares mutable lastIndex state between those calls, which silently skips or duplicates matches. Test and
+  // strip need their own instances even though the pattern is identical.
+  const STOP_PHRASE_TEST_RE = /\b(stop|quiet|enough|cancel|shut up)\b/;
+  const STOP_PHRASE_STRIP_RE = /\b(stop|quiet|enough|cancel|shut up)\b/g;
 
   // Common words carry no signal for telling a real interruption apart from Jarvis's own voice bleeding into
   // the mic - "is it done" overlaps "is" and "it" with almost anything Jarvis could have said. Only distinctive
@@ -838,9 +843,16 @@
     // Keep checking for a short grace period past the end of speech, not only while still actively speaking.
     const justFinishedSpeaking = !speaker.active && Date.now() - speaker.lastSpokeAt < ECHO_GRACE_MS;
     if (speaker.active || justFinishedSpeaking) {
-      const isStopPhrase = /\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake);
+      const isStopPhrase = STOP_PHRASE_TEST_RE.test(lower) || lower.includes(wake);
       if (!isStopPhrase && soundsLikeSelfEcho(lower, speaker.recentText)) return; // just hearing itself
       if (speaker.active) speaker.stop();
+      // A bare "stop"/"quiet"/"Jarvis, stop" - nothing left worth answering once the stop words and wake word
+      // are stripped out - should just go quiet. Falling through to send() below would forward the word
+      // "stop" itself to Jarvis as a fresh question, which it answers and speaks aloud - so saying "stop"
+      // during a reply just started a new one every time, rather than ever actually going quiet.
+      const remaining = lower.replace(STOP_PHRASE_STRIP_RE, " ").replace(new RegExp(`\\b${wake}\\b`, "g"), " ")
+        .replace(/[^a-z0-9]+/g, " ").trim();
+      if (isStopPhrase && remaining.length < 3) { extendFollowUp(); return; }
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
     if (S.approvals.length && /^(approve|approved|confirm|confirmed|go ahead|yes,? (do it|send it|deploy it)|send it|deploy it)\b/.test(bare)) {
