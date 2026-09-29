@@ -286,7 +286,12 @@
   const autosize = () => { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; };
   $("#input").addEventListener("input", autosize);
   $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
-  $("#quick").addEventListener("click", (e) => { const q = e.target.closest("[data-q]"); if (q) send(q.dataset.q, "typed"); });
+  // Tapping one of these is standing in for asking it out loud - so it should get spoken back the same way,
+  // not go silent just because the question arrived as a click rather than actual speech.
+  $("#quick").addEventListener("click", (e) => {
+    const q = e.target.closest("[data-q]");
+    if (q) send(q.dataset.q, S.speakPref === "off" ? "typed" : "voice");
+  });
   $("#btn-briefing").addEventListener("click", () => send("Give me my briefing", S.speakPref === "off" ? "typed" : "voice"));
   $("#btn-new-convo").addEventListener("click", async () => { await api("/api/conversation/reset", { method: "POST" }); });
 
