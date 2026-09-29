@@ -12,6 +12,7 @@
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, attachments: [], greeted: false,
+    dashOpen: store.get("dashboard", "0") === "1",
   };
 
   // ------------------------------------------------------------------ helpers
@@ -131,6 +132,38 @@
     if (state === "thinking") clearTimeout(sleepTimer);
   }
   function caption(text, interim = "") { $("#caption").innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
+
+  // ------------------------------------------------------------------ dashboard reveal (orb-first HUD)
+  // Idle view is just the orb, caption and composer - the three panel columns and the conversation
+  // transcript are opt-in, remembered per-browser. The choice is also applied inline in <head> (same
+  // jarvis.dashboard key) so there's no flash of the wrong layout before this script runs.
+  function setDashOpen(open) {
+    S.dashOpen = open;
+    store.set("dashboard", open ? "1" : "0");
+    document.body.classList.toggle("dash-open", open);
+    const btn = $("#btn-dashboard");
+    btn.setAttribute("aria-pressed", String(open));
+    btn.title = open ? "Hide dashboard" : "Show dashboard";
+  }
+  $("#btn-dashboard").addEventListener("click", () => setDashOpen(!S.dashOpen));
+  setDashOpen(S.dashOpen); // sync the button label/state with whatever <head> already applied to <body>
+
+  // Approvals/suggestions must never go silently unnoticed just because the dashboard is tucked away -
+  // a small pulsing badge on the orb itself covers that, and opens the real panels (with their working
+  // Approve/Cancel buttons) rather than duplicating that rendering here.
+  function updateOrbBadge() {
+    const n = (S.approvals?.length || 0) + (S.suggestions?.length || 0);
+    const badge = $("#orb-badge");
+    badge.hidden = n === 0;
+    if (n) badge.textContent = String(n);
+  }
+  $("#orb-badge").addEventListener("click", () => {
+    setDashOpen(true);
+    requestAnimationFrame(() => {
+      const target = (S.approvals?.length ? $("#approvals-panel") : $("#suggestions-panel"));
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
 
   const canvas = $("#reactor");
   const ctx = canvas.getContext("2d");
@@ -416,6 +449,9 @@
         if (current) current.remove();
         current = null;
         addMessage("assistant", d.message).classList.add("error");
+        // The transcript panel is hidden by default in the minimal orb view, so the caption is the only
+        // place a failed reply is otherwise visible - without this an error would fail completely silently.
+        caption(d.message);
         setHud("idle"); $("#toolline").textContent = ""; extendFollowUp();
         break;
       case "notification":
@@ -557,6 +593,7 @@
       ${a.kind === "review_requests" ? `<details class="diff"><summary>Show recipients</summary><pre>${esc(a.payload.requests.map((r) => `${r.email}  ${r.site}`).join("\n"))}</pre></details>` : ""}
       ${a.kind === "fsm_write" ? `<details class="diff"><summary>Show change</summary><pre>${esc(a.payload.method + " " + a.payload.path + "\n" + JSON.stringify(a.payload.body, null, 2))}</pre></details>` : ""}
       <div class="row"><button class="btn go" data-act="approve" data-id="${a.id}">Approve</button><button class="btn stop" data-act="deny" data-id="${a.id}">Cancel</button></div></div>`).join("");
+    updateOrbBadge();
   }
   function renderSuggestions() {
     const list = S.suggestions || [];
@@ -565,6 +602,7 @@
     $("#suggestions").innerHTML = list.map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
       ${s.detail ? `<span class="sub">${esc(s.detail)}</span>` : ""}
       <div class="row"><button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button></div></div>`).join("");
+    updateOrbBadge();
   }
   $("#suggestions").addEventListener("click", async (e) => {
     const b = e.target.closest("[data-sug]");
