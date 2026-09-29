@@ -162,6 +162,18 @@ class MaxBrain:
         except Exception as e:  # noqa: BLE001
             log.warning("Couldn't start Claude Code in advance: %s", e)
 
+    async def interrupt(self) -> bool:
+        """Stop whatever Claude Code is currently doing, so the next message can start straight away."""
+        if self._client is None:
+            return False
+        try:
+            await self._client.interrupt()
+            return True
+        except Exception as e:  # noqa: BLE001 - the connection may already be gone
+            log.warning("Couldn't interrupt Claude Code (%s); reconnecting on the next message.", e)
+            await self._disconnect()
+            return True
+
     async def close(self) -> None:
         if self._worker and not self._worker.done() and self._jobs is not None:
             await self._jobs.put(None)

@@ -33,6 +33,7 @@ class JarvisBrain:
         self.client: anthropic.AsyncAnthropic = j.client
         self.messages: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
+        self._active: set[asyncio.Task] = set()
         self.tools = [t.definition() for t in TOOLS] + (SERVER_TOOLS if self.s.web_search_enabled else [])
         self.refresh_system()
 
@@ -93,8 +94,24 @@ class JarvisBrain:
     # ------------------------------------------------------------------ main entry
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
                   speaker: str | None = None) -> str:
-        async with self._lock:
-            return await self._turn(text, mode, attachments, speaker)
+        task = asyncio.current_task()
+        if task is not None:
+            self._active.add(task)
+        try:
+            async with self._lock:
+                return await self._turn(text, mode, attachments, speaker)
+        finally:
+            if task is not None:
+                self._active.discard(task)
+
+    async def interrupt(self) -> bool:
+        """Stop whatever Jarvis is currently generating, so the next message can start straight away."""
+        stopped = False
+        for t in list(self._active):
+            if not t.done():
+                t.cancel()
+                stopped = True
+        return stopped
 
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
                     speaker: str | None = None) -> str:
