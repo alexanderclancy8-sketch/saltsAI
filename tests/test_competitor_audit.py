@@ -99,6 +99,24 @@ async def test_competitor_audit_without_a_places_key_still_runs_our_own_seo(tmp_
     assert "seo" not in competitor
 
 
+async def test_competitor_audit_looks_up_competitors_with_just_a_places_key_no_place_id_yet(tmp_path, http_and_seen):
+    # google_reviews() (our own listing) needs both the key and our place ID; find_business() (a competitor,
+    # looked up by name) only ever needs the key. An owner who has only added the key so far must still get
+    # competitor ratings - the "us" side is the only part that should stay blank.
+    handler, _ = http_and_seen
+    s = Settings(website_url="https://www.saltsfireandsecurity.co.uk", google_places_api_key="places-key",
+                _env_file=None)  # no google_place_id yet
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        presence = PresenceSources(s, http)
+        marketing = MarketingTracker(s, Database(tmp_path / "db.sqlite"), http, presence, None, None)
+        result = await marketing.competitor_audit(["Firetech Solutions Bradford"])
+
+    assert "rating" not in result["us"]  # our own listing needs a place ID we don't have yet
+    competitor = result["competitors"][0]
+    assert "note" not in competitor
+    assert competitor["name"] == "Firetech Solutions Ltd" and competitor["rating"] == 4.2
+
+
 async def test_competitor_audit_caps_at_six_and_keeps_going_after_one_lookup_fails(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)

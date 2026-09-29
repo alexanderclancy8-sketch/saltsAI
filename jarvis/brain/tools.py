@@ -575,8 +575,8 @@ async def accept_quote(j, a: AcceptQuoteIn):
                        ("scheduled_start", a.scheduled_start)):
         if value:
             job_body[key] = value
-    summary = (f"Accept quote {quote['id']} ({quote.get('title', '')}, £{quote.get('value', 0):,.0f}) for "
-              f"{quote.get('customer', '')} and book the job")
+    summary = (f"Accept quote {quote['id']} ({quote.get('title') or ''}, £{quote.get('value') or 0:,.0f}) for "
+              f"{quote.get('customer') or ''} and book the job")
     action_id = j.actions.queue("accept_quote", summary, {"quote_id": quote["id"], "job_body": job_body})
     return {"queued_action": action_id, "quote": quote["id"], "job": job_body,
            "note": "Queued for approval on the display - accepting the quote and booking the job happen "

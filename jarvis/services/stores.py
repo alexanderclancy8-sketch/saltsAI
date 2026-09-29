@@ -46,7 +46,10 @@ DEMO_VANS = ["Van - Dan Harper", "Van - Priya Shah", "Van - Tom Wilkinson", "Van
 class Stores:
     def __init__(self, db: Database, demo_seed: bool = False, fsm=None):
         self.db = db
-        self.fsm = fsm if fsm is not None and not getattr(fsm, "demo", True) else None
+        # Kept as the live router (not resolved to None here) so that, exactly like staff/accountant/tracker,
+        # a Salts FSM connection made later on the Settings page is picked up without a Jarvis restart - see
+        # sync()/record() below, which check whether it's still in demo mode fresh on every call instead.
+        self.fsm = fsm
         self.source = "Jarvis stock ledger"
         self._synced = 0.0
         if demo_seed and not self.db.query_one("SELECT sku FROM stock_items LIMIT 1") \
@@ -60,7 +63,7 @@ class Stores:
     # ------------------------------------------------------------------ Salts FSM sync
     async def sync(self, force: bool = False) -> None:
         """Refresh the working copy from Salts FSM (the system of record when it has stock data)."""
-        if self.fsm is None or (not force and time.time() - self._synced < SYNC_SECONDS):
+        if self.fsm is None or getattr(self.fsm, "demo", True) or (not force and time.time() - self._synced < SYNC_SECONDS):
             return
         try:
             rows = await self.fsm.stock()

@@ -240,9 +240,14 @@ class MarketingTracker:
     async def competitor_audit(self, competitors: list[str]) -> dict[str, Any]:
         """Us vs named local competitors: Google rating/reviews where a Places key is set, and the same SEO
         snapshot seo_audit() runs on our own site, run again against each competitor's website."""
-        has_places = self.src.configured().get("google_reviews", False)
+        # Looking up OUR OWN listing (google_reviews()) needs both the API key and our place ID; looking up a
+        # named competitor by text (find_business()) only ever needs the key - gating both on "google_reviews"
+        # being fully configured meant a key-only setup (no place ID captured yet) silently skipped every
+        # competitor lookup too, telling the owner to "add a Places API key" they'd already added.
+        has_reviews = self.src.configured().get("google_reviews", False)
+        has_places = bool(self.s.google_places_api_key)
         us: dict[str, Any] = {"name": self.s.company_name}
-        if has_places:
+        if has_reviews:
             try:
                 us.update(await self.src.google_reviews())
             except Exception as e:  # noqa: BLE001

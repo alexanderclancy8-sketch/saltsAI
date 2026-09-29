@@ -165,6 +165,35 @@ async def test_fsm_router_reconnects_live_when_the_web_address_is_saved(settings
     await j.http.aclose()
 
 
+async def test_stores_also_reconnects_live_instead_of_staying_stuck_on_demo(settings):
+    # Stores decided once at construction time whether Salts FSM was configured and, if not, threw the
+    # reference away for good - so stock never actually reconnected even after the owner saved the web
+    # address, unlike every other service that holds the live FSMRouter. Same fix, same proof.
+    j = make(settings)
+    assert j.stores.fsm is j.fsm  # not resolved away to None just because FSM started out in demo mode
+    await j.stores.sync()
+    assert j.stores.source == "Jarvis stock ledger"  # still demo - nothing to sync from yet
+
+    calls = []
+
+    async def fake_stock():
+        calls.append("stock")
+        return []
+
+    async def fake_moves(date_from, date_to):
+        return []
+
+    j.fsm._real.get = lambda *a, **k: (_ for _ in ()).throw(AssertionError("should use fsm.stock(), not get()"))
+    j.fsm._real.stock = fake_stock
+    j.fsm._real.stock_movements = fake_moves
+    settings.fsm_base_url = "https://fsm.saltsfireandsecurity.co.uk"
+    assert j.fsm.demo is False
+
+    await j.stores.sync(force=True)
+    assert calls == ["stock"] and j.stores.source == "Salts FSM"
+    await j.http.aclose()
+
+
 async def test_real_fsm_client_calls_the_jobs_detail_path_and_normalises_extras():
     import httpx
 
@@ -218,6 +247,23 @@ async def test_accept_quote_reports_an_unknown_quote(settings):
     result = await accept_quote(j, AcceptQuoteIn(quote_ref="Q99999"))
     assert "error" in result and "Q99999" in result["error"]
     assert j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_accept_quote_handles_a_quote_with_no_value_or_title(settings):
+    # normalise() always sets "value"/"title" for every quote, even to None when Salts FSM's own record
+    # doesn't have one - .get(key, default) does NOT protect against that (the key is present, just None),
+    # so building the summary must guard with "or" the same way the rest of the codebase does.
+    j = make(settings)
+
+    async def fake_quotes(status=None):
+        return [{"id": "Q1", "title": None, "customer": "Acme Ltd", "site": "Acme Site", "value": None,
+                "status": "sent"}]
+
+    j.fsm.quotes = fake_quotes
+    result = await accept_quote(j, AcceptQuoteIn(quote_ref="Q1"))
+    assert "queued_action" in result
+    assert "Q1" in j.db.pending_actions()[0]["summary"]
     await j.http.aclose()
 
 
