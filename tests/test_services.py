@@ -264,6 +264,25 @@ async def test_meetings_rams_and_questionnaire(tmp_path):
     assert await j.documents.rams(job["ref"]) == "Certainly, sir."
     assert "couldn't find" in await j.documents.rams("NOPE")
     assert await j.documents.questionnaire("Q1. Are you BAFE certified?", "Example Council") == "Certainly, sir."
+    assert await j.documents.recruitment("Fire alarm service engineer", "FIA card needed") == "Certainly, sir."
+    assert await j.documents.hr_letter("written warning confirmation", "Sam", "Late three times this month") \
+        == "Certainly, sir."
+    await j.http.aclose()
+
+
+async def test_hr_tools_are_registered_and_reachable(tmp_path):
+    from jarvis.brain.tools import HRLetterIn, RecruitmentIn, TOOLS_BY_NAME, draft_hr_letter, draft_recruitment
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    assert TOOLS_BY_NAME["draft_recruitment"].approval is False
+    assert TOOLS_BY_NAME["draft_hr_letter"].approval is False  # a draft on the display, never sent by Jarvis
+    result = await draft_recruitment(j, RecruitmentIn(role="Office administrator", notes=None))
+    assert result["shown_on_display"] is True and result["draft"] == "Certainly, sir."
+    result = await draft_hr_letter(j, HRLetterIn(kind="reference letter", person="Alex", details="Left on good terms"))
+    assert result["shown_on_display"] is True and result["draft"] == "Certainly, sir."
     await j.http.aclose()
 
 

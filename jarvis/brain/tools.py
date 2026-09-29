@@ -341,6 +341,21 @@ class QuestionnaireIn(BaseModel):
     buyer: str | None = None
 
 
+class RecruitmentIn(BaseModel):
+    role: str = Field(description="The role to hire, e.g. 'Fire alarm service engineer', 'Office administrator'")
+    notes: str | None = Field(None, description="Anything specific: salary range, experience needed, "
+                                                 "location, full/part time, why the role's open")
+
+
+class HRLetterIn(BaseModel):
+    kind: str = Field(description="The letter/document type, e.g. 'invite to disciplinary meeting', "
+                                  "'written warning confirmation', 'performance improvement plan', "
+                                  "'reference letter', 'probation outcome'")
+    person: str = Field(description="Who this is for")
+    details: str = Field(description="The real facts: what happened, dates, what's already been discussed, "
+                                      "what needs to be in the letter. Never invented - only what's given.")
+
+
 class HoursIn(BaseModel):
     hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
                                                "closed (so Monday covers the weekend)")
@@ -855,6 +870,14 @@ async def answer_questionnaire(j, a: QuestionnaireIn):
     return {"shown_on_display": True, "answers": await j.documents.questionnaire(a.questions, a.buyer)}
 
 
+async def draft_recruitment(j, a: RecruitmentIn):
+    return {"shown_on_display": True, "draft": await j.documents.recruitment(a.role, a.notes)}
+
+
+async def draft_hr_letter(j, a: HRLetterIn):
+    return {"shown_on_display": True, "draft": await j.documents.hr_letter(a.kind, a.person, a.details)}
+
+
 async def out_of_hours_calls(j, a: HoursIn):
     return await j.ooh.calls(max(1, min(a.hours, 240)) if a.hours else None)
 
@@ -1174,6 +1197,15 @@ TOOLS: list[Tool] = [
                                  "company's accreditations, policies, insurance and competency evidence, with gaps "
                                  "marked. Shown on the display.", QuestionnaireIn, answer_questionnaire,
          "Answering the questionnaire"),
+    Tool("draft_recruitment", "Draft a job posting and interview questions for a role, grounded in how similar "
+                              "roles here are actually described and measured. Shown on the display - a draft "
+                              "to review, never posted anywhere directly.", RecruitmentIn, draft_recruitment,
+         "Drafting the job posting"),
+    Tool("draft_hr_letter", "Draft an HR letter/document (disciplinary invite, written warning, performance "
+                            "improvement plan, reference, probation outcome...), ACAS-compliant, from the real "
+                            "facts given - never invented. Shown on the display for the owner to review before "
+                            "it's ever sent; flags when a solicitor should look at it first.",
+         HRLetterIn, draft_hr_letter, "Drafting the HR letter"),
     Tool("out_of_hours_calls", "Overnight events from the out-of-hours / alarm monitoring reports emailed to info@ "
                                "(including PDF reports): calls taken and alarm faults, comms failures and "
                                "activations - site, urgency, what was done, and which still need a job in Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),
