@@ -7,6 +7,8 @@
 #   bash infra/deploy.sh settings FILE        copy the filled-in values from an env file (like .env.example) into the app
 #   bash infra/deploy.sh adopt NAME [GROUP]   turn a Linux web app you made by hand in the portal into Jarvis
 #   bash infra/deploy.sh token                replace the Claude token (or API key) Jarvis uses
+#   bash infra/deploy.sh voice                give Jarvis Azure's natural British voice (free tier where available)
+#   bash infra/deploy.sh secret NAME          save one key or password (e.g. ELEVENLABS_API_KEY) without showing it
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
 #
@@ -96,6 +98,43 @@ wait_until_up() {
   echo "It isn't answering yet. The install may still be going, or it may have failed. Two ways to see:"
   echo "    az webapp log deployment show -n $APP_NAME -g $RG --query \"[].message\" -o tsv | tail -25"
   echo "    az webapp log tail -n $APP_NAME -g $RG      (what Jarvis prints as it starts; Ctrl+C to stop)"
+}
+
+# Gives Jarvis a natural British voice from Azure Speech, created and connected here so there's no key to copy.
+setup_voice() {
+  find_jarvis_app
+  local name="$APP_NAME-voice" region="${SPEECH_REGION:-uksouth}" voice="${VOICE:-en-GB-RyanNeural}" key
+  if [ -z "$(az cognitiveservices account list -g "$RG" --query "[?name=='$name'].name | [0]" -o tsv)" ]; then
+    echo "Setting up Azure's speech service for Jarvis's voice (a minute or two)..."
+    az provider register --namespace Microsoft.CognitiveServices --wait -o none
+    if az cognitiveservices account create -n "$name" -g "$RG" -l "$region" --kind SpeechServices --sku F0 \
+      --tags app="$TAG" --yes -o none 2>/dev/null; then
+      echo "Using the free tier: 500,000 characters of speech a month, far more than Jarvis needs."
+    else
+      echo "Azure allows one free speech service per subscription and it's taken, so this one is pay-as-you-go:"
+      echo "about £12 per million characters, which is pennies a day for Jarvis."
+      az cognitiveservices account create -n "$name" -g "$RG" -l "$region" --kind SpeechServices --sku S0 \
+        --tags app="$TAG" --yes -o none
+    fi
+  fi
+  key="$(az cognitiveservices account keys list -n "$name" -g "$RG" --query key1 -o tsv)"
+  az webapp config appsettings set -g "$RG" -n "$APP_NAME" -o none \
+    --settings "AZURE_SPEECH_KEY=$key" "AZURE_SPEECH_REGION=$region" "AZURE_TTS_VOICE=$voice"
+  echo "Done. Jarvis now speaks with Azure's $voice British voice. It restarts to pick this up, so refresh the"
+  echo "display in a minute. To try another voice, e.g. Thomas:  VOICE=en-GB-ThomasNeural bash infra/deploy.sh voice"
+  echo "(others: en-GB-OliverNeural, en-GB-AlfieNeural, en-GB-ElliotNeural, en-GB-EthanNeural, en-GB-NoahNeural)."
+  echo "If an ElevenLabs key is added later, Jarvis uses ElevenLabs instead."
+}
+
+# Saves one setting without showing it or leaving it in the shell history, e.g.  secret ELEVENLABS_API_KEY
+set_secret() {
+  local name="${1:-}" value
+  [[ "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "give the setting's name, e.g.  bash infra/deploy.sh secret ELEVENLABS_API_KEY"
+  find_jarvis_app
+  ask value "Paste the value for $name (it won't show): " token
+  [ -n "$value" ] || die "nothing was changed."
+  az webapp config appsettings set -g "$RG" -n "$APP_NAME" -o none --settings "$name=$value"
+  echo "Saved $name. Jarvis restarts to pick it up."
 }
 
 # Replaces the Claude token (or API key) Jarvis uses, without it appearing on screen or in the shell history.
@@ -490,5 +529,7 @@ case "${1:-setup}" in
   adopt) adopt "${2:-}" "${3:-}" ;;
   signin) shift; enable_signin "$@" ;;
   token) set_token ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token]" ;;
+  voice) setup_voice ;;
+  secret) set_secret "${2:-}" ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|secret NAME]" ;;
 esac

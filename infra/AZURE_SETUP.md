@@ -146,6 +146,11 @@ rm jarvis.env
   been reset and the folder's gone, repeat the `git clone` line from step 3 first.
 - **Change who can sign in:** `bash infra/deploy.sh signin you@... partner@... officemanager@...`. This sets
   the full list, so anyone left off loses access.
+- **A natural British voice:** `bash infra/deploy.sh voice` sets up Azure's speech service (free tier where
+  available) and connects it, with no keys to copy. For ElevenLabs' "Daniel" voice instead, get an API key
+  from elevenlabs.io and run `bash infra/deploy.sh secret ELEVENLABS_API_KEY`.
+- **Any other key, one at a time:** `bash infra/deploy.sh secret NAME` (e.g. `MS_CLIENT_SECRET`). It asks for
+  the value without showing it.
 - **New Claude token** (e.g. yearly, or if it's been shown to anyone): `bash infra/deploy.sh token`. It asks
   for the token without showing it, so it doesn't end up in the shell history.
 - **If the upload says "Timeout waiting for token from portal":** that's Cloud Shell's sign-in, not Jarvis.
