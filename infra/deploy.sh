@@ -9,6 +9,7 @@
 #   bash infra/deploy.sh token                replace the Claude token (or API key) Jarvis uses
 #   bash infra/deploy.sh voice                give Jarvis Azure's natural British voice (free tier where available)
 #   bash infra/deploy.sh voicetest            fetch a sample of Jarvis's Azure voice to listen to
+#   bash infra/deploy.sh m365                 register Jarvis for Microsoft 365 (mail, calendar, Teams) and save it
 #   bash infra/deploy.sh secret NAME          save one key or password (e.g. ELEVENLABS_API_KEY) without showing it
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
@@ -348,6 +349,58 @@ ask_claude() {
   done
 }
 
+# Registers Jarvis for Microsoft 365 (mail, calendar, Teams meeting transcripts) and saves the settings.
+m365() {
+  find_jarvis_app
+  local GRAPH_APP_ID=00000003-0000-0000-c000-000000000000
+  local permissions=(Mail.ReadWrite Mail.Send Calendars.Read Reports.Read.All OnlineMeetingTranscript.Read.All)
+  local display="Jarvis M365 ($APP_NAME)" app_id sp_id tenant mailbox secret role_id perm consented=0
+
+  ask mailbox "Your Microsoft 365 mailbox (the one Jarvis reads and sends from): "
+  [[ "$mailbox" == ?*@?*.?* ]] || die "that doesn't look like an email address."
+  tenant="$(az account show --query tenantId -o tsv)"
+
+  app_id="$(az ad app list --display-name "$display" --query "[0].appId" -o tsv)"
+  if [ -z "$app_id" ]; then
+    echo "Registering Jarvis for Microsoft 365..."
+    app_id="$(az ad app create --display-name "$display" --sign-in-audience AzureADMyOrg --query appId -o tsv)"
+  fi
+  sp_id="$(az ad sp show --id "$app_id" --query id -o tsv 2>/dev/null || true)"
+  [ -n "$sp_id" ] || sp_id="$(az ad sp create --id "$app_id" --query id -o tsv)"
+
+  echo "Requesting the Microsoft Graph permissions Jarvis needs..."
+  for perm in "${permissions[@]}"; do
+    # Looked up by name rather than a hardcoded id, since these can change and vary between clouds.
+    role_id="$(az ad sp show --id "$GRAPH_APP_ID" --query "appRoles[?value=='$perm'].id | [0]" -o tsv)"
+    [ -n "$role_id" ] || die "couldn't find the Microsoft Graph permission '$perm' - Microsoft may have renamed it.
+Add it by hand in Entra ID > App registrations > $display > API permissions, then run this again."
+    az ad app permission add --id "$app_id" --api "$GRAPH_APP_ID" --api-permissions "$role_id=Role" -o none
+  done
+
+  echo "Requesting admin consent (this only works if you're a Global Administrator)..."
+  sleep 5  # a freshly-added permission can take a few seconds to be visible to consent against
+  az ad app permission admin-consent --id "$app_id" 2>/dev/null && consented=1
+
+  secret="$(az ad app credential reset --id "$app_id" --display-name jarvis-m365 --years 2 --query password -o tsv)"
+  az webapp config appsettings set -g "$RG" -n "$APP_NAME" -o none \
+    --settings "MS_TENANT_ID=$tenant" "MS_CLIENT_ID=$app_id" "MS_CLIENT_SECRET=$secret" "MS_MAILBOX=$mailbox"
+
+  echo
+  echo "Saved. Jarvis restarts to pick this up."
+  if [ "$consented" = 1 ]; then
+    echo "Admin consent was granted."
+  else
+    echo "You'll need a Global Administrator to approve access, by opening this link and accepting:"
+    echo "    https://login.microsoftonline.com/$tenant/adminconsent?client_id=$app_id"
+    echo "Until that's done, Jarvis's Microsoft 365 features won't work."
+  fi
+  echo
+  echo "Recommended: without a further step, this lets Jarvis read and send mail for ANY mailbox in your"
+  echo "organisation, not just $mailbox. To restrict it, in Exchange Online PowerShell (Cloud Shell's PowerShell"
+  echo "tab, or portal.exchange.microsoft.com > ... > Connect-ExchangeOnline) run:"
+  echo "    New-ApplicationAccessPolicy -AppId $app_id -PolicyScopeGroupId $mailbox -AccessRight RestrictAccess -Description Jarvis"
+}
+
 # Turns a Linux web app made by hand in the portal into Jarvis.
 adopt() {
   local groups kind site_linux plan_linux plan_kind plan_name plan_id host tier others site_id go
@@ -560,6 +613,7 @@ case "${1:-setup}" in
   token) set_token ;;
   voice) setup_voice ;;
   voicetest) voice_test ;;
+  m365) m365 ;;
   secret) set_secret "${2:-}" ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|voicetest|secret NAME]" ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|voicetest|m365|secret NAME]" ;;
 esac

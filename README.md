@@ -72,52 +72,56 @@ anywhere else. Use Chrome or Edge for voice.
 
 ## Connecting the real systems
 
+**Easiest: the Settings page.** Open the gear icon on the display, go to **Connections**, and fill each service
+in - a card per system, with the fields it needs, plain-English help text, a **Test connection** button that
+checks it for real, and setup steps for the fiddly ones (Microsoft 365, Sage, Teams). Nothing needs redeploying:
+saving reloads Jarvis with the new settings straight away, and secrets are stored encrypted. This replaces
+editing `.env` / App Service settings by hand for everything except the two YAML endpoint files below.
+
 Do these in any order; each one replaces demo data as soon as it's set.
 
-1. **Microsoft 365 (Outlook + Teams)**
-   - In Entra ID, register an app, add a client secret, and grant the *application* permissions `Mail.ReadWrite`,
-     `Mail.Send`, `Reports.Read.All` (office activity), `Calendars.Read` and `OnlineMeetingTranscript.Read.All`
-     (meeting write-ups), with admin consent. For transcripts also run
-     `New-CsApplicationAccessPolicy -Identity Jarvis -AppIds <id>` and `Grant-CsApplicationAccessPolicy` for your user.
-   - Restrict it to your mailbox (plus the shared mailbox your out-of-hours reports arrive in, e.g. info@):
+1. **Microsoft 365 (Outlook + Teams).** Quickest: in Azure Cloud Shell run
+   `APP_NAME=<your app name> bash infra/deploy.sh m365` - it registers Jarvis in Entra ID, requests the
+   permissions (`Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`, `Reports.Read.All`,
+   `OnlineMeetingTranscript.Read.All`), asks for admin consent, and saves the settings for you. Or do it by hand
+   in the Settings page's Microsoft 365 card, which shows the same steps.
+   - Whichever way you set it up, it's worth restricting the app to your mailbox (and any shared mailbox, e.g.
+     info@) in Exchange Online PowerShell:
      `New-ApplicationAccessPolicy -AppId <id> -PolicyScopeGroupId <mail-enabled group> -AccessRight RestrictAccess`.
+     `deploy.sh m365` prints this command with your own values filled in.
    - To see names in activity reports, turn off *"Display concealed user, group, and site names"* in the M365
      admin centre (Settings → Org settings → Reports).
    - For Teams updates, create a Teams **Workflows** "post to a channel when a webhook request is received" flow
-     and put its URL in `TEAMS_WEBHOOK_URL`.
-2. **Salts FSM.** Set `FSM_BASE_URL` and `FSM_API_KEY`, and edit `fsm_endpoints.yaml` to match the FSM's API
-   routes: jobs, engineers, systems, contracts, quotes, sites, timesheets, stock, tracking. Field names are matched
-   flexibly. If the FSM has no API yet, add read-only JSON endpoints for these and Jarvis will pick them up.
+     and put its URL in the Settings page's Teams card.
+2. **Salts FSM.** Fill in the web address and API key on the Settings page, and edit `fsm_endpoints.yaml` to
+   match the FSM's API routes: jobs, engineers, systems, contracts, quotes, sites, timesheets, stock, tracking.
+   Field names are matched flexibly. If the FSM has no API yet, add read-only JSON endpoints for these and
+   Jarvis will pick them up.
 3. **Sage.**
    - *Sage Accounting (cloud):* create an app at developerselfservice.sageone.com with the callback
-     `https://<jarvis>/auth/sage/callback`, set `SAGE_CLIENT_ID` and `SAGE_CLIENT_SECRET`, then use **Settings →
-     Connect Sage** on the display. To let Jarvis create invoices you've approved, set `SAGE_WRITE_ENABLED=true`
+     `https://<jarvis>/auth/sage/callback`, put its client ID and secret on the Settings page, then use
+     **Connect Sage** there. To let Jarvis create invoices you've approved, turn on "Let Jarvis create invoices"
      and reconnect.
    - *Sage 50 (desktop):* export sales and purchase invoices (and bank balances) to CSV into `finance_data/`, as
      `sales_invoices.csv`, `purchase_invoices.csv` and `bank.csv`. Sage's usual column names are recognised.
-4. **RAM Tracking.** Ask RAM for External API access, set `RAM_API_BASE_URL` and `RAM_API_KEY`, and match
+4. **RAM Tracking.** Ask RAM for External API access, put the address and key on the Settings page, and match
    `ram_endpoints.yaml` to the paths in RAM's Swagger docs. Put each engineer's van registration in the staff
    register.
 5. **Staff register.** Copy `staff_roles.example.yaml` to `data/staff_roles.yaml` and describe everyone's role,
    duties and targets, or just tell Jarvis ("Jarvis, Josh should be sending 14 quotes a week").
 6. **Accreditations.** Copy `accreditations.example.yaml` to `data/accreditations.yaml` and add your real
    certificate numbers and dates.
-7. **Auto-fix and deploy.**
-   - Put the Salts FSM code on GitHub.
-   - Create a fine-grained token for that repo (contents, pull requests, issues, actions: read and write) and set
-     `GITHUB_TOKEN` and `FSM_REPO`.
-   - Add `templates/fsm-repo/.github/workflows/deploy-azure.yml` to the FSM repo (edit its build step) and set
-     `FSM_DEPLOY_WORKFLOW`.
-   - Or, to deploy straight to App Service instead of through that workflow, set `AZURE_DEPLOY_MODE=kudu` and
-     `AZURE_FSM_SCM_URL`.
-8. **Voice.**
-   - Put your ElevenLabs key in `ELEVENLABS_API_KEY`. The default voice is "Daniel", a deep, authoritative British
-     male; "George" is warmer. You can pick any voice under Settings.
-   - Speech-to-text: set `DEEPGRAM_API_KEY` for live, always-listening mode, or `OPENAI_API_KEY` for Whisper
-     push-to-talk.
-   - Wispr Flow and other dictation apps also work straight into the chat box.
-9. **Marketing.** `GOOGLE_REVIEW_URL`; `GOOGLE_PLACES_API_KEY` + `GOOGLE_PLACE_ID` (reviews); a Search Console
-   service account (rankings); Meta Page token (Facebook/Instagram); LinkedIn and TikTok tokens.
+7. **Auto-fix and deploy.** On the Settings page's Auto-fix card: a fine-grained GitHub token for the FSM repo
+   (contents, pull requests, issues, actions: read and write), the repo (`owner/repo`), and either a deploy
+   workflow name (add `templates/fsm-repo/.github/workflows/deploy-azure.yml` to the FSM repo first) or, to
+   deploy straight to App Service instead, switch "Deploy through" to Kudu and add the FSM app's Kudu address.
+8. **Voice.** On the Settings page's Voice card: an ElevenLabs key for the most natural voice (or run
+   `bash infra/deploy.sh voice` for a free Azure one), and a Deepgram key for always-listening speech-to-text
+   (OpenAI/Whisper also works for push-to-talk). Wispr Flow and other dictation apps work straight into the chat
+   box too.
+9. **Marketing.** On the Settings page's "Google and socials" card: a Google Places key and Place ID (reviews),
+   a Search Console service account (rankings), a Facebook Page token (Facebook/Instagram), and LinkedIn/TikTok
+   tokens.
 
 ## Deploying to Azure
 

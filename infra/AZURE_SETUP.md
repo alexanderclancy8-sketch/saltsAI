@@ -124,21 +124,22 @@ az webapp log tail -g "$(az webapp list --query "[?name=='salts-jarvis'].resourc
 
 Press `Ctrl+C` to stop the log.
 
-## 5. Add the other connections (the owner can do this any time)
+## 5. Add the other connections (the owner can do this any time - no Cloud Shell needed)
 
+Open Jarvis in a browser and click the gear icon (Settings) > **Connections**. Each system - Microsoft 365,
+Salts FSM, Sage, RAM Tracking, voice, marketing and more - has its own card with the fields it needs, help
+text, and a **Test connection** button. Saving applies straight away; nothing needs redeploying. Fill in the
+owner's name and email under "You and the business" too, so Jarvis knows who's talking.
+
+For Microsoft 365 specifically, it's quicker back in Cloud Shell:
 ```bash
-cp .env.example jarvis.env
-code jarvis.env
+APP_NAME=<the app name from step 3, e.g. jarvis-salts> bash infra/deploy.sh m365
 ```
+This registers Jarvis with Microsoft 365, requests the permissions it needs, asks a Global Administrator to
+approve them, and fills the Microsoft 365 card in for you.
 
-This opens an editor. The **owner** fills in whatever keys they have: Microsoft 365, Sage, ElevenLabs,
-Deepgram and so on (`README.md` explains each one). Also fill in `OWNER_EMAIL`, and `PARTNER_NAME` and
-`PARTNER_EMAIL`, so Jarvis knows who's talking. Blank lines are skipped. Save with `Ctrl+S`, then:
-
-```bash
-bash infra/deploy.sh settings jarvis.env
-rm jarvis.env
-```
+Bulk import: to set many keys in one go from Cloud Shell instead, `cp .env.example jarvis.env`, fill it in, then
+`APP_NAME=<app name> bash infra/deploy.sh settings jarvis.env` and delete the file.
 
 ## Later
 
@@ -146,6 +147,7 @@ rm jarvis.env
   been reset and the folder's gone, repeat the `git clone` line from step 3 first.
 - **Change who can sign in:** `bash infra/deploy.sh signin you@... partner@... officemanager@...`. This sets
   the full list, so anyone left off loses access.
+- **Microsoft 365 setup or a fresh client secret:** `bash infra/deploy.sh m365` (see step 5 above).
 - **A natural British voice:** `bash infra/deploy.sh voice` sets up Azure's speech service (free tier where
   available) and connects it, with no keys to copy. For ElevenLabs' "Daniel" voice instead, get an API key
   from elevenlabs.io and run `bash infra/deploy.sh secret ELEVENLABS_API_KEY`.
