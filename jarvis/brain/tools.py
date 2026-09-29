@@ -10,6 +10,8 @@ from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 
+from ..humanize import human_datetime
+
 MAX_RESULT_CHARS = 60_000
 
 
@@ -555,7 +557,7 @@ async def log_job(j, a: LogJobIn):
     if a.engineer:
         summary += f" - assign to {a.engineer}"
     if a.scheduled_start:
-        summary += f" for {a.scheduled_start}"
+        summary += f" for {human_datetime(a.scheduled_start)}"
     action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/jobs", "body": body})
     return {"queued_action": action_id, "job": body, "note": "Queued for approval on the display."}
 
@@ -1151,10 +1153,14 @@ TOOLS: list[Tool] = [
                               "unassigned jobs and tell me', 'every 30 minutes, check for a supplier email about "
                               "the delayed order'. It runs itself from then on with the same tools and the same "
                               "approval rules as a live conversation - looking things up is automatic, but "
-                              "anything it wants to change still needs your approval.", CreateAutomationIn,
+                              "anything it wants to change still needs your approval. Confirm it back using the "
+                              "'schedule' field in the result (plain English, e.g. 'every weekday at 8am') - "
+                              "never read the raw 'cron' field out loud.", CreateAutomationIn,
          create_automation, "Setting up an automation"),
     Tool("list_automations", "Every automation the owner has set up, its schedule, and what it found last time "
-                             "it ran.", NoInput, list_automations, "Checking your automations"),
+                             "it ran. Each one has a 'schedule' field in plain English (e.g. 'every weekday at "
+                             "8am') - read that back, not the raw 'cron' field.", NoInput, list_automations,
+         "Checking your automations"),
     Tool("delete_automation", "Remove one of the owner's automations by its number.", DeleteAutomationIn,
          delete_automation, "Removing that automation"),
     Tool("archive_to_azure", "Upload a report or document to the company's Azure Blob Storage archive.",

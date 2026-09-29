@@ -158,12 +158,15 @@
   }
 
   const speaker = {
-    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null,
+    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, recentText: "",
     feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
     flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
     enqueue(sentence) {
       const clean = sentence.replace(/```[\s\S]*?```/g, " ").replace(/[#*_`>|]/g, " ").replace(/\s+/g, " ").trim();
       if (!clean || /^[-\s]+$/.test(clean)) return;
+      // Tracked so a barge-in heard while this plays can be told apart from the mic just picking up Jarvis's
+      // own voice (echo cancellation is never perfect without headphones) - see wordOverlapRatio().
+      this.recentText += " " + clean;
       const item = { text: clean, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
       this.queue.push(item);
       if (!this.active) this.next();
@@ -334,6 +337,7 @@
         setHud("thinking"); toolsSeen = [];
         current = addMessage("assistant", ""); current.querySelector(".md").classList.add("typing");
         current.dataset.raw = "";
+        speaker.recentText = ""; // a fresh reply is starting - forget what the last one said
         break;
       case "delta":
         if (!current) { current = addMessage("assistant", ""); current.dataset.raw = ""; }
@@ -661,7 +665,10 @@
           // buried partway into an unrelated sentence is almost always background chatter this free,
           // general-purpose listener misheard, not someone actually talking to Jarvis.
           if (!wakeRe.test(lead)) continue;
-          if (alt.confidence > 0 && alt.confidence < 0.5) continue; // Chrome leaves this at 0 when unsupported
+          // No confidence check here any more - a short wake-word utterance often scores low even when heard
+          // correctly, and this listener silently drops anything it rejects with no retry, so a strict
+          // threshold mostly just made Jarvis miss real attempts ("hit and miss"). The leading-word check
+          // above is the real defence against background chatter.
           this.heard(alt.transcript);
           return;
         }
@@ -711,17 +718,36 @@
     sentry.start();
   }
 
+  // Common words carry no signal for telling a real interruption apart from Jarvis's own voice bleeding into
+  // the mic - "is it done" overlaps "is" and "it" with almost anything Jarvis could have said. Only distinctive
+  // words count towards the match.
+  const STOP_WORDS = new Set(["a", "an", "the", "is", "are", "was", "were", "to", "of", "and", "or", "it", "in",
+    "on", "for", "that", "this", "i", "you", "we", "he", "she", "they", "do", "does", "did", "so", "but", "if",
+    "at", "as", "be", "with", "not", "no", "yes", "sir", "your", "my", "me", "have", "has", "had", "will", "can"]);
+  function contentWords(s) {
+    return s.toLowerCase().replace(/[^a-z0-9\s']/g, " ").split(/\s+/).filter((w) => w && !STOP_WORDS.has(w));
+  }
+  // Is `heard` most likely just the mic picking up what Jarvis itself is saying right now, rather than a real
+  // interruption? Judged by how much of its distinctive content overlaps with Jarvis's own recent speech -
+  // not by word count or a magic stop-word - so a genuine interruption of any length gets through unblocked,
+  // while an actual echo (which shares almost all of its wording) gets quietly ignored instead of looping.
+  function soundsLikeSelfEcho(heard, spoken) {
+    const h = contentWords(heard);
+    if (h.length < 2) return false; // too little distinctive content to judge - fail open, let it through
+    const spokenWords = new Set(contentWords(spoken));
+    const matched = h.filter((w) => spokenWords.has(w)).length;
+    return matched / h.length >= 0.6;
+  }
+
   function utterance(raw) {
     const text = String(raw || "").trim();
     if (!text) return;
     const lower = text.toLowerCase();
     const wake = (S.voice.wake_word || "jarvis").toLowerCase();
     if (speaker.active) {
-      // Only a stop-word or the wake word breaks in on its own speech. Anything looser than that risks
-      // treating its own voice, picked up by the mic (echo cancellation is never perfect without
-      // headphones), as a fresh command - which gets replied to, gets heard again, and loops.
-      if (/\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake)) speaker.stop();
-      else return;
+      const isStopPhrase = /\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake);
+      if (!isStopPhrase && soundsLikeSelfEcho(lower, speaker.recentText)) return; // just hearing itself
+      speaker.stop();
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
     if (S.approvals.length && /^(approve|approved|confirm|confirmed|go ahead|yes,? (do it|send it|deploy it)|send it|deploy it)\b/.test(bare)) {

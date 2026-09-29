@@ -45,7 +45,8 @@ async def test_log_job_includes_engineer_and_date_when_given(settings):
     assert body["priority"] == "24h" and body["engineer"] == "Dan Harper"
     assert body["scheduled_start"] == "2026-10-06T09:00" and body["customer"] == "Aire Valley Care Ltd"
     summary = j.db.pending_actions()[0]["summary"]
-    assert "Dan Harper" in summary and "2026-10-06T09:00" in summary
+    # the summary is read out loud / shown on the approval card, so it gets the human phrasing, not raw ISO
+    assert "Dan Harper" in summary and "Tuesday 6 October at 9am" in summary
     assert result["note"] == "Queued for approval on the display."
     await j.http.aclose()
 

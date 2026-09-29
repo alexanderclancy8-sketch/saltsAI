@@ -126,9 +126,11 @@ async def test_create_list_delete_automation_tools(settings):
     created = await create_tool.handler(j, CreateAutomationIn(
         description="Weekly review", cron="0 9 * * 1", prompt="Summarise last week's completed jobs"))
     assert created["id"] == 1
+    assert created["schedule"] == "every Monday at 9am"  # plain English for Jarvis to read back, not the cron
 
     listed = await list_tool.handler(j, NoInput())
     assert len(listed) == 1 and listed[0]["description"] == "Weekly review"
+    assert listed[0]["schedule"] == "every Monday at 9am"
 
     deleted = await delete_tool.handler(j, DeleteAutomationIn(automation_id=1))
     assert "Removed" in deleted

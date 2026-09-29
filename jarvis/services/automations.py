@@ -18,6 +18,7 @@ import logging
 from apscheduler.triggers.cron import CronTrigger
 
 from ..db import now_iso
+from ..humanize import cron_to_english
 
 log = logging.getLogger(__name__)
 MAX_AUTOMATIONS = 25  # generous, but stops a runaway conversation from scheduling hundreds of jobs
@@ -43,10 +44,11 @@ class AutomationService:
             return {"error": f"Already at the limit of {MAX_AUTOMATIONS} automations - remove one first."}
         automation_id = self.j.db.create_automation(description, cron, prompt)
         self._register(self.j.db.get_automation(automation_id))
-        return {"id": automation_id, "description": description, "cron": cron}
+        return {"id": automation_id, "description": description, "cron": cron,
+                "schedule": cron_to_english(cron)}
 
     def list_all(self) -> list[dict]:
-        return self.j.db.list_automations()
+        return [{**a, "schedule": cron_to_english(a["cron"])} for a in self.j.db.list_automations()]
 
     def delete(self, automation_id: int) -> str:
         automation = self.j.db.get_automation(automation_id)
