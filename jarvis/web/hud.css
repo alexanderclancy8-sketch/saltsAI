@@ -148,6 +148,9 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .mic.on { background: var(--ok-dim); border-color: var(--ok); color: var(--ok); }
 .mic.stop { background: var(--crit-dim); border-color: var(--crit); color: var(--crit); }
 .mic.stop:hover { background: rgba(240,89,107,0.22); }
+/* Dormant wake-word listening: the free browser listener is on, but nothing's being streamed anywhere. */
+.mic.sentry { border-color: var(--accent); animation: sentry-pulse 2.4s ease-in-out infinite; }
+@keyframes sentry-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .chip { font-size: 12px; border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; color: var(--muted); }
 .chip button { background: none; border: none; color: var(--muted); cursor: pointer; }

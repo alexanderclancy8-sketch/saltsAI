@@ -86,6 +86,8 @@
     S.hudState = state;
     $("#state").textContent = STATE_LABEL[state] || state;
     $("#btn-stop").hidden = !["thinking", "speaking"].includes(state);
+    // A turn just started - don't let a sleep check meant for the *previous* lull fire part-way through it.
+    if (state === "thinking") clearTimeout(sleepTimer);
   }
   function caption(text, interim = "") { $("#caption").innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
 
@@ -180,7 +182,7 @@
     },
     async next() {
       const item = this.queue.shift();
-      if (!item) { this.active = false; this.browserSpeaking = false; if (S.hudState === "speaking") setHud("idle"); S.followUpUntil = Date.now() + 8000; if (this.onIdle) this.onIdle(); return; }
+      if (!item) { this.active = false; this.browserSpeaking = false; if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (this.onIdle) this.onIdle(); return; }
       this.active = true; setHud("speaking");
       const url = item.audio ? await item.audio : null;
       if (!this.active) return;
@@ -255,11 +257,29 @@
     const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
     S.attachments = []; renderAttachments();
     if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }
-    addMessage("user", payload.text);
     setHud("thinking");
-    api("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
-      .then((r) => r.json()).then((d) => { addMessage("assistant", d.reply); if (shouldSpeak(mode)) say(d.reply); else setHud("idle"); })
-      .catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
+    streamChat(payload).catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
+  }
+
+  // The WebSocket is down (or hasn't connected yet) - falls back to the same conversation over a plain
+  // POST, but still streamed word-by-word: each server-sent-event line is exactly the shape handle() already
+  // knows how to render, so the experience matches the WebSocket path instead of waiting on the full reply.
+  async function streamChat(payload) {
+    const r = await api("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (line) handle(JSON.parse(line.slice(6)));
+      }
+    }
   }
 
   $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send($("#input").value, "typed"); $("#input").value = ""; autosize(); });
@@ -330,7 +350,7 @@
           if (toolsSeen.length) current.insertAdjacentHTML("beforeend", `<div class="tools">${esc([...new Set(toolsSeen)].join(" · "))}</div>`);
         } else addMessage("assistant", d.text);
         if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
-        if (!speaker.active) setHud("idle");
+        if (!speaker.active) { setHud("idle"); extendFollowUp(); }
         caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
         current = null;
         refreshSoon();
@@ -339,7 +359,7 @@
         if (current) current.remove();
         current = null;
         addMessage("assistant", d.message).classList.add("error");
-        setHud("idle"); $("#toolline").textContent = "";
+        setHud("idle"); $("#toolline").textContent = ""; extendFollowUp();
         break;
       case "notification":
         toast(d.title, d.body, d.level);
@@ -356,7 +376,7 @@
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
       case "conversation_reset": $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
-      case "stopped": if (!speaker.active) setHud("idle"); break;
+      case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
         if (S.ws) { S.ws.onclose = null; S.ws.close(); }
@@ -611,6 +631,73 @@
     },
   };
 
+  // A free, always-on wake-word-only listener (the browser's own speech recognition, no API cost) used
+  // whenever the real speech-to-text is a paid one (Deepgram/Whisper) - so "always listening" doesn't mean
+  // continuously streaming audio to a paid service. It only ever escalates to the real microphone (stt)
+  // once it hears the wake word; after a period of silence, stt goes back to sleep and this takes over again.
+  const sentry = {
+    rec: null, on: false,
+    start() {
+      if (this.on || stt.on || S.listenMode !== "wake" || S.voice.stt === "browser") return;
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) return; // no free fallback available in this browser - always-listening just stays on the paid stream
+      this.on = true; mic.classList.add("sentry");
+      const r = new SR(); this.rec = r;
+      r.lang = S.voice.language || "en-GB"; r.continuous = true; r.interimResults = false;
+      r.onresult = (e) => {
+        const wake = (S.voice.wake_word || "jarvis").toLowerCase();
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal && e.results[i][0].transcript.toLowerCase().includes(wake)) {
+            this.heard(e.results[i][0].transcript);
+            return;
+          }
+        }
+      };
+      r.onerror = (e) => { if (this.on && e.error !== "no-speech" && e.error !== "aborted") { this.on = false; setTimeout(() => this.start(), 2000); } };
+      r.onend = () => { if (this.on) { this.on = false; this.start(); } }; // browsers stop continuous recognition now and then - just restart it
+      try { r.start(); } catch { /* already running */ }
+    },
+    heard(text) {
+      if (!this.on) return;
+      this.stop();
+      utterance(text); // same wake-word/command parsing as the paid listener uses
+    },
+    stop() {
+      if (!this.on) return;
+      this.on = false; mic.classList.remove("sentry");
+      if (this.rec) { const r = this.rec; this.rec = null; r.onend = null; r.onerror = null; try { r.stop(); } catch { /* already stopped */ } }
+    },
+  };
+
+  function enterWakeMode() {
+    sentry.stop(); stt.stop(false);
+    if (S.voice.stt === "browser") stt.start(); else sentry.start();
+  }
+  function exitWakeMode() {
+    sentry.stop(); stt.stop(false);
+    clearTimeout(sleepTimer);
+  }
+
+  // Keeps the real (possibly paid) microphone up for a short spell after anything is heard or said, so a
+  // follow-up doesn't need the wake word repeated - then, once that spell passes with nothing further, hands
+  // back off to the free wake-word listener instead of streaming forever.
+  const WAKE_LISTEN_MS = 8000;
+  let sleepTimer = null;
+  function extendFollowUp(ms = WAKE_LISTEN_MS) {
+    S.followUpUntil = Date.now() + ms;
+    if (S.listenMode !== "wake" || S.voice.stt === "browser") return;
+    if (!stt.on) stt.start();
+    clearTimeout(sleepTimer);
+    sleepTimer = setTimeout(checkSleep, ms + 250);
+  }
+  function checkSleep() {
+    if (S.listenMode !== "wake" || S.voice.stt === "browser") return;
+    const remaining = S.followUpUntil - Date.now();
+    if (remaining > 0) { sleepTimer = setTimeout(checkSleep, remaining + 250); return; }
+    if (stt.on) stt.stop(false);
+    sentry.start();
+  }
+
   function utterance(raw) {
     const text = String(raw || "").trim();
     if (!text) return;
@@ -637,7 +724,7 @@
   }
 
   mic.addEventListener("click", () => {
-    if (stt.on) stt.stop(true); else stt.start();
+    if (stt.on) stt.stop(true); else { sentry.stop(); stt.start(); }
   });
 
   // ------------------------------------------------------------------ stop
@@ -684,7 +771,7 @@
   $("#set-listen").value = S.listenMode; $("#set-speak").value = S.speakPref;
   $("#set-listen").addEventListener("change", (e) => {
     S.listenMode = e.target.value; store.set("listen", S.listenMode);
-    if (S.listenMode === "wake") { stt.stop(false); stt.start(); toast("Always listening", `Say "${S.voice.wake_word}…" to talk to me.`); } else stt.stop(false);
+    if (S.listenMode === "wake") { enterWakeMode(); toast("Always listening", `Say "${S.voice.wake_word}…" to talk to me.`); } else exitWakeMode();
   });
   $("#set-speak").addEventListener("change", (e) => { S.speakPref = e.target.value; store.set("speak", S.speakPref); if (S.speakPref === "off") speaker.stop(); });
   $("#set-voice").addEventListener("change", (e) => { S.voiceId = e.target.value; store.set("voice", S.voiceId); });
@@ -905,6 +992,6 @@
     setInterval(refresh, 60000);
     setInterval(refreshMap, 60000);
     if (S.listenMode === "wake") toast("Always-listening mode", "Tap anywhere to enable the microphone and voice.");
-    window.addEventListener("click", () => { if (S.listenMode === "wake" && !stt.on) stt.start(); }, { once: true });
+    window.addEventListener("click", () => { if (S.listenMode === "wake" && !stt.on && !sentry.on) enterWakeMode(); }, { once: true });
   })();
 })();

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -271,6 +272,21 @@ def test_chat_and_tts_endpoints(settings):
         assert c.post("/api/chat", json={"text": ""}).status_code == 422
 
 
+def test_chat_stream_endpoint_streams_the_same_events_the_websocket_does(settings):
+    """The WebSocket-down fallback: still word-by-word, not a wait for the whole reply."""
+    app = create_app(settings, make(settings, [message([text_block("Good afternoon, sir.")])]))
+    with TestClient(app) as c:
+        r = c.post("/api/chat/stream", json={"text": "hello", "mode": "voice"})
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = [json.loads(line[len("data: "):]) for line in r.text.split("\n\n") if line.startswith("data: ")]
+        types = [e["type"] for e in events]
+        assert types[0] == "user_message" and "thinking" in types and types[-1] == "reply"
+        assert len(events) >= 3  # more than one line arrived - it wasn't buffered into a single reply
+        assert events[-1]["data"]["text"] == "Good afternoon, sir."
+        assert events[0]["data"]["text"] == "hello" and events[0]["data"]["mode"] == "voice"
+
+
 def test_status_survives_a_broken_connection(settings):
     """A misconfigured FSM (or any other live integration) must not take the whole display down."""
     app = create_app(settings, make(settings))
@@ -289,7 +305,7 @@ def test_status_survives_a_broken_connection(settings):
 def test_all_body_endpoints_declare_json_bodies(settings):
     app = create_app(settings, make(settings))
     schema = app.openapi()
-    for path in ("/api/chat", "/api/tts"):
+    for path in ("/api/chat", "/api/chat/stream", "/api/tts"):
         assert "requestBody" in schema["paths"][path]["post"], path
 
 

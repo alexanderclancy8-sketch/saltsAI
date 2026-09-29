@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import json
 import logging
 import os
 import time
@@ -140,6 +142,38 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         reply = await J(request).brain.ask(body.text, "voice" if body.mode == "voice" else "typed", body.attachments,
                                            speaker=speaker(request))
         return {"reply": reply}
+
+    # Same conversation, but for when the live WebSocket isn't available (e.g. it dropped and hasn't
+    # reconnected yet): word-by-word as Claude generates it, rather than the client waiting on the full
+    # reply. Each line is one of the same {"type", "data"} events the WebSocket already streams.
+    CHAT_STREAM_EVENTS = {"user_message", "thinking", "delta", "tool", "reply", "error", "stopped"}
+    CHAT_STREAM_TERMINAL = {"reply", "error", "stopped"}
+
+    @app.post("/api/chat/stream", dependencies=[Depends(owner)])
+    async def chat_stream(body: ChatIn, request: Request):
+        j = J(request)
+        mode = "voice" if body.mode == "voice" else "typed"
+        q = j.bus.subscribe()
+        task = asyncio.create_task(j.brain.ask(body.text, mode, body.attachments, speaker=speaker(request)))
+
+        async def events():
+            try:
+                while True:
+                    msg = await q.get()
+                    if msg["type"] not in CHAT_STREAM_EVENTS:
+                        continue
+                    yield f"data: {json.dumps(msg, default=str)}\n\n"
+                    if msg["type"] in CHAT_STREAM_TERMINAL:
+                        break
+            finally:
+                j.bus.unsubscribe(q)
+                if not task.done():
+                    task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.post("/api/conversation/reset", dependencies=[Depends(owner)])
     async def reset(request: Request):

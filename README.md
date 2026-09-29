@@ -128,7 +128,9 @@ Do these in any order; each one replaces demo data as soon as it's set.
    ("Jarvis, run a security review now").
 8. **Voice.** On the Settings page's Voice card: an ElevenLabs key for the most natural voice (or run
    `bash infra/deploy.sh voice` for a free Azure one), and a Deepgram key for always-listening speech-to-text
-   (OpenAI/Whisper also works for push-to-talk). Wispr Flow and other dictation apps work straight into the chat
+   (OpenAI/Whisper also works for push-to-talk). "Always listening" doesn't mean always streaming to Deepgram/
+   Whisper: Jarvis only wakes the paid microphone once it hears "Jarvis" (using the browser's own free wake-word
+   spotting the rest of the time), and puts it back to sleep after a few seconds of silence. Wispr Flow and other dictation apps work straight into the chat
    box too.
 9. **Marketing.** On the Settings page's "Google and socials" card: a Google Places key and Place ID (reviews),
    a Search Console service account (rankings), a Facebook Page token (Facebook/Instagram), and LinkedIn/TikTok
