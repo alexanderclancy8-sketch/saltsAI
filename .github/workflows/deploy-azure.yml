@@ -1,0 +1,44 @@
+# Deploys Jarvis to Azure App Service when main changes (or on demand).
+# Setup: create an Entra app with a federated credential for this repo (OIDC) that has
+# Website Contributor on the web app, then add repository secrets AZURE_CLIENT_ID,
+# AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and variable AZURE_WEBAPP_NAME.
+# It does nothing until AZURE_WEBAPP_NAME is set, and it refuses any web app not tagged app=jarvis
+# (infra/main.bicep tags Jarvis's), so it can never overwrite Salts FSM.
+name: Deploy Jarvis to Azure
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+  deploy:
+    needs: test
+    if: vars.AZURE_WEBAPP_NAME != ''
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package
+        run: zip -r jarvis.zip jarvis knowledge requirements.txt *.yaml -x "knowledge/private/*" "*/__pycache__/*"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Check the target is Jarvis
+        env:
+          APP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          tag="$(az webapp list --query "[?name=='$APP_NAME'].tags.app | [0]" -o tsv)"
+          if [ "$tag" != "jarvis" ]; then
+            echo "::error::$APP_NAME is not tagged app=jarvis; refusing to deploy Jarvis over it."
+            exit 1
+          fi
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          package: jarvis.zip

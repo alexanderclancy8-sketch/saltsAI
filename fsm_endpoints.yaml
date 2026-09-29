@@ -1,0 +1,17 @@
+# Salts FSM API paths, relative to FSM_BASE_URL + FSM_API_PREFIX.
+# Change these to match the real routes in the Salts FSM app. Jarvis only ever
+# issues GET requests against these. Responses may be a JSON array or an object
+# with an items/data/results/value array; common field-name variants
+# (camelCase / snake_case) are recognised automatically.
+jobs: /jobs              # supports ?from=YYYY-MM-DD&to=YYYY-MM-DD&status=&engineer=
+staff: /engineers
+systems: /systems        # maintained systems (fire alarm, EL, intruder, CCTV, access...)
+contracts: /contracts    # maintenance contracts incl. renewal date
+quotes: /quotes
+sites: /sites
+customers: /customers
+timesheets: /timesheets  # supports ?from=&to=
+locations: /tracking/locations  # latest engineer/van GPS positions (?engineer=&since=)
+stock: /stock            # stock items with location + quantity (stores and vans)
+stock_movements: /stock/movements  # GET ?from=&to=, POST to record a movement
+health: /health

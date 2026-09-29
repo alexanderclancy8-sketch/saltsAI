@@ -1,0 +1,104 @@
+# Accreditations register. Copy to data/accreditations.yaml (git-ignored) and fill in
+# the real certificate numbers and dates - or tell Jarvis ("our CHAS renews on 14 March").
+# Jarvis reminds you before each renewal/audit and builds the evidence pack.
+
+accreditations:
+  - scheme: BAFE SP203-1 (Fire Detection & Alarm Systems)
+    certification_body: SSAIB
+    certificate_number: "TBC"
+    modules: [Design, Installation, Commissioning & Handover, Maintenance]
+    renewal_date: 2027-03-31
+    next_audit: 2026-11-15
+    audit_type: annual surveillance audit + site/installation sampling
+    evidence:
+      - Quality manual / management system procedures (document control, reviews)
+      - Competency matrix - designers, installers, commissioners, maintainers (FIA / equivalent)
+      - Sample of recent projects with design certs, installation, commissioning & acceptance certificates
+      - Maintenance records showing 6-monthly (5-7 month) service visits and variations recorded
+      - Complaints log with corrective actions
+      - Calibration records for test equipment (insulation / loop testers, detector testers, sound meters)
+      - Subcontractor control and evaluation records
+      - Insurance certificates (PL / EL / PI)
+      - Management review and internal audit records
+
+  - scheme: SSAIB (Security Systems - intruder / CCTV / access control)
+    certification_body: SSAIB
+    certificate_number: "TBC"
+    renewal_date: 2027-03-31
+    next_audit: 2026-11-15
+    audit_type: annual surveillance audit incl. site inspections
+    evidence:
+      - Quality management system records (ISO 9001-based scheme requirements)
+      - Staff screening files to BS 7858 for everyone with access to security information
+      - Police URN records and false alarm management (NPCC policy)
+      - Maintenance visits to PD 6662 / BS EN 50131 (twice-yearly where signalling to ARC)
+      - Certificates of compliance issued for new systems
+      - Complaints log, corrective actions, calibration, insurance
+
+  - scheme: CHAS (Contractors Health & Safety Assessment Scheme)
+    certification_body: CHAS
+    certificate_number: "TBC"
+    renewal_date: 2027-01-31
+    audit_type: annual online questionnaire (SSIP)
+    evidence:
+      - Health & safety policy signed and dated within the last 12 months
+      - Risk assessments and method statements (RAMS) for typical jobs
+      - Training records - asbestos awareness, working at height, IPAF/PASMA, manual handling, first aid
+      - Accident book and RIDDOR reporting procedure
+      - COSHH assessments
+      - Employers' liability (min £5m) and public liability insurance certificates
+      - Competent person for H&S advice named
+      - Environmental and equality policies
+      - CDM 2015 arrangements
+
+# Test equipment that needs calibration (auditors check this)
+calibration:
+  - item: Insulation resistance / loop tester
+    serial: "TBC"
+    calibrated_until: 2026-12-01
+  - item: Sound level meter
+    serial: "TBC"
+    calibrated_until: 2027-02-01
+
+# Vans - MOT, service, insurance and road tax dates
+vehicles:
+  - registration: YD71 SFS
+    driver: Dan Harper
+    mot_due: 2026-11-02
+    service_due: 2026-10-20
+    insurance_due: 2027-01-01
+    tax_due: 2027-03-01
+  - registration: YD72 SFS
+    driver: Priya Shah
+    mot_due: 2027-02-14
+    service_due: 2026-10-08
+    insurance_due: 2027-01-01
+    tax_due: 2027-03-01
+
+# Ladders, access equipment, PAT and tools that need periodic inspection
+equipment:
+  - item: Ladders and steps (all vans)
+    check: inspection due
+    next_due: 2026-10-15
+  - item: Portable appliances (office + vans)
+    check: PAT test due
+    next_due: 2026-12-01
+  - item: Harnesses / fall arrest
+    check: 6-monthly inspection due
+    next_due: 2026-11-20
+
+insurance:
+  - type: Public liability
+    expires: 2027-01-01
+  - type: Employers' liability
+    expires: 2027-01-01
+  - type: Professional indemnity (design)
+    expires: 2027-01-01
+
+policies:
+  - name: Health & safety policy
+    last_reviewed: 2026-01-10
+  - name: Quality manual
+    last_reviewed: 2026-02-01
+  - name: Data protection / GDPR policy
+    last_reviewed: 2025-11-01

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Report a Problem</title>
+  <meta name="theme-color" content="#0a0d12">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/hud.css">
+  <style>
+    .wrap { position: relative; z-index: 1; max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+    label { display: block; margin: 14px 0 6px; font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    input, select, textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+      padding: 11px 12px; font-family: var(--ui); font-size: 17px; }
+    textarea { min-height: 140px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .btn { width: 100%; margin-top: 18px; padding: 14px; font-size: 17px; }
+    .msg-ok { border: 1px solid var(--ok); background: rgba(61,220,151,0.1); padding: 14px; border-radius: 10px; margin-top: 16px; }
+    .msg-bad { border: 1px solid var(--crit); background: rgba(255,77,94,0.1); padding: 14px; border-radius: 10px; margin-top: 16px; }
+    @media (max-width: 480px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY · REPORT A PROBLEM</small></div>
+  <form class="panel" id="form" style="margin-top:18px">
+    <p class="empty" style="margin:0">Something not working in Salts FSM, on a site system, or anything else? Tell Jarvis - the right person is told straight away, and software bugs are often fixed the same day.</p>
+    <div class="row">
+      <div><label for="name">Your name</label><input id="name" name="name" required autocomplete="name"></div>
+      <div><label for="email">Your email (for updates)</label><input id="email" name="email" type="email" autocomplete="email"></div>
+    </div>
+    <div class="row">
+      <div><label for="system">What's affected</label>
+        <select id="system" name="system">
+          <option>Salts FSM</option><option>Salts FSM - mobile / job sheets</option><option>Fire alarm on a site</option>
+          <option>Security system on a site</option><option>Email / Microsoft 365</option><option>Van / equipment</option><option>Other</option>
+        </select></div>
+      <div><label for="severity">How bad is it?</label>
+        <select id="severity" name="severity">
+          <option value="low">Minor - annoying but I can work</option>
+          <option value="medium" selected>It's slowing me down</option>
+          <option value="high">I can't do my job</option>
+          <option value="critical">Urgent - life safety / everyone affected</option>
+        </select></div>
+    </div>
+    <label for="title">In a few words</label>
+    <input id="title" name="title" required maxlength="200" placeholder="e.g. Can't upload photos to job sheets">
+    <label for="description">What happened? What did you expect?</label>
+    <textarea id="description" name="description" required placeholder="What were you doing, what went wrong, any error message, which job or site…"></textarea>
+    <label for="screenshot">Screenshot or photo (optional)</label>
+    <input id="screenshot" name="screenshot" type="file" accept="image/*">
+    <input type="hidden" name="key" id="key">
+    <button class="btn go" type="submit" id="submit">Send to Jarvis</button>
+    <div id="result" aria-live="polite"></div>
+  </form>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const $ = (id) => document.getElementById(id);
+  $("key").value = params.get("key") || "";
+  try { $("name").value = localStorage.getItem("report.name") || ""; $("email").value = localStorage.getItem("report.email") || ""; } catch {}
+  $("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("submit").disabled = true; $("submit").textContent = "Sending…";
+    try { localStorage.setItem("report.name", $("name").value); localStorage.setItem("report.email", $("email").value); } catch {}
+    const fd = new FormData($("form"));
+    if (!$("screenshot").files.length) fd.delete("screenshot");
+    try {
+      const r = await fetch("/api/issues/report", { method: "POST", body: fd });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "Something went wrong");
+      $("result").innerHTML = `<div class="msg-ok">${d.message.replace(/</g, "&lt;")}</div>`;
+      $("title").value = ""; $("description").value = ""; $("screenshot").value = "";
+    } catch (err) {
+      $("result").innerHTML = `<div class="msg-bad">${String(err.message).replace(/</g, "&lt;")}</div>`;
+    } finally {
+      $("submit").disabled = false; $("submit").textContent = "Send to Jarvis";
+    }
+  });
+</script>
+</body>
+</html>

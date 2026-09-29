@@ -1,0 +1,8 @@
+.venv
+.git
+data
+finance_data
+knowledge/private
+.env
+tests
+__pycache__

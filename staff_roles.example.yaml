@@ -1,0 +1,103 @@
+# Staff register: who does what, and what "good" looks like.
+#
+# Copy this file to data/staff_roles.yaml (git-ignored - it holds personal data) and
+# fill in your real team, or just tell Jarvis ("Jarvis, Hannah also handles
+# contract renewals; expect 15 quotes a week from Josh") and it will update it.
+#
+# Jarvis uses this to understand everyone's duties, measure each person against
+# THEIR OWN expectations, and flag anyone falling short in the weekly review.
+# Targets are minimums unless the metric name ends in _max.
+
+defaults:
+  engineer:
+    jobs_per_day: 2.5
+    utilisation_pct: 70          # hours on jobs / hours on timesheet
+    on_time_start_pct: 85        # started within 30 min of booked time
+    revisit_rate_pct_max: 10     # jobs needing another call-out within 30 days
+  office:
+    emails_sent_per_day: 12
+    teams_messages_per_day: 5
+
+staff:
+  - name: Dan Harper
+    type: engineer
+    role: Senior Fire Engineer
+    vehicle: YD71 SFS           # van registration as it appears in RAM Tracking
+    duties:
+      - Service and maintain fire detection & alarm systems to BS 5839-1 (6-monthly visits)
+      - Attend fire alarm faults and call-outs within SLA
+      - Commission new Gent Vigilon and Kentec installations
+      - Mentor the apprentice
+    expectations:
+      jobs_per_day: 3
+      utilisation_pct: 75
+
+  - name: Priya Shah
+    type: engineer
+    role: Fire & Security Engineer
+    duties:
+      - Fire alarm, emergency lighting and intruder alarm servicing
+      - Remedial works from service reports
+
+  - name: Tom Wilkinson
+    type: engineer
+    role: Security Engineer
+    duties:
+      - Intruder alarm (BS EN 50131 / PD 6662), CCTV and access control installs and maintenance
+      - Keep ARC signalling and police URN records up to date
+
+  - name: Megan Lowe
+    type: engineer
+    role: Fire Engineer
+    duties:
+      - Planned maintenance visits and emergency lighting annual duration tests (BS 5266-1)
+
+  - name: Kyle Brennan
+    type: engineer
+    role: Apprentice Engineer
+    duties:
+      - Assist senior engineers; complete FIA training modules
+    expectations:
+      jobs_per_day: 1.5
+      utilisation_pct: 55
+
+  - name: Sam Oduya
+    type: engineer
+    role: Commissioning Engineer
+    duties:
+      - Commissioning and handover of new systems; cause & effect testing; certificates
+
+  - name: Hannah Cole
+    type: office
+    email: hannah.cole@example.co.uk
+    role: Office Manager / Scheduler
+    duties:
+      - Book and schedule all engineer jobs in Salts FSM; keep PPM visits within their service window
+      - Answer customer calls and emails the same day
+      - Chase engineers for completed job sheets and certificates
+    expectations:
+      jobs_booked_per_week: 25
+      emails_sent_per_day: 15
+
+  - name: Josh Pryce
+    type: office
+    email: josh.pryce@example.co.uk
+    role: Sales & Estimating
+    duties:
+      - Survey and quote new installations and remedial works
+      - Follow up every sent quote within 7 days
+      - Renew maintenance contracts before their renewal date
+    expectations:
+      quotes_per_week: 14
+      quote_conversion_pct: 35
+
+  - name: Rachel Gill
+    type: office
+    email: rachel.gill@example.co.uk
+    role: Accounts Administrator
+    duties:
+      - Raise invoices in Sage within 2 days of job completion
+      - Credit control - chase overdue invoices weekly
+      - Supplier bills, VAT and CIS paperwork for the accountant
+    expectations:
+      emails_sent_per_day: 10
