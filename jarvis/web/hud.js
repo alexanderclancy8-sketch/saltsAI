@@ -2,6 +2,7 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
   const store = {
     get(k, d) { try { const v = localStorage.getItem("jarvis." + k); return v === null ? d : v; } catch { return d; } },
     set(k, v) { try { localStorage.setItem("jarvis." + k, v); } catch { /* private mode */ } },
@@ -81,40 +82,36 @@
 
   // ------------------------------------------------------------------ HUD state + reactor
   const STATE_LABEL = { idle: "Online", listening: "Listening", thinking: "Thinking", speaking: "Speaking", awaiting: "Yes, sir?" };
-  function setHud(state) { S.hudState = state; $("#state").textContent = STATE_LABEL[state] || state; }
+  function setHud(state) {
+    S.hudState = state;
+    $("#state").textContent = STATE_LABEL[state] || state;
+    $("#btn-stop").hidden = !["thinking", "speaking"].includes(state);
+  }
   function caption(text, interim = "") { $("#caption").innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
 
   const canvas = $("#reactor");
   const ctx = canvas.getContext("2d");
   function drawReactor(t) {
     const w = canvas.width, h = canvas.height, cx = w / 2, cy = h / 2;
-    S.level += (S.targetLevel - S.level) * 0.25;
-    if (S.hudState === "speaking" && speaker.browserSpeaking) S.targetLevel = 0.35 + 0.3 * Math.abs(Math.sin(t / 90));
-    const colour = { idle: "38,217,255", listening: "61,220,151", thinking: "255,176,32", speaking: "38,217,255", awaiting: "61,220,151" }[S.hudState] || "38,217,255";
+    S.level += (S.targetLevel - S.level) * 0.2;
+    if (S.hudState === "speaking" && speaker.browserSpeaking) S.targetLevel = 0.3 + 0.25 * Math.abs(Math.sin(t / 90));
+    const colour = { idle: "76,141,255", listening: "52,211,153", thinking: "245,185,66", speaking: "76,141,255", awaiting: "52,211,153" }[S.hudState] || "76,141,255";
     const lvl = S.level;
     ctx.clearRect(0, 0, w, h);
-    const glow = ctx.createRadialGradient(cx, cy, 10, cx, cy, w / 2);
-    glow.addColorStop(0, `rgba(${colour},${0.35 + lvl * 0.5})`); glow.addColorStop(0.35, `rgba(${colour},0.08)`); glow.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = glow; ctx.fillRect(0, 0, w, h);
-    const speed = S.hudState === "thinking" ? 3 : 1;
-    const rings = [[150, 2, 0.0004, [40, 12]], [128, 6, -0.0007, [3, 9]], [108, 1.5, 0.001, [80, 20]], [88, 10, -0.0005, [14, 6]]];
-    rings.forEach(([r, width, spin, dash], k) => {
-      ctx.save(); ctx.translate(cx, cy); ctx.rotate(t * spin * speed);
-      ctx.setLineDash(dash); ctx.lineWidth = width;
-      ctx.strokeStyle = `rgba(${colour},${0.25 + 0.2 * k / 3 + lvl * 0.4})`;
-      ctx.beginPath(); ctx.arc(0, 0, r + (k === 3 ? lvl * 10 : 0), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
-    });
+    const speed = S.hudState === "thinking" ? 1.4 : 1;
+    // A calm progress ring plus one slow-rotating tick ring - a status indicator, not a light show.
     ctx.save(); ctx.translate(cx, cy);
-    for (let i = 0; i < 60; i++) {
-      const a = (i / 60) * Math.PI * 2 + t * 0.0002;
-      const len = i % 5 === 0 ? 10 : 4;
-      ctx.strokeStyle = `rgba(${colour},0.45)`; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(Math.cos(a) * 160, Math.sin(a) * 160); ctx.lineTo(Math.cos(a) * (160 - len), Math.sin(a) * (160 - len)); ctx.stroke();
-    }
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.beginPath(); ctx.arc(0, 0, 128, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = `rgba(${colour},${0.55 + lvl * 0.35})`; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.arc(0, 0, 128, -Math.PI / 2, -Math.PI / 2 + (0.18 + lvl * 0.7) * Math.PI * 2); ctx.stroke();
+    ctx.rotate(t * 0.00025 * speed);
+    ctx.setLineDash([2, 16]); ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(${colour},0.3)`;
+    ctx.beginPath(); ctx.arc(0, 0, 108, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
-    const core = 34 + lvl * 26 + Math.sin(t / 600) * 2;
+    const core = 30 + lvl * 18;
     const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, core);
-    g.addColorStop(0, "rgba(255,255,255,0.95)"); g.addColorStop(0.4, `rgba(${colour},0.9)`); g.addColorStop(1, `rgba(${colour},0)`);
+    g.addColorStop(0, "rgba(255,255,255,0.9)"); g.addColorStop(0.5, `rgba(${colour},0.75)`); g.addColorStop(1, `rgba(${colour},0)`);
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, core, 0, Math.PI * 2); ctx.fill();
     requestAnimationFrame(drawReactor);
   }
@@ -359,6 +356,13 @@
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
       case "conversation_reset": $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
+      case "stopped": if (!speaker.active) setHud("idle"); break;
+      case "reload":
+        toast("Settings applied", "Reconnecting…");
+        if (S.ws) { S.ws.onclose = null; S.ws.close(); }
+        setTimeout(connect, 400);
+        setTimeout(refresh, 700);
+        break;
     }
   }
 
@@ -635,6 +639,24 @@
   mic.addEventListener("click", () => {
     if (stt.on) stt.stop(true); else stt.start();
   });
+
+  // ------------------------------------------------------------------ stop
+  function stopEverything() {
+    speaker.stop(); // instant - halts audio/browser speech straight away
+    if (current) {
+      const body = current.querySelector(".md");
+      body.classList.remove("typing");
+      if (!current.dataset.raw) current.remove(); else body.innerHTML = md(current.dataset.raw) + `<div class="tools">Stopped.</div>`;
+      current = null;
+    }
+    setHud("idle");
+    $("#toolline").textContent = "";
+    // Tell the backend too, so it actually stops generating and the next message doesn't queue behind it.
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
+    else api("/api/interrupt", { method: "POST" }).catch(() => {});
+  }
+  $("#btn-stop").addEventListener("click", stopEverything);
+  window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#btn-stop").hidden) stopEverything(); });
   let spaceHeld = false;
   window.addEventListener("keydown", (e) => {
     if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
@@ -642,9 +664,23 @@
   });
   window.addEventListener("keyup", (e) => { if (e.code === "Space" && spaceHeld) { spaceHeld = false; stt.stop(true); } });
 
-  // ------------------------------------------------------------------ settings
-  $("#btn-settings").addEventListener("click", () => $("#drawer").classList.add("open"));
-  $("#drawer-close").addEventListener("click", () => $("#drawer").classList.remove("open"));
+  // ------------------------------------------------------------------ settings drawer: voice/display tab
+  function openDrawer() {
+    $("#drawer").classList.add("open");
+    if (!Settings.loaded) Settings.load();
+  }
+  $("#btn-settings").addEventListener("click", openDrawer);
+  $("#drawer-close").addEventListener("click", () => {
+    if (Settings.dirty() && !confirm("Discard unsaved connection changes?")) return;
+    Settings.revert();
+    $("#drawer").classList.remove("open");
+  });
+  $("#drawer-tabs").addEventListener("click", (e) => {
+    const tab = e.target.closest(".drawer-tab");
+    if (!tab) return;
+    $$(".drawer-tab").forEach((t) => t.classList.toggle("active", t === tab));
+    $$(".drawer-pane").forEach((p) => { p.hidden = p.id !== `pane-${tab.dataset.pane}`; });
+  });
   $("#set-listen").value = S.listenMode; $("#set-speak").value = S.speakPref;
   $("#set-listen").addEventListener("change", (e) => {
     S.listenMode = e.target.value; store.set("listen", S.listenMode);
@@ -655,7 +691,6 @@
   $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say("At your service, sir. This is how I sound."); });
   let voicesLoaded = false;
   async function renderSettings(st) {
-    $("#connections").innerHTML = Object.entries(st.connections || {}).map(([k, v]) => `<div class="conn"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("");
     $("#btn-sage").hidden = !(st.sage?.configured && !st.sage?.connected);
     if (!voicesLoaded && S.voice.tts === "elevenlabs") {
       voicesLoaded = true;
@@ -666,6 +701,200 @@
       } catch { /* ignore */ }
     }
   }
+
+  // ------------------------------------------------------------------ settings drawer: connections tab
+  const Settings = {
+    loaded: false, sections: [], edited: {}, cleared: new Set(), open: new Set(), advanced: new Set(), testing: new Set(),
+
+    async load() {
+      try {
+        const data = await (await api("/api/settings")).json();
+        this.loaded = true;
+        this.sections = data.sections;
+        if (data.context?.staff_report_link) $("#report-link").textContent = data.context.staff_report_link.replace(/^https?:\/\//, "");
+        this.render(data.problem);
+      } catch { toast("Couldn't load settings", "Check the connection and try again.", "warning"); }
+    },
+
+    dirty() { return Object.keys(this.edited).length > 0 || this.cleared.size > 0; },
+
+    revert() { this.edited = {}; this.cleared.clear(); this.render(); },
+
+    field(key) { for (const s of this.sections) { const f = s.fields.find((x) => x.key === key); if (f) return f; } return null; },
+
+    render(problem = "") {
+      $("#settings-problem").innerHTML = problem
+        ? `<div class="set-problem">${esc(problem)}</div>` : "";
+      $("#settings-sections").innerHTML = this.sections.map((s) => this.renderSection(s)).join("");
+      this.updateSaveBar();
+    },
+
+    badge(sec) {
+      if (!sec.show_badge) return "";
+      const test = sec.last_test;
+      if (test && !test.stale) return test.ok ? `<span class="set-badge on">Working</span>` : `<span class="set-badge fail">Test failed</span>`;
+      if (sec.configured) return `<span class="set-badge on">Connected</span>`;
+      return `<span class="set-badge off">Not set up</span>`;
+    },
+
+    renderSection(sec) {
+      const isOpen = this.open.has(sec.id);
+      const basics = sec.fields.filter((f) => !f.advanced);
+      const advanced = sec.fields.filter((f) => f.advanced);
+      const showAdvanced = this.advanced.has(sec.id);
+      const guide = sec.guide?.length ? `<div class="set-guide"><strong>Setup</strong><ol>${sec.guide.map((g) => `<li>${esc(g)}</li>`).join("")}</ol></div>` : "";
+      const test = sec.last_test;
+      const testHtml = sec.test ? `
+        <div class="set-section-actions">
+          <button class="btn small" data-test="${esc(sec.id)}" type="button" ${this.testing.has(sec.id) ? "disabled" : ""}>
+            ${this.testing.has(sec.id) ? "Testing…" : "Test connection"}
+          </button>
+        </div>
+        ${test ? `<div class="set-test-result ${test.ok ? "ok" : "fail"}">${esc(test.detail)}${test.stale ? '<span class="stale-note">Settings changed since this test - test again.</span>' : ""}</div>` : ""}
+      ` : "";
+      return `
+        <div class="set-section${isOpen ? " open" : ""}" data-section="${esc(sec.id)}">
+          <div class="set-section-head" data-toggle="${esc(sec.id)}">
+            <div class="set-section-titles"><h3>${esc(sec.title)}</h3><div class="blurb">${esc(sec.blurb)}</div></div>
+            ${this.badge(sec)}
+            <span class="set-chevron">▸</span>
+          </div>
+          <div class="set-section-fields">
+            ${guide}
+            ${basics.map((f) => this.renderField(sec.id, f)).join("")}
+            ${advanced.length ? (showAdvanced
+              ? advanced.map((f) => this.renderField(sec.id, f)).join("") + `<button class="set-advanced-toggle" data-hide-advanced="${esc(sec.id)}" type="button">Hide advanced options</button>`
+              : `<button class="set-advanced-toggle" data-show-advanced="${esc(sec.id)}" type="button">Show ${advanced.length} advanced option${advanced.length > 1 ? "s" : ""}</button>`) : ""}
+            ${testHtml}
+          </div>
+        </div>`;
+    },
+
+    renderField(sectionId, f) {
+      const hasEdit = Object.prototype.hasOwnProperty.call(this.edited, f.key);
+      const isCleared = this.cleared.has(f.key);
+      const error = this._errors?.[f.key];
+      const sourceNote = f.source === "azure" ? "from Azure" : f.source === "here" ? "" : "";
+      let control = "";
+      if (f.kind === "bool") {
+        const checked = hasEdit ? this.edited[f.key] : !!f.value;
+        control = `<div class="set-checkbox"><input type="checkbox" id="f-${f.key}" data-field="${f.key}" ${checked ? "checked" : ""}>
+          <label for="f-${f.key}">${esc(f.label)}</label></div>`;
+        return `<div class="set-field${error ? " has-error" : ""}">${control}${f.help ? `<div class="field-help">${esc(f.help)}</div>` : ""}${error ? `<div class="field-error">${esc(error)}</div>` : ""}</div>`;
+      }
+      if (f.kind === "select") {
+        const current = hasEdit ? this.edited[f.key] : f.value;
+        control = `<select id="f-${f.key}" data-field="${f.key}">${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === current ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+      } else if (f.kind === "secret") {
+        if (isCleared) {
+          control = `<div class="set-secret-row"><span class="set-hint">will be cleared</span><button class="btn small" data-undo-clear="${f.key}" type="button">Undo</button></div>`;
+        } else {
+          const hint = hasEdit ? "new value entered" : (f.is_set ? f.hint : "not set");
+          control = `<div class="set-secret-row">
+            <input type="password" id="f-${f.key}" data-field="${f.key}" placeholder="${f.is_set ? "Leave blank to keep the current one" : esc(f.placeholder || "")}" autocomplete="new-password">
+            <span class="set-hint">${esc(hint)}</span>
+            ${f.is_set ? `<button class="btn small" data-clear="${f.key}" type="button">Clear</button>` : ""}
+          </div>`;
+        }
+      } else if (f.kind === "textarea" || f.kind === "notes") {
+        const current = hasEdit ? this.edited[f.key] : (f.value || "");
+        control = `<textarea id="f-${f.key}" data-field="${f.key}" placeholder="${esc(f.placeholder || "")}">${esc(current)}</textarea>`;
+      } else {
+        const current = hasEdit ? this.edited[f.key] : (f.value ?? "");
+        const type = f.kind === "number" ? "number" : f.kind === "email" ? "email" : f.kind === "url" ? "url" : "text";
+        control = `<input type="${type}" id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}">`;
+      }
+      return `<div class="set-field${error ? " has-error" : ""}">
+        <label for="f-${f.key}">${esc(f.label)}${sourceNote ? `<span class="set-source">${sourceNote}</span>` : ""}</label>
+        ${control}
+        ${f.help ? `<div class="field-help">${esc(f.help)}</div>` : ""}
+        ${error ? `<div class="field-error">${esc(error)}</div>` : ""}
+      </div>`;
+    },
+
+    updateSaveBar() {
+      const dirty = this.dirty();
+      $("#settings-savebar").hidden = !dirty;
+      $("#settings-status").textContent = dirty
+        ? `${Object.keys(this.edited).length + this.cleared.size} change${(Object.keys(this.edited).length + this.cleared.size) === 1 ? "" : "s"} not yet saved`
+        : "";
+    },
+
+    async test(sectionId) {
+      this.testing.add(sectionId);
+      this.render();
+      try {
+        const r = await api(`/api/settings/test/${encodeURIComponent(sectionId)}`, { method: "POST" });
+        const result = await r.json();
+        const sec = this.sections.find((s) => s.id === sectionId);
+        if (sec) sec.last_test = result;
+        toast(result.ok ? "Connected" : "Test failed", result.detail, result.ok ? "info" : "warning");
+      } catch { toast("Couldn't run the test", "Check the connection and try again.", "warning"); }
+      this.testing.delete(sectionId);
+      this.render();
+    },
+
+    async save() {
+      $("#btn-settings-save").disabled = true;
+      $("#btn-settings-save").textContent = "Saving…";
+      try {
+        const r = await api("/api/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values: this.edited, clear: [...this.cleared] }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          this._errors = data.errors || {};
+          this.render();
+          toast("Couldn't save", "Fix the highlighted fields.", "warning");
+          return;
+        }
+        this._errors = {};
+        this.edited = {}; this.cleared.clear();
+        this.sections = data.sections;
+        this.render(data.problem);
+        if (data.signed_out) { toast("Password changed", "Sign in again with the new one."); setTimeout(() => location.href = "/login", 1200); return; }
+        toast("Settings saved", "Jarvis picked up the changes.");
+        refresh();
+      } catch {
+        toast("Couldn't save", "Check the connection and try again.", "warning");
+      } finally {
+        // Always re-enable, even after a validation error or a redirect-to-login - a stuck "Saving…" button
+        // with no way to try again is worse than a button that's briefly clickable during the redirect.
+        $("#btn-settings-save").disabled = false;
+        $("#btn-settings-save").textContent = "Save changes";
+      }
+    },
+  };
+
+  $("#settings-sections").addEventListener("click", (e) => {
+    const toggle = e.target.closest("[data-toggle]");
+    if (toggle) { const id = toggle.dataset.toggle; Settings.open.has(id) ? Settings.open.delete(id) : Settings.open.add(id); Settings.render(); return; }
+    const test = e.target.closest("[data-test]");
+    if (test) { Settings.test(test.dataset.test); return; }
+    const showAdv = e.target.closest("[data-show-advanced]");
+    if (showAdv) { Settings.advanced.add(showAdv.dataset.showAdvanced); Settings.render(); return; }
+    const hideAdv = e.target.closest("[data-hide-advanced]");
+    if (hideAdv) { Settings.advanced.delete(hideAdv.dataset.hideAdvanced); Settings.render(); return; }
+    const clear = e.target.closest("[data-clear]");
+    if (clear) { Settings.cleared.add(clear.dataset.clear); delete Settings.edited[clear.dataset.clear]; Settings.render(); return; }
+    const undo = e.target.closest("[data-undo-clear]");
+    if (undo) { Settings.cleared.delete(undo.dataset.undoClear); Settings.render(); return; }
+  });
+  $("#settings-sections").addEventListener("input", (e) => {
+    const el = e.target.closest("[data-field]");
+    if (!el) return;
+    const key = el.dataset.field;
+    const f = Settings.field(key);
+    if (!f) return;
+    if (f.kind === "bool") Settings.edited[key] = el.checked;
+    else if (f.kind === "number") Settings.edited[key] = el.value === "" ? "" : Number(el.value);
+    else Settings.edited[key] = el.value;
+    Settings.cleared.delete(key);
+    Settings.updateSaveBar();
+  });
+  $("#btn-settings-save").addEventListener("click", () => Settings.save());
+  $("#btn-settings-cancel").addEventListener("click", () => Settings.revert());
 
   // ------------------------------------------------------------------ boot
   (async () => {
