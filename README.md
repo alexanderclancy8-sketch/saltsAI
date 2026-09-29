@@ -91,8 +91,14 @@ Do these in any order; each one replaces demo data as soon as it's set.
      `deploy.sh m365` prints this command with your own values filled in.
    - To see names in activity reports, turn off *"Display concealed user, group, and site names"* in the M365
      admin centre (Settings → Org settings → Reports).
-   - For Teams updates, create a Teams **Workflows** "post to a channel when a webhook request is received" flow
-     and put its URL in the Settings page's Teams card.
+   - For Teams updates (one-way, posted to a channel), create a Teams **Workflows** "post to a channel when a
+     webhook request is received" flow and put its URL in the Settings page's Teams card.
+   - For **Teams chat** - messaging Jarvis from your phone and getting a real reply, the same conversation as
+     the web display - run `APP_NAME=<your app name> bash infra/deploy.sh teamsbot`. It registers Jarvis as a
+     Bot Framework bot, turns on the Teams channel, saves the settings, and builds a Teams app package
+     (`jarvis-teams-app.zip`) to sideload: Teams > Apps > Manage your apps > Upload a custom app. Only the
+     owner's and business partner's email addresses (set under "You and the business") get a reply - anyone
+     else who messages the bot is ignored.
 2. **Salts FSM.** Fill in the web address and API key on the Settings page, and edit `fsm_endpoints.yaml` to
    match the FSM's API routes: jobs, engineers, systems, contracts, quotes, sites, timesheets, stock, tracking.
    Field names are matched flexibly. If the FSM has no API yet, add read-only JSON endpoints for these and

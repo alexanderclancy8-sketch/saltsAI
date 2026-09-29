@@ -148,6 +148,10 @@ Bulk import: to set many keys in one go from Cloud Shell instead, `cp .env.examp
 - **Change who can sign in:** `bash infra/deploy.sh signin you@... partner@... officemanager@...`. This sets
   the full list, so anyone left off loses access.
 - **Microsoft 365 setup or a fresh client secret:** `bash infra/deploy.sh m365` (see step 5 above).
+- **Message Jarvis from your phone in Teams:** `bash infra/deploy.sh teamsbot`. It registers a Bot Framework
+  bot, turns on the Teams channel, and builds `jarvis-teams-app.zip` for you to download (Cloud Shell's
+  "Manage files" > "Download") and sideload in Teams (Apps > Manage your apps > Upload a custom app). Set the
+  owner's and business partner's emails on the Settings page first - only they get a reply.
 - **A natural British voice:** `bash infra/deploy.sh voice` sets up Azure's speech service (free tier where
   available) and connects it, with no keys to copy. For ElevenLabs' "Daniel" voice instead, get an API key
   from elevenlabs.io and run `bash infra/deploy.sh secret ELEVENLABS_API_KEY`.

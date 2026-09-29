@@ -10,6 +10,7 @@
 #   bash infra/deploy.sh voice                give Jarvis Azure's natural British voice (free tier where available)
 #   bash infra/deploy.sh voicetest            fetch a sample of Jarvis's Azure voice to listen to
 #   bash infra/deploy.sh m365                 register Jarvis for Microsoft 365 (mail, calendar, Teams) and save it
+#   bash infra/deploy.sh teamsbot              register a Teams chat bot and build its app package
 #   bash infra/deploy.sh secret NAME          save one key or password (e.g. ELEVENLABS_API_KEY) without showing it
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
@@ -401,6 +402,67 @@ Add it by hand in Entra ID > App registrations > $display > API permissions, the
   echo "    New-ApplicationAccessPolicy -AppId $app_id -PolicyScopeGroupId $mailbox -AccessRight RestrictAccess -Description Jarvis"
 }
 
+# Registers Jarvis as a Bot Framework bot with the Teams channel turned on, so the owner and business partner
+# can message it from their phone, and builds the app package to add it to Teams.
+teamsbot() {
+  find_jarvis_app
+  local display="Jarvis Teams Bot ($APP_NAME)" bot_name="${APP_NAME}-bot" app_id sp_id tenant host secret
+  local company website out="$HOME/jarvis-teams-app.zip" workdir owner_email partner_email allowed
+  setting() { az webapp config appsettings list -g "$RG" -n "$APP_NAME" --query "[?name=='$1'].value | [0]" -o tsv; }
+
+  tenant="$(az account show --query tenantId -o tsv)"
+  host="$(az webapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)"
+  company="$(setting COMPANY_NAME)"; company="${company:-Salts Fire and Security}"
+  website="$(setting WEBSITE_URL)"; website="${website:-https://$host}"
+  owner_email="$(setting OWNER_EMAIL)"; partner_email="$(setting PARTNER_EMAIL)"
+  allowed="$(printf '%s\n' "$owner_email" "$partner_email" | { grep -v '^$' || true; } | paste -sd ' ' -)"
+
+  echo "Registering Jarvis as a bot..."
+  app_id="$(az ad app list --display-name "$display" --query "[0].appId" -o tsv)"
+  if [ -z "$app_id" ]; then
+    app_id="$(az ad app create --display-name "$display" --sign-in-audience AzureADMyOrg --query appId -o tsv)"
+  fi
+  sp_id="$(az ad sp show --id "$app_id" --query id -o tsv 2>/dev/null || true)"
+  [ -n "$sp_id" ] || az ad sp create --id "$app_id" -o none
+  secret="$(az ad app credential reset --id "$app_id" --display-name jarvis-teamsbot --years 2 --query password -o tsv)"
+
+  echo "Creating the Azure Bot resource and turning on the Teams channel..."
+  az extension add --name botservice --upgrade -y -o none 2>/dev/null || true
+  if az bot show -g "$RG" -n "$bot_name" -o none 2>/dev/null; then
+    az bot update -g "$RG" -n "$bot_name" --endpoint "https://$host/api/teams/messages" -o none
+  else
+    az bot create -g "$RG" -n "$bot_name" --kind registration --appid "$app_id" --app-type SingleTenant \
+      --tenant-id "$tenant" --sku F0 --endpoint "https://$host/api/teams/messages" -o none
+  fi
+  az bot msteams create -g "$RG" -n "$bot_name" -o none 2>/dev/null || true  # already on if this fails as "exists"
+
+  az webapp config appsettings set -g "$RG" -n "$APP_NAME" -o none \
+    --settings "TEAMS_BOT_APP_ID=$app_id" "TEAMS_BOT_APP_PASSWORD=$secret" "TEAMS_BOT_TENANT_ID=$tenant"
+
+  echo "Building the Teams app package..."
+  workdir="$(mktemp -d)"
+  sed -e "s/__BOT_APP_ID__/$app_id/g" -e "s/__COMPANY_NAME__/$company/g" \
+    -e "s#__WEBSITE_URL__#$website#g" templates/teams-app/manifest.json >"$workdir/manifest.json"
+  cp templates/teams-app/color.png templates/teams-app/outline.png "$workdir/"
+  rm -f "$out"
+  (cd "$workdir" && zip -qr "$out" manifest.json color.png outline.png)
+  rm -rf "$workdir"
+
+  echo
+  echo "Saved. Jarvis restarts to pick this up."
+  echo "Teams app package: $out"
+  echo "In Cloud Shell's toolbar click 'Manage files' > 'Download', type  jarvis-teams-app.zip  to get it onto"
+  echo "your PC, then in Teams: Apps > Manage your apps > Upload a custom app, and pick that file. If Teams"
+  echo "won't let you (custom app uploads switched off), ask your Microsoft 365 admin to install it for you, or"
+  echo "to turn on custom app uploads in the Teams admin centre first."
+  if [ -n "$allowed" ]; then
+    echo "Only $allowed can actually get a reply - anyone else who messages the bot is ignored."
+  else
+    echo "Set the owner's (and business partner's) email under Settings > You and the business first -"
+    echo "until then, nobody is recognised, so the bot won't reply to anyone."
+  fi
+}
+
 # Turns a Linux web app made by hand in the portal into Jarvis.
 adopt() {
   local groups kind site_linux plan_linux plan_kind plan_name plan_id host tier others site_id go
@@ -614,6 +676,7 @@ case "${1:-setup}" in
   voice) setup_voice ;;
   voicetest) voice_test ;;
   m365) m365 ;;
+  teamsbot) teamsbot ;;
   secret) set_secret "${2:-}" ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|voicetest|m365|secret NAME]" ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token|voice|voicetest|m365|teamsbot|secret NAME]" ;;
 esac
