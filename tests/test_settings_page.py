@@ -172,6 +172,36 @@ def test_connection_test_reports_when_nothing_is_configured(settings):
         assert body["ok"] is False and "first" in body["detail"].lower()
 
 
+def test_saving_a_bare_fsm_domain_through_the_real_route_actually_unblocks_the_connection_test(settings):
+    # The exact round trip the owner hits: paste the FSM address on the Settings page without "https://",
+    # save, then click Test. Covers the real bug report end to end, not just the pieces in isolation.
+    settings.jarvis_owner_password = "s3cret"
+    j = make(settings)
+    app = create_app(settings, j)
+    with TestClient(app) as c:
+        c.post("/login", data={"password": "s3cret"})
+        before = c.post("/api/settings/test/fsm").json()
+        assert before["ok"] is False and "first" in before["detail"].lower()
+
+        saved = c.post("/api/settings", json={"values": {"fsm_base_url": "fsm.saltsfireandsecurity.co.uk"},
+                                              "clear": []})
+        assert saved.status_code == 200
+        assert settings.fsm_base_url == "https://fsm.saltsfireandsecurity.co.uk"
+
+        live = app.state.j  # the save reloads Jarvis - this is the instance later requests actually use
+        assert live.fsm.demo is False
+
+        async def fake_check():
+            return "Salts FSM reachable"
+
+        async def fake_jobs():
+            return []
+
+        live.fsm.check, live.fsm.jobs = fake_check, fake_jobs
+        after = c.post("/api/settings/test/fsm").json()
+        assert after["ok"] is True and after["detail"] == "Salts FSM reachable. 0 jobs found."
+
+
 def test_connection_test_selfimprove_checks_its_own_github(settings, monkeypatch):
     settings.jarvis_owner_password = "s3cret"
     j = make(settings)
