@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     ms_client_secret: str = ""
     ms_mailbox: str = ""  # e.g. alex.clancy@saltsfireandsecurity.co.uk
     teams_webhook_url: str = ""  # Teams "Workflows" incoming webhook for updates
+    # Teams chat: a proper conversational bot (Bot Framework) so the owner/partner can message Jarvis from their
+    # phone in Teams, not just post one-way updates. Its own Entra app - see `deploy.sh teamsbot`.
+    teams_bot_app_id: str = ""
+    teams_bot_app_password: str = ""
+    teams_bot_tenant_id: str = ""
     issue_email_tag: str = "[ISSUE]"
     # Out-of-hours answering service: the address/domain (or a subject word) of their call-report emails
     ooh_email_from: str = ""
@@ -244,6 +249,10 @@ class Settings(BaseSettings):
     @property
     def graph_configured(self) -> bool:
         return bool(self.ms_tenant_id and self.ms_client_id and self.ms_client_secret and self.ms_mailbox)
+
+    @property
+    def teams_bot_configured(self) -> bool:
+        return bool(self.teams_bot_app_id and self.teams_bot_app_password and self.teams_bot_tenant_id)
 
     @property
     def fsm_configured(self) -> bool:

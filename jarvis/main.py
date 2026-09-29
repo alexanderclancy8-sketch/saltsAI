@@ -21,6 +21,7 @@ from . import auth
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
+from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
 from .integrations.voice import VoiceError
 from .services import connection_tests
 from .settings_store import SECTIONS_BY_ID, SettingsStore
@@ -352,6 +353,49 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.post("/api/wrapup", dependencies=[Depends(owner)])
     async def wrapup(request: Request):
         return {"text": await J(request).wrapup.run(deliver=False)}
+
+    # ------------------------------------------------------------------ Teams chat (Bot Framework webhook)
+    async def _handle_teams_message(j: Jarvis, service_url: str, conversation_id: str, text: str, name: str) -> None:
+        try:
+            reply = await j.brain.ask(text, "typed", speaker=name)
+            await j.teamsbot.reply(service_url, conversation_id, reply)
+        except Exception as e:  # noqa: BLE001
+            log.exception("Teams chat reply failed")
+            try:
+                await j.teamsbot.reply(service_url, conversation_id,
+                                       "Something went wrong my end - please try again.")
+            except Exception:  # noqa: BLE001
+                pass
+
+    @app.post("/api/teams/messages")
+    async def teams_messages(request: Request):
+        # Microsoft calls this directly - there's no session cookie, so the bearer token IS the authentication.
+        j = J(request)
+        try:
+            await verify_activity(request.headers.get("authorization"), settings.teams_bot_app_id, j.http)
+        except TeamsBotError as e:
+            log.warning("Rejected a Teams request: %s", e)
+            raise HTTPException(401, "invalid token") from None
+        activity = await request.json()
+        if activity.get("type") != "message" or not activity.get("text"):
+            return {}
+        service_url = activity.get("serviceUrl", "")
+        if not trusted_service_url(service_url):
+            log.warning("Rejected a Teams activity with an untrusted serviceUrl: %s", service_url)
+            return {}
+        conversation_id = (activity.get("conversation") or {}).get("id")
+        from_id = (activity.get("from") or {}).get("id")
+        if not conversation_id or not from_id:
+            return {}
+        email = await j.teamsbot.sender_email(service_url, conversation_id, from_id)
+        allowed = {settings.owner_email.lower(), settings.partner_email.lower()} | settings.managers
+        if not email or email.lower() not in {a for a in allowed if a}:
+            log.info("Ignored a Teams message from an unrecognised account (%s)", email or from_id)
+            return {}
+        name = settings.person(email)
+        text = str(activity["text"]).strip()[:20000]
+        asyncio.create_task(_handle_teams_message(j, service_url, conversation_id, text, name))
+        return {}
 
     # ------------------------------------------------------------------ settings page
     def settings_view(j: Jarvis) -> dict[str, Any]:

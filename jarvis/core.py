@@ -19,6 +19,7 @@ from .integrations.fsm import DemoFSM, FSMClient
 from .integrations.github import GitHub
 from .integrations.marketing import PresenceSources
 from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
+from .integrations.teamsbot import TeamsBot
 from .integrations.ramtracking import DemoRamTracking, RamTracking
 from .integrations.voice import Voice
 from .knowledge import KnowledgeBase
@@ -62,6 +63,7 @@ class Jarvis:
         # integrations (demo stand-ins where not configured)
         self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail()
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
+        self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMClient(s, self.http) if s.fsm_configured else DemoFSM()
         self.ram = RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key else DemoRamTracking(self.fsm)
         self.finance = build_finance(s, self.http, self.db)
@@ -142,6 +144,7 @@ class Jarvis:
         return {
             "Email (Outlook)": "connected" if not self.mail.demo else "DEMO data - connect Microsoft 365",
             "Teams updates": "connected" if self.teams.enabled else "not set up",
+            "Teams chat": "connected" if self.teamsbot.configured else "not set up",
             "Salts FSM": "connected" if not self.fsm.demo else "DEMO data - set FSM_BASE_URL",
             "Accounts": (f"{self.finance.name}" if not getattr(self.finance, "demo", False)
                          else "DEMO data - connect Sage or add CSV exports"),

@@ -126,6 +126,23 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "teamsbot", "Teams chat", "Message Jarvis from your phone in Teams, and get a real reply back - not just "
+        "one-way updates.",
+        (
+            Field("teams_bot_app_id", "Bot app ID"),
+            Field("teams_bot_app_password", "Bot app secret", "secret"),
+            Field("teams_bot_tenant_id", "Directory (tenant) ID"),
+        ),
+        required=("teams_bot_app_id", "teams_bot_app_password", "teams_bot_tenant_id"),
+        test=True,
+        guide=(
+            "Quickest: in Azure Cloud Shell run  APP_NAME={app_name} bash infra/deploy.sh teamsbot  - it "
+            "registers Jarvis as a Bot Framework bot, turns on the Teams channel, fills these boxes in, and "
+            "builds an app package for you to add to Teams.",
+            "Only you and the business partner can use it - anyone else who messages the bot is ignored.",
+        ),
+    ),
+    Section(
         "fsm", "Salts FSM", "Jobs, engineers, sites, systems, contracts, quotes, stock and timesheets.",
         (
             Field("fsm_base_url", "FSM web address", "url", placeholder="https://salts-fsm.azurewebsites.net"),

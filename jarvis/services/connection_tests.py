@@ -108,6 +108,17 @@ async def _storage(j) -> tuple[bool, str]:
                   else "Storage reachable. The archive container will be created with the first report.")
 
 
+async def _teamsbot(j) -> tuple[bool, str]:
+    from ..integrations.teamsbot import TeamsBotError
+
+    if not j.teamsbot.configured:
+        return False, "Add the bot app ID, secret and tenant ID first (or run deploy.sh teamsbot)."
+    try:
+        return True, await j.teamsbot.check()
+    except TeamsBotError as e:
+        return False, str(e)
+
+
 async def _voice(j) -> tuple[bool, str]:
     s, parts, ok = j.settings, [], True
     tts = s.effective_tts
@@ -162,6 +173,6 @@ async def _marketing(j) -> tuple[bool, str]:
 
 
 TESTS = {
-    "claude": _claude, "microsoft365": _microsoft365, "teams": _teams, "fsm": _fsm, "sage": _sage, "ram": _ram,
-    "github": _github, "storage": _storage, "voice": _voice, "marketing": _marketing,
+    "claude": _claude, "microsoft365": _microsoft365, "teams": _teams, "teamsbot": _teamsbot, "fsm": _fsm,
+    "sage": _sage, "ram": _ram, "github": _github, "storage": _storage, "voice": _voice, "marketing": _marketing,
 }
