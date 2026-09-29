@@ -54,6 +54,10 @@ class ActionExecutor:
         if action["kind"] == "fsm_write":
             result = await self.fsm.write(p["method"], p["path"], p.get("body"))
             return f"Salts FSM updated: {str(result)[:300]}"
+        if action["kind"] == "accept_quote":
+            await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"})
+            result = await self.fsm.write("POST", "/jobs", p["job_body"])
+            return f"Quote {p['quote_id']} accepted; job booked: {str(result)[:250]}"
         if action["kind"] == "deploy_fix":
             return await self.fixer.deploy(p["issue_id"], p["pr_number"])
         raise ValueError(f"Unknown action kind {action['kind']}")

@@ -168,6 +168,15 @@ class LogJobIn(BaseModel):
     customer: str = Field("", description="Customer name, only if different from the site name")
 
 
+class AcceptQuoteIn(BaseModel):
+    quote_ref: str = Field(description="The quote's reference/number, e.g. 'Q1180'")
+    job_type: Literal["service", "callout", "remedial", "install", "commissioning", "survey"] = Field(
+        "install", description="What kind of job this becomes - most accepted quotes are new work, so "
+                               "'install' unless the quote is clearly something else")
+    engineer: str = Field("", description="Engineer to assign the job to - leave blank to book it unassigned")
+    scheduled_start: str = Field("", description="When to book the job for - leave blank to leave unscheduled")
+
+
 class SelfImproveIn(BaseModel):
     request: str = Field(description="What to add, change or fix in Jarvis's own code, in plain English")
 
@@ -549,6 +558,28 @@ async def log_job(j, a: LogJobIn):
         summary += f" for {a.scheduled_start}"
     action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/jobs", "body": body})
     return {"queued_action": action_id, "job": body, "note": "Queued for approval on the display."}
+
+
+async def accept_quote(j, a: AcceptQuoteIn):
+    quote = next((q for q in await j.fsm.quotes() if str(q.get("id", "")).lower() == a.quote_ref.lower()), None)
+    if not quote:
+        return {"error": f"No quote '{a.quote_ref}' found."}
+    if quote.get("status") == "accepted":
+        return {"error": f"Quote {quote['id']} is already marked accepted."}
+    job_body: dict[str, Any] = {"site": quote.get("site") or quote.get("customer") or "", "type": a.job_type,
+                                "description": quote.get("title") or f"Work from quote {quote['id']}",
+                                "created_by": "Jarvis"}
+    for key, value in (("customer", quote.get("customer")), ("engineer", a.engineer),
+                       ("scheduled_start", a.scheduled_start)):
+        if value:
+            job_body[key] = value
+    summary = (f"Accept quote {quote['id']} ({quote.get('title', '')}, £{quote.get('value', 0):,.0f}) for "
+              f"{quote.get('customer', '')} and book the job")
+    action_id = j.actions.queue("accept_quote", summary, {"quote_id": quote["id"], "job_body": job_body})
+    return {"queued_action": action_id, "quote": quote["id"], "job": job_body,
+           "note": "Queued for approval on the display - accepting the quote and booking the job happen "
+                   "together. Materials for the job can be ordered separately with log_purchase_order once "
+                   "it's booked, referencing this job in the note."}
 
 
 async def business_health(j, a: HealthIn):
@@ -953,6 +984,10 @@ TOOLS: list[Tool] = [
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "
                     "owner's approval, never booked straight away.", LogJobIn, log_job, "Logging a job"),
+    Tool("accept_quote", "Accept a quote and book the resulting job in Salts FSM, together as one step - use "
+                        "this rather than fsm_change/log_job separately whenever a quote has just been won. "
+                        "Queued for approval; once approved, order any materials the job needs with "
+                        "log_purchase_order.", AcceptQuoteIn, accept_quote, "Accepting the quote"),
     Tool("business_health", "Business health check: revenue growth, margins, debtor days, overdue debt, cash "
                             "runway, recurring contract revenue, quote win rate, utilisation and unbilled work vs "
                             "targets, with recommended actions.", HealthIn, business_health,

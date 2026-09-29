@@ -3,10 +3,12 @@ action queue, so the tools themselves should only ever prepare and queue, never 
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from jarvis.brain.tools import (JobRefIn, LogJobIn, LogPurchaseOrderIn, PurchaseOrderLineIn, job_detail, log_job,
-                                log_purchase_order)
+from jarvis.brain.tools import (AcceptQuoteIn, JobRefIn, LogJobIn, LogPurchaseOrderIn, PurchaseOrderLineIn,
+                                accept_quote, job_detail, log_job, log_purchase_order)
 from jarvis.core import Jarvis
 from tests.fakes import FakeClient
 
@@ -160,3 +162,56 @@ async def test_real_fsm_client_calls_the_jobs_detail_path_and_normalises_extras(
     assert seen["url"] == "https://fsm.example.co.uk/api/jobs/J24100"
     assert result["id"] == "J24100" and result["status"] == "completed"  # aliased from jobId/jobStatus
     assert result["extra"] == {"materials_used": [{"sku": "BAT-12V7", "qty": 2}], "linked_invoice": "INV-30412"}
+
+
+# --------------------------------------------------------------------------- accept_quote
+async def test_accept_quote_queues_a_combined_accept_and_book_action(settings):
+    j = make(settings)
+    result = await accept_quote(j, AcceptQuoteIn(quote_ref="Q1180", engineer="Dan Harper",
+                                                 scheduled_start="2026-10-06T09:00"))
+    assert "queued_action" in result
+    pending = j.db.pending_actions()
+    assert len(pending) == 1 and pending[0]["kind"] == "accept_quote"
+    assert "Q1180" in pending[0]["summary"] and "Wharfedale Academy Trust" in pending[0]["summary"]
+    payload = pending[0]["payload"]
+    assert payload["quote_id"] == "Q1180"
+    assert payload["job_body"] == {
+        "site": "Ilkley Grammar Annexe", "type": "install", "description": "Vigilon panel upgrade, block B",
+        "created_by": "Jarvis", "customer": "Wharfedale Academy Trust", "engineer": "Dan Harper",
+        "scheduled_start": "2026-10-06T09:00"}
+    await j.http.aclose()
+
+
+async def test_accept_quote_rejects_a_quote_already_accepted(settings):
+    j = make(settings)
+    result = await accept_quote(j, AcceptQuoteIn(quote_ref="Q1175"))  # already "accepted" in demo data
+    assert "error" in result and "already" in result["error"]
+    assert j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_accept_quote_reports_an_unknown_quote(settings):
+    j = make(settings)
+    result = await accept_quote(j, AcceptQuoteIn(quote_ref="Q99999"))
+    assert "error" in result and "Q99999" in result["error"]
+    assert j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_approving_accept_quote_writes_both_the_status_and_the_job(settings):
+    j = make(settings)
+    calls = []
+
+    async def fake_write(method, path, body=None):
+        calls.append((method, path, body))
+        return {"ok": True}
+
+    j.fsm.write = fake_write
+    result = await accept_quote(j, AcceptQuoteIn(quote_ref="Q1180"))
+    await j.actions.approve(result["queued_action"])
+    await asyncio.sleep(0.05)  # the approval runs the write in a spawned task
+
+    assert calls[0] == ("PATCH", "/quotes/Q1180", {"status": "accepted"})
+    assert calls[1][0] == "POST" and calls[1][1] == "/jobs" and calls[1][2]["site"] == "Ilkley Grammar Annexe"
+    assert j.db.get_action(result["queued_action"])["status"] == "done"
+    await j.http.aclose()
