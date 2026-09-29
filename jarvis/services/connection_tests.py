@@ -96,6 +96,12 @@ async def _github(j) -> tuple[bool, str]:
     return True, await j.github.check()
 
 
+async def _selfimprove(j) -> tuple[bool, str]:
+    if not j.self_improve.enabled:
+        return False, "Add Jarvis's own repository and a GitHub token for it first."
+    return True, await j.self_github.check()
+
+
 async def _storage(j) -> tuple[bool, str]:
     if not j.blob.enabled:
         return False, "Add the storage connection string first."
@@ -174,5 +180,6 @@ async def _marketing(j) -> tuple[bool, str]:
 
 TESTS = {
     "claude": _claude, "microsoft365": _microsoft365, "teams": _teams, "teamsbot": _teamsbot, "fsm": _fsm,
-    "sage": _sage, "ram": _ram, "github": _github, "storage": _storage, "voice": _voice, "marketing": _marketing,
+    "sage": _sage, "ram": _ram, "github": _github, "selfimprove": _selfimprove, "storage": _storage,
+    "voice": _voice, "marketing": _marketing,
 }

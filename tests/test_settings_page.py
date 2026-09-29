@@ -17,6 +17,16 @@ def make(settings, script=None):
     return Jarvis(settings, client=FakeClient(script))
 
 
+def test_every_testable_section_has_a_registered_connection_test():
+    """A Section(test=True) with no matching entry in connection_tests.TESTS silently shows a "Test" button
+    that always says "There's nothing to test here" - catches exactly that gap."""
+    from jarvis.services import connection_tests
+    from jarvis.settings_store import SECTIONS
+
+    testable = {s.id for s in SECTIONS if s.test}
+    assert testable <= connection_tests.TESTS.keys(), testable - connection_tests.TESTS.keys()
+
+
 def test_view_lists_sections_and_masks_secrets(settings):
     settings.fsm_api_key = "topsecret12345"
     store = SettingsStore(settings)
@@ -150,6 +160,28 @@ def test_connection_test_reports_when_nothing_is_configured(settings):
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is False and "first" in body["detail"].lower()
+
+
+def test_connection_test_selfimprove_checks_its_own_github(settings, monkeypatch):
+    settings.jarvis_owner_password = "s3cret"
+    j = make(settings)
+    app = create_app(settings, j)
+    with TestClient(app) as c:
+        c.post("/login", data={"password": "s3cret"})
+        r = c.post("/api/settings/test/selfimprove")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is False and "repository" in body["detail"].lower()
+
+        async def fake_check():
+            return "GitHub repo owner/jarvis reachable"
+
+        fake_gh = type("FakeGH", (), {"check": staticmethod(fake_check)})()
+        j.self_improve.gh = fake_gh  # makes .enabled true
+        j.self_github = fake_gh  # what the connection test actually calls .check() on
+        r2 = c.post("/api/settings/test/selfimprove")
+        body2 = r2.json()
+        assert body2["ok"] is True and body2["detail"] == "GitHub repo owner/jarvis reachable"
 
 
 def test_test_result_is_marked_stale_after_the_settings_change(settings):
