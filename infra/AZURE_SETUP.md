@@ -146,4 +146,9 @@ rm jarvis.env
   been reset and the folder's gone, repeat the `git clone` line from step 3 first.
 - **Change who can sign in:** `bash infra/deploy.sh signin you@... partner@... officemanager@...`. This sets
   the full list, so anyone left off loses access.
+- **New Claude token** (e.g. yearly, or if it's been shown to anyone): `bash infra/deploy.sh token`. It asks
+  for the token without showing it, so it doesn't end up in the shell history.
+- **If the upload says "Timeout waiting for token from portal":** that's Cloud Shell's sign-in, not Jarvis.
+  The script retries by itself. If it still fails, run `az login`, follow the code it shows, then run
+  `bash infra/deploy.sh update`.
 - **Every 2 years:** the sign-in secret expires. Run the same `signin` command again to renew it.

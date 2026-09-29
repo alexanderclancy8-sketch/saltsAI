@@ -6,6 +6,7 @@
 #   bash infra/deploy.sh update               upload the latest Jarvis code (settings are kept)
 #   bash infra/deploy.sh settings FILE        copy the filled-in values from an env file (like .env.example) into the app
 #   bash infra/deploy.sh adopt NAME [GROUP]   turn a Linux web app you made by hand in the portal into Jarvis
+#   bash infra/deploy.sh token                replace the Claude token (or API key) Jarvis uses
 #   bash infra/deploy.sh signin EMAIL...      only these Microsoft 365 accounts can open Jarvis (run again to change
 #                                             the list; each run also issues a fresh sign-in secret, valid 2 years)
 #
@@ -39,14 +40,47 @@ find_jarvis_app() {
 
 deploy_code() {
   find_jarvis_app
-  local tmp
+  local tmp attempt signin_hiccup="token from portal|credential problem"
   tmp="$(mktemp -d)"
   zip -qr "$tmp/jarvis.zip" jarvis knowledge requirements.txt ./*.yaml -x "*/__pycache__/*"
   echo "Uploading Jarvis to $APP_NAME. Azure installs the packages, which takes about 5 minutes..."
-  if ! az webapp deploy -g "$RG" -n "$APP_NAME" --src-path "$tmp/jarvis.zip" --type zip -o none; then
-    echo "Azure is still starting it, or the build failed. Watch the log with:  az webapp log tail -g $RG -n $APP_NAME"
+  for attempt in 1 2 3; do
+    if az webapp deploy -g "$RG" -n "$APP_NAME" --src-path "$tmp/jarvis.zip" --type zip -o none 2>&1 | tee "$tmp/log"; then
+      rm -rf "$tmp"
+      return 0
+    fi
+    # Cloud Shell's sign-in sometimes times out before the upload starts; that's worth another go.
+    grep -qiE "$signin_hiccup" "$tmp/log" && [ "$attempt" -lt 3 ] || break
+    echo "Cloud Shell's sign-in timed out, so nothing was uploaded. Trying again (attempt $((attempt + 1)) of 3)..."
+    sleep "${RETRY_WAIT:-20}"
+  done
+  echo
+  if grep -qiE "$signin_hiccup" "$tmp/log"; then
+    echo "The upload couldn't get a sign-in from Cloud Shell. Jarvis's settings are saved; only the code is missing."
+    echo "Run  az login  and follow the code it shows, then upload again with:"
+  else
+    echo "The upload didn't finish, or Azure is still starting Jarvis. See what's happening with:"
+    echo "    az webapp log tail -g $RG -n $APP_NAME"
+    echo "To upload again:"
   fi
+  echo "    APP_NAME=$APP_NAME bash infra/deploy.sh update"
   rm -rf "$tmp"
+}
+
+# Replaces the Claude token (or API key) Jarvis uses, without it appearing on screen or in the shell history.
+set_token() {
+  find_jarvis_app
+  local claude_token anthropic_key
+  ask_claude
+  if [ -n "$claude_token" ]; then
+    az webapp config appsettings set -g "$RG" -n "$APP_NAME" -o none --settings "CLAUDE_CODE_OAUTH_TOKEN=$claude_token"
+    # An API key alongside the token would make Claude Code bill the API instead of the subscription.
+    az webapp config appsettings delete -g "$RG" -n "$APP_NAME" -o none --setting-names ANTHROPIC_API_KEY
+  else
+    az webapp config appsettings set -g "$RG" -n "$APP_NAME" -o none --settings "ANTHROPIC_API_KEY=$anthropic_key"
+    az webapp config appsettings delete -g "$RG" -n "$APP_NAME" -o none --setting-names CLAUDE_CODE_OAUTH_TOKEN
+  fi
+  echo "Saved. Jarvis restarts to pick it up."
 }
 
 # Why an address can't be used for Microsoft sign-in, or nothing if it can.
@@ -424,5 +458,6 @@ case "${1:-setup}" in
   settings) push_settings "${2:-}" ;;
   adopt) adopt "${2:-}" "${3:-}" ;;
   signin) shift; enable_signin "$@" ;;
-  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...]" ;;
+  token) set_token ;;
+  *) die "unknown command '$1'. Use: bash infra/deploy.sh [setup|update|settings FILE|adopt NAME [GROUP]|signin EMAIL...|token]" ;;
 esac
