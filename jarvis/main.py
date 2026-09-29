@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -14,12 +15,15 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from typing import Any
 
 from . import auth
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
 from .integrations.voice import VoiceError
+from .services import connection_tests
+from .settings_store import SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("jarvis")
@@ -37,8 +41,24 @@ class TTSIn(BaseModel):
     voice_id: str | None = None
 
 
+class SettingsIn(BaseModel):
+    values: dict[str, Any] = {}
+    clear: list[str] = []
+
+
+def carry_conversation(old: Jarvis, new: Jarvis) -> None:
+    """Keep the conversation going when Jarvis is rebuilt with new settings."""
+    if type(old.brain) is type(new.brain):
+        new.brain.messages = old.brain.messages
+        if hasattr(old.brain, "session_id"):
+            new.brain.session_id = old.brain.session_id
+
+
 def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -> FastAPI:
     settings = settings or get_settings()
+    store = SettingsStore(settings)  # what the owner saved on the Settings page, over the Azure settings
+    store.apply()
+    reload_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -48,7 +68,20 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if not settings.jarvis_owner_password:
             log.warning("JARVIS_OWNER_PASSWORD is not set - the display only answers requests from this machine.")
         yield
-        await j.stop()
+        await app.state.j.stop()
+
+    async def reload_jarvis(app: FastAPI) -> None:
+        """Rebuild Jarvis with the new settings and swap it in; open displays reconnect by themselves."""
+        async with reload_lock:
+            old: Jarvis = app.state.j
+            new = Jarvis(settings, db=old.db)
+            carry_conversation(old, new)
+            app.state.j = new
+            await new.start()
+            old.bus.publish("reload", {"reason": "settings"})
+            await asyncio.sleep(0.1)
+            await old.stop()
+            log.info("Settings applied; Jarvis reloaded.")
 
     app = FastAPI(title="Salts Jarvis", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=WEB), name="static")
@@ -112,17 +145,33 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         J(request).brain.reset()
         return {"ok": True}
 
+    @app.post("/api/interrupt", dependencies=[Depends(owner)])
+    async def interrupt(request: Request):
+        j = J(request)
+        stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
+        j.bus.publish("stopped", {"stopped": stopped})
+        return {"stopped": stopped}
+
     @app.get("/api/transcript", dependencies=[Depends(owner)])
     async def transcript(request: Request):
         return J(request).db.recent_transcript(40)
 
+    async def _safe(coro, label: str) -> dict[str, Any]:
+        # A misconfigured or unreachable connection (a wrong FSM address, Sage down, ...) must degrade
+        # gracefully here - it must never take the whole display down with it.
+        try:
+            return await coro
+        except Exception as e:  # noqa: BLE001
+            log.warning("status %s failed: %s", label, e)
+            return {"error": f"{type(e).__name__}: {e}"[:200]}
+
     @app.get("/api/status", dependencies=[Depends(owner)])
     async def status(request: Request):
         j = J(request)
-        data, presence, customers = await asyncio.gather(j.briefings.status(), j.marketing.overview(30),
-                                                         j.customers.scores())
+        data, presence, customers = await asyncio.gather(
+            j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
-                    customer_watch=[c for c in customers["customers"] if c["status"] != "healthy"][:6],
+                    customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name,
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
@@ -209,6 +258,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     task.add_done_callback(running.discard)
                 elif msg.get("type") == "ping":
                     await ws.send_json({"type": "pong"})
+                elif msg.get("type") == "stop":
+                    stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
+                    j.bus.publish("stopped", {"stopped": stopped})
 
         tasks = [asyncio.create_task(pump()), asyncio.create_task(listen())]
         try:
@@ -300,6 +352,44 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.post("/api/wrapup", dependencies=[Depends(owner)])
     async def wrapup(request: Request):
         return {"text": await J(request).wrapup.run(deliver=False)}
+
+    # ------------------------------------------------------------------ settings page
+    def settings_view(j: Jarvis) -> dict[str, Any]:
+        base = settings.public_base_url.rstrip("/")
+        context = {"base_url": base, "app_name": os.environ.get("WEBSITE_SITE_NAME", "salts-jarvis")}
+        data = store.view(j.db, context)
+        data["context"] = {
+            **context,
+            "staff_report_link": f"{base}/report?key={settings.staff_report_key}" if settings.staff_report_key else "",
+            "sage": {"configured": isinstance(j.finance, SageFinance),
+                     "connected": isinstance(j.finance, SageFinance) and j.finance.connected},
+            "backend": settings.effective_llm_backend,
+            "managers": sorted(settings.managers),
+            "microsoft_signin": os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() == "true",
+        }
+        return data
+
+    @app.get("/api/settings", dependencies=[Depends(owner)])
+    async def get_settings_page(request: Request):
+        return settings_view(J(request))
+
+    @app.post("/api/settings", dependencies=[Depends(owner)])
+    async def save_settings(body: SettingsIn, request: Request):
+        errors = store.update(body.values, body.clear)
+        if errors:
+            return JSONResponse({"errors": errors}, status_code=400)
+        await reload_jarvis(request.app)
+        data = settings_view(J(request))
+        data["signed_out"] = "jarvis_owner_password" in body.values and bool(body.values["jarvis_owner_password"])
+        return data
+
+    @app.post("/api/settings/test/{section}", dependencies=[Depends(owner)])
+    async def test_connection(section: str, request: Request):
+        if section not in SECTIONS_BY_ID or not SECTIONS_BY_ID[section].test:
+            raise HTTPException(404, "Nothing to test there.")
+        j = J(request)
+        ok, detail = await connection_tests.run(j, section)
+        return store.record_test(j.db, section, ok, detail)
 
     # ------------------------------------------------------------------ Sage connect (OAuth)
     @app.get("/auth/sage/start", dependencies=[Depends(owner)])

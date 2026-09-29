@@ -6,6 +6,7 @@ Every integration is optional. Anything left unset falls back to demo data
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -64,6 +65,7 @@ class Settings(BaseSettings):
     claude_code_oauth_token: str = ""
     anthropic_api_key: str = ""
     jarvis_model: str = "claude-opus-5-5"
+    voice_model: str = ""  # model for spoken replies; blank = same as JARVIS_MODEL (claude-sonnet-5-5 is quicker)
     voice_effort: str = "low"  # spoken conversation: quick, natural replies
     chat_effort: str = "medium"  # typed chat: thorough answers without long waits (raise to high for deep work)
     engineer_effort: str = "high"  # code fixes
@@ -229,6 +231,10 @@ class Settings(BaseSettings):
     def db_path(self) -> Path:
         return self.data_dir / "jarvis.db"
 
+    def model_for(self, mode: str) -> str:
+        """The Claude model for a spoken ("voice") or typed turn."""
+        return (self.voice_model or self.jarvis_model) if mode == "voice" else self.jarvis_model
+
     @property
     def effective_llm_backend(self) -> str:
         if self.llm_backend in ("max", "api"):
@@ -286,6 +292,10 @@ class Settings(BaseSettings):
     def model_post_init(self, __context) -> None:  # noqa: D401
         self.vat_quarter_months = sorted(int(m) for m in self.vat_quarter_end_months.split(",") if m.strip())
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # On App Service, fall back to the app's own address (needed for the Sage sign-in callback).
+        host = os.environ.get("WEBSITE_HOSTNAME", "")
+        if self.public_base_url == "http://localhost:8000" and host and "localhost" not in host:
+            self.public_base_url = f"https://{host}"
 
 
 @lru_cache
