@@ -38,15 +38,24 @@ find_jarvis_app() {
   die "there's no web app called $APP_NAME. Check APP_NAME, or run the first-time setup."
 }
 
+# True if Jarvis is answering at https://HOST.
+jarvis_up() { curl -s --max-time 10 "https://$1/healthz" 2>/dev/null | grep -q '"ok"'; }
+
 deploy_code() {
   find_jarvis_app
-  local tmp attempt signin_hiccup="token from portal|credential problem"
+  local tmp attempt host was_up=0 signin_hiccup="token from portal|credential problem"
   tmp="$(mktemp -d)"
+  host="$(az webapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)"
+  ! jarvis_up "$host" || was_up=1
   zip -qr "$tmp/jarvis.zip" jarvis knowledge requirements.txt ./*.yaml -x "*/__pycache__/*"
-  echo "Uploading Jarvis to $APP_NAME. Azure installs the packages, which takes about 5 minutes..."
+  echo "Uploading Jarvis to $APP_NAME..."
   for attempt in 1 2 3; do
-    if az webapp deploy -g "$RG" -n "$APP_NAME" --src-path "$tmp/jarvis.zip" --type zip -o none 2>&1 | tee "$tmp/log"; then
+    # --async: hand the zip over and don't hold the connection open while Azure installs the packages. That
+    # takes longer than Azure's front door will wait, which otherwise shows up as a 502 error.
+    if az webapp deploy -g "$RG" -n "$APP_NAME" --src-path "$tmp/jarvis.zip" --type zip --async true -o none \
+      2>&1 | tee "$tmp/log"; then
       rm -rf "$tmp"
+      wait_until_up "$host" "$was_up"
       return 0
     fi
     # Cloud Shell's sign-in sometimes times out before the upload starts; that's worth another go.
@@ -65,6 +74,28 @@ deploy_code() {
   fi
   echo "    APP_NAME=$APP_NAME bash infra/deploy.sh update"
   rm -rf "$tmp"
+}
+
+# After an upload: a running Jarvis restarts by itself; a first install is watched until it answers.
+wait_until_up() {
+  local host="$1" was_up="$2" i
+  if [ "$was_up" = 1 ]; then
+    echo "Uploaded. Azure is installing it now, and Jarvis restarts with the new version in about 5 minutes."
+    return 0
+  fi
+  echo "Uploaded. Azure is installing Jarvis's packages now. Checking every 20 seconds until it answers (up to 15 minutes)..."
+  for i in $(seq 1 "${WAIT_CHECKS:-45}"); do
+    sleep "${WAIT_SECONDS:-20}"
+    if jarvis_up "$host"; then
+      echo "Jarvis is up: https://$host"
+      return 0
+    fi
+    printf '.'
+  done
+  echo
+  echo "It isn't answering yet. The install may still be going, or it may have failed. Two ways to see:"
+  echo "    az webapp log deployment show -n $APP_NAME -g $RG --query \"[].message\" -o tsv | tail -25"
+  echo "    az webapp log tail -n $APP_NAME -g $RG      (what Jarvis prints as it starts; Ctrl+C to stop)"
 }
 
 # Replaces the Claude token (or API key) Jarvis uses, without it appearing on screen or in the shell history.
