@@ -126,15 +126,22 @@ Do these in any order; each one replaces demo data as soon as it's set.
    exploitable vulnerabilities - never editing anything itself. Findings become ordinary issues, so a genuine
    one goes through the same approve-then-deploy pipeline as any other fix. Ask any time for an ad-hoc one
    ("Jarvis, run a security review now").
-8. **Voice.** On the Settings page's Voice card: an ElevenLabs key for the most natural voice (or run
+8. **Self-improvement.** On the Settings page's Self-improvement card: this repository (`owner/repo`) and a
+   GitHub token for it (leave the token blank to reuse the Auto-fix one above, if that PAT already covers this
+   repo too). Ask Jarvis to add or fix something about itself ("Jarvis, add a tool that...", "there's a bug
+   where...") and it investigates, writes the change and opens a pull request - CI runs on it same as any other
+   PR. This is deliberately narrower than the FSM auto-fix: there's no merge step and no deploy step at all: the
+   PR just sits there for you to review and merge yourself, whenever you're ready, through your own tooling.
+   Jarvis never merges or redeploys itself, under any circumstances.
+9. **Voice.** On the Settings page's Voice card: an ElevenLabs key for the most natural voice (or run
    `bash infra/deploy.sh voice` for a free Azure one), and a Deepgram key for always-listening speech-to-text
    (OpenAI/Whisper also works for push-to-talk). "Always listening" doesn't mean always streaming to Deepgram/
    Whisper: Jarvis only wakes the paid microphone once it hears "Jarvis" (using the browser's own free wake-word
    spotting the rest of the time), and puts it back to sleep after a few seconds of silence. Wispr Flow and other dictation apps work straight into the chat
    box too.
-9. **Marketing.** On the Settings page's "Google and socials" card: a Google Places key and Place ID (reviews),
-   a Search Console service account (rankings), a Facebook Page token (Facebook/Instagram), and LinkedIn/TikTok
-   tokens.
+10. **Marketing.** On the Settings page's "Google and socials" card: a Google Places key and Place ID (reviews),
+    a Search Console service account (rankings), a Facebook Page token (Facebook/Instagram), and LinkedIn/TikTok
+    tokens.
 
 ## Deploying to Azure
 
@@ -181,6 +188,11 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   asked for, saving email *drafts* for you to review, and keeping its own notes.
 - The auto-fix engineer can only read and edit a copy of the code, with no shell and no secrets, and every
   change goes through a pull request and CI.
+- **Self-improvement is PR-only, always.** Jarvis can write changes to its own source and open a pull request,
+  but it has no merge step and no deploy step at all - not even behind an approval click. A human always merges
+  and redeploys it, through their own tooling, never Jarvis. The engineer is also instructed to refuse (and
+  explain why, via `give_up`) any request that would weaken the approval gate, authentication or settings
+  encryption, whatever the request says.
 - **Staff monitoring:** tell staff in writing what is monitored and why (job data, timesheets, vehicle tracking
   during working hours, Microsoft 365 activity *counts*, never message content). This keeps you within UK GDPR
   and ICO employment guidance. Jarvis treats flags as prompts for a conversation, not verdicts.

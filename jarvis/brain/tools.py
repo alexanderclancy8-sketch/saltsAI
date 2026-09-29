@@ -168,6 +168,10 @@ class LogJobIn(BaseModel):
     customer: str = Field("", description="Customer name, only if different from the site name")
 
 
+class SelfImproveIn(BaseModel):
+    request: str = Field(description="What to add, change or fix in Jarvis's own code, in plain English")
+
+
 class HealthIn(BaseModel):
     days: int = Field(90, description="Period to assess, in days")
 
@@ -503,6 +507,10 @@ async def fsm_change(j, a: FsmChangeIn):
 
 async def run_security_review(j, a: NoInput):
     return j.security_watch.start()
+
+
+async def self_improve(j, a: SelfImproveIn):
+    return j.self_improve.start(a.request)
 
 
 async def log_job(j, a: LogJobIn):
@@ -894,6 +902,10 @@ TOOLS: list[Tool] = [
                                 "Runs in the background and can take a few minutes; findings become issues and "
                                 "the owner's notified, same as the scheduled review.", NoInput, run_security_review,
          "Starting a security review"),
+    Tool("self_improve", "Have Jarvis write a change to its OWN source code - a new tool, a fix, a tweak to how "
+                        "it behaves - and open a pull request for it. Never merged or deployed automatically, "
+                        "always left for a human to review and merge. Runs in the background and can take a "
+                        "few minutes.", SelfImproveIn, self_improve, "Working on myself"),
     Tool("log_job", "Log a new job in Salts FSM from a plain description - a fault report, call-out or booking. "
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "

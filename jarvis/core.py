@@ -42,6 +42,7 @@ from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
+from .services.self_improve import SelfImprove
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
@@ -69,6 +70,8 @@ class Jarvis:
         self.ram = RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key else DemoRamTracking(self.fsm)
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None
+        self.self_github = (GitHub(s.jarvis_github_token or s.github_token, s.jarvis_repo, self.http,
+                                   s.jarvis_default_branch) if s.jarvis_self_improve_configured else None)
         self.blob = BlobArchive(s)
         self.kudu = KuduDeployer(s, self.http)
         self.voice = Voice(s, self.http)
@@ -86,6 +89,7 @@ class Jarvis:
                                     integrations=self._integrations(), notifier=self.notifier, issues=self.issues)
         self.fixer.issues, self.fixer.tester = self.issues, self.tester
         self.security_watch = SecurityWatch(s, self.db, self.bus, self.notifier, self.client, self.github, self.issues)
+        self.self_improve = SelfImprove(s, self.db, self.bus, self.notifier, self.client, self.self_github)
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
@@ -153,6 +157,8 @@ class Jarvis:
             "FSM source / auto-fix": f"{s.fsm_repo} ({s.fixer_mode})" if self.github else "not connected",
             "Security watch": (f"reviewing {s.fsm_repo} on a schedule" if self.security_watch.enabled
                                else "not set up (needs the same GitHub connection as auto-fix)"),
+            "Self-improvement": (f"can propose PRs against {s.jarvis_repo} (never merges or deploys them)"
+                                 if self.self_improve.enabled else "not set up (add a repo + token on Settings)"),
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",

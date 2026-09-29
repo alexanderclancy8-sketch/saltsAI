@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     fsm_deploy_workflow: str = ""  # e.g. deploy-azure.yml (workflow_dispatch)
     fixer_mode: str = "builtin"  # builtin | claude_action | off
 
+    # --- Self-improvement (Jarvis's own source) --------------------------
+    jarvis_repo: str = ""  # owner/repo - this repository, so Jarvis can propose changes to itself
+    jarvis_github_token: str = ""  # blank reuses github_token if that PAT already covers this repo too
+    jarvis_default_branch: str = "main"
+
     # --- Azure ------------------------------------------------------------
     azure_storage_connection_string: str = ""
     azure_storage_container: str = "jarvis-reports"
@@ -262,6 +267,10 @@ class Settings(BaseSettings):
     @property
     def github_configured(self) -> bool:
         return bool(self.github_token and self.fsm_repo)
+
+    @property
+    def jarvis_self_improve_configured(self) -> bool:
+        return bool((self.jarvis_github_token or self.github_token) and self.jarvis_repo)
 
     @property
     def elevenlabs_voice_id(self) -> str:

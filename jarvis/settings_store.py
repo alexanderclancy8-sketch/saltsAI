@@ -252,6 +252,19 @@ SECTIONS: tuple[Section, ...] = (
         test=True,
     ),
     Section(
+        "selfimprove", "Self-improvement", "Lets Jarvis propose changes to its OWN source code as a pull "
+                                          "request. It never merges or deploys these itself - only you can.",
+        (
+            Field("jarvis_repo", "Jarvis's own repository", placeholder="owner/repo"),
+            Field("jarvis_github_token", "GitHub token", "secret",
+                  "Fine-grained token for this repo: contents, pull requests (read and write). Leave blank to "
+                  "reuse the Auto-fix token above if it already covers this repo too."),
+            Field("jarvis_default_branch", "Main branch", advanced=True),
+        ),
+        required=("jarvis_repo",),
+        test=True,
+    ),
+    Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
         (
             Field("azure_storage_connection_string", "Storage connection string", "secret"),
@@ -457,6 +470,8 @@ class SettingsStore:
                                                "tiktok_access_token", "google_review_url"))
         if section.id == "voice":
             return s.effective_tts != "browser"
+        if section.id == "selfimprove":
+            return s.jarvis_self_improve_configured
         return all(getattr(s, k) for k in section.required) if section.required else True
 
     def fingerprint(self, section: Section) -> str:
