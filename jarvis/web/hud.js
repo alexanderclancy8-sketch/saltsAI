@@ -689,7 +689,7 @@
   // Keeps the real (possibly paid) microphone up for a short spell after anything is heard or said, so a
   // follow-up doesn't need the wake word repeated - then, once that spell passes with nothing further, hands
   // back off to the free wake-word listener instead of streaming forever.
-  const WAKE_LISTEN_MS = 8000;
+  const WAKE_LISTEN_MS = 20000; // a real back-and-forth has pauses for thinking - don't make them say "Jarvis" again
   let sleepTimer = null;
   function extendFollowUp(ms = WAKE_LISTEN_MS) {
     S.followUpUntil = Date.now() + ms;
@@ -712,8 +712,12 @@
     const lower = text.toLowerCase();
     const wake = (S.voice.wake_word || "jarvis").toLowerCase();
     if (speaker.active) {
-      if (/\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake)) speaker.stop();
-      else return; // ignore our own voice echoing back
+      const isStopPhrase = /\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake);
+      // A real interruption is a phrase ("wait, actually...") - a stray word or two while it's talking is
+      // almost always its own voice bleeding back into the mic, even with echo cancellation on.
+      const soundsDeliberate = lower.split(/\s+/).length >= 3;
+      if (isStopPhrase || soundsDeliberate) speaker.stop();
+      else return;
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
     if (S.approvals.length && /^(approve|approved|confirm|confirmed|go ahead|yes,? (do it|send it|deploy it)|send it|deploy it)\b/.test(bare)) {
@@ -726,7 +730,7 @@
       const idx = lower.indexOf(wake);
       if (idx === -1 && Date.now() > S.followUpUntil) { caption("", `(heard: "${text.slice(0, 60)}")`); return; }
       const cmd = idx >= 0 ? text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "") : text;
-      if (!cmd) { setHud("awaiting"); S.followUpUntil = Date.now() + 8000; say("Yes, sir?"); return; }
+      if (!cmd) { setHud("awaiting"); extendFollowUp(); say("Yes, sir?"); return; }
       send(cmd, "voice");
     } else send(text, "voice");
   }
