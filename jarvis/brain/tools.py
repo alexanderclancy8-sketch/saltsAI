@@ -402,6 +402,21 @@ class ForgetIn(BaseModel):
     memory_id: int
 
 
+class RecruitAgentIn(BaseModel):
+    role: str = Field(description="A short role for the sub-agent, e.g. 'Tender response drafter', 'Competitor "
+                                  "SEO researcher', 'Contract renewal analyst'")
+    brief: str = Field(description="The specific, self-contained task - everything the sub-agent needs, since "
+                                   "it starts with no memory of this conversation. Give it what it needs to "
+                                   "know (site names, job refs, what 'done' looks like), not just a topic.")
+    tools: list[str] | None = Field(None, description="Tool names to give the sub-agent (e.g. "
+                                    "['knowledge_search', 'fsm_query', 'customer_health']). Leave blank for "
+                                    "the full read/research tool set, which is right for most tasks - narrow "
+                                    "it only when a tightly scoped agent genuinely does a better job. It can "
+                                    "never recruit further agents or start another background job, and "
+                                    "anything it proposes writing still queues for your approval same as always.")
+    max_turns: int = Field(12, ge=1, le=20, description="How many tool calls to allow before it must answer")
+
+
 class CreateAutomationIn(BaseModel):
     description: str = Field(description="Short label for what this is, e.g. 'Weekday overdue-jobs check'")
     cron: str = Field(description="Standard 5-field crontab schedule in the company's local timezone, e.g. "
@@ -768,6 +783,11 @@ async def regulatory_watch(j, a: RegWatchIn):
 async def technical_watch(j, a: RegWatchIn):
     text = await j.regwatch.technical(a.focus)
     return {"shown_on_display": True, "update": text}
+
+
+async def recruit_agent(j, a: RecruitAgentIn):
+    report = await j.recruiter.recruit(a.role, a.brief, tool_names=a.tools, max_turns=a.max_turns)
+    return {"role": a.role, "report": report}
 
 
 async def unbilled_jobs(j, a: OfficeIn):
@@ -1194,6 +1214,13 @@ TOOLS: list[Tool] = [
     Tool("remember", "Save a fact or preference the owner wants you to remember long term.", RememberIn, remember,
          "Making a note"),
     Tool("forget", "Delete a remembered fact by its number.", ForgetIn, forget, "Forgetting that"),
+    Tool("recruit_agent", "Delegate one well-scoped, self-contained task to a fresh sub-agent with its own "
+                          "brief and tools, and get its report back - for a chunk of work worth doing on its "
+                          "own rather than inline (a focused piece of research, a draft, an analysis). Not for "
+                          "anything recurring (use create_automation) or for code changes to Salts FSM or "
+                          "Jarvis itself (use issue_fix/self_improve). It has the same approval rules as you "
+                          "do - anything it proposes writing queues for approval, never happens directly.",
+         RecruitAgentIn, recruit_agent, "Recruiting an agent"),
     Tool("create_automation", "Set up your own recurring check on a schedule - 'every weekday at 8am, check for "
                               "unassigned jobs and tell me', 'every 30 minutes, check for a supplier email about "
                               "the delayed order'. It runs itself from then on with the same tools and the same "

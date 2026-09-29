@@ -32,6 +32,13 @@ Customers can accept quotes through a public quote link (`?public=1#quote=...`).
 ## How Jarvis connects
 - **Read:** REST API under `FSM_BASE_URL` + `FSM_API_PREFIX`, with the routes in `fsm_endpoints.yaml` (jobs,
   engineers, systems, contracts, quotes, sites, customers, timesheets). Jarvis can also GET any other API path.
+- **Field names are normalised, not assumed.** `jarvis/integrations/fsm.py`'s `ALIASES` maps each record's real
+  field onto every spelling Salts FSM's API (or a future version of it) might use for it - a job's reference
+  might come back as `ref`, `reference`, `jobNumber`, `job_number` or `number` depending on the endpoint or a
+  later API change, and Jarvis reads any of them as the same `ref` field. This is why a bare `fsm_query` (a
+  raw GET) can show field names that look different from what the other FSM tools report - both are correct,
+  one is normalised and one isn't. If Salts FSM's API adds a genuinely new field with no equivalent yet, add
+  it to `ALIASES` rather than reading it ad hoc each time.
 - **Write:** only through `fsm_change`, which queues a change for Alex's approval.
 - **Source code:** the GitHub repository in `FSM_REPO` - Jarvis can search and read it to explain features,
   and its engineering agent prepares bug fixes as pull requests.

@@ -197,6 +197,13 @@ SECTIONS: tuple[Section, ...] = (
                 ("alice", "Alice - British female"), ("lily", "Lily - British female"))),
             Field("elevenlabs_model", "ElevenLabs model", "select", options=(
                 ("eleven_multilingual_v2", "Most natural"), ("eleven_flash_v2_5", "Fastest")), advanced=True),
+            Field("elevenlabs_stability", "Voice stability (0-1)", "number",
+                  "Lower sounds more natural and varied; higher sounds flatter and more consistent. "
+                  "0.3-0.4 usually sounds least robotic.", advanced=True),
+            Field("elevenlabs_style", "Voice style exaggeration (0-1)", "number",
+                  "Higher leans into the voice's character more, but can introduce odd artifacts if pushed "
+                  "too far. Keep this low.", advanced=True),
+            Field("elevenlabs_speed", "Voice speed", "number", "1.0 is normal pace.", advanced=True),
             Field("azure_speech_key", "Azure Speech key", "secret",
                   "Free and very good. Cloud Shell: bash infra/deploy.sh voice sets this up."),
             Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True),

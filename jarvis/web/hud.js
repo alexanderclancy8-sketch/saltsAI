@@ -232,7 +232,7 @@
   }
 
   const speaker = {
-    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, recentText: "",
+    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, recentText: "", lastSpokeAt: 0,
     feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
     flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
     enqueue(sentence) {
@@ -259,7 +259,7 @@
     },
     async next() {
       const item = this.queue.shift();
-      if (!item) { this.active = false; this.browserSpeaking = false; if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (this.onIdle) this.onIdle(); return; }
+      if (!item) { this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (this.onIdle) this.onIdle(); return; }
       this.active = true; setHud("speaking");
       const url = item.audio ? await item.audio : null;
       if (!this.active) return;
@@ -279,7 +279,7 @@
       u.onend = u.onerror = () => { this.browserSpeaking = false; this.next(); };
       speechSynthesis.speak(u);
     },
-    stop() { this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
+    stop() { this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
   };
   const shouldSpeak = (mode) => S.speakPref === "always" || (S.speakPref === "voice" && mode === "voice");
 
@@ -804,6 +804,8 @@
     sentry.start();
   }
 
+  const ECHO_GRACE_MS = 1500;  // how long past the end of speech the mic might still be hearing its tail
+
   // Common words carry no signal for telling a real interruption apart from Jarvis's own voice bleeding into
   // the mic - "is it done" overlaps "is" and "it" with almost anything Jarvis could have said. Only distinctive
   // words count towards the match.
@@ -830,10 +832,15 @@
     if (!text) return;
     const lower = text.toLowerCase();
     const wake = (S.voice.wake_word || "jarvis").toLowerCase();
-    if (speaker.active) {
+    // Echo cancellation is never perfect without headphones, and room echo/output buffering trails on past
+    // the moment playback actually stops - so the mic can pick up the tail end of Jarvis's own voice just
+    // after speaker.active has already gone false (right when extendFollowUp() opens the real mic back up).
+    // Keep checking for a short grace period past the end of speech, not only while still actively speaking.
+    const justFinishedSpeaking = !speaker.active && Date.now() - speaker.lastSpokeAt < ECHO_GRACE_MS;
+    if (speaker.active || justFinishedSpeaking) {
       const isStopPhrase = /\b(stop|quiet|enough|cancel|shut up)\b/.test(lower) || lower.includes(wake);
       if (!isStopPhrase && soundsLikeSelfEcho(lower, speaker.recentText)) return; // just hearing itself
-      speaker.stop();
+      if (speaker.active) speaker.stop();
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
     if (S.approvals.length && /^(approve|approved|confirm|confirmed|go ahead|yes,? (do it|send it|deploy it)|send it|deploy it)\b/.test(bare)) {
@@ -1054,7 +1061,8 @@
         // there to build on rather than a blank field that silently fails to save without it.
         if (f.kind === "url" && !current) current = "https://";
         const type = f.kind === "number" ? "number" : f.kind === "email" ? "email" : f.kind === "url" ? "url" : "text";
-        control = `<input type="${type}" id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}">`;
+        const step = f.kind === "number" ? ' step="any"' : "";  // some settings (voice stability etc.) are fractional
+        control = `<input type="${type}"${step} id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}">`;
       }
       return `<div class="set-field${error ? " has-error" : ""}">
         <label for="f-${f.key}">${esc(f.label)}${sourceNote ? `<span class="set-source">${sourceNote}</span>` : ""}</label>

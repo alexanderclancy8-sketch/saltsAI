@@ -40,6 +40,7 @@ from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.routine_tests import RoutineTester
@@ -121,6 +122,7 @@ class Jarvis:
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
         self.site_access = SiteAccessCodes(self)
+        self.recruiter = Recruiter(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain

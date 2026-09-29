@@ -52,11 +52,11 @@ def base_options(settings, *, model: str | None = None, **kw: Any):
                               permission_mode="dontAsk", **kw)
 
 
-def build_sdk_tools(j) -> list:
+def build_sdk_tools(j, tools: list | None = None) -> list:
     from claude_agent_sdk import tool
 
     sdk_tools = []
-    for t in TOOLS:
+    for t in (tools if tools is not None else TOOLS):
         async def handler(args: dict[str, Any], _t=t) -> dict[str, Any]:
             call_id = uuid.uuid4().hex[:8]
             j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "start"})
@@ -78,10 +78,11 @@ def build_sdk_tools(j) -> list:
     return sdk_tools
 
 
-def build_mcp_server(j):
+def build_mcp_server(j, tool_names: list[str] | None = None):
     from claude_agent_sdk import create_sdk_mcp_server
 
-    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j))
+    tools = [t for t in TOOLS if tool_names is None or t.name in tool_names] if tool_names is not None else None
+    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j, tools))
 
 
 def _tool_label(name: str) -> str:
@@ -343,6 +344,28 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
     if result is None or result.is_error:
         raise RuntimeError(f"Claude run failed: {getattr(result, 'errors', None) or getattr(result, 'result', None)}")
     return result
+
+
+async def run_agent(settings, j, *, system: str, prompt: str, tool_names: list[str], effort: str = "medium",
+                    max_turns: int = 12) -> str:
+    """Headless Claude Code run against a filtered subset of Jarvis's own tools, exposed as its own in-process
+    MCP server the same way `MaxBrain` exposes the full set - used by `services/recruiter.py` for a recruited
+    sub-agent's Max-backend path. Any write one of those tools attempts still goes through `dispatch()`'s
+    approval gate exactly as it would from the main conversation."""
+    from claude_agent_sdk import ResultMessage, query
+
+    server = build_mcp_server(j, tool_names)
+    options = base_options(settings, system_prompt=system, effort=effort, tools=CHAT_BUILTINS,
+                           mcp_servers={SERVER: server},
+                           allowed_tools=[f"mcp__{SERVER}__{n}" for n in tool_names] + CHAT_BUILTINS,
+                           disallowed_tools=BLOCKED, max_turns=max_turns)
+    result = None
+    async for msg in query(prompt=prompt, options=options):
+        if isinstance(msg, ResultMessage):
+            result = msg
+    if result is None or result.is_error:
+        raise RuntimeError(f"Recruited agent failed: {getattr(result, 'errors', None) or getattr(result, 'result', None)}")
+    return (result.result or "").strip()
 
 
 def parse_structured(result, schema: type[BaseModel]) -> BaseModel:

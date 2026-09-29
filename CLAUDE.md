@@ -79,6 +79,13 @@ prompt) until the model calls a terminal tool (`submit_fix`/`submit_findings`/`s
 rejects every command but `view`). `self_improve.py` is deliberately narrower than `fixer.py`: no merge step, no
 deploy step, ever, not even behind an approval click - a human always merges it. Copy the shape of whichever of
 these three is closest to a new engineer/review-style feature rather than starting from scratch.
+`services/recruiter.py` (the `recruit_agent` tool) generalises the same shape beyond code: a fresh agent, a
+fixed turn budget, a final answer - but against Jarvis's own tool set via `dispatch()` (so a write it proposes
+queues for approval exactly like anything else) rather than a code checkout, for research/drafting/analysis
+tasks worth delegating rather than doing inline. Like the other three it runs both backends (a plain
+`AsyncAnthropic` tool loop for the API backend, `max_backend.run_agent` - a filtered MCP tool server - for the
+Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
+or starting another background job itself.
 
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through
 alias tables so small API differences don't break things - e.g. `jarvis/integrations/fsm.py`'s `ALIASES` maps

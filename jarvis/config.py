@@ -187,7 +187,10 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice: str = "daniel"  # preset name from ELEVENLABS_BRITISH_VOICES or a raw voice id
     elevenlabs_model: str = "eleven_multilingual_v2"  # most natural; eleven_flash_v2_5 answers a little faster
-    elevenlabs_stability: float = 0.5
+    # Lower stability reads as more natural, varied speech - JARVIS-like warmth rather than a flat, robotic
+    # monotone; too low starts to wander/mumble. 0.35 is ElevenLabs' own commonly recommended conversational
+    # sweet spot. Style stays low: pushed up it exaggerates delivery and introduces artifacts.
+    elevenlabs_stability: float = 0.35
     elevenlabs_similarity: float = 0.8
     elevenlabs_style: float = 0.15
     elevenlabs_speed: float = 1.0
