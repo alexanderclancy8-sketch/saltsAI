@@ -188,7 +188,7 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .drawer-body { padding: 20px 22px 40px; flex: 1; }
 .drawer label { display: block; font-size: 12.5px; color: var(--muted-dim); margin: 0 0 5px; font-weight: 500; }
 .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email],
-.drawer input[type=url], .drawer input[type=number], .drawer textarea {
+.drawer input[type=url], .drawer input[type=number], .drawer input[type=time], .drawer textarea {
   width: 100%; background: none; color: var(--text); border: 1px solid var(--line);
   border-radius: var(--radius-sm); padding: 9px 10px; font-family: var(--ui); font-size: 14.5px; outline: none;
   transition: border-color .15s; }
@@ -216,6 +216,14 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .set-field .field-help { font-size: 12px; color: var(--muted-dim); margin-top: 4px; }
 .set-field .field-error { font-size: 12px; color: var(--crit); margin-top: 4px; }
 .set-field.has-error input, .set-field.has-error select { border-color: var(--crit); }
+.cron-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.cron-picker input[type=time] { width: auto; flex: 0 0 auto; }
+.cron-days { display: flex; gap: 4px; flex-wrap: wrap; }
+.cron-day { border: 1px solid var(--line); background: none; color: var(--muted-dim); border-radius: 99px;
+  padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: var(--ui); font-weight: 500; transition: border-color .15s, color .15s; }
+.cron-day:hover { border-color: var(--line-strong); color: var(--text); }
+.cron-day.active { border-color: var(--accent); color: var(--accent-text); }
+.cron-presets { display: flex; gap: 12px; margin-top: 6px; }
 .set-checkbox { display: flex; align-items: center; gap: 8px; }
 .set-checkbox input { width: auto; }
 .set-checkbox label { margin: 0; }
