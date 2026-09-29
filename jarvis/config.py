@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     llm_backend: str = "auto"
     claude_code_oauth_token: str = ""
     anthropic_api_key: str = ""
-    jarvis_model: str = "claude-opus-5-5"
+    jarvis_model: str = "claude-sonnet-5-5"
     voice_model: str = "claude-sonnet-5-5"  # spoken replies default to the quicker model; blank = same as JARVIS_MODEL
     voice_effort: str = "low"  # spoken conversation: quick, natural replies
     chat_effort: str = "medium"  # typed chat: thorough answers without long waits (raise to high for deep work)

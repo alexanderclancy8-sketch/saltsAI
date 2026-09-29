@@ -15,7 +15,7 @@ from .db import Database
 from .events import EventBus
 from .integrations.azure import BlobArchive, KuduDeployer
 from .integrations.finance import build_finance
-from .integrations.fsm import DemoFSM, FSMClient
+from .integrations.fsm import FSMRouter
 from .integrations.github import GitHub
 from .integrations.marketing import PresenceSources
 from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
@@ -67,7 +67,7 @@ class Jarvis:
         self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail()
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
-        self.fsm = FSMClient(s, self.http) if s.fsm_configured else DemoFSM()
+        self.fsm = FSMRouter(s, self.http)
         self.ram = RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key else DemoRamTracking(self.fsm)
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None

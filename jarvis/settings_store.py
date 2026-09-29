@@ -403,8 +403,14 @@ class SettingsStore:
             value = " | ".join(line.strip() for line in str(value).splitlines() if line.strip())
         if f.kind == "email" and value and not _EMAIL.match(value):
             return None, "That doesn't look like an email address."
-        if f.kind == "url" and value and not re.match(r"^https?://[^\s/]+", value):
-            return None, "Start with https://"
+        if f.kind == "url" and value:
+            # A bare domain ("fsm.example.co.uk") is a much more likely mistake than someone actually
+            # wanting a scheme-less value - fix it up rather than silently rejecting the save and leaving
+            # them thinking it's configured when it never actually got saved.
+            if not re.match(r"^https?://", value) and re.match(r"^[^\s/]+\.[^\s/]+", value):
+                value = f"https://{value}"
+            if not re.match(r"^https?://[^\s/]+", value):
+                return None, "Start with https://"
         if f.kind == "select" and value not in {v for v, _ in f.options}:
             return None, "Pick one of the options."
         if f.kind == "cron" and value:

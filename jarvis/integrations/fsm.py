@@ -177,6 +177,34 @@ def _unwrap(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+class FSMRouter:
+    """The single, stable object Jarvis holds as `self.fsm` - it never gets swapped out after startup, so
+    every service that captured a direct reference to it (staff, accountant, actions, billing, tracker, ...)
+    keeps working correctly even after the owner changes the FSM address.
+
+    Whether to actually call the real Salts FSM API or hand back demo data is checked fresh on every call
+    instead of being decided once when Jarvis started - so saving the web address on the Settings page takes
+    effect immediately, the same as every other hot-reloadable setting, rather than silently staying on demo
+    data (or refusing to reconnect) until the app is restarted.
+    """
+
+    def __init__(self, settings: Settings, http: httpx.AsyncClient):
+        self.s = settings
+        self._real = FSMClient(settings, http)
+        self._demo: DemoFSM | None = None
+
+    @property
+    def demo(self) -> bool:
+        return not self.s.fsm_configured
+
+    def __getattr__(self, name: str) -> Any:
+        if self.demo:
+            if self._demo is None:
+                self._demo = DemoFSM()
+            return getattr(self._demo, name)
+        return getattr(self._real, name)
+
+
 class FSMClient:
     demo = False
 

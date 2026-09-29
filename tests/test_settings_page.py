@@ -56,6 +56,16 @@ def test_save_applies_immediately_and_persists_encrypted(settings):
     assert reloaded.overrides["owner_email"] == "alex@example.com"
 
 
+def test_a_bare_domain_gets_https_added_instead_of_being_rejected(settings):
+    # Typing the domain without "https://" is a far more likely slip than actually wanting no scheme at
+    # all - rejecting it outright just leaves the owner thinking they've saved it when they haven't.
+    store = SettingsStore(settings)
+    errors = store.update({"fsm_base_url": "fsm.saltsfireandsecurity.co.uk"}, [])
+    assert errors == {}
+    assert settings.fsm_base_url == "https://fsm.saltsfireandsecurity.co.uk"
+    assert settings.fsm_configured
+
+
 def test_blank_secret_leaves_existing_value_untouched(settings):
     store = SettingsStore(settings)
     store.update({"fsm_api_key": "realkey123"}, [])

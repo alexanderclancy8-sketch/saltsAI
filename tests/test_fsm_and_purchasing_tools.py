@@ -143,6 +143,28 @@ async def test_job_detail_raises_a_clear_error_for_an_unknown_job(settings):
     await j.http.aclose()
 
 
+async def test_fsm_router_reconnects_live_when_the_web_address_is_saved(settings):
+    # self.fsm is only ever built once in Jarvis.__init__ - lots of other services capture a direct reference
+    # to it. It must stay on demo data while unconfigured, then switch itself to the real client the moment
+    # the address is set on the live Settings object, with no Jarvis rebuild and no restart needed.
+    j = make(settings)
+    assert j.fsm.demo is True
+    assert (await j.fsm.jobs())  # demo data answers straight away
+
+    calls = []
+
+    async def fake_get(path, params=None):
+        calls.append(path)
+        return []
+
+    j.fsm._real.get = fake_get  # noqa: SLF001 - only reached once the router stops routing to demo
+    settings.fsm_base_url = "https://fsm.saltsfireandsecurity.co.uk"
+    assert j.fsm.demo is False
+    await j.fsm.get("/jobs")  # missing on the router itself, so this proves __getattr__ now delegates here
+    assert calls == ["/jobs"]
+    await j.http.aclose()
+
+
 async def test_real_fsm_client_calls_the_jobs_detail_path_and_normalises_extras():
     import httpx
 
