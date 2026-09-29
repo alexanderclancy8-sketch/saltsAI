@@ -13,6 +13,7 @@ from .brain.agent import JarvisBrain
 from .config import Settings
 from .db import Database
 from .events import EventBus
+from .humanize import cron_to_english
 from .integrations.azure import BlobArchive, KuduDeployer
 from .integrations.finance import build_finance
 from .integrations.fsm import FSMRouter
@@ -44,6 +45,7 @@ from .services.renewals import Renewals
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
 from .services.self_improve import SelfImprove
+from .services.self_learning import SelfLearning
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
@@ -116,6 +118,7 @@ class Jarvis:
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.automations = AutomationService(self)
+        self.self_learning = SelfLearning(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
@@ -163,6 +166,7 @@ class Jarvis:
                                  if self.self_improve.enabled else "not set up (add a repo + token on Settings)"),
             "Automations": (f"{len(self.automations.list_all())} you've set up"
                             if self.automations.list_all() else "none set up yet - just ask"),
+            "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",

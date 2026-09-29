@@ -309,6 +309,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("regulatory_watch_cron", "Tax and employment-law watch", "cron"),
             Field("security_watch_cron", "Security review of Salts FSM's code", "cron"),
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
+            Field("self_learning_cron", "Self-reflection (what to remember)", "cron", advanced=True),
             Field("routine_test_interval_min", "Routine tests every (minutes)", "number", advanced=True),
             Field("inbox_check_interval_min", "Check inbox every (minutes)", "number", advanced=True),
             Field("lone_worker_check_min", "Lone-worker sweep every (minutes)", "number", advanced=True),

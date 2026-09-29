@@ -217,6 +217,7 @@ class Settings(BaseSettings):
     wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs
+    self_learning_cron: str = "0 21 * * *"  # nightly reflection: remember anything durable from the day's chats
     inbox_check_interval_min: int = 10
     scheduler_enabled: bool = True
 

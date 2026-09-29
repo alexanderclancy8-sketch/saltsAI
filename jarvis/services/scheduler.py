@@ -63,6 +63,9 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("end-of-day wrap-up", j.wrapup.run),
                   CronTrigger.from_crontab(s.wrapup_cron, timezone=s.timezone), id="wrapup",
                   max_instances=1, coalesce=True)
+    sched.add_job(_guard("self-learning reflection", j.self_learning.reflect),
+                  CronTrigger.from_crontab(s.self_learning_cron, timezone=s.timezone), id="self_learning",
+                  max_instances=1, coalesce=True)
     sched.add_job(_guard("lone-worker check", j.lone_worker_sweep), "interval",
                   minutes=s.lone_worker_check_min, id="lone_worker", max_instances=1, coalesce=True)
     if not getattr(j.mail, "demo", True):
