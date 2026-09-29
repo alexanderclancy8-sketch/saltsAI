@@ -76,6 +76,25 @@ class PresenceSources:
         d = r.json()
         return {"rating": d.get("rating", 0), "reviews": d.get("userRatingCount", 0)}
 
+    async def find_business(self, query: str) -> dict[str, Any]:
+        """Look up any Google Business listing by name (add the town for a common name) - used to bring a
+        named local competitor's rating/review count/website into a comparison, the same way google_reviews()
+        does for our own listing."""
+        r = await self.http.post("https://places.googleapis.com/v1/places:searchText",
+                                 json={"textQuery": query},
+                                 headers={"X-Goog-Api-Key": self.s.google_places_api_key,
+                                          "X-Goog-FieldMask": "places.displayName,places.rating,"
+                                                              "places.userRatingCount,places.websiteUri,"
+                                                              "places.formattedAddress"})
+        r.raise_for_status()
+        places = r.json().get("places") or []
+        if not places:
+            return {"error": f"No Google Business listing found for '{query}'."}
+        p = places[0]
+        return {"name": (p.get("displayName") or {}).get("text", query), "rating": p.get("rating"),
+                "reviews": p.get("userRatingCount"), "website": p.get("websiteUri"),
+                "address": p.get("formattedAddress")}
+
     # -- Google Search Console ----------------------------------------------------------
     async def _google_access_token(self) -> str:
         if self._google_token and self._google_token[1] > time.time() + 60:

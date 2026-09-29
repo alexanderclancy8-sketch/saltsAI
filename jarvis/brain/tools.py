@@ -184,6 +184,11 @@ class UrlIn(BaseModel):
     url: str | None = Field(None, description="Page to audit; defaults to the company website")
 
 
+class CompetitorAuditIn(BaseModel):
+    competitors: list[str] = Field(description="Local competitor names - add the town if the name is generic, "
+                                                "e.g. 'Firetech Solutions Bradford' - up to 6 at once")
+
+
 class AdviceIn(BaseModel):
     focus: str | None = Field(None, description="Optional area to focus on, e.g. 'cash', 'growth', 'hiring', "
                                                 "'pricing', 'acquisition'")
@@ -556,6 +561,10 @@ async def search_rankings(j, a: SocialIn):
 
 async def seo_audit(j, a: UrlIn):
     return await j.marketing.seo_audit(a.url)
+
+
+async def competitor_audit(j, a: CompetitorAuditIn):
+    return await j.marketing.competitor_audit(a.competitors)
 
 
 async def business_advice(j, a: AdviceIn):
@@ -949,6 +958,11 @@ TOOLS: list[Tool] = [
     Tool("seo_audit", "Audit the website for local SEO: titles, descriptions, headings, structured data, local "
                       "keywords, accreditations, speed, sitemap - with fixes.", UrlIn, seo_audit,
          "Auditing the website"),
+    Tool("competitor_audit", "Compare us against named local competitors: Google rating and review count (needs "
+                             "a Google Places key), plus the same website SEO snapshot seo_audit runs on our own "
+                             "site, run again on each competitor's site. Use web search alongside this for "
+                             "anything it doesn't cover, e.g. pricing or who ranks higher for a specific search "
+                             "term.", CompetitorAuditIn, competitor_audit, "Auditing the competition"),
     Tool("business_advice", "Business consultant report: board-level review across finance, team, sales, "
                             "operations, compliance and marketing with risks, opportunities and a 90-day plan, or a "
                             "consultant deep dive on a focus area (pricing, growth, hiring, efficiency, SWOT, "

@@ -237,6 +237,39 @@ class MarketingTracker:
                               "Publish a helpful article monthly (e.g. 'How often should a fire alarm be serviced? "
                               "BS 5839 explained') and share it on the socials."]}
 
+    async def competitor_audit(self, competitors: list[str]) -> dict[str, Any]:
+        """Us vs named local competitors: Google rating/reviews where a Places key is set, and the same SEO
+        snapshot seo_audit() runs on our own site, run again against each competitor's website."""
+        has_places = self.src.configured().get("google_reviews", False)
+        us: dict[str, Any] = {"name": self.s.company_name}
+        if has_places:
+            try:
+                us.update(await self.src.google_reviews())
+            except Exception as e:  # noqa: BLE001
+                us["reviews_error"] = str(e)[:200]
+        try:
+            us["seo"] = await self.seo_audit()
+        except Exception as e:  # noqa: BLE001
+            us["seo_error"] = str(e)[:200]
+
+        results = []
+        for name in competitors[:6]:  # a handful at a time keeps this quick and the report readable
+            entry: dict[str, Any] = {"query": name}
+            if has_places:
+                try:
+                    entry.update(await self.src.find_business(name))
+                except Exception as e:  # noqa: BLE001
+                    entry["error"] = str(e)[:200]
+            else:
+                entry["note"] = "Add a Google Places API key on the Settings page to compare ratings/reviews."
+            if entry.get("website"):
+                try:
+                    entry["seo"] = await self.seo_audit(entry["website"])
+                except Exception as e:  # noqa: BLE001
+                    entry["seo_error"] = str(e)[:200]
+            results.append(entry)
+        return {"us": us, "competitors": results}
+
     async def weekly_report(self) -> str:
         data = {"socials": await self.overview(30)}
         try:
