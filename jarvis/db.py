@@ -133,6 +133,16 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS automations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    description TEXT NOT NULL,
+    cron TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run_at TEXT DEFAULT '',
+    last_result TEXT DEFAULT ''
+);
 """
 
 
@@ -232,6 +242,26 @@ class Database:
 
     def memories(self) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM memory ORDER BY id")
+
+    # -- automations ------------------------------------------------------------------
+    def create_automation(self, description: str, cron: str, prompt: str) -> int:
+        return self.execute("INSERT INTO automations (created_at, description, cron, prompt) VALUES (?,?,?,?)",
+                            (now_iso(), description, cron, prompt))
+
+    def get_automation(self, automation_id: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM automations WHERE id = ?", (automation_id,))
+
+    def list_automations(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM automations ORDER BY id")
+
+    def update_automation(self, automation_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(f"UPDATE automations SET {cols} WHERE id = ?", (*fields.values(), automation_id))
+
+    def delete_automation(self, automation_id: int) -> None:
+        self.execute("DELETE FROM automations WHERE id = ?", (automation_id,))
 
     # -- approvals ------------------------------------------------------------------
     def create_action(self, kind: str, summary: str, payload: dict[str, Any]) -> int:

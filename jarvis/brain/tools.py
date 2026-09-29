@@ -373,6 +373,20 @@ class ForgetIn(BaseModel):
     memory_id: int
 
 
+class CreateAutomationIn(BaseModel):
+    description: str = Field(description="Short label for what this is, e.g. 'Weekday overdue-jobs check'")
+    cron: str = Field(description="Standard 5-field crontab schedule in the company's local timezone, e.g. "
+                                  "'0 8 * * 1-5' for 8am on weekdays, '*/30 * * * *' for every 30 minutes")
+    prompt: str = Field(description="An instruction to yourself for what to actually check or do when this "
+                                    "runs, e.g. 'Check for jobs scheduled today with no engineer assigned and "
+                                    "tell the owner if there are any' - write it as if telling yourself what "
+                                    "to go and look at, using whatever tools that needs")
+
+
+class DeleteAutomationIn(BaseModel):
+    automation_id: int = Field(description="The automation's number, from list_automations")
+
+
 class ArchiveIn(BaseModel):
     filename: str = Field(description="e.g. vat-estimate-q3.md")
     content: str
@@ -835,6 +849,18 @@ async def forget(j, a: ForgetIn):
     return "Forgotten."
 
 
+async def create_automation(j, a: CreateAutomationIn):
+    return j.automations.create(a.description, a.cron, a.prompt)
+
+
+async def list_automations(j, a: NoInput):
+    return j.automations.list_all()
+
+
+async def delete_automation(j, a: DeleteAutomationIn):
+    return j.automations.delete(a.automation_id)
+
+
 async def archive_to_azure(j, a: ArchiveIn):
     if not j.blob.enabled:
         return "Azure Blob Storage isn't configured (AZURE_STORAGE_CONNECTION_STRING)."
@@ -1064,6 +1090,16 @@ TOOLS: list[Tool] = [
     Tool("remember", "Save a fact or preference the owner wants you to remember long term.", RememberIn, remember,
          "Making a note"),
     Tool("forget", "Delete a remembered fact by its number.", ForgetIn, forget, "Forgetting that"),
+    Tool("create_automation", "Set up your own recurring check on a schedule - 'every weekday at 8am, check for "
+                              "unassigned jobs and tell me', 'every 30 minutes, check for a supplier email about "
+                              "the delayed order'. It runs itself from then on with the same tools and the same "
+                              "approval rules as a live conversation - looking things up is automatic, but "
+                              "anything it wants to change still needs your approval.", CreateAutomationIn,
+         create_automation, "Setting up an automation"),
+    Tool("list_automations", "Every automation the owner has set up, its schedule, and what it found last time "
+                             "it ran.", NoInput, list_automations, "Checking your automations"),
+    Tool("delete_automation", "Remove one of the owner's automations by its number.", DeleteAutomationIn,
+         delete_automation, "Removing that automation"),
     Tool("archive_to_azure", "Upload a report or document to the company's Azure Blob Storage archive.",
          ArchiveIn, archive_to_azure, "Uploading to Azure",
          approval=True, describe=lambda a: f"Upload {a.filename} to the Azure archive"),

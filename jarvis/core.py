@@ -27,6 +27,7 @@ from .services.accountant import Accountant
 from .services.accreditations import Accreditations
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
+from .services.automations import AutomationService
 from .services.billing import Billing
 from .services.customers import CustomerHealth
 from .services.documents import Documents
@@ -113,6 +114,8 @@ class Jarvis:
         self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
+        self.scheduler = None
+        self.automations = AutomationService(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
@@ -120,7 +123,6 @@ class Jarvis:
             self.brain = MaxBrain(self)
         else:
             self.brain = JarvisBrain(self)
-        self.scheduler = None
         self._startup_tasks: set[asyncio.Task] = set()
 
     def _seed_notes(self) -> None:
@@ -159,6 +161,8 @@ class Jarvis:
                                else "not set up (needs the same GitHub connection as auto-fix)"),
             "Self-improvement": (f"can propose PRs against {s.jarvis_repo} (never merges or deploys them)"
                                  if self.self_improve.enabled else "not set up (add a repo + token on Settings)"),
+            "Automations": (f"{len(self.automations.list_all())} you've set up"
+                            if self.automations.list_all() else "none set up yet - just ask"),
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",
@@ -184,6 +188,7 @@ class Jarvis:
 
             self.scheduler = build_scheduler(self)
             self.scheduler.start()
+            self.automations.register_all()
             task = asyncio.create_task(self._first_run())
             self._startup_tasks.add(task)
             task.add_done_callback(self._startup_tasks.discard)
