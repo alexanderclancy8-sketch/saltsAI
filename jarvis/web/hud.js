@@ -956,6 +956,17 @@
 
     field(key) { for (const s of this.sections) { const f = s.fields.find((x) => x.key === key); if (f) return f; } return null; },
 
+    currentValue(key) {
+      if (Object.prototype.hasOwnProperty.call(this.edited, key)) return this.edited[key];
+      if (this.cleared.has(key)) return "";
+      return this.field(key)?.value;
+    },
+
+    // A field with depends_on only makes sense to show once you can see the field it depends on (same
+    // section, no ordering surprises) and only while that field's own current value matches - lets a
+    // section with several providers (Voice: ElevenLabs/Azure/Piper) show just the one actually selected.
+    visible(f) { return !f.depends_on || this.currentValue(f.depends_on[0]) === f.depends_on[1]; },
+
     render(problem = "") {
       $("#settings-problem").innerHTML = problem
         ? `<div class="set-problem">${esc(problem)}</div>` : "";
@@ -973,8 +984,9 @@
 
     renderSection(sec) {
       const isOpen = this.open.has(sec.id);
-      const basics = sec.fields.filter((f) => !f.advanced);
-      const advanced = sec.fields.filter((f) => f.advanced);
+      const shown = sec.fields.filter((f) => this.visible(f));
+      const basics = shown.filter((f) => !f.advanced);
+      const advanced = shown.filter((f) => f.advanced);
       const showAdvanced = this.advanced.has(sec.id);
       const guide = sec.guide?.length ? `<div class="set-guide"><strong>Setup</strong><ol>${sec.guide.map((g) => `<li>${esc(g)}</li>`).join("")}</ol></div>` : "";
       const test = sec.last_test;
@@ -1222,7 +1234,10 @@
     else if (f.kind === "number") Settings.edited[key] = el.value === "" ? "" : Number(el.value);
     else Settings.edited[key] = el.value;
     Settings.cleared.delete(key);
-    Settings.updateSaveBar();
+    // A select/checkbox is a discrete, complete choice (unlike typing, there's no mid-keystroke focus to
+    // lose) - re-render so any field whose depends_on names this one shows or hides immediately, e.g.
+    // switching Voice provider swaps which provider's fields are visible without needing to save first.
+    if (f.kind === "select" || f.kind === "bool") Settings.render(); else Settings.updateSaveBar();
   });
   $("#btn-settings-save").addEventListener("click", () => Settings.save());
   $("#btn-settings-cancel").addEventListener("click", () => Settings.revert());

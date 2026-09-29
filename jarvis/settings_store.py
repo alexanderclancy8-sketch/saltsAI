@@ -40,6 +40,10 @@ class Field:
     placeholder: str = ""
     options: tuple[tuple[str, str], ...] = ()
     advanced: bool = False
+    # (other_field_key, value) - only shown once that field's current value equals this. Lets a section with
+    # several providers (Voice: ElevenLabs/Azure/Piper) show only the one actually selected, not all of them
+    # stacked up at once - see hud.js's Settings.renderField().
+    depends_on: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -189,32 +193,48 @@ SECTIONS: tuple[Section, ...] = (
         "voice", "Voice", "How Jarvis sounds, and how it hears you.",
         (
             Field("tts_provider", "Voice", "select", options=(
-                ("auto", "Best available"), ("elevenlabs", "ElevenLabs"), ("azure", "Azure"), ("browser", "Browser"))),
+                ("auto", "Best available"), ("elevenlabs", "ElevenLabs"), ("azure", "Azure"),
+                ("piper", "Piper (free, local)"), ("browser", "Browser"))),
             Field("elevenlabs_api_key", "ElevenLabs API key", "secret",
-                  "The most natural voice. elevenlabs.io > profile > API Keys."),
+                  "The most natural voice. elevenlabs.io > profile > API Keys.",
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("elevenlabs_voice", "ElevenLabs voice", "select", options=(
                 ("daniel", "Daniel - deep British male"), ("george", "George - warm British male"),
-                ("alice", "Alice - British female"), ("lily", "Lily - British female"))),
+                ("alice", "Alice - British female"), ("lily", "Lily - British female")),
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("elevenlabs_model", "ElevenLabs model", "select", options=(
-                ("eleven_multilingual_v2", "Most natural"), ("eleven_flash_v2_5", "Fastest")), advanced=True),
+                ("eleven_multilingual_v2", "Most natural"), ("eleven_flash_v2_5", "Fastest")), advanced=True,
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("elevenlabs_stability", "Voice stability (0-1)", "number",
                   "Lower sounds more natural and varied; higher sounds flatter and more consistent. "
-                  "0.3-0.4 usually sounds least robotic.", advanced=True),
+                  "0.3-0.4 usually sounds least robotic.", advanced=True, depends_on=("tts_provider", "elevenlabs")),
             Field("elevenlabs_style", "Voice style exaggeration (0-1)", "number",
                   "Higher leans into the voice's character more, but can introduce odd artifacts if pushed "
-                  "too far. Keep this low.", advanced=True),
-            Field("elevenlabs_speed", "Voice speed", "number", "1.0 is normal pace.", advanced=True),
+                  "too far. Keep this low.", advanced=True, depends_on=("tts_provider", "elevenlabs")),
+            Field("elevenlabs_speed", "Voice speed", "number", "1.0 is normal pace.", advanced=True,
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("azure_speech_key", "Azure Speech key", "secret",
-                  "Free and very good. Cloud Shell: bash infra/deploy.sh voice sets this up."),
-            Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True),
-            Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES),
+                  "Free and very good. Cloud Shell: bash infra/deploy.sh voice sets this up.",
+                  depends_on=("tts_provider", "azure")),
+            Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True,
+                  depends_on=("tts_provider", "azure")),
+            Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES,
+                  depends_on=("tts_provider", "azure")),
             Field("azure_tts_style", "Azure speaking style", "select",
-                  options=(("chat", "Conversational"), ("", "Standard")), advanced=True),
+                  options=(("chat", "Conversational"), ("", "Standard")), advanced=True,
+                  depends_on=("tts_provider", "azure")),
+            Field("piper_voice", "Piper voice (free)", "select", options=(
+                ("alan", "Alan - British male (RP)"), ("northern_english_male", "Northern English male"),
+                ("jenny_dioco", "Jenny - British female"), ("alba", "Alba - British female")),
+                  help="No API key needed - downloaded once and run locally. This is the voice used whenever "
+                       "no ElevenLabs or Azure key is set.", depends_on=("tts_provider", "piper")),
             Field("stt_provider", "Listening", "select", options=(
                 ("auto", "Best available"), ("deepgram", "Deepgram"), ("whisper", "OpenAI Whisper"),
                 ("browser", "Browser"))),
-            Field("deepgram_api_key", "Deepgram API key", "secret", "For always-listening mode. deepgram.com"),
-            Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True),
+            Field("deepgram_api_key", "Deepgram API key", "secret", "For always-listening mode. deepgram.com",
+                  depends_on=("stt_provider", "deepgram")),
+            Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True,
+                  depends_on=("stt_provider", "whisper")),
             Field("wake_word", "Wake word", placeholder="jarvis"),
         ),
         test=True,
@@ -493,7 +513,8 @@ class SettingsStore:
             for f in sec.fields:
                 value = getattr(self.s, f.key)
                 item = {"key": f.key, "label": f.label, "kind": f.kind, "help": f.help, "placeholder": f.placeholder,
-                        "options": [list(o) for o in f.options], "advanced": f.advanced, "source": self._source(f.key)}
+                        "options": [list(o) for o in f.options], "advanced": f.advanced, "source": self._source(f.key),
+                        "depends_on": list(f.depends_on) if f.depends_on else None}
                 if f.kind == "secret":
                     item.update(is_set=bool(value), hint=_hint(str(value)) if value else "")
                 else:

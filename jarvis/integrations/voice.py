@@ -1,19 +1,23 @@
 """Voice I/O.
 
-Speech output (TTS): ElevenLabs (default British "Daniel" voice) or Azure Neural TTS.
-Speech input (STT): Deepgram Nova-3 live streaming (proxied so the API key never
-reaches the browser), Deepgram pre-recorded, or OpenAI Whisper for push-to-talk.
-If nothing is configured the browser's built-in speech engines are used.
+Speech output (TTS): ElevenLabs or Azure Neural TTS if a key is configured, otherwise Piper - a free,
+local neural TTS engine (runs on the server itself, no external API, no cost) - which is why it, not the
+browser's own robotic voice, is the default whenever nothing paid is set up. Speech input (STT): Deepgram
+Nova-3 live streaming (proxied so the API key never reaches the browser), Deepgram pre-recorded, or OpenAI
+Whisper for push-to-talk. If nothing is configured the browser's built-in speech engines are used.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import re
+import wave
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from xml.sax.saxutils import escape
@@ -28,6 +32,12 @@ ELEVEN_API = "https://api.elevenlabs.io/v1"
 DEEPGRAM_API = "https://api.deepgram.com/v1/listen"
 DEEPGRAM_WS = "wss://api.deepgram.com/v1/listen"
 VOCAB = ["Jarvis", "Salts", "Salts FSM", "Vigilon", "Gent", "Kentec", "Apollo", "Paxton", "BAFE", "NSI", "SSAIB"]
+
+# Free British English voices from the Piper project (github.com/OHF-Voice/piper1-gpl), model files hosted
+# at huggingface.co/rhasspy/piper-voices - {voice: quality tier}. All confirmed to exist at "medium" quality
+# as of writing; add more here (checking the quality folder actually exists first) rather than guessing one.
+PIPER_VOICES = {"alan": "medium", "northern_english_male": "medium", "jenny_dioco": "medium", "alba": "medium"}
+PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
 
 
 class VoiceError(RuntimeError):
@@ -54,15 +64,18 @@ class Voice:
     def __init__(self, settings: Settings, http: httpx.AsyncClient):
         self.s = settings
         self.http = http
+        self._piper_models: dict[str, Any] = {}  # model path -> loaded PiperVoice, expensive to (re)load
 
     # ------------------------------------------------------------------ status
     def client_config(self) -> dict[str, Any]:
+        voice = (self.s.elevenlabs_voice if self.s.effective_tts == "elevenlabs" else
+                self.s.piper_voice if self.s.effective_tts == "piper" else self.s.azure_tts_voice)
         return {
             "tts": self.s.effective_tts,
             "stt": self.s.effective_stt,
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
-            "voice": self.s.elevenlabs_voice if self.s.effective_tts == "elevenlabs" else self.s.azure_tts_voice,
+            "voice": voice,
         }
 
     # ------------------------------------------------------------------ TTS
@@ -75,6 +88,8 @@ class Voice:
             return await self._elevenlabs(text, voice_id or self.s.elevenlabs_voice_id), "audio/mpeg"
         if provider == "azure":
             return await self._azure_tts(text), "audio/mpeg"
+        if provider == "piper":
+            return await self._piper(text, voice_id), "audio/wav"
         raise VoiceError("No server TTS configured - use the browser voice")
 
     async def _open_stream(self, request: httpx.Request) -> AsyncIterator[bytes]:
@@ -134,6 +149,48 @@ class Voice:
             content=ssml.encode(), timeout=60,
         )
         return await self._open_stream(req)
+
+    async def _piper(self, text: str, voice: str | None = None) -> AsyncIterator[bytes]:
+        voice = voice or self.s.piper_voice
+        quality = PIPER_VOICES.get(voice, "medium")
+        model_path = await self._ensure_piper_voice(voice, quality)
+        wav_bytes = await asyncio.to_thread(self._piper_synthesize, model_path, text)
+
+        async def gen() -> AsyncIterator[bytes]:
+            yield wav_bytes
+
+        return gen()
+
+    async def _ensure_piper_voice(self, voice: str, quality: str) -> Path:
+        """Downloads a Piper voice model the first time it's used and caches it under data_dir, which
+        survives restarts/redeploys - so this only ever costs real time once per voice, not once per reply."""
+        cache_dir = self.s.data_dir / "piper-voices"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"en_GB-{voice}-{quality}"
+        model_path, config_path = cache_dir / f"{stem}.onnx", cache_dir / f"{stem}.onnx.json"
+        if not model_path.exists() or not config_path.exists():
+            base = f"{PIPER_VOICES_BASE}/{voice}/{quality}/{stem}"
+            for suffix, path in ((".onnx", model_path), (".onnx.json", config_path)):
+                r = await self.http.get(f"{base}{suffix}", timeout=120, follow_redirects=True)
+                if r.status_code >= 400:
+                    raise VoiceError(f"Couldn't download the Piper voice '{voice}' ({r.status_code}) - "
+                                     "check it's a real voice name from huggingface.co/rhasspy/piper-voices.")
+                path.write_bytes(r.content)
+        return model_path
+
+    def _piper_synthesize(self, model_path: Path, text: str) -> bytes:
+        """Runs on a worker thread (asyncio.to_thread) - Piper's inference is synchronous CPU work and would
+        otherwise block the event loop for every other request while a reply is being spoken."""
+        from piper import PiperVoice
+
+        key = str(model_path)
+        voice = self._piper_models.get(key)
+        if voice is None:
+            voice = self._piper_models[key] = PiperVoice.load(key)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            voice.synthesize_wav(text, wav_file)
+        return buf.getvalue()
 
     async def list_voices(self) -> list[dict[str, Any]]:
         """ElevenLabs voices on the account, British accents first."""

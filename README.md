@@ -7,7 +7,7 @@ brain is Claude, so it is also a fully capable general AI you can ask anything.
 
 ```
          ┌──────────────── HUD (browser / wall screen / phone) ────────────────┐
-voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · live panels · map │
+voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · live panels · map │
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
@@ -137,8 +137,11 @@ Do these in any order; each one replaces demo data as soon as it's set.
    PR. This is deliberately narrower than the FSM auto-fix: there's no merge step and no deploy step at all: the
    PR just sits there for you to review and merge yourself, whenever you're ready, through your own tooling.
    Jarvis never merges or redeploys itself, under any circumstances.
-9. **Voice.** On the Settings page's Voice card: an ElevenLabs key for the most natural voice (or run
-   `bash infra/deploy.sh voice` for a free Azure one), and a Deepgram key for always-listening speech-to-text
+9. **Voice.** Jarvis speaks with [Piper](https://github.com/OHF-Voice/piper1-gpl) by default - a free, local
+   neural voice with no API key and no cost, downloaded once and run on the server itself - so it never falls
+   back to the browser's robotic voice even with nothing configured. On the Settings page's Voice card: pick
+   from a few free Piper voices, or add an ElevenLabs key for the most natural voice (or run
+   `bash infra/deploy.sh voice` for a free Azure one) if you'd rather pay for something better, and a Deepgram key for always-listening speech-to-text
    (OpenAI/Whisper also works for push-to-talk). "Always listening" doesn't mean always streaming to Deepgram/
    Whisper: Jarvis only wakes the paid microphone once it hears "Jarvis" (using the browser's own free wake-word
    spotting the rest of the time), and puts it back to sleep after a few seconds of silence. Wispr Flow and other dictation apps work straight into the chat

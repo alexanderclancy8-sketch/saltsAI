@@ -183,7 +183,9 @@ class Settings(BaseSettings):
     marketing_report_cron: str = "50 7 * * 1"
 
     # --- Voice --------------------------------------------------------------
-    tts_provider: str = "auto"  # auto | elevenlabs | azure | browser
+    tts_provider: str = "auto"  # auto | elevenlabs | azure | piper | browser
+    piper_voice: str = "alan"  # free, local TTS (jarvis/integrations/voice.py's PIPER_VOICES) - the default
+    # whenever no paid ElevenLabs/Azure key is set, since it beats the browser's own robotic voice for free
     elevenlabs_api_key: str = ""
     elevenlabs_voice: str = "daniel"  # preset name from ELEVENLABS_BRITISH_VOICES or a raw voice id
     elevenlabs_model: str = "eleven_multilingual_v2"  # most natural; eleven_flash_v2_5 answers a little faster
@@ -289,7 +291,7 @@ class Settings(BaseSettings):
             return "elevenlabs"
         if self.azure_speech_key:
             return "azure"
-        return "browser"
+        return "piper"  # free and local - better than the browser's robotic voice, and needs no key
 
     @property
     def effective_stt(self) -> str:

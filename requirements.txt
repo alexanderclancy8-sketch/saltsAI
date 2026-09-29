@@ -13,3 +13,4 @@ apscheduler>=3.10,<4
 azure-storage-blob>=12.20
 python-multipart>=0.0.9
 pyyaml>=6
+piper-tts>=1.8  # free, local neural TTS - the default voice when no paid ElevenLabs/Azure key is configured
