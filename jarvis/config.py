@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     claude_code_oauth_token: str = ""
     anthropic_api_key: str = ""
     jarvis_model: str = "claude-opus-5-5"
-    voice_effort: str = "medium"  # spoken conversation (lower latency)
-    chat_effort: str = "high"  # typed chat - full Claude-quality answers
+    voice_effort: str = "low"  # spoken conversation: quick, natural replies
+    chat_effort: str = "medium"  # typed chat: thorough answers without long waits (raise to high for deep work)
     engineer_effort: str = "high"  # code fixes
     jarvis_fallbacks: bool = True
     jarvis_compaction: bool = True

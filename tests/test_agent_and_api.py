@@ -24,7 +24,7 @@ async def test_tool_loop_and_history(settings):
     assert tool_result["type"] == "tool_result" and "cash_at_bank" in tool_result["content"]
     call = j.client.beta.messages.calls[0]
     assert call["model"] == "claude-opus-5-5" and call["fallbacks"] == "default"
-    assert call["output_config"] == {"effort": "medium"}  # spoken turns use the lower-latency effort
+    assert call["output_config"] == {"effort": "low"}  # spoken turns use the quickest effort
     assert j.brain.messages[0]["content"][-1]["text"].startswith("[spoken")
     await j.http.aclose()
 
@@ -125,6 +125,55 @@ async def test_max_backend_builds_tools_without_api_key(settings):
     assert opts.env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-test" and opts.setting_sources == []
     assert opts.permission_mode == "dontAsk"
     assert "your Claude Max subscription" in j.connections()["Claude"]
+    await j.http.aclose()
+
+
+async def test_max_brain_keeps_one_claude_code_running(settings, monkeypatch):
+    import claude_agent_sdk
+    from claude_agent_sdk import ResultMessage, StreamEvent
+
+    settings.llm_backend = "max"
+    settings.claude_code_oauth_token = "sk-ant-oat-test"
+    started = []
+
+    class FakeClient:
+        def __init__(self, options):
+            self.options, self.prompts, self.closed = options, [], False
+            started.append(self)
+
+        async def connect(self, prompt=None):
+            pass
+
+        async def query(self, prompt, session_id="default"):
+            self.prompts.append(prompt)
+
+        async def receive_response(self):
+            delta = {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Right, all quiet."}}
+            yield StreamEvent(uuid="u1", session_id="s1", event=delta)
+            yield ResultMessage(subtype="success", duration_ms=5, duration_api_ms=5, is_error=False, num_turns=1,
+                                session_id="s1", result="Right, all quiet.")
+
+        async def disconnect(self):
+            self.closed = True
+
+    monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", FakeClient)
+    j = Jarvis(settings)
+    await j.brain.warm()
+    assert await j.brain.ask("Anything urgent?", "voice") == "Right, all quiet."
+    assert await j.brain.ask("And the inbox?", "voice") == "Right, all quiet."
+    assert len(started) == 1 and len(started[0].prompts) == 2  # one Claude Code process for both messages
+    assert started[0].options.effort == "low" and started[0].options.resume is None
+
+    await j.brain.ask("Draft the tender answers", "typed")  # typed chat thinks harder: restart, same conversation
+    assert len(started) == 2 and started[0].closed
+    assert started[1].options.effort == "medium" and started[1].options.resume == "s1"
+
+    j.brain.reset()
+    await j.brain.ask("Start again", "typed")  # a reset starts a new conversation
+    assert len(started) == 3 and started[2].options.resume is None
+
+    await j.brain.close()
+    assert started[2].closed
     await j.http.aclose()
 
 

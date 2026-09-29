@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -92,7 +93,12 @@ def _tool_label(name: str) -> str:
 
 
 class MaxBrain:
-    """Same interface as JarvisBrain, backed by the Claude Agent SDK on a subscription."""
+    """Same interface as JarvisBrain, backed by the Claude Agent SDK on a subscription.
+
+    One Claude Code process is kept running between messages (ClaudeSDKClient), so a reply doesn't pay for
+    starting Claude Code, loading the tools and reloading the conversation each time. The SDK client must be used
+    from the task that connected it, so a single worker task owns it and handles messages one at a time.
+    """
 
     def __init__(self, j):
         self.j = j
@@ -100,9 +106,13 @@ class MaxBrain:
         self.server = build_mcp_server(j)
         self.session_id: str | None = None
         self.messages: list[dict[str, Any]] = []  # kept for interface parity (history lives in the session)
-        self._lock = asyncio.Lock()
         self.uploads = self.s.data_dir / "uploads"
         self.uploads.mkdir(parents=True, exist_ok=True)
+        self._jobs: asyncio.Queue | None = None
+        self._worker: asyncio.Task | None = None
+        self._client = None
+        self._client_key: tuple[str, str] | None = None  # (effort, system prompt) the client was started with
+        self._fresh_start = False
         self.refresh_system()
 
     def refresh_system(self) -> None:
@@ -111,6 +121,7 @@ class MaxBrain:
 
     def reset(self) -> None:
         self.session_id = None
+        self._fresh_start = True  # the worker restarts Claude Code without the old conversation
         self.refresh_system()
         self.j.bus.publish("conversation_reset", None)
 
@@ -128,14 +139,89 @@ class MaxBrain:
                 continue
         return paths
 
+    # ------------------------------------------------------------------ worker
+    def _ensure_worker(self) -> asyncio.Queue:
+        if self._worker is None or self._worker.done():
+            self._jobs = asyncio.Queue()
+            self._worker = asyncio.create_task(self._run_worker(self._jobs))
+        return self._jobs
+
+    async def _submit(self, job: tuple) -> Any:
+        future = asyncio.get_running_loop().create_future()
+        await self._ensure_worker().put((*job, future))
+        return await future
+
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
                   speaker: str | None = None) -> str:
-        async with self._lock:
-            return await self._turn(text, mode, attachments, speaker)
+        return await self._submit(("ask", text, mode, attachments, speaker))
+
+    async def warm(self) -> None:
+        """Start Claude Code ahead of the first message, so that one is quick too."""
+        try:
+            await self._submit(("warm",))
+        except Exception as e:  # noqa: BLE001
+            log.warning("Couldn't start Claude Code in advance: %s", e)
+
+    async def close(self) -> None:
+        if self._worker and not self._worker.done() and self._jobs is not None:
+            await self._jobs.put(None)
+            try:
+                await asyncio.wait_for(self._worker, timeout=10)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                self._worker.cancel()
+
+    async def _run_worker(self, jobs: asyncio.Queue) -> None:
+        try:
+            while (job := await jobs.get()) is not None:
+                *args, future = job
+                try:
+                    if args[0] == "warm":
+                        await self._connected(self.s.voice_effort)
+                        result = None
+                    else:
+                        result = await self._turn(*args[1:])
+                    if not future.done():
+                        future.set_result(result)
+                except Exception as e:  # noqa: BLE001
+                    await self._disconnect()  # start afresh (resuming the conversation) next time
+                    if not future.done():
+                        future.set_exception(e)
+        finally:
+            await self._disconnect()
+
+    async def _connected(self, effort: str):
+        """The running Claude Code client, restarted only if effort, instructions or the conversation changed."""
+        key = (effort, self.system)
+        if self._client is not None and self._client_key == key and not self._fresh_start:
+            return self._client
+        from claude_agent_sdk import ClaudeSDKClient
+
+        await self._disconnect()
+        if self._fresh_start:
+            self.session_id, self._fresh_start = None, False
+        options = base_options(
+            self.s, system_prompt=self.system, effort=effort,
+            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server},
+            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS, disallowed_tools=BLOCKED,
+            include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads))
+        started = time.monotonic()
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
+        log.info("Claude Code started in %.1fs (effort %s)", time.monotonic() - started, effort)
+        self._client, self._client_key = client, key
+        return client
+
+    async def _disconnect(self) -> None:
+        client, self._client, self._client_key = self._client, None, None
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception as e:  # noqa: BLE001
+                log.debug("Claude Code client disconnect: %s", e)
 
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
                     speaker: str | None = None) -> str:
-        from claude_agent_sdk import ResultMessage, StreamEvent, query
+        from claude_agent_sdk import ResultMessage, StreamEvent
 
         bus, db = self.j.bus, self.j.db
         now = datetime.now(ZoneInfo(self.s.timezone))
@@ -147,20 +233,21 @@ class MaxBrain:
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode})
 
-        options = base_options(
-            self.s, system_prompt=self.system, effort=self.s.voice_effort if mode == "voice" else self.s.chat_effort,
-            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server},
-            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS, disallowed_tools=BLOCKED,
-            include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads))
+        started = time.monotonic()
+        first_words: float | None = None
         parts: list[str] = []
         result = None
         try:
-            async for msg in query(prompt=f"{tag}\n{text}{note}", options=options):
+            client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort)
+            await client.query(f"{tag}\n{text}{note}")
+            async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):
                     ev = msg.event or {}
                     etype = ev.get("type")
                     if etype == "content_block_delta" and (ev.get("delta") or {}).get("type") == "text_delta":
                         chunk = ev["delta"].get("text", "")
+                        if first_words is None:
+                            first_words = time.monotonic() - started
                         parts.append(chunk)
                         bus.publish("delta", {"text": chunk, "mode": mode})
                     elif etype == "content_block_start":
@@ -176,11 +263,14 @@ class MaxBrain:
                     self.session_id = msg.session_id or self.session_id
         except Exception as e:  # noqa: BLE001
             log.exception("Claude Agent SDK turn failed")
+            await self._disconnect()
             msg = ("I couldn't reach Claude through your subscription - check CLAUDE_CODE_OAUTH_TOKEN "
                    "(run `claude setup-token`)." if "auth" in str(e).lower() or "login" in str(e).lower()
                    else "Something went wrong talking to Claude. Please try again.")
             bus.publish("error", {"message": msg, "detail": str(e)[:300]})
             return msg
+        log.info("%s reply: first words after %s, finished after %.1fs", mode,
+                 f"{first_words:.1f}s" if first_words is not None else "-", time.monotonic() - started)
         if result is not None and result.is_error:
             limit = "limit" in str(result.result or result.errors or "").lower()
             msg = ("I've hit the usage limit on your Claude plan for now - it resets shortly." if limit

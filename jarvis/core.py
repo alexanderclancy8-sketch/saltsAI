@@ -162,6 +162,10 @@ class Jarvis:
         await self.advisor.report(deliver=True)
 
     async def start(self) -> None:
+        if hasattr(self.brain, "warm"):  # start Claude Code now so the first message is quick too
+            task = asyncio.create_task(self.brain.warm())
+            self._startup_tasks.add(task)
+            task.add_done_callback(self._startup_tasks.discard)
         if self.settings.scheduler_enabled:
             from .services.scheduler import build_scheduler
 
@@ -183,6 +187,8 @@ class Jarvis:
     async def stop(self) -> None:
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
+        if hasattr(self.brain, "close"):
+            await self.brain.close()
         await self.http.aclose()
 
     async def daily_billing(self) -> None:
