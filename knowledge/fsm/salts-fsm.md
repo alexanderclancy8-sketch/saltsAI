@@ -1,3 +1,15 @@
+---
+title: Salts FSM — how our field service management app works
+aliases: [FSM, field service management, Salts FSM]
+tags: [fsm]
+type: note
+summary: What Salts FSM is, its main records and workflows, and how Jarvis connects to it (read via API, write only through fsm_change).
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[fsm-moc]]"]
+---
+
 # Salts FSM - how our field service management app works
 
 Summary: what Salts FSM is, its main records and workflows, and how Jarvis connects to it. Extend this as the

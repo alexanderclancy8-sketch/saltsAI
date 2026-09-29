@@ -1,3 +1,15 @@
+---
+title: UK tax and accounting for a limited company fire and security contractor
+aliases: [tax and accounting, VAT CIS PAYE reference, finance reference]
+tags: [finance, tax]
+type: note
+summary: VAT (incl. the construction reverse charge), CIS, PAYE/RTI, Corporation Tax, Companies House, pensions, capital allowances and credit control for a UK fire and security contractor.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[maintenance-contracts-and-scheduling]]", "[[certification-and-competency]]", "[[finance-moc]]"]
+---
+
 # UK tax and accounting for a limited company fire and security contractor
 
 Summary: A practical reference for running the finances of a UK limited company in fire and security. Covers VAT (including the construction domestic reverse charge), CIS, PAYE/RTI, employer NIC, Corporation Tax, Companies House, pensions auto-enrolment, capital allowances, vans vs cars, management accounts KPIs and credit control.
@@ -314,5 +326,5 @@ The DRC has applied since 1 March 2021. Under it, the **customer** accounts for 
 
 ## Related files
 
-- `operations/maintenance-contracts-and-scheduling.md` (billing, KPIs, contracts)
-- `legislation/certification-and-competency.md` (record retention)
+- [[maintenance-contracts-and-scheduling]] (billing, KPIs, contracts)
+- [[certification-and-competency]] (record retention)

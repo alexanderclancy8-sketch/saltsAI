@@ -1,3 +1,15 @@
+---
+title: Salts Fire and Security — company profile
+aliases: [company profile, salts overview, who we are]
+tags: [company]
+type: note
+summary: Who Salts Fire and Security is, what it does and how the business runs day to day.
+created: 2026-09-28
+updated: 2026-09-29
+status: evergreen
+related: ["[[salts-fsm]]", "[[system-takeover-access]]", "[[company-moc]]"]
+---
+
 # Salts Fire and Security - company profile
 
 Summary: who the company is, what it does and how it works. Loaded into Jarvis' memory on every conversation.

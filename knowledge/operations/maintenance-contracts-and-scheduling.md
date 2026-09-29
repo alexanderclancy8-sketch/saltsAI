@@ -1,3 +1,15 @@
+---
+title: Maintenance contracts, scheduling, SLAs, KPIs and paperwork
+aliases: [PPM scheduling, maintenance contracts, KPIs reference, SLAs]
+tags: [operations, ppm]
+type: note
+summary: Contract types and renewals, visit frequencies, PPM vs reactive work, SLAs, remedial quotes, KPI formulas, paperwork, and lawful staff/vehicle monitoring.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[uk-tax-and-accounting]]", "[[certification-and-competency]]", "[[standards-moc]]", "[[operations-moc]]"]
+---
+
 # Maintenance contracts, scheduling, SLAs, KPIs and paperwork for a fire and security service business
 
 Summary: How a UK fire and security maintenance business typically runs. Covers contract types and renewals, visit frequencies by system, planned (PPM) vs reactive work, SLAs and out-of-hours, remedial quotes and defect categories, KPIs with formulas, paperwork, and lawful staff and vehicle monitoring under UK GDPR.
@@ -202,6 +214,6 @@ Monitoring engineers (vehicle trackers, job app GPS, dash cams, phone call recor
 
 ## Related files
 
-- `standards/` folder (all system standards)
-- `legislation/certification-and-competency.md` (auditors, record retention)
-- `finance/uk-tax-and-accounting.md` (billing, credit control, CIS/VAT on FM work)
+- [[standards-moc]] (all system standards)
+- [[certification-and-competency]] (auditors, record retention)
+- [[uk-tax-and-accounting]] (billing, credit control, CIS/VAT on FM work)

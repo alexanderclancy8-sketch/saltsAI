@@ -1,3 +1,15 @@
+---
+title: Taking over a customer's existing system — getting proper access
+aliases: [system takeover, access recovery, engineer code recovery]
+tags: [company, access-recovery]
+type: note
+summary: The right process for getting access to a system Salts is taking over or has been locked out of — never by sourcing another company's codes.
+created: 2026-09-29
+updated: 2026-09-29
+status: evergreen
+related: ["[[salts-fire-and-security]]", "[[company-moc]]"]
+---
+
 # Taking over a customer's existing system - getting proper access
 
 Summary: what to do when a customer wants Salts to take over maintenance of a fire alarm, intruder, CCTV or

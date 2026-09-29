@@ -1,3 +1,15 @@
+---
+title: CCTV and access control — BS EN 62676, BS 8418, UK GDPR, BS EN 60839-11 and BS 7273-4
+aliases: [CCTV standard, access control standard, BS EN 62676]
+tags: [standards, cctv, access-control, gdpr]
+type: note
+summary: Specifying, installing and maintaining CCTV and access control — the BS EN 62676 series, BS 8418, UK GDPR/ICO obligations, fail-safe vs fail-secure locking and the BS 7273-4 fire alarm interface.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[intruder-alarms-and-security]]", "[[fire-extinguishers-and-other]]", "[[maintenance-contracts-and-scheduling]]", "[[standards-moc]]"]
+---
+
 # CCTV and access control: BS EN 62676, BS 8418, UK GDPR, BS EN 60839-11 and BS 7273-4
 
 Summary: A UK guide to specifying, installing and maintaining CCTV and access control systems. Covers the BS EN 62676 video surveillance series, BS 8418 remotely monitored detector-activated CCTV, UK GDPR/ICO obligations, the Surveillance Camera Code, BS EN 60839-11 access control, fail-safe vs fail-secure locking and the fire alarm interface for maglocks (BS 7273-4).
@@ -194,6 +206,6 @@ Status: Written September 2026 from general knowledge. Data protection law was a
 
 ## Related files
 
-- `standards/intruder-alarms-and-security.md`
-- `standards/fire-extinguishers-and-other.md` (fire doors and hold-open devices)
-- `operations/maintenance-contracts-and-scheduling.md` (staff monitoring and GDPR)
+- [[intruder-alarms-and-security]]
+- [[fire-extinguishers-and-other]] (fire doors and hold-open devices)
+- [[maintenance-contracts-and-scheduling]] (staff monitoring and GDPR)

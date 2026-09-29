@@ -1,3 +1,15 @@
+---
+title: Intruder and hold-up alarm systems — BS EN 50131, PD 6662, BS 8243, BS 9263 and police response
+aliases: [intruder alarms, PD 6662, BS EN 50131, URN reference]
+tags: [standards, intruder-alarms]
+type: note
+summary: Intruder alarm grading, the PD 6662 scheme, confirmed alarms, maintenance, police response and URNs, false alarm limits and ARC signalling.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[cctv-and-access-control]]", "[[certification-and-competency]]", "[[maintenance-contracts-and-scheduling]]", "[[standards-moc]]"]
+---
+
 # Intruder and hold-up alarm systems: BS EN 50131, PD 6662, BS 8243, BS 9263 and police response
 
 Summary: A UK guide to intruder alarm grading, the PD 6662 scheme, confirmed alarms (BS 8243), maintenance (BS 9263), police response and URNs, false alarm limits, and alarm signalling to alarm receiving centres (BS EN 50136).
@@ -192,6 +204,6 @@ Police forces generally require new police-response systems to be able to genera
 
 ## Related files
 
-- `standards/cctv-and-access-control.md` (BS 8418, video verification)
-- `legislation/certification-and-competency.md` (NSI, SSAIB, BS 7858)
-- `operations/maintenance-contracts-and-scheduling.md`
+- [[cctv-and-access-control]] (BS 8418, video verification)
+- [[certification-and-competency]] (NSI, SSAIB, BS 7858)
+- [[maintenance-contracts-and-scheduling]]
