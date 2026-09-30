@@ -19,7 +19,8 @@ def iso(days: int) -> str:
 
 def system(sid, site, stype, due_in, freq=6, **extra):
     return {"id": sid, "site": site, "customer": "Cust", "type": stype, "make_model": "x",
-            "service_frequency_months": freq, "last_service": iso(due_in - 180),
+            "service_frequency_months": freq,
+            "last_service": iso(due_in - 180) if due_in is not None else None,
             "next_service_due": iso(due_in) if due_in is not None else None, **extra}
 
 
