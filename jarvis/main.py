@@ -26,10 +26,12 @@ from .integrations.finance import SageFinance
 from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
+from .logredact import install_log_redaction
 from .services import connection_tests, documents
 from .settings_store import SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+install_log_redaction()  # httpx would otherwise log webhook URLs (incl. `sig=`) at INFO
 log = logging.getLogger("jarvis")
 WEB = Path(__file__).parent / "web"
 
