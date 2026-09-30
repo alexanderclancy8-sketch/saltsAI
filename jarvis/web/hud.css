@@ -179,6 +179,13 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 /* Dormant wake-word listening: the free browser listener is on, but nothing's being streamed anywhere. */
 .mic.sentry { border-color: var(--accent); animation: sentry-pulse 2.4s ease-in-out infinite; }
 @keyframes sentry-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+/* Learned reply suggestion: greyed hint above the box; Right Arrow accepts it (prefill only, never sends). */
+.reply-hint { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted-dim); min-width: 0; }
+.reply-hint[hidden] { display: none; }
+.reply-hint .rh-text { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-hint kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
+.reply-hint button { background: none; border: none; color: var(--muted-dim); cursor: pointer; font-size: 12px; }
+.reply-hint button:hover { color: var(--accent-text); }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .chip { font-size: 12px; border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; color: var(--muted-dim); }
 .chip button { background: none; border: none; color: var(--muted-dim); cursor: pointer; }

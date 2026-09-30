@@ -60,6 +60,21 @@ def speakable(text: str) -> str:
     return text.strip()
 
 
+def audio_extension(mime: str) -> str:
+    """File extension matching the recorded container - Whisper picks its decoder from the filename, so a Safari
+    audio/mp4 recording sent as 'speech.webm' is rejected."""
+    m = (mime or "").lower()
+    if "mp4" in m or "m4a" in m or "aac" in m:
+        return "mp4"
+    if "ogg" in m:
+        return "ogg"
+    if "mpeg" in m or "mp3" in m:
+        return "mp3"
+    if "wav" in m:
+        return "wav"
+    return "webm"
+
+
 class Voice:
     def __init__(self, settings: Settings, http: httpx.AsyncClient):
         self.s = settings
@@ -76,6 +91,8 @@ class Voice:
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
             "voice": voice,
+            "ack_fillers": bool(self.s.voice_ack_fillers),
+            "silence_ms": int(self.s.voice_silence_ms),
         }
 
     # ------------------------------------------------------------------ TTS
@@ -209,22 +226,26 @@ class Voice:
     # ------------------------------------------------------------------ STT (push-to-talk)
     async def transcribe(self, audio: bytes, mime: str) -> str:
         provider = self.s.effective_stt
+        log.info("STT request: provider=%s bytes=%d mime=%s", provider, len(audio), mime)
         if provider == "deepgram":
             r = await self.http.post(
                 DEEPGRAM_API,
                 params={"model": self.s.deepgram_model, "language": self.s.stt_language, "smart_format": "true"},
                 headers={"Authorization": f"Token {self.s.deepgram_api_key}", "Content-Type": mime},
                 content=audio, timeout=60)
+            log.info("STT response: provider=deepgram status=%s", r.status_code)
             r.raise_for_status()
             return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
         if provider == "whisper":
-            ext = "webm" if "webm" in mime else "ogg" if "ogg" in mime else "mp4" if "mp4" in mime else "wav"
+            ext = audio_extension(mime)
+            base_mime = mime.split(";")[0].strip() or "audio/webm"
             r = await self.http.post(
                 "https://api.openai.com/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self.s.openai_api_key}"},
                 data={"model": self.s.whisper_model, "language": self.s.stt_language.split("-")[0],
                       "prompt": ", ".join(VOCAB)},
-                files={"file": (f"speech.{ext}", audio, mime)}, timeout=60)
+                files={"file": (f"speech.{ext}", audio, base_mime)}, timeout=60)
+            log.info("STT response: provider=whisper status=%s", r.status_code)
             r.raise_for_status()
             return r.json().get("text", "")
         raise VoiceError("No server speech-to-text configured - use the browser microphone")

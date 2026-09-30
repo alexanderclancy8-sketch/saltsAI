@@ -88,6 +88,11 @@
         <div class="conversation" id="conversation"></div>
       </div>
       <div class="attachments" id="attachments"></div>
+      <div class="reply-hint" id="reply-hint" hidden>
+        <span class="rh-text" id="reply-hint-text"></span>
+        <kbd title="Press the right arrow key (caret at the end) to put this in the box - Enter still sends, Esc dismisses">→</kbd>
+        <button type="button" id="reply-hint-forget" title="Forget this learned reply" aria-label="Forget this learned reply">✕</button>
+      </div>
       <form class="composer" id="composer">
         <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach">📎</button>
         <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
@@ -160,6 +165,11 @@
         <option value="voice">When I talk to Jarvis</option>
         <option value="always">Always</option>
         <option value="off">Never</option>
+      </select>
+      <label for="set-bargein" style="margin-top:14px">Talk over Jarvis (always-listening mode)</label>
+      <select id="set-bargein">
+        <option value="1">On - say "Jarvis…" to interrupt him</option>
+        <option value="0">Off - only "Jarvis, stop" interrupts (use this if he cuts himself off on speakers)</option>
       </select>
       <label for="set-voice" style="margin-top:14px">Voice</label>
       <select id="set-voice"><option value="">Default (British)</option></select>
