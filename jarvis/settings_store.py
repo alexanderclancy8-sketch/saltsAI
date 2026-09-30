@@ -236,6 +236,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True,
                   depends_on=("stt_provider", "whisper")),
             Field("wake_word", "Wake word", placeholder="jarvis"),
+            Field("voice_ack_fillers", "Say a short acknowledgment while thinking", "bool",
+                  "When you ask something out loud and the answer takes a couple of seconds, Jarvis says one "
+                  "short line like \"Let me check the accounts.\" Never for typed questions.", advanced=True),
         ),
         test=True,
     ),

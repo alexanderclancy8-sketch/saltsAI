@@ -8,7 +8,7 @@
     set(k, v) { try { localStorage.setItem("jarvis." + k, v); } catch { /* private mode */ } },
   };
   const S = {
-    status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB" },
+    status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB", ack_fillers: true },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, attachments: [],
@@ -233,18 +233,23 @@
 
   const speaker = {
     queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, lastSpokeAt: 0, recent: [],
+    playingFiller: false, // the item most recently taken off the queue was a thinking-time filler (see `filler`)
     feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
     flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
-    enqueue(sentence) {
+    // `filler` marks the one-off "let me check the accounts" acknowledgment: it goes through exactly the same
+    // queue, recent-speech list and echo window as any other speech, but next() treats it differently on the
+    // way out (no HUD flip to "speaking", no follow-up window) because it is not a reply.
+    enqueue(sentence, filler = false) {
       const clean = sentence.replace(/```[\s\S]*?```/g, " ").replace(/[#*_`>|]/g, " ").replace(/\s+/g, " ").trim();
-      if (!clean || /^[-\s]+$/.test(clean)) return;
+      if (!clean || /^[-\s]+$/.test(clean)) return null;
       // Remember what we're about to say so the mic can recognise it as our own voice if it hears it back.
       const now = Date.now();
       this.recent = this.recent.filter((r) => now - r.at < RECENT_TTS_MS).slice(-30);
       this.recent.push({ text: clean, at: now });
-      const item = { text: clean, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
+      const item = { text: clean, filler, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
       this.queue.push(item);
       if (!this.active) this.next();
+      return item;
     },
     async fetchAudio(text) {
       try {
@@ -260,10 +265,30 @@
     },
     async next() {
       const item = this.queue.shift();
-      if (!item) { this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (this.onIdle) this.onIdle(); return; }
-      this.active = true; setHud("speaking");
+      if (!item) {
+        const wasFiller = this.playingFiller; this.playingFiller = false;
+        this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); // the echo tail applies to a filler too
+        // A filler that finishes while the turn is still in flight is not a reply: the HUD stays on "thinking"
+        // and it must not open the follow-up window or count as an exchange. If the turn has meanwhile ended
+        // (the reply's own speech found the speaker busy and so skipped this), finish off as normal.
+        if (wasFiller && filler.inFlight()) { if (this.onIdle) this.onIdle(); return; }
+        if (S.hudState === "speaking" || (wasFiller && S.hudState === "thinking")) setHud("idle");
+        extendFollowUp(); if (this.onIdle) this.onIdle(); return;
+      }
+      this.playingFiller = !!item.filler;
+      this.active = true; if (!item.filler) setHud("speaking");
       const url = item.audio ? await item.audio : null;
       if (!this.active) return;
+      if (item.cancelled) {
+        // A filler that hadn't started playing when the real reply (or the user) arrived: drop it silently.
+        this.playingFiller = false;
+        if (this.queue.length) { this.next(); return; }
+        this.active = false;
+        if (!filler.inFlight() && S.hudState === "thinking") { setHud("idle"); extendFollowUp(); }
+        if (this.onIdle) this.onIdle();
+        return;
+      }
+      item.started = true;
       if (url) {
         player.src = url;
         player.onended = () => { URL.revokeObjectURL(url); this.next(); };
@@ -284,7 +309,9 @@
       // Only start the echo tail if something was actually being said - a push-to-talk press calls stop() on a
       // silent speaker, and that must not put the owner's own first words inside an "echo window".
       if (this.active || this.queue.length || this.browserSpeaking) this.lastSpokeAt = Date.now();
-      this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
+      this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; this.playingFiller = false;
+      filler.end(); // any stop (new message, push-to-talk, Stop button) also ends the thinking-time filler for that turn
+      player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
   };
   const shouldSpeak = (mode) => S.speakPref === "always" || (S.speakPref === "voice" && mode === "voice");
 
@@ -331,6 +358,83 @@
   // Jarvis never speaks unprompted: there is deliberately no on-load greeting. Speech (TTS) only ever
   // follows something the owner asked (typed or voice) or an action they just took on the page.
 
+  // ------------------------------------------------------------------ thinking-time acknowledgment filler
+  // The ONE exception to "never speaks unprompted", and it is turn-scoped: only while a turn the owner started
+  // by *speaking* is in flight (send(..., spoken=true) -> filler.begin()) and the real reply has not started.
+  // There is no other way to reach filler.fire(): no turn object, no speech. Guarantees:
+  //  - once per turn: turn.fired is set before anything is queued, and the single timer is never re-armed;
+  //  - no overlap: fire() re-checks the user, STT and the speaker at the moment it would speak, and the first
+  //    delta/reply/user speech/stop cancels the timer and drops a filler that hasn't started playing - one that
+  //    is already playing is left to finish and the reply queues behind it in the normal speaker queue;
+  //  - echo: it goes through speaker.enqueue() like any speech, so it is in speaker.recent and keeps the echo
+  //    window open while it plays and for ECHO_TAIL_MS after; it is never passed to send()/utterance(), never
+  //    added to the conversation or transcript, and speaker.next() skips extendFollowUp() for it, so it cannot
+  //    set S.followUpUntil or count as an exchange.
+  const FILLER_DELAY_MS = 1800; // silence after the turn starts before one acknowledgment is spoken (1.5-2s)
+  const FILLER_DEFAULT_PHRASES = ["One moment.", "Let me think about that.", "Just a moment.", "Give me a second."];
+  // First matching pattern wins; matched against the tool name carried on the "tool" start event.
+  const FILLER_TOOL_PHRASES = [
+    [/^(finance_|unbilled_jobs$|raise_invoices$|draft_credit_control$|business_health$)/, ["Let me check the accounts.", "Checking the accounts."]],
+    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
+    [/^email_/, ["Checking your email.", "Let me check your email."]],
+    [/^stock_/, ["Let me check the stock.", "Checking the stock."]],
+    [/^(web_search|web_fetch|search_rankings$|seo_audit$|competitor_audit$)/, ["Let me look that up.", "Looking that up."]],
+  ];
+  const filler = {
+    turn: null, lastPhrase: "",
+    enabled() { return S.voice.ack_fillers !== false && S.speakPref !== "off"; },
+    // Called from send() for a turn the owner spoke. Typed turns and click-shortcuts pass spoken=false: no filler.
+    begin(spoken) {
+      this.end();
+      if (!spoken || !this.enabled()) return;
+      const turn = { tool: "", blocked: false, fired: false, item: null, timer: null };
+      turn.timer = setTimeout(() => this.fire(turn), FILLER_DELAY_MS);
+      this.turn = turn;
+    },
+    inFlight() { return this.turn !== null; },
+    // "tool" event: remember what is running so the phrase fits it if the timer hasn't fired yet. Never speaks itself.
+    tool(ev) {
+      if (!this.turn) return;
+      if (ev.state === "start") { this.turn.tool = String(ev.name || ""); this.turn.toolId = ev.id; }
+      else if (this.turn.toolId === ev.id) this.turn.tool = "";
+    },
+    // The reply has started, or the user is talking: no filler for the rest of this turn. A filler that hasn't
+    // started playing is dropped; one that is mid-utterance finishes and the reply queues behind it.
+    block() {
+      const turn = this.turn;
+      if (!turn) return;
+      turn.blocked = true;
+      clearTimeout(turn.timer); turn.timer = null;
+      const item = turn.item;
+      if (item && !item.started) {
+        item.cancelled = true;
+        const i = speaker.queue.indexOf(item);
+        if (i >= 0) speaker.queue.splice(i, 1);
+      }
+    },
+    end() { this.block(); this.turn = null; },
+    phrase(tool) {
+      let pool = FILLER_DEFAULT_PHRASES;
+      for (const [re, phrases] of FILLER_TOOL_PHRASES) if (re.test(tool)) { pool = phrases; break; }
+      const options = pool.filter((p) => p !== this.lastPhrase);
+      this.lastPhrase = options[Math.floor(Math.random() * options.length)];
+      return this.lastPhrase;
+    },
+    fire(turn) {
+      if (this.turn !== turn || turn.blocked || turn.fired) return;
+      turn.timer = null;
+      if (!this.enabled()) return;
+      if (S.hudState !== "thinking") return;                    // only while genuinely waiting on the reply
+      if (current && current.dataset.raw) return;               // reply text has already started arriving
+      if (speaker.active || speaker.queue.length || speaker.buffer.trim() || speaker.browserSpeaking) return;
+      if (stt.finals.trim() || stt.silenceTimer) return;        // the owner is mid-sentence / STT has unsubmitted speech
+      turn.fired = true;
+      turn.item = speaker.enqueue(this.phrase(turn.tool), true);
+    },
+    // STT/VAD heard the owner (not our own voice): stay quiet for this turn.
+    userSpeech() { this.block(); },
+  };
+
   // ------------------------------------------------------------------ conversation
   let current = null;
   function addMessage(role, text, extra = "") {
@@ -350,7 +454,9 @@
     } catch { /* ignore */ }
   }
 
-  function send(text, mode = "typed") {
+  // `spoken` is true only when the text came from the owner's actual speech (utterance()) - not for typed text
+  // or for click shortcuts that merely reply in voice. Only spoken turns are eligible for the thinking filler.
+  function send(text, mode = "typed", spoken = false) {
     text = text.trim();
     if (!text && !S.attachments.length) return;
     S.lastMode = mode;
@@ -364,6 +470,7 @@
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
     S.attachments = []; renderAttachments();
+    filler.begin(spoken && mode === "voice"); // after speaker.stop() above, which ended any previous turn's filler
     if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }
     setHud("thinking");
     streamChat(payload).catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
@@ -448,13 +555,16 @@
         current.dataset.raw += d.text;
         current.querySelector(".md").innerHTML = md(current.dataset.raw);
         $("#conversation").scrollTop = 1e9;
+        filler.block(); // the real reply has started - no filler, and drop one that hasn't begun playing
         if (shouldSpeak(d.mode)) speaker.feed(d.text);
         break;
       case "tool":
         if (d.state === "start") { $("#toolline").textContent = "› " + d.label + "…"; toolsSeen.push(d.label); }
         else if (d.state === "error") $("#toolline").textContent = "› " + d.label + " - problem";
+        filler.tool(d); // lets a still-pending filler name the running tool; never speaks by itself
         break;
       case "reply":
+        filler.end(); // reply is ready: cancel the pending timer / unstarted filler (a playing one finishes first)
         $("#toolline").textContent = "";
         if (current) {
           if (d.replace || !current.dataset.raw) current.dataset.raw = d.text;
@@ -469,6 +579,7 @@
         refreshSoon();
         break;
       case "error":
+        filler.end();
         if (current) current.remove();
         current = null;
         addMessage("assistant", d.message).classList.add("error");
@@ -492,7 +603,7 @@
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
-      case "conversation_reset": $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
+      case "conversation_reset": filler.end(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
       case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
@@ -739,8 +850,9 @@
           const heard = e.results[i][0].transcript;
           if (e.results[i].isFinal) {
             if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
+            filler.userSpeech();
             this.finals += heard + " "; this.finalHeard();
-          } else if (!echoWindowOpen()) interim += heard;
+          } else if (!echoWindowOpen()) { interim += heard; filler.userSpeech(); }
         }
         caption(this.finals, interim);
       };
@@ -749,11 +861,14 @@
     },
     onDeepgram(m) {
       if (m.type === "transcript") {
+        // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
+        if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
         if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
         caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
         if (m.speech_final && this.finals.trim()) this.commit();
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();
       else if (m.type === "speech_started" && speaker.active && S.listenMode === "wake") { /* barge-in handled on words */ }
+      else if (m.type === "speech_started" && !echoWindowOpen()) filler.userSpeech(); // VAD heard the owner
       else if (m.type === "error") { toast("Speech service", m.message, "warning"); }
     },
     async transcribeChunks(mime) {
@@ -919,8 +1034,8 @@
       if (idx === -1) { caption("", `(heard: "${text.slice(0, 60)}")`); return; }
       const cmd = text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "");
       if (!cmd) { setHud("awaiting"); extendFollowUp(); say("Yes, sir?"); return; }
-      send(cmd, "voice");
-    } else send(text, "voice");
+      send(cmd, "voice", true);
+    } else send(text, "voice", true);
   }
 
   mic.addEventListener("click", () => {
@@ -934,6 +1049,7 @@
 
   // ------------------------------------------------------------------ stop
   function stopEverything() {
+    filler.end();
     speaker.stop(); // instant - halts audio/browser speech straight away
     if (current) {
       const body = current.querySelector(".md");
