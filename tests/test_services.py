@@ -93,6 +93,24 @@ async def test_tracking_van_day_and_nearest():
     assert near["destination"] == "Aire Valley Care Home" and near["engineers"]
 
 
+@pytest.mark.parametrize("order", [["Priya Shah", "Dan Harper"], ["Dan Harper", "Priya Shah"]])
+async def test_nearest_breaks_ties_by_name_not_feed_order(order):
+    class TiedFSM:
+        demo = True
+
+        async def sites(self):
+            return [{"name": "Aire Valley Care Home", "lat": 53.844, "lng": -1.837}]
+
+        async def locations(self):
+            return [{"engineer": n, "vehicle": "X", "lat": 53.85, "lng": -1.77, "status": "parked"} for n in order]
+
+        async def jobs(self, *a, **k):
+            return []
+
+    near = await Tracker(TiedFSM(), http=None).nearest("Aire Valley")
+    assert [e["engineer"] for e in near["engineers"]] == ["Dan Harper", "Priya Shah"]
+
+
 def test_geo_helpers():
     leeds, bradford = (53.7997, -1.5492), (53.7960, -1.7594)
     assert 13_000 < haversine_m(leeds, bradford) < 15_000

@@ -76,6 +76,7 @@ class Voice:
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
             "voice": voice,
+            "ack_fillers": bool(self.s.voice_ack_fillers),
         }
 
     # ------------------------------------------------------------------ TTS
