@@ -40,6 +40,11 @@ PIPER_VOICES = {"alan": "medium", "northern_english_male": "medium", "jenny_dioc
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
 
 
+TTS_RETRY_STATUSES = {429, 500, 502, 503, 504}
+TTS_RETRY_DELAY_S = 0.4
+MAX_STT_BYTES = 25 * 1024 * 1024  # OpenAI's transcription upload limit; nothing legitimate is bigger
+
+
 class VoiceError(RuntimeError):
     pass
 
@@ -55,9 +60,62 @@ def speakable(text: str) -> str:
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)
     text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
     text = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", text)
-    text = text.replace("&", " and ").replace(" e.g. ", " for example ").replace(" i.e. ", " that is ")
+    text = _expand_for_speech(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+_MONEY = re.compile(r"£\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?(?:(bn|k|m)\b|\s(thousand|million|billion)\b)?", re.I)
+_MONEY_WORDS = {"k": "thousand", "m": "million", "bn": "billion"}
+# Zone-less ISO dates/times only: humanize.human_datetime ignores any UTC offset, so a "...Z" or "+01:00" value
+# is left alone rather than spoken as the wrong hour.
+_ISO_DATE = re.compile(r"(?<![\d-])\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?(?![\dTZ+:-]|\.\d)")
+_CLOCK_24H = re.compile(r"(?<![\d:.])([01]\d|2[0-3]):([0-5]\d)(?![\d:]|\s?[ap]m\b)", re.I)
+_URL = re.compile(r"https?://(?:www\.)?([^/\s?#)]*[^/\s?#).,;:!])(?:[^\s)]*[^\s).,;:!?])?")
+_EMAIL = re.compile(r"\b([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)\b")
+_BS_PART = re.compile(r"\b(BS(?: EN)?(?: ISO)? \d+)-(\d+)\b")
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿️]")
+
+
+def _money(m: re.Match) -> str:
+    whole, pence = m.group(1).replace(",", ""), m.group(2)
+    mult = (m.group(3) or m.group(4) or "").lower()
+    if mult:  # "£73k" -> "73 thousand pounds"
+        return f"{whole}{'.' + pence if pence else ''} {_MONEY_WORDS.get(mult, mult)} pounds"
+    unit = "pound" if whole == "1" else "pounds"
+    pence = (pence or "").ljust(2, "0")
+    if int(pence or 0):  # "£12.50" -> "12 pounds 50"; "£12.00" -> "12 pounds"
+        return f"{whole} {unit} {pence}"
+    return f"{whole} {unit}"
+
+
+def _clock(m: re.Match) -> str:
+    from ..humanize import _format_time
+
+    return _format_time(int(m.group(1)), int(m.group(2)))
+
+
+def _expand_for_speech(text: str) -> str:
+    """Spell out the things a TTS engine reads badly: currency, percentages, ISO dates, 24-hour times, bare
+    URLs and email addresses, British Standard part numbers ("BS 5839-1"), common abbreviations and emoji.
+    Conservative on purpose - anything not clearly one of these is left exactly as written."""
+    from ..humanize import human_datetime
+
+    text = _MONEY.sub(_money, text)
+    text = re.sub(r"\b(\d{1,3}(?:,\d{3})+)\b", lambda m: m.group(1).replace(",", ""), text)
+    text = re.sub(r"(\d)\s?%", r"\1 percent", text)
+    text = _ISO_DATE.sub(lambda m: human_datetime(m.group(0)), text)
+    text = _CLOCK_24H.sub(_clock, text)
+    text = _URL.sub(lambda m: m.group(1).replace(".", " dot "), text)
+    text = _EMAIL.sub(lambda m: f"{m.group(1)} at {m.group(2).replace('.', ' dot ')}", text)
+    text = _BS_PART.sub(r"\1 part \2", text)
+    text = re.sub(r"\be\.g\.", "for example", text, flags=re.I)
+    text = re.sub(r"\bi\.e\.", "that is", text, flags=re.I)
+    text = re.sub(r"\betc\.", "et cetera", text, flags=re.I)
+    text = re.sub(r"\bapprox\.", "approximately", text, flags=re.I)
+    text = re.sub(r"\bvs\.?(?=\s)", "versus", text, flags=re.I)
+    text = text.replace("&", " and ").replace("—", ", ").replace("→", " to ")
+    return _EMOJI.sub("", text)
 
 
 class Voice:
@@ -94,7 +152,22 @@ class Voice:
         raise VoiceError("No server TTS configured - use the browser voice")
 
     async def _open_stream(self, request: httpx.Request) -> AsyncIterator[bytes]:
-        resp = await self.http.send(request, stream=True)
+        # One quick retry for a transient failure (rate limit, 5xx, dropped connection): a single hiccup used to
+        # mean the whole reply fell back to the robotic browser voice. Nothing is read before the status is
+        # known, so resending the already-built request is safe.
+        for attempt in (1, 2):
+            try:
+                resp = await self.http.send(request, stream=True)
+            except httpx.TransportError as e:
+                if attempt == 2:
+                    raise VoiceError(f"TTS provider unreachable: {type(e).__name__}") from e
+                await asyncio.sleep(TTS_RETRY_DELAY_S)
+                continue
+            if resp.status_code in TTS_RETRY_STATUSES and attempt == 1:
+                await resp.aclose()
+                await asyncio.sleep(TTS_RETRY_DELAY_S)
+                continue
+            break
         if resp.status_code >= 400:
             body = (await resp.aread())[:300]
             await resp.aclose()
@@ -209,6 +282,25 @@ class Voice:
 
     # ------------------------------------------------------------------ STT (push-to-talk)
     async def transcribe(self, audio: bytes, mime: str) -> str:
+        """Push-to-talk transcription. Every provider failure (network, HTTP error, odd response shape) is
+        raised as a VoiceError so the caller can tell the browser to fall back to its own speech engine, rather
+        than surfacing a bare 500."""
+        if not audio:
+            return ""
+        if len(audio) > MAX_STT_BYTES:
+            raise VoiceError("That recording is too long to transcribe - try a shorter one.")
+        try:
+            return await self._transcribe(audio, mime)
+        except VoiceError:
+            raise
+        except httpx.HTTPStatusError as e:
+            raise VoiceError(f"Speech-to-text provider returned {e.response.status_code}") from e
+        except httpx.HTTPError as e:
+            raise VoiceError(f"Speech-to-text provider unreachable: {type(e).__name__}") from e
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise VoiceError(f"Unexpected speech-to-text response: {type(e).__name__}") from e
+
+    async def _transcribe(self, audio: bytes, mime: str) -> str:
         provider = self.s.effective_stt
         if provider == "deepgram":
             r = await self.http.post(
@@ -256,15 +348,23 @@ class Voice:
                     if msg.get("bytes"):
                         await dg.send(msg["bytes"])
                     elif msg.get("text"):
-                        control = json.loads(msg["text"])
-                        if control.get("type") in ("KeepAlive", "Finalize", "CloseStream"):
+                        try:
+                            control = json.loads(msg["text"])
+                        except ValueError:
+                            continue  # a garbled control message must not tear down the live transcription
+                        if isinstance(control, dict) and control.get("type") in ("KeepAlive", "Finalize", "CloseStream"):
                             await dg.send(json.dumps({"type": control["type"]}))
                 with contextlib.suppress(Exception):
                     await dg.send(json.dumps({"type": "CloseStream"}))
 
             async def downstream() -> None:
                 async for raw in dg:
-                    data = json.loads(raw)
+                    try:
+                        data = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(data, dict):
+                        continue
                     kind = data.get("type")
                     if kind == "Results":
                         alt = (data.get("channel", {}).get("alternatives") or [{}])[0]

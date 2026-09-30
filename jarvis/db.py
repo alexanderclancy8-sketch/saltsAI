@@ -262,6 +262,13 @@ class Database:
 
     # -- memory -------------------------------------------------------------------
     def remember(self, fact: str) -> int:
+        """Stores a fact; saying the same thing twice (the nightly reflection often re-discovers a preference)
+        returns the existing memory's id instead of growing the system prompt with a duplicate."""
+        fact = fact.strip()
+        key = " ".join(fact.lower().split())
+        for m in self.memories():
+            if " ".join(m["fact"].lower().split()) == key:
+                return m["id"]
         return self.execute("INSERT INTO memory (created_at, fact) VALUES (?,?)", (now_iso(), fact))
 
     def forget(self, memory_id: int) -> None:

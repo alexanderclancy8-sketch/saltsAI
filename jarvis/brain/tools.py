@@ -446,7 +446,8 @@ class KnowledgeIn(BaseModel):
 
 
 class RememberIn(BaseModel):
-    fact: str
+    # bounded: every memory is copied into the system prompt on every turn
+    fact: str = Field(min_length=3, max_length=1000)
 
 
 class ForgetIn(BaseModel):
