@@ -98,7 +98,13 @@ class Settings(BaseSettings):
     teams_bot_app_id: str = ""
     teams_bot_app_password: str = ""
     teams_bot_tenant_id: str = ""
+    # Where engineering-agent notifications go (pull request ready, fix ready, deploy/merge results, issue triage,
+    # security review): comma-separated "teams" and/or "email". Default is Teams only - no email at all.
+    engineering_notify_channels: str = "teams"
+    # If Teams delivery fails, also email the owner. Off by default: a failure is logged and shown on the display.
+    engineering_email_fallback: bool = False
     issue_email_tag: str = "[ISSUE]"
+
     # Fix / pull-request notifications (PR ready, CI results, fix live, security-review findings). They always
     # appear on the display and the issues list; this picks the extra channels, comma-separated from
     # "teams" and "email" ("none" = display only). Default Teams only - email is off.
@@ -257,6 +263,7 @@ class Settings(BaseSettings):
     @property
     def managers(self) -> set[str]:
         return {e.strip().lower() for e in self.manager_emails.split(",") if e.strip()}
+
 
     @property
     def fix_channels(self) -> tuple[str, ...]:
