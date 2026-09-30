@@ -458,7 +458,7 @@
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
-      case "display": openDisplay(d.title, d.markdown); break;
+      case "display": openDisplay(d.title, d.markdown, d.doc_id); break;
       case "approvals": S.approvals = d; renderApprovals(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
       case "issue": refreshSoon(); break;
@@ -476,8 +476,17 @@
   }
 
   // ------------------------------------------------------------------ display overlay
-  function openDisplay(title, markdown) {
+  function openDisplay(title, markdown, docId) {
     $("#display-title").textContent = title;
+    // Download buttons only for stored, drafted documents (the id is a 32-char hex string from the server).
+    const dl = $("#display-downloads");
+    if (docId && /^[0-9a-f]{32}$/.test(docId)) {
+      $("#display-pdf").href = `/api/documents/${docId}/pdf`;
+      $("#display-docx").href = `/api/documents/${docId}/docx`;
+      dl.hidden = false;
+    } else {
+      dl.hidden = true;
+    }
     $("#display-body").innerHTML = md(markdown);
     $("#display").classList.add("open");
   }

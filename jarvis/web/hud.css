@@ -190,6 +190,9 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
   transition: opacity .18s ease, transform .18s ease; }
 .display.open { opacity: 1; transform: none; pointer-events: auto; }
 .display header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.display-downloads { display: inline-flex; gap: 6px; margin-right: 8px; }
+.display-downloads[hidden] { display: none; }
+.display-downloads .icon-btn { text-decoration: none; border-color: var(--line); color: var(--accent-text); }
 .display header h3 { margin: 0; font-family: var(--ui); font-size: 15px; color: var(--text); font-weight: 600; flex: 1; }
 .display .body { padding: 18px 22px; overflow-y: auto; font-size: 15px; }
 
