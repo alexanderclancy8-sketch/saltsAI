@@ -130,7 +130,12 @@
 </main>
 
 <div class="display" id="display" role="dialog" aria-modal="true" aria-labelledby="display-title">
-  <header><h3 id="display-title"></h3><button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
+  <header><h3 id="display-title"></h3>
+    <span class="display-downloads" id="display-downloads" hidden>
+      <a class="icon-btn" id="display-pdf" download>Download PDF</a>
+      <a class="icon-btn" id="display-docx" download>Download Word</a>
+    </span>
+    <button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
   <div class="body md" id="display-body"></div>
 </div>
 

@@ -153,6 +153,13 @@ CREATE TABLE IF NOT EXISTS automations (
     last_run_at TEXT DEFAULT '',
     last_result TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    markdown TEXT NOT NULL
+);
 """
 
 
@@ -293,6 +300,15 @@ class Database:
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))
+
+    # -- drafted documents (rendered to PDF/Word on request) ---------------------------------
+    def add_document(self, doc_id: str, kind: str, title: str, markdown: str) -> str:
+        self.execute("INSERT INTO documents (id, created_at, kind, title, markdown) VALUES (?,?,?,?,?)",
+                     (doc_id, now_iso(), kind, title, markdown))
+        return doc_id
+
+    def get_document(self, doc_id: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM documents WHERE id = ?", (doc_id,))
 
     # -- key/value -------------------------------------------------------------------
     def get_kv(self, key: str, default: str | None = None) -> str | None:

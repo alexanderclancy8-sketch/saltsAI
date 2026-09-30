@@ -25,7 +25,7 @@ from .core import Jarvis
 from .integrations.finance import SageFinance
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
 from .integrations.voice import VoiceError
-from .services import connection_tests
+from .services import connection_tests, documents
 from .settings_store import SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -304,6 +304,27 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             for t in tasks:
                 t.cancel()
             j.bus.unsubscribe(q)
+
+    # ------------------------------------------------------------------ drafted documents (PDF / Word)
+    @app.get("/api/documents/{doc_id}/{fmt}", dependencies=[Depends(owner)])
+    async def download_document(doc_id: str, fmt: str, request: Request):
+        if fmt not in ("pdf", "docx"):
+            raise HTTPException(404, "No such format - use pdf or docx.")
+        if not documents.valid_doc_id(doc_id):
+            raise HTTPException(400, "Invalid document id")
+        doc = J(request).documents.get(doc_id)
+        if not doc:
+            raise HTTPException(404, "No such document")
+        render, mime = (documents.render_pdf, documents.PDF_MIME) if fmt == "pdf" else \
+            (documents.render_docx, documents.DOCX_MIME)
+        try:
+            data = await asyncio.to_thread(render, doc, settings.company_name)
+        except ImportError:
+            raise HTTPException(503, "Document rendering isn't installed on this server.") from None
+        filename = documents.download_filename(doc, fmt)
+        return Response(data, media_type=mime,
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                 "Cache-Control": "no-store"})
 
     # ------------------------------------------------------------------ approvals
     @app.get("/api/approvals", dependencies=[Depends(owner)])
