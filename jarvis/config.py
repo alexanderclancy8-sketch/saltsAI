@@ -247,6 +247,7 @@ class Settings(BaseSettings):
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs
     self_learning_cron: str = "0 21 * * *"  # nightly reflection: remember anything durable from the day's chats
+    conversation_quality_cron: str = "30 8 * * 1"  # weekly short "conversation quality" summary (Mondays 8:30)
     inbox_check_interval_min: int = 10
     scheduler_enabled: bool = True
 

@@ -82,6 +82,38 @@ CREATE TABLE IF NOT EXISTS metrics (
     value REAL NOT NULL,
     PRIMARY KEY (day, source, metric)
 );
+CREATE TABLE IF NOT EXISTS turn_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    user_text TEXT DEFAULT '',
+    reply_text TEXT DEFAULT '',
+    stt_ms INTEGER,
+    first_delta_ms INTEGER,
+    first_audio_ms INTEGER,
+    total_ms INTEGER,
+    tool_calls INTEGER NOT NULL DEFAULT 0,
+    duplicate INTEGER NOT NULL DEFAULT 0,
+    echo_suspect INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    format_flags TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS voice_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS turn_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    turn_id INTEGER NOT NULL UNIQUE,
+    rating TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    user_text TEXT DEFAULT '',
+    reply_text TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS stock_items (
     sku TEXT PRIMARY KEY,
     name TEXT NOT NULL,

@@ -133,6 +133,10 @@ once, not per-transport. Voice wake-word listening for cost-free "always listeni
 `SpeechRecognition` (`sentry` in hud.js) until it hears the wake word, then hands off to the configured paid STT
 (Deepgram/Whisper) for the actual command, sleeping back to the free listener after a period of silence
 (`extendFollowUp`/`checkSleep`) - don't reintroduce a fully continuous paid stream for "always listening" mode.
-Barge-in (talking over Jarvis) lives in `utterance()`'s echo-window block: the window stays a strict allowlist (wake
+Conversation quality (`services/conversation_quality.py`, `j.quality`): both brains call `begin()` at the top of `_turn`
+and poke the returned record (`first_delta`/`tools`/`finish`) - keep that in any new brain path. It logs per-turn metrics,
+the HUD's Good/Wrong buttons and "that was wrong" phrases (`/api/feedback`), browser-only signals (`/api/voice-events`),
+and feeds the nightly reflection plus a weekly summary. The regression suite to run after every change is
+`tests/test_conversation_regression.py`. Barge-in (talking over Jarvis) lives in `utterance()`'s echo-window block: the window stays a strict allowlist (wake
 word or stop phrase only); stop phrases always cut the turn via `stopEverything()`, the wake word additionally needs
 the `bargein` setting on, `bargeInAllowed()`, and to not match Jarvis's own recent speech. Tests: `tests/test_hud_bargein.py`.

@@ -40,6 +40,19 @@ class ChatIn(BaseModel):
     compose: bool = False  # true only when the owner typed this into the chat box (not a quick button / voice)
 
 
+class FeedbackIn(BaseModel):
+    rating: str = Field(pattern="^(good|wrong)$")
+    note: str = Field("", max_length=500)
+    turn_id: int | None = None  # default: Jarvis's most recent turn
+
+
+class VoiceEventIn(BaseModel):
+    kind: str = Field(max_length=40)  # stt_failure | stt_empty | echo_suppressed | first_audio
+    ms: float | None = None           # first_audio only: milliseconds from sending the request to the first sound
+    turn_id: int | None = None
+    detail: str = Field("", max_length=300)
+
+
 class ForgetIn(BaseModel):
     text: str = Field(min_length=1, max_length=200)
 
@@ -223,6 +236,34 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def reply_suggestions_clear(request: Request):
         return {"forgotten": J(request).reply_suggestions.clear()}
 
+    # Conversation quality: the owner marks a reply good/wrong (HUD buttons, or by saying "that was wrong" - see
+    # services/conversation_quality.py), the browser reports what only it can see (echo it suppressed, time to first
+    # audio), and the summary is readable on demand. All of it only writes Jarvis's own metrics tables.
+    @app.post("/api/feedback", dependencies=[Depends(owner)])
+    async def feedback(body: FeedbackIn, request: Request):
+        saved = J(request).quality.feedback(body.rating, body.note, body.turn_id)
+        if not saved:
+            raise HTTPException(404, "No such turn to give feedback on.")
+        return saved
+
+    @app.post("/api/voice-events", dependencies=[Depends(owner)])
+    async def voice_event(body: VoiceEventIn, request: Request):
+        quality = J(request).quality
+        if body.kind == "first_audio":
+            if body.ms is None:
+                raise HTTPException(400, "first_audio needs ms")
+            quality.record_first_audio(body.ms, body.turn_id)
+            return {"ok": True}
+        if not quality.record_event(body.kind, body.detail):
+            raise HTTPException(400, "Unknown event kind.")
+        return {"ok": True}
+
+    @app.get("/api/quality", dependencies=[Depends(owner)])
+    async def conversation_quality(request: Request, days: int = 7):
+        quality = J(request).quality
+        days = max(1, min(days, 90))
+        return {"days": days, "stats": quality.stats(days), "summary": quality.summary_text(days)}
+
     @app.get("/api/transcript", dependencies=[Depends(owner)])
     async def transcript(request: Request):
         return J(request).db.recent_transcript(40)
@@ -270,10 +311,20 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.post("/api/stt", dependencies=[Depends(owner)])
     async def stt(request: Request, audio: UploadFile = File(...)):
         data = await audio.read()
+        j = J(request)
+        started = time.monotonic()
         try:
-            text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
+            text = await j.voice.transcribe(data, audio.content_type or "audio/webm")
         except VoiceError as e:
+            j.quality.record_event("stt_failure", str(e))
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
+        except Exception as e:  # noqa: BLE001 - still measured, then raised as before
+            j.quality.record_event("stt_failure", f"{type(e).__name__}: {e}")
+            raise
+        if (text or "").strip():
+            j.quality.note_stt((time.monotonic() - started) * 1000)
+        else:
+            j.quality.record_event("stt_empty")
         return {"text": text}
 
     @app.get("/api/voices", dependencies=[Depends(owner)])

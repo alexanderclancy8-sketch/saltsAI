@@ -47,6 +47,7 @@ from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
+from .services.conversation_quality import ConversationQuality
 from .services.self_improve import SelfImprove
 from .services.self_learning import SelfLearning
 from .services.site_access import SiteAccessCodes
@@ -125,6 +126,7 @@ class Jarvis:
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.automations = AutomationService(self)
+        self.quality = ConversationQuality(self)  # per-turn metrics + feedback; must exist before the brain below
         self.self_learning = SelfLearning(self)
         self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
