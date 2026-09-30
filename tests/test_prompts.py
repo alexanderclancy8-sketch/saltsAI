@@ -15,6 +15,28 @@ def test_persona_formats_and_keeps_existing_guidance(settings):
     assert "[spoken ...]" in text
 
 
+def test_persona_spoken_guidance_is_tight_and_echo_aware(settings):
+    text = _persona(settings)
+    assert "never repeat the question back" in text
+    assert "free of wake phrases" in text
+    assert "at most one question" in text
+
+
+def test_hud_voice_input_guards_against_self_echo_and_submits_in_every_mode():
+    from pathlib import Path
+
+    hud = (Path(__file__).resolve().parent.parent / "jarvis" / "web" / "hud.js").read_text(encoding="utf-8")
+    # Self-echo guard is wired into every listener and the central utterance() path.
+    assert "function looksLikeSelfEcho" in hud
+    assert hud.count("looksLikeSelfEcho(") >= 5
+    assert "ECHO_TAIL_MS" in hud and "speaker.recent" in hud
+    # Push-to-talk / non-wake modes commit finals after end-of-speech instead of waiting for stop().
+    assert "finalHeard()" in hud and "PTT_SILENCE_MS" in hud
+    assert "if (S.listenMode === \"wake\") { utterance(this.finals)" not in hud
+    # Still no unprompted greeting.
+    assert "no on-load greeting" in hud
+
+
 def test_persona_technical_authority_and_discipline(settings):
     text = _persona(settings)
     for std in ("BS 5839", "BS 5266", "BS EN 50131", "PD 6662", "BS 8243", "BS EN 62676", "BS EN 60839-11"):

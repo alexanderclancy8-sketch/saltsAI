@@ -232,12 +232,16 @@
   }
 
   const speaker = {
-    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, lastSpokeAt: 0,
+    queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, lastSpokeAt: 0, recent: [],
     feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
     flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
     enqueue(sentence) {
       const clean = sentence.replace(/```[\s\S]*?```/g, " ").replace(/[#*_`>|]/g, " ").replace(/\s+/g, " ").trim();
       if (!clean || /^[-\s]+$/.test(clean)) return;
+      // Remember what we're about to say so the mic can recognise it as our own voice if it hears it back.
+      const now = Date.now();
+      this.recent = this.recent.filter((r) => now - r.at < RECENT_TTS_MS).slice(-30);
+      this.recent.push({ text: clean, at: now });
       const item = { text: clean, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
       this.queue.push(item);
       if (!this.active) this.next();
@@ -276,11 +280,53 @@
       u.onend = u.onerror = () => { this.browserSpeaking = false; this.next(); };
       speechSynthesis.speak(u);
     },
-    stop() { this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
+    stop() {
+      // Only start the echo tail if something was actually being said - a push-to-talk press calls stop() on a
+      // silent speaker, and that must not put the owner's own first words inside an "echo window".
+      if (this.active || this.queue.length || this.browserSpeaking) this.lastSpokeAt = Date.now();
+      this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
   };
   const shouldSpeak = (mode) => S.speakPref === "always" || (S.speakPref === "voice" && mode === "voice");
 
   function say(text) { if (S.speakPref !== "off") { speaker.feed(text + " "); speaker.flush(); } }
+
+  // ------------------------------------------------------------------ self-echo guard
+  // Without headphones the mic hears Jarvis's own voice. Nothing heard while he's talking, or in the short tail
+  // after, may ever be treated as the owner asking something - so every recognised transcript goes through
+  // looksLikeSelfEcho() before it is kept or submitted (in stt, sentry and utterance()).
+  const ECHO_TAIL_MS = 2500;      // how long past the end of speech the mic might still be hearing its tail
+  const RECENT_TTS_MS = 60000;    // how long we remember what we said
+  const RECENT_MATCH_MS = 20000;  // outside the echo window, only compare against very recent speech
+  const PTT_SILENCE_MS = 1200;    // push-to-talk: this long after the last final result counts as end of speech
+  const normWords = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  const echoWindowOpen = () => speaker.active || speaker.browserSpeaking || Date.now() - speaker.lastSpokeAt < ECHO_TAIL_MS;
+
+  function looksLikeSelfEcho(text) {
+    const wake = (S.voice.wake_word || "jarvis").toLowerCase();
+    const words = normWords(text);
+    if (!words.length) return false;
+    // A real person says the wake phrase once. "hey jarvis ... hey jarvis ... hey jarvis" mashed together in a
+    // single transcript is the mic hearing overlapping playback, never a genuine command.
+    if (words.filter((w) => w === wake).length >= 2) return true;
+    const filler = new Set([wake, "hey", "ok", "okay"]);
+    const content = words.filter((w) => !filler.has(w));
+    if (!content.length) return false;
+    // A short, explicit "stop"/"quiet" is always allowed through - that's how the owner interrupts.
+    if (content.length <= 4 && STOP_PHRASE_TEST_RE.test(content.join(" "))) return false;
+    const inWindow = echoWindowOpen();
+    const now = Date.now();
+    const recent = speaker.recent.filter((r) => now - r.at < (inWindow ? RECENT_TTS_MS : RECENT_MATCH_MS));
+    if (!recent.length) return false;
+    const spoken = recent.map((r) => normWords(r.text).join(" ")).join(" ");
+    // Fuzzy match against what we recently said: the exact words back again...
+    if (content.length >= 4 && ` ${spoken} `.includes(` ${content.join(" ")} `)) return true;
+    // ...or, while (or just after) speaking, mostly made of words we just said - a garbled echo.
+    if (inWindow && content.length >= 3) {
+      const vocab = new Set(spoken.split(" "));
+      if (content.filter((w) => vocab.has(w)).length / content.length >= 0.7) return true;
+    }
+    return false;
+  }
 
   // Jarvis never speaks unprompted: there is deliberately no on-load greeting. Speech (TTS) only ever
   // follows something the owner asked (typed or voice) or an action they just took on the page.
@@ -602,7 +648,7 @@
   async function decide(id, act) {
     const r = await (await api(`/api/approvals/${id}/${act}`, { method: "POST" })).json();
     toast(act === "approve" ? "Approved" : "Cancelled", r.result);
-    say(act === "approve" ? "Very good, sir. On it." : "Cancelled.");
+    say(act === "approve" ? "Right, on it." : "Right, I've dropped that one.");
   }
 
   $("#btn-run-tests").addEventListener("click", async () => { toast("Running routine tests…"); const r = await (await api("/api/tests/run", { method: "POST" })).json(); const bad = r.filter((t) => !t.ok).length; toast("Routine tests finished", bad ? `${bad} failing` : "All passing", bad ? "warning" : "info"); refresh(); });
@@ -639,7 +685,22 @@
   // ------------------------------------------------------------------ speech input
   const mic = $("#btn-mic");
   const stt = {
-    on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [],
+    on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
+    // Hands whatever final text has built up to utterance(). In wake mode the mic stays open for the next
+    // wake phrase; in every other mode this is the end of the turn, so the mic closes rather than sitting on
+    // "Listening…" with nothing ever submitted.
+    commit() {
+      clearTimeout(this.silenceTimer); this.silenceTimer = null;
+      const text = this.finals.trim(); this.finals = "";
+      if (text) utterance(text);
+      if (S.listenMode !== "wake" && this.on) this.stop(false);
+    },
+    // A genuine final result is always submitted: immediately in wake mode, otherwise once speech has gone quiet.
+    finalHeard() {
+      if (S.listenMode === "wake") { this.commit(); return; }
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = setTimeout(() => this.commit(), PTT_SILENCE_MS);
+    },
     async start() {
       if (this.on) return;
       ensureAudio();
@@ -675,8 +736,11 @@
       r.onresult = (e) => {
         let interim = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) { this.finals += e.results[i][0].transcript + " "; if (S.listenMode === "wake") { utterance(this.finals); this.finals = ""; } }
-          else interim += e.results[i][0].transcript;
+          const heard = e.results[i][0].transcript;
+          if (e.results[i].isFinal) {
+            if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
+            this.finals += heard + " "; this.finalHeard();
+          } else if (!echoWindowOpen()) interim += heard;
         }
         caption(this.finals, interim);
       };
@@ -685,10 +749,10 @@
     },
     onDeepgram(m) {
       if (m.type === "transcript") {
-        if (m.is_final && m.text) this.finals += m.text + " ";
-        caption(this.finals, m.is_final ? "" : m.text);
-        if (m.speech_final && S.listenMode === "wake" && this.finals.trim()) { utterance(this.finals); this.finals = ""; }
-      } else if (m.type === "utterance_end" && S.listenMode === "wake" && this.finals.trim()) { utterance(this.finals); this.finals = ""; }
+        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
+        caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
+        if (m.speech_final && this.finals.trim()) this.commit();
+      } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();
       else if (m.type === "speech_started" && speaker.active && S.listenMode === "wake") { /* barge-in handled on words */ }
       else if (m.type === "error") { toast("Speech service", m.message, "warning"); }
     },
@@ -702,6 +766,7 @@
     },
     stop(submit = true) {
       if (!this.on) return;
+      clearTimeout(this.silenceTimer); this.silenceTimer = null;
       this.on = false; mic.classList.remove("on");
       if (this.recognition) { const r = this.recognition; this.recognition = null; r.onend = null; r.stop(); }
       if (this.rec && this.rec.state !== "inactive") this.rec.stop();
@@ -738,6 +803,7 @@
           // buried partway into an unrelated sentence is almost always background chatter this free,
           // general-purpose listener misheard, not someone actually talking to Jarvis.
           if (!wakeRe.test(lead)) continue;
+          if (looksLikeSelfEcho(alt.transcript)) continue; // Jarvis's own voice (or a mashed-up echo of it)
           // No confidence check here any more - a short wake-word utterance often scores low even when heard
           // correctly, and this listener silently drops anything it rejects with no retry, so a strict
           // threshold mostly just made Jarvis miss real attempts ("hit and miss"). The leading-word check
@@ -791,7 +857,6 @@
     sentry.start();
   }
 
-  const ECHO_GRACE_MS = 1500;  // how long past the end of speech the mic might still be hearing its tail
   // Two separate regex objects, deliberately - a single /g-flagged RegExp used with both .test() and .replace()
   // shares mutable lastIndex state between those calls, which silently skips or duplicates matches. Test and
   // strip need their own instances even though the pattern is identical.
@@ -803,12 +868,17 @@
     if (!text) return;
     const lower = text.toLowerCase();
     const wake = (S.voice.wake_word || "jarvis").toLowerCase();
+    // Last line of defence for every listener (browser, Deepgram, Whisper, sentry): anything that looks like
+    // Jarvis's own voice - repeated wake phrases mashed together, or a close match for what he recently said -
+    // is dropped outright, in every listen mode, and can never be treated as the owner asking something.
+    if (looksLikeSelfEcho(text)) return;
     // Echo cancellation is never perfect without headphones, and room echo/output buffering trails on past
     // the moment playback actually stops - so the mic can pick up the tail end of Jarvis's own voice just
     // after speaker.active has already gone false (right when extendFollowUp() opens the real mic back up).
-    // Keep checking for a short grace period past the end of speech, not only while still actively speaking.
-    const justFinishedSpeaking = !speaker.active && Date.now() - speaker.lastSpokeAt < ECHO_GRACE_MS;
-    if (speaker.active || justFinishedSpeaking) {
+    // Keep checking for a short tail past the end of speech, not only while still actively speaking. In
+    // push-to-talk the owner deliberately opened the mic themselves (which also silenced Jarvis), so only the
+    // similarity check above applies there; in wake mode the strict allowlist below does as well.
+    if (S.listenMode === "wake" && echoWindowOpen()) {
       const isStopPhrase = STOP_PHRASE_TEST_RE.test(lower) || lower.includes(wake);
       // While actively speaking (or just finished), only actually respond to a stop phrase or the wake word -
       // anything else heard in this window is presumed to be the mic picking up Jarvis's own voice, not a
@@ -828,12 +898,15 @@
       if (isStopPhrase && remaining.length < 3) { extendFollowUp(); return; }
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
-    if (S.approvals.length && /^(approve|approved|confirm|confirmed|go ahead|yes,? (do it|send it|deploy it)|send it|deploy it)\b/.test(bare)) {
+    // In always-listening mode a spoken approve/deny must be addressed to Jarvis by name - a bare "cancel" or
+    // "go ahead" overheard from the room (or from Jarvis's own voice) is never a decision.
+    const addressed = S.listenMode !== "wake" || lower.includes(wake);
+    if (addressed && S.approvals.length && /^(approve|approved|confirm|confirmed|go ahead|yes,? (do it|send it|deploy it)|send it|deploy it)\b/.test(bare)) {
       if (S.approvals.length === 1) decide(S.approvals[0].id, "approve");
-      else say(`There are ${S.approvals.length} approvals waiting, sir - please tap the one you mean.`);
+      else say(`Sir, there are ${S.approvals.length} approvals waiting - tap the one you mean.`);
       return;
     }
-    if (S.approvals.length === 1 && /^(deny|cancel|don't|do not|no,? (cancel|don't))\b/.test(bare)) { decide(S.approvals[0].id, "deny"); return; }
+    if (addressed && S.approvals.length === 1 && /^(deny|cancel|don't|do not|no,? (cancel|don't))\b/.test(bare)) { decide(S.approvals[0].id, "deny"); return; }
     if (S.listenMode === "wake") {
       // The wake word is required on every single utterance now, with no "quick follow-up, skip repeating
       // Jarvis" exception - that exception was a real, reported source of false triggers: anything heard
@@ -907,7 +980,7 @@
   });
   $("#set-speak").addEventListener("change", (e) => { S.speakPref = e.target.value; store.set("speak", S.speakPref); if (S.speakPref === "off") speaker.stop(); });
   $("#set-voice").addEventListener("change", (e) => { S.voiceId = e.target.value; store.set("voice", S.voiceId); });
-  $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say("At your service, sir. This is how I sound."); });
+  $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say("Good to go, sir. This is how I sound."); });
   let voicesLoaded = false;
   async function renderSettings(st) {
     $("#btn-sage").hidden = !(st.sage?.configured && !st.sage?.connected);
