@@ -11,11 +11,14 @@
     status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB" },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
+    lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
     // followUpUntil: until when a heard utterance may skip the wake word - only ever set by grantFollowUp(), i.e.
     // after a genuine exchange. micUntil: until when the real mic is kept open (extendFollowUp) - says nothing
     // about whether the wake word may be skipped. voiceTurn: false | "pending" (accepted spoken request, no reply
     // yet) | "replied" (reply received, waiting for Jarvis to finish speaking it).
-    lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
+    // Barge-in (talk over Jarvis with the wake word). On by default because the echo guards below are always in
+    // place; the owner can switch it off in Settings if it misfires on speakers. See bargeInAllowed().
+    bargeIn: store.get("bargein", "1") !== "0", captureUntil: 0,
     dashOpen: store.get("dashboard", "0") === "1",
   };
 
@@ -237,6 +240,11 @@
 
   const speaker = {
     queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, lastSpokeAt: 0, recent: [],
+    // Bumped by stop(). Every async callback (audio fetch, play(), onended, speechSynthesis onend) remembers the
+    // generation it started in and does nothing if it has changed - otherwise a cancelled sentence's late
+    // callback either re-speaks it in the browser voice (a play() aborted by pause() rejects, which used to fall
+    // through to speakBrowser) or calls next() a second time and overlaps the next reply.
+    gen: 0,
     feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
     flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
     enqueue(sentence) {
@@ -264,30 +272,36 @@
     },
     async next() {
       const item = this.queue.shift();
-      if (!item) { this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); if (this.onIdle) this.onIdle(); return; }
+      if (!item) { this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); if (S.hudState === "speaking") setHud("idle"); if (S.voiceTurn === "replied") finishVoiceTurn(); if (this.onIdle) this.onIdle(); return; }
+      const gen = this.gen;
       this.active = true; setHud("speaking");
       const url = item.audio ? await item.audio : null;
-      if (!this.active) return;
+      if (!this.active || gen !== this.gen) { if (url) URL.revokeObjectURL(url); return; }
       if (url) {
         player.src = url;
-        player.onended = () => { URL.revokeObjectURL(url); this.next(); };
-        player.onerror = () => this.next();
-        try { await player.play(); } catch { voiceProblem("the browser blocked the audio - click anywhere on the page and try again"); this.speakBrowser(item.text); }
+        player.onended = () => { URL.revokeObjectURL(url); if (gen === this.gen) this.next(); };
+        player.onerror = () => { if (gen === this.gen) this.next(); };
+        try { await player.play(); } catch {
+          if (gen !== this.gen) return; // stopped while the audio was starting - not a blocked-autoplay problem
+          voiceProblem("the browser blocked the audio - click anywhere on the page and try again"); this.speakBrowser(item.text);
+        }
       } else this.speakBrowser(item.text);
     },
     speakBrowser(text) {
       if (!("speechSynthesis" in window)) { this.next(); return; }
+      const gen = this.gen;
       const u = new SpeechSynthesisUtterance(text);
       const v = pickBrowserVoice(); if (v) u.voice = v;
       u.lang = "en-GB"; u.rate = 1.02; u.pitch = 0.95;
       this.browserSpeaking = true;
-      u.onend = u.onerror = () => { this.browserSpeaking = false; this.next(); };
+      u.onend = u.onerror = () => { if (gen !== this.gen) return; this.browserSpeaking = false; this.next(); };
       speechSynthesis.speak(u);
     },
     stop() {
       // Only start the echo tail if something was actually being said - a push-to-talk press calls stop() on a
       // silent speaker, and that must not put the owner's own first words inside an "echo window".
       if (this.active || this.queue.length || this.browserSpeaking) this.lastSpokeAt = Date.now();
+      this.gen++;
       this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
   };
   const shouldSpeak = (mode) => S.speakPref === "always" || (S.speakPref === "voice" && mode === "voice");
@@ -304,6 +318,65 @@
   const PTT_SILENCE_MS = 1200;    // push-to-talk: this long after the last final result counts as end of speech
   const normWords = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
   const echoWindowOpen = () => speaker.active || speaker.browserSpeaking || Date.now() - speaker.lastSpokeAt < ECHO_TAIL_MS;
+
+  // ------------------------------------------------------------------ barge-in
+  // Talking over Jarvis. Inside the echo window the allowlist is still exactly "the wake word or a stop phrase" -
+  // barge-in only decides what happens when one of those is heard: speech is cut at once, and (for the wake
+  // word) what the owner says next is captured. Guards against Jarvis's own voice triggering it:
+  //  - the mic stream asks for echoCancellation/noiseSuppression/autoGainControl (MIC_CONSTRAINTS), and barge-in
+  //    switches itself off if the browser reports it couldn't honour echoCancellation (stt.echoCancelled);
+  //  - a wake-word match is ignored if the words around it appear in what Jarvis has been saying (matchesOwnSpeech);
+  //  - the wake word must be in the first few words, be at least BARGE_IN_MIN_WAKE_CHARS long, and (as always)
+  //    looksLikeSelfEcho() has already rejected repeated wake phrases and close copies of Jarvis's speech;
+  //  - a stop phrase only counts as a short utterance (no long sentence that merely contains "stop").
+  // Stop phrases ("Jarvis, stop", "quiet"...) always work, even with barge-in switched off in Settings.
+  const MIC_CONSTRAINTS = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  const BARGE_IN_MIN_WAKE_CHARS = 4;   // a 1-3 letter wake word is too easily "heard" in noise to interrupt on
+  const BARGE_IN_LEAD_WORDS = 4;       // the wake word has to open the utterance, as in the sentry listener
+  const BARGE_IN_CAPTURE_MS = 8000;    // after a bare "Jarvis" barge-in, how long the next words count as addressed to him
+  const STOP_MAX_WORDS = 4;            // same limit looksLikeSelfEcho() uses for "a short, explicit stop"
+  const STOP_WORDS = new Set(["stop", "quiet", "enough", "cancel", "shut", "up"]);
+
+  function bargeInAllowed() {
+    const wakeChars = normWords(S.voice.wake_word || "jarvis").join("").length;
+    return S.bargeIn && stt.echoCancelled !== false && wakeChars >= BARGE_IN_MIN_WAKE_CHARS;
+  }
+
+  // What, if anything, an utterance heard inside the echo window is: its wake word / stop phrase flags, and what is
+  // left once wake word, fillers and stop words are taken away (empty for a bare "Jarvis, stop").
+  function classifyInterrupt(text) {
+    const words = normWords(text);
+    const wakeWords = normWords(S.voice.wake_word || "jarvis");
+    const has = (list, phrase) => phrase.length > 0 && ` ${list.join(" ")} `.includes(` ${phrase.join(" ")} `);
+    const filler = new Set([...wakeWords, "hey", "ok", "okay"]);
+    const rest = words.filter((w) => !filler.has(w));
+    return {
+      hasWake: has(words, wakeWords),
+      wakeInLead: has(words.slice(0, BARGE_IN_LEAD_WORDS), wakeWords),
+      stop: rest.length > 0 && rest.length <= STOP_MAX_WORDS && STOP_PHRASE_TEST_RE.test(rest.join(" ")),
+      remaining: rest.filter((w) => !STOP_WORDS.has(w)).join(" "),
+    };
+  }
+
+  // True if the wake word plus the couple of words after it appear in what Jarvis has recently said - i.e. the mic
+  // is most likely hearing him say it, not the owner.
+  function matchesOwnSpeech(text) {
+    const words = normWords(text);
+    const wakeWords = normWords(S.voice.wake_word || "jarvis");
+    const at = words.indexOf(wakeWords[0]);
+    if (at === -1) return false;
+    const heard = words.slice(at, at + wakeWords.length + 2).join(" ");
+    const now = Date.now();
+    const spoken = ` ${speaker.recent.filter((r) => now - r.at < RECENT_TTS_MS).map((r) => normWords(r.text).join(" ")).join(" ")} `;
+    return spoken.includes(` ${heard} `);
+  }
+
+  // The visible cue for why speech just stopped.
+  function bargeInCue(kind) {
+    const text = kind === "stop" ? "Stopped - I heard a stop phrase." : `Stopped - I heard "${S.voice.wake_word || "jarvis"}".`;
+    toast("Interrupted", text);
+    caption("", text);
+  }
 
   function looksLikeSelfEcho(text) {
     const wake = (S.voice.wake_word || "jarvis").toLowerCase();
@@ -693,6 +766,9 @@
   const mic = $("#btn-mic");
   const stt = {
     on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
+    // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
+    // the mic stream is NOT echo-cancelled, which switches barge-in off (see bargeInAllowed()).
+    echoCancelled: null,
     // Hands whatever final text has built up to utterance(). In wake mode the mic stays open for the next
     // wake phrase; in every other mode this is the end of the turn, so the mic closes rather than sitting on
     // "Listening…" with nothing ever submitted.
@@ -708,22 +784,29 @@
       clearTimeout(this.silenceTimer);
       this.silenceTimer = setTimeout(() => this.commit(), PTT_SILENCE_MS);
     },
-    async start() {
+    // keepSpeaking: the mic is being opened in the background (follow-up window, reconnect) rather than by the owner
+    // pressing the mic - so it must not cut Jarvis off or overwrite the thinking/speaking display. Without it,
+    // paid-STT wake mode had no microphone open at all while Jarvis was talking (the free wake-word listener
+    // is stopped once it fires), so "Jarvis, stop" mid-sentence could not be heard.
+    async start({ keepSpeaking = false } = {}) {
       if (this.on) return;
       ensureAudio();
-      speaker.stop();
-      this.on = true; this.finals = ""; mic.classList.add("on"); setHud("listening"); caption("", "Listening…");
+      if (!keepSpeaking) speaker.stop();
+      this.on = true; this.finals = ""; mic.classList.add("on");
+      if (!keepSpeaking) { setHud("listening"); caption("", "Listening…"); }
       const mode = S.voice.stt;
       try {
         if (mode === "browser") return this.startBrowser();
-        this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
+        this.echoCancelled = (this.stream.getAudioTracks()[0]?.getSettings?.() || {}).echoCancellation !== false;
+        if (!this.echoCancelled && S.bargeIn) toast("Barge-in off for now", "This microphone can't cancel echo, so talking over Jarvis is disabled. \"Jarvis, stop\" still works.", "warning");
         const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/mp4";
         this.rec = new MediaRecorder(this.stream, { mimeType: mime });
         if (mode === "deepgram") {
           this.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/stt`);
           this.ws.onmessage = (e) => this.onDeepgram(JSON.parse(e.data));
           this.ws.onopen = () => { this.rec.ondataavailable = (e) => { if (e.data.size && this.ws.readyState === 1) this.ws.send(e.data); }; this.rec.start(250); };
-          this.ws.onclose = () => { if (this.on && S.listenMode === "wake") setTimeout(() => { this.stop(false); this.start(); }, 1000); };
+          this.ws.onclose = () => { if (this.on && S.listenMode === "wake") setTimeout(() => { this.stop(false); this.start({ keepSpeaking: true }); }, 1000); };
         } else {
           this.chunks = [];
           this.rec.ondataavailable = (e) => this.chunks.push(e.data);
@@ -851,10 +934,10 @@
   let sleepTimer = null;
   // This only keeps the microphone open - it deliberately does NOT open the "no wake word needed" window, since
   // it is also called for errors, stops and Jarvis's own speech finishing. Only grantFollowUp() does that.
-  function extendFollowUp(ms = WAKE_LISTEN_MS) {
+  function extendFollowUp(ms = WAKE_LISTEN_MS, { keepSpeaking = false } = {}) {
     S.micUntil = Date.now() + ms;
     if (S.listenMode !== "wake" || S.voice.stt === "browser") return;
-    if (!stt.on) stt.start();
+    if (!stt.on) stt.start({ keepSpeaking: keepSpeaking || speaker.active });
     clearTimeout(sleepTimer);
     sleepTimer = setTimeout(checkSleep, ms + 250);
   }
@@ -862,6 +945,8 @@
     if (S.listenMode !== "wake" || S.voice.stt === "browser") return;
     const remaining = Math.max(S.micUntil, S.followUpUntil) - Date.now();
     if (remaining > 0) { sleepTimer = setTimeout(checkSleep, remaining + 250); return; }
+    // Still talking: keep the mic up so a stop phrase / barge-in can be heard (the next idle re-arms this anyway).
+    if (speaker.active) { sleepTimer = setTimeout(checkSleep, 2000); return; }
     if (stt.on) stt.stop(false);
     sentry.start();
   }
@@ -891,7 +976,6 @@
   // shares mutable lastIndex state between those calls, which silently skips or duplicates matches. Test and
   // strip need their own instances even though the pattern is identical.
   const STOP_PHRASE_TEST_RE = /\b(stop|quiet|enough|cancel|shut up)\b/;
-  const STOP_PHRASE_STRIP_RE = /\b(stop|quiet|enough|cancel|shut up)\b/g;
 
   function utterance(raw) {
     const text = String(raw || "").trim();
@@ -912,7 +996,7 @@
     // push-to-talk the owner deliberately opened the mic themselves (which also silenced Jarvis), so only the
     // similarity check above applies there; in wake mode the strict allowlist below does as well.
     if (S.listenMode === "wake" && echoWindowOpen()) {
-      const isStopPhrase = STOP_PHRASE_TEST_RE.test(lower) || lower.includes(wake);
+      const heard = classifyInterrupt(text);
       // While actively speaking (or just finished), only actually respond to a stop phrase or the wake word -
       // anything else heard in this window is presumed to be the mic picking up Jarvis's own voice, not a
       // real interruption. A word-overlap heuristic used to sit here instead, judging echo by how much heard
@@ -920,15 +1004,26 @@
       // genuine echo scores a *low* match and sails straight through as if it were a real command. Requiring
       // the wake word or a stop phrase has no such failure mode: it's a strict allowlist, not a similarity
       // score, so mistranscribed echo is rejected the same as clearly-echoed echo.
-      if (!isStopPhrase) return;
-      if (speaker.active) speaker.stop();
       // A bare "stop"/"quiet"/"Jarvis, stop" - nothing left worth answering once the stop words and wake word
       // are stripped out - should just go quiet. Falling through to send() below would forward the word
       // "stop" itself to Jarvis as a fresh question, which it answers and speaks aloud - so saying "stop"
-      // during a reply just started a new one every time, rather than ever actually going quiet.
-      const remaining = lower.replace(STOP_PHRASE_STRIP_RE, " ").replace(new RegExp(`\\b${wake}\\b`, "g"), " ")
-        .replace(/[^a-z0-9]+/g, " ").trim();
-      if (isStopPhrase && remaining.length < 3) { extendFollowUp(); return; }
+      // during a reply just started a new one every time, rather than ever actually going quiet. It has to be
+      // stopEverything(), not just speaker.stop(): the reply is usually still streaming in, and every further
+      // delta would otherwise be fed straight back into the speaker, so Jarvis carried on after "stop".
+      if (heard.stop && heard.remaining.length < 3) { stopEverything(); bargeInCue("stop"); extendFollowUp(); return; }
+      // Everything else needs the wake word, and barge-in on: with it off (or unsafe - see bargeInAllowed()) only
+      // stop phrases cut Jarvis off, and the wake word is ignored like any other speech in the window.
+      if (!heard.hasWake || !bargeInAllowed()) { if (S.captureUntil > Date.now()) caption("", "(still settling - say that again)"); return; }
+      // The wake word must open the utterance and must not be Jarvis saying it himself.
+      if (!heard.wakeInLead || matchesOwnSpeech(text)) return;
+      // Barge-in: cut the speech and the turn that's producing it, then fall through to handle what follows the
+      // wake word as a fresh command. A bare wake word just arms a short capture (below) for the next utterance.
+      stopEverything(); bargeInCue("wake");
+      if (!text.slice(lower.indexOf(wake) + wake.length).replace(/^[\s,.!?]+/, "")) {
+        S.captureUntil = Date.now() + BARGE_IN_CAPTURE_MS;
+        setHud("awaiting"); extendFollowUp(undefined, { keepSpeaking: true });
+        return;
+      }
     }
     const bare = lower.replace(new RegExp(`^\\s*(hey\\s+)?${wake}[\\s,.!?]*`), "").trim();
     // In always-listening mode a spoken approve/deny must be addressed to Jarvis by name - a bare "cancel" or
@@ -947,12 +1042,17 @@
       // apply while echoWindowOpen(), where the strict wake-word-or-stop-phrase allowlist above still rules.
       const idx = lower.indexOf(wake);
       if (idx === -1) {
+        // The one narrow exception: the owner barged in with a bare "Jarvis" a moment ago (see the echo-window
+        // block above) - that wake word already addressed him, so take the next thing said as the command.
+        // One-shot and short-lived, and only reachable outside the echo window, so echo can never use it.
+        if (S.captureUntil > Date.now()) { S.captureUntil = 0; send(text, "voice"); S.voiceTurn = "pending"; extendFollowUp(undefined, { keepSpeaking: true }); return; }
+        S.captureUntil = 0;
         if (inEchoWindow || Date.now() >= S.followUpUntil) {
           caption("", `(heard: "${text.slice(0, 60)}")`);
           missingWakeCue(wake, inEchoWindow);
           return;
         }
-        send(text, "voice"); S.voiceTurn = "pending"; // accepted follow-up: a real spoken request
+        send(text, "voice"); S.voiceTurn = "pending";
         return;
       }
       const cmd = text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "");
@@ -963,6 +1063,9 @@
         return;
       }
       send(cmd, "voice"); S.voiceTurn = "pending";
+      // Keep the real mic open while the reply is thought about and spoken, so "Jarvis, stop" / a barge-in can be
+      // heard mid-sentence (the free wake-word listener that just fired has stopped itself).
+      extendFollowUp(undefined, { keepSpeaking: true });
     } else send(text, "voice");
   }
 
@@ -978,6 +1081,7 @@
   // ------------------------------------------------------------------ stop
   function stopEverything() {
     speaker.stop(); // instant - halts audio/browser speech straight away
+    S.captureUntil = 0;
     if (current) {
       const body = current.querySelector(".md");
       body.classList.remove("typing");
@@ -1023,6 +1127,8 @@
     if (S.listenMode === "wake") { enterWakeMode(); toast("Always listening", `Say "${S.voice.wake_word}…" to talk to me.`); } else exitWakeMode();
   });
   $("#set-speak").addEventListener("change", (e) => { S.speakPref = e.target.value; store.set("speak", S.speakPref); if (S.speakPref === "off") speaker.stop(); });
+  $("#set-bargein").value = S.bargeIn ? "1" : "0";
+  $("#set-bargein").addEventListener("change", (e) => { S.bargeIn = e.target.value !== "0"; store.set("bargein", S.bargeIn ? "1" : "0"); if (!S.bargeIn) S.captureUntil = 0; });
   $("#set-voice").addEventListener("change", (e) => { S.voiceId = e.target.value; store.set("voice", S.voiceId); });
   $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say("Good to go, sir. This is how I sound."); });
   let voicesLoaded = false;
