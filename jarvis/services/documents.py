@@ -2,7 +2,9 @@
 answers drafted from the company's real evidence, HR documents (job postings, interview questions,
 disciplinary/performance letters), and bid support - a go/no-go + pricing assessment grounded in real
 capacity/cash/win-rate data, and a full narrative proposal document grounded in real evidence and comparable
-past jobs, for tenders bigger than a plain PQQ answer_questionnaire response covers."""
+past jobs, for tenders bigger than a plain PQQ answer_questionnaire response covers. Also display-only correspondence drafts:
+credit-control chasers (reminder / call script / Letter Before Action) built from the accountant's real overdue data,
+and sales follow-up sequences for open Salts FSM quotes. None of these are ever sent by these tools."""
 
 from __future__ import annotations
 
@@ -110,6 +112,242 @@ studies - reference real job types/systems/scale, never invented client names or
 Mark any gap as TO CONFIRM. Never invent a client name, contract value, or accreditation we don't hold."""
 
 
+CREDIT_CONTROL_SYSTEM = """You are Jarvis, drafting credit-control correspondence for {company}, a UK fire &
+security contractor, for {owner} to review. This is a DRAFT ONLY: you never send it - sending is a separate,
+approval-gated step ({owner} approves it via the email tool).
+
+Use ONLY the figures, invoice numbers and dates in the JSON provided. Never invent or estimate an amount, date,
+invoice ref, PO number, bank detail, contact name, company number or interest figure. Anything you need that is not
+provided goes in as a clearly marked placeholder, e.g. [TO CONFIRM: customer contact name], and is repeated in a short
+"Missing / to confirm" list at the end. Quote statutory interest and fixed-sum compensation (Late Payment of
+Commercial Debts (Interest) Act 1998) ONLY when the invoice data supplies those figures; if they are not supplied,
+do not mention them at all (for a Letter Before Action, say in the checklist that they should be added once
+calculated). The interest figures are the accountant tool's estimate as at today - say "as at [date]" and that
+interest continues to accrue; do not compute a daily rate yourself.
+
+Match the requested channel and the escalation stage (`stage_key`):
+- reminder (1-7 days overdue): warm, friendly, assume an oversight. Short. Ask for payment or a payment date.
+- second_reminder (8-21 days): polite but firmer. Reference the earlier reminder only if the data says one was
+  sent, otherwise use [TO CONFIRM: date of earlier reminder]. Ask for payment, or a firm payment date, by a
+  specific short deadline expressed relative to the letter date (e.g. "within 7 days").
+- final_notice (22-45 days): firm, clear and businesslike. State that this is a final reminder before further
+  action, request payment within 7 days, and invite them to contact us now if there is a dispute.
+- letter_before_action (46+ days): formal, factual, unemotional - no adjectives, no threats beyond stating the
+  next step. See below.
+Never threaten to withhold or pause life-safety or emergency call-outs. If the stage text mentions pausing
+non-urgent work, treat that only as an option for {owner} to consider in the checklist, not something to
+threaten in the correspondence.
+
+Channels:
+- email: subject line, then body. Sign off from {owner} at {company}.
+- call: a phone script for the accounts-payable contact: opening, purpose, the specific invoice(s) and amount(s),
+  what to ask (payment date, any query/dispute, correct contact/PO), how to respond to likely answers ("in the
+  post", "not received the invoice", "dispute"), what to agree and record, and a note-to-file template. Polite
+  and factual, never aggressive.
+- letter: a formal letter with sender/recipient placeholders, date placeholder, subject "Re: invoice(s) ...",
+  and sign-off.
+
+Letter Before Action (business-to-business): follow the expectations of the Practice Direction - Pre-Action
+Conduct and Protocols (PD-PAC): (1) a concise summary of the claim (who owes what, for what work/invoice, when it
+fell due); (2) what we want: payment of the sum(s) stated, plus statutory interest and fixed compensation where
+the data supplies them; (3) a clear deadline of {deadline} days from the date of the letter (leave the calendar date
+as a placeholder until the send date is fixed); (4) how to pay [TO CONFIRM: bank details]; (5) that if the debt is not
+paid or a reasoned response given by the deadline, we intend to start court proceedings without further notice,
+which may add court fees and costs; (6) invite the recipient to say if they dispute any part and why, and to send
+any documents relied on; (7) mention we are willing to consider alternative dispute resolution or a payment
+proposal. Note: the Pre-Action Protocol for Debt Claims applies where the debtor is an individual (including a sole
+trader), not a limited company - if the customer might be a sole trader or individual, say so in the checklist,
+because the Protocol then requires more (information sheet, reply form, longer response period) and a solicitor
+must prepare it. Statutory interest/compensation only applies between businesses.
+
+Output markdown: the draft itself, then a short "Before sending" checklist. For a Letter Before Action the
+checklist MUST start with: "Have a solicitor (or {owner}'s qualified accountant) review this letter before it goes
+out." and must also cover: confirm the customer is a business (and not a sole trader/individual); confirm the
+work was done and invoiced correctly and there is no open dispute; confirm earlier reminders were sent and their
+dates; confirm the interest/compensation figures and the base rate used; confirm the recipient and address; and
+that no life-safety service is being withheld. Finally list "Missing / to confirm" items, including everything in
+the `missing` array."""
+
+SALES_FOLLOWUP_SYSTEM = """You are Jarvis, drafting a short, professional, non-pushy follow-up sequence for an open quote
+at {company}, a UK fire & security installer/maintainer, for {owner} to review. This is a DRAFT ONLY: you never send
+anything - sending is a separate, approval-gated step ({owner} approves it via the email tool).
+
+Use ONLY the quote data in the JSON provided (quote ref, customer, site, value, date sent, days since sent, scope/
+title). Never invent prices, discounts, dates, deadlines, stock levels, competitor activity, contact names or
+scope details. Anything missing becomes a marked placeholder, e.g. [TO CONFIRM: contact name], and is repeated in a
+short "Missing / to confirm" list at the end (including everything in the `missing` array).
+
+Write one touch per entry in `touches` (in order), for the requested channel:
+- Each touch names the specific quote (ref, site, scope, value as given) and is brief - an email of 4-8 lines, or
+  a phone script of an opening, 2-3 talking points and a light close with voicemail wording.
+- Day 7: a friendly check-in - did the quote arrive, is there anything unclear.
+- Day 14: offer practical help - a site visit, walking through the scope, clarifying what's included, or adjusting
+  options/phasing if the budget or scope needs to change (only offer, never promise a discount).
+- Day 21: a polite close-out - say we'll assume the timing isn't right for now, that the quote stays on file, and
+  that they are welcome to come back or ask for it to be refreshed; no guilt, no ultimatum.
+No pressure tactics, no invented urgency or scarcity, no "last chance", no threats of price rises unless the data
+says so. Where a touch's `status` is `already_passed`, still draft it but label it "only if not already sent".
+Sign off from {owner} at {company}. If the quote's scope relates to life-safety systems you may say we are happy to
+answer compliance questions, but do not scare or exaggerate.
+
+Output markdown: a heading per touch (day and channel), the draft, then a short "Missing / to confirm" list."""
+
+CC_CHANNELS = ("email", "call", "letter")
+CC_DEFAULT_CHANNEL = {"reminder": "email", "second_reminder": "call", "final_notice": "email",
+                      "letter_before_action": "letter"}
+LBA_DEADLINE_DAYS = 14
+SALES_CHANNELS = ("email", "call")
+SALES_TOUCH_DAYS = (7, 14, 21)
+
+
+def _stage_key(days_overdue: int) -> str:
+    """Mirrors accountant.credit_control_stage's bands as a stable key."""
+    if days_overdue <= 0:
+        return "not_due"
+    if days_overdue <= 7:
+        return "reminder"
+    if days_overdue <= 21:
+        return "second_reminder"
+    if days_overdue <= 45:
+        return "final_notice"
+    return "letter_before_action"
+
+
+def _match_overdue(actions: list[dict[str, Any]], query: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Find credit-control actions by invoice ref (exact), else customer name (exact, then partial)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return [], "Tell me a customer name or an invoice reference."
+    by_ref = [a for a in actions if str(a.get("invoice") or "").lower() == q]
+    if by_ref:
+        return by_ref, None
+    exact = [a for a in actions if str(a.get("customer") or "").lower() == q]
+    if exact:
+        return exact, None
+    partial = [a for a in actions if q in str(a.get("customer") or "").lower()]
+    names = sorted({str(a.get("customer")) for a in partial})
+    if len(names) > 1:
+        return [], f"'{query}' matches several customers ({', '.join(names)}) - which one do you mean?"
+    return partial, None
+
+
+def build_credit_control_context(cc: dict[str, Any], aged: dict[str, Any] | None, query: str,
+                                 channel: str | None, today: date, base_rate_pct: float | None = None
+                                 ) -> tuple[dict[str, Any] | None, str | None]:
+    """Turn accountant.credit_control() (+ aged detail) into the exact facts a chaser may use.
+
+    Returns (context, None), or (None, message) when nothing suitable can be drafted."""
+    if channel is not None:
+        channel = channel.strip().lower()
+        if channel not in CC_CHANNELS:
+            return None, f"Channel must be one of: {', '.join(CC_CHANNELS)}."
+    matched, err = _match_overdue(cc.get("actions") or [], query)
+    if err:
+        return None, err
+    if not matched:
+        return None, (f"I couldn't find an overdue invoice or customer matching '{query}' in credit control - "
+                      "it may be paid, not yet due, or the name/reference is different. Nothing to draft.")
+    details = {str(i.get("number")): i for i in ((aged or {}).get("overdue_invoices") or [])}
+    invoices, missing = [], []
+    for a in sorted(matched, key=lambda x: -(x.get("days_overdue") or 0)):
+        ref = str(a.get("invoice"))
+        d = details.get(ref, {})
+        row = {"invoice": ref, "customer": a.get("customer"), "amount_due": a.get("amount_due"),
+               "days_overdue": a.get("days_overdue"), "recommended_step": a.get("action"),
+               "invoice_date": d.get("date"), "due_date": d.get("due_date"), "invoice_total": d.get("total")}
+        for key in ("statutory_interest", "fixed_compensation"):
+            if a.get(key) is not None:
+                row[key] = a[key]
+        for label, key in (("invoice date", "invoice_date"), ("due date", "due_date")):
+            if not row.get(key):
+                missing.append(f"{label} for {ref}")
+        if a.get("amount_due") in (None, 0) or a.get("days_overdue") in (None,):
+            missing.append(f"amount or days overdue for {ref}")
+        invoices.append(row)
+    worst = max((r.get("days_overdue") or 0) for r in invoices)
+    stage = _stage_key(worst)
+    chosen = channel or CC_DEFAULT_CHANNEL.get(stage, "email")
+    notes = []
+    if chosen == "call" and stage == "letter_before_action":
+        notes.append("A Letter Before Action must be in writing - this call script is a courtesy warning only.")
+    if chosen == "letter" and stage in ("reminder", "second_reminder"):
+        notes.append("A formal letter is heavier than this stage normally warrants; consider an email or call first.")
+    with_interest = [r for r in invoices if "statutory_interest" in r]
+    totals: dict[str, Any] = {"amount_due": round(sum(float(r.get("amount_due") or 0) for r in invoices), 2)}
+    if with_interest and len(with_interest) == len(invoices):
+        totals["statutory_interest"] = round(sum(r["statutory_interest"] for r in with_interest), 2)
+        totals["fixed_compensation"] = round(sum(r["fixed_compensation"] for r in with_interest), 2)
+    elif with_interest:
+        missing.append("statutory interest/compensation is only supplied for some invoices - quote it only for those")
+    if stage == "letter_before_action" and not with_interest:
+        missing.append("statutory interest/compensation figures (not supplied)")
+    missing += ["customer contact name, email and postal address", "date(s) of any earlier reminders sent",
+                "our bank/payment details", "confirmation the customer is a limited company/business "
+                "(statutory interest only applies business-to-business)"]
+    ctx = {"today": today.isoformat(), "query": query, "customer": invoices[0]["customer"],
+           "stage_key": stage, "stage_text": invoices[0]["recommended_step"] if len(invoices) == 1 else
+           f"most overdue invoice is {worst} days overdue", "channel": chosen,
+           "channel_defaulted": channel is None, "channel_notes": notes, "invoices": invoices, "totals": totals,
+           "lba_deadline_days": LBA_DEADLINE_DAYS if stage == "letter_before_action" else None,
+           "interest_basis": (f"8% over Bank of England base rate (Jarvis configured base rate {base_rate_pct}%), "
+                              "as estimated by the accountant tool - to be confirmed"
+                              if with_interest and base_rate_pct is not None else None),
+           "missing": missing}
+    return ctx, None
+
+
+def build_followup_context(quotes: list[dict[str, Any]], quote_ref: str, channel: str | None,
+                           today: date) -> tuple[dict[str, Any] | None, str | None]:
+    """Facts for a sales follow-up from an FSM quote; (None, message) if it can't/shouldn't be drafted."""
+    from .remedials import LOST, WON
+
+    if channel is not None:
+        channel = channel.strip().lower()
+        if channel not in SALES_CHANNELS:
+            return None, f"Channel must be one of: {', '.join(SALES_CHANNELS)}."
+    ref = (quote_ref or "").strip().lower()
+    quote = next((q for q in quotes if ref and str(q.get("id") or "").lower() == ref), None)
+    if not quote:
+        return None, f"I couldn't find quote '{quote_ref}' in Salts FSM - check the reference and I'll draft the follow-up."
+    status = str(quote.get("status") or "").lower()
+    if status in WON or status in LOST:
+        return None, (f"Quote {quote.get('id')} is already '{status}', so there's nothing to chase. "
+                      "No follow-up drafted.")
+    days_since = None
+    sent = str(quote.get("sent_date") or "")[:10]
+    try:
+        days_since = (today - date.fromisoformat(sent)).days
+    except ValueError:
+        sent = ""
+    missing = []
+    for label, key in (("scope/title", "title"), ("customer", "customer"), ("site", "site"),
+                       ("value", "value")):
+        if quote.get(key) in (None, ""):
+            missing.append(label)
+    if not sent:
+        missing.append("date the quote was sent (touch timing can't be worked out)")
+    missing.append("customer contact name and email/phone")
+    touches = []
+    for d in SALES_TOUCH_DAYS:
+        if days_since is None:
+            state = "unknown"
+        elif days_since > d + 3:
+            state = "already_passed"
+        elif days_since >= d:
+            state = "due_now"
+        else:
+            state = "upcoming"
+        touches.append({"day": d, "status": state,
+                        "purpose": {7: "friendly check-in", 14: "offer help", 21: "polite close-out"}[d]})
+    ctx = {"today": today.isoformat(), "channel": channel or "email", "channel_defaulted": channel is None,
+           "quote": {"ref": quote.get("id"), "customer": quote.get("customer"), "site": quote.get("site"),
+                     "value": quote.get("value"), "date_sent": sent or None, "days_since_sent": days_since,
+                     "scope": quote.get("title"), "status": quote.get("status"),
+                     "prepared_by": quote.get("created_by")},
+           "touches": touches, "missing": missing}
+    return ctx, None
+
+
 class Documents:
     def __init__(self, j):
         self.j = j
@@ -177,6 +415,46 @@ class Documents:
                                "knowledge_extracts": knowledge}, default=str)[:40000],
             effort="medium", max_tokens=8000)
         j.bus.publish("display", {"title": f"HR - {kind} ({person})", "markdown": text})
+        return text
+
+    async def credit_control_draft(self, target: str, channel: str | None = None) -> str:
+        """Draft a reminder email / call script / Letter Before Action for an overdue invoice or customer.
+        Display only - never sent (sending goes through the approval-gated email_send tool)."""
+        j = self.j
+        cc = await _safe(j.accountant.credit_control(), "credit control")
+        if "error" in cc:
+            return f"I couldn't read the credit-control data just now ({cc['error']}), so I haven't drafted anything."
+        aged = await _safe(j.accountant.aged("receivable"), "aged debtors")
+        if "error" in aged:
+            aged = None  # dates then show up as missing rather than being guessed
+        ctx, problem = build_credit_control_context(cc, aged, target, channel, date.today(),
+                                                    getattr(j.settings, "boe_base_rate", None))
+        if problem:
+            return problem
+        text = await llm.write(
+            j.client, j.settings,
+            system=CREDIT_CONTROL_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name,
+                                                deadline=LBA_DEADLINE_DAYS),
+            prompt=json.dumps(ctx, default=str)[:40000], effort="medium", max_tokens=8000)
+        j.bus.publish("display", {"title": f"Credit control ({ctx['channel']}) - {ctx['customer']}", "markdown": text})
+        return text
+
+    async def sales_followup(self, quote_ref: str, channel: str | None = None) -> str:
+        """Draft a day 7 / 14 / 21 follow-up sequence for an open Salts FSM quote. Display only - never sent."""
+        j = self.j
+        try:
+            quotes = await j.fsm.quotes()
+        except Exception as e:  # noqa: BLE001
+            return f"I couldn't read quotes from Salts FSM just now ({type(e).__name__}), so I haven't drafted anything."
+        ctx, problem = build_followup_context(quotes, quote_ref, channel, date.today())
+        if problem:
+            return problem
+        text = await llm.write(
+            j.client, j.settings,
+            system=SALES_FOLLOWUP_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name),
+            prompt=json.dumps(ctx, default=str)[:30000], effort="medium", max_tokens=6000)
+        j.bus.publish("display", {"title": f"Quote follow-up ({ctx['channel']}) - {ctx['quote']['ref']}",
+                                  "markdown": text})
         return text
 
     async def bid_assessment(self, opportunity: str, value: float | None, notes: str | None = None) -> str:

@@ -372,6 +372,17 @@ class BidDocumentIn(BaseModel):
     notes: str | None = Field(None, description="Anything to emphasise, pricing constraints, deadline")
 
 
+class CreditControlDraftIn(BaseModel):
+    target: str = Field(description="An overdue invoice reference (e.g. 'INV-10388') or a customer name")
+    channel: str | None = Field(None, description="'email', 'call' (phone script) or 'letter'. Leave empty to "
+                                                  "default from the escalation stage (LBA stage -> letter)")
+
+
+class SalesFollowupIn(BaseModel):
+    quote_ref: str = Field(description="The Salts FSM quote reference, e.g. 'Q1180'")
+    channel: str | None = Field(None, description="'email' (default) or 'call' (phone script)")
+
+
 class HoursIn(BaseModel):
     hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
                                                "closed (so Monday covers the weekend)")
@@ -903,6 +914,16 @@ async def bid_document(j, a: BidDocumentIn):
             "draft": await j.documents.bid_document(a.opportunity, a.client, a.requirements, a.notes)}
 
 
+async def draft_credit_control(j, a: CreditControlDraftIn):
+    return {"shown_on_display": True, "draft": await j.documents.credit_control_draft(a.target, a.channel),
+            "note": "Draft only - nothing has been sent."}
+
+
+async def draft_sales_followup(j, a: SalesFollowupIn):
+    return {"shown_on_display": True, "draft": await j.documents.sales_followup(a.quote_ref, a.channel),
+            "note": "Draft only - nothing has been sent."}
+
+
 async def out_of_hours_calls(j, a: HoursIn):
     return await j.ooh.calls(max(1, min(a.hours, 240)) if a.hours else None)
 
@@ -1240,6 +1261,18 @@ TOOLS: list[Tool] = [
                          "(use answer_questionnaire for that). Use once you've decided to bid. Shown on the "
                          "display, never submitted by Jarvis.", BidDocumentIn, bid_document,
          "Drafting the bid document"),
+    Tool("draft_credit_control", "Draft credit-control correspondence for an overdue invoice or customer - a "
+                                 "reminder email, phone-call script or formal Letter Before Action - using only the "
+                                 "real figures from finance_credit_control (tone matches the escalation stage; "
+                                 "statutory interest only where the data supplies it; gaps flagged). Shown on the "
+                                 "display; DRAFTS ONLY, never sent by this tool - to send, use email_send, which "
+                                 "goes for approval. A Letter Before Action needs solicitor/accountant review first.",
+         CreditControlDraftIn, draft_credit_control, "Drafting the credit-control letter"),
+    Tool("draft_sales_followup", "Draft a polite day 7 / 14 / 21 follow-up sequence (email or phone script, with a "
+                                 "close-out touch) for an open Salts FSM quote that hasn't been actioned, using the "
+                                 "real quote data. Shown on the display; DRAFTS ONLY, never sent by this tool - to "
+                                 "send, use email_send, which goes for approval.",
+         SalesFollowupIn, draft_sales_followup, "Drafting the quote follow-up"),
     Tool("out_of_hours_calls", "Overnight events from the out-of-hours / alarm monitoring reports emailed to info@ "
                                "(including PDF reports): calls taken and alarm faults, comms failures and "
                                "activations - site, urgency, what was done, and which still need a job in Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),
