@@ -940,6 +940,21 @@ function send(text, mode = "typed", opts = {}) {
 
   // ------------------------------------------------------------------ speech input
   const mic = $("#btn-mic");
+  // Smallest recording worth sending to speech-to-text: anything below is just container headers / a mic click.
+  const MIN_AUDIO_BYTES = 1000;
+  // First container the browser can actually record, preferring webm/opus (Chrome/Firefox/Edge) and falling back
+  // to mp4 (Safari/iOS). "" means let the browser choose its own default.
+  function pickRecorderMime() {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
+    return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  }
+  // File extension for the upload - Whisper decides the audio format from the filename, so it must match the data.
+  function audioExtension(type) {
+    const t = String(type || "").toLowerCase();
+    return t.includes("mp4") || t.includes("m4a") || t.includes("aac") ? "mp4"
+      : t.includes("ogg") ? "ogg" : t.includes("wav") ? "wav" : t.includes("mpeg") || t.includes("mp3") ? "mp3" : "webm";
+  }
   const stt = {
     on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
@@ -976,8 +991,10 @@ function send(text, mode = "typed", opts = {}) {
         this.stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
         this.echoCancelled = (this.stream.getAudioTracks()[0]?.getSettings?.() || {}).echoCancellation !== false;
         if (!this.echoCancelled && S.bargeIn) toast("Barge-in off for now", "This microphone can't cancel echo, so talking over Jarvis is disabled. \"Jarvis, stop\" still works.", "warning");
-        const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/mp4";
-        this.rec = new MediaRecorder(this.stream, { mimeType: mime });
+        const picked = pickRecorderMime();
+        this.rec = picked ? new MediaRecorder(this.stream, { mimeType: picked }) : new MediaRecorder(this.stream);
+        const mime = this.rec.mimeType || picked || "audio/webm";
+        console.info("[stt] recording", { mode, requested: picked || "(browser default)", actual: mime });
         if (mode === "deepgram") {
           this.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/stt`);
           this.ws.onmessage = (e) => this.onDeepgram(JSON.parse(e.data));
@@ -985,9 +1002,13 @@ function send(text, mode = "typed", opts = {}) {
           this.ws.onclose = () => { if (this.on && S.listenMode === "wake") setTimeout(() => { this.stop(false); this.start({ keepSpeaking: true }); }, 1000); };
         } else {
           this.chunks = [];
-          this.rec.ondataavailable = (e) => this.chunks.push(e.data);
-          this.rec.onstop = () => this.transcribeChunks(mime);
-          this.rec.start();
+          const rec = this.rec, stream = this.stream;
+          rec.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
+          rec.onerror = (e) => { console.warn("[stt] MediaRecorder error", e); toast("Recording failed", (e.error && e.error.message) || "The microphone recording stopped unexpectedly.", "warning"); };
+          // The mic is released here, not in stop(): the final chunk arrives just before "stop", and cutting the
+          // tracks first can truncate it (or lose it entirely on Safari).
+          rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); this.transcribeChunks(mime); };
+          rec.start();
         }
       } catch (e) {
         toast("Microphone unavailable", e.message || "Allow microphone access in the browser.", "warning");
@@ -1027,21 +1048,41 @@ function send(text, mode = "typed", opts = {}) {
       else if (m.type === "error") { toast("Speech service", m.message, "warning"); }
     },
     async transcribeChunks(mime) {
-      const blob = new Blob(this.chunks, { type: mime });
-      if (blob.size < 2000) return;
-      const fd = new FormData(); fd.append("audio", blob, "speech.webm");
+      const chunks = this.chunks; this.chunks = [];
+      const type = String(mime || (chunks[0] && chunks[0].type) || "audio/webm").split(";")[0];
+      const blob = new Blob(chunks, { type });
+      console.info("[stt] recording finished", { bytes: blob.size, type: blob.type, rawMime: mime, chunks: chunks.length });
+      const fail = (title, body) => { toast(title, body, "warning"); caption("", ""); if (S.hudState === "listening") setHud("idle"); };
+      if (blob.size < MIN_AUDIO_BYTES) { fail("Nothing recorded", "No audio was captured. Hold the mic a little longer and check the microphone isn't muted."); return; }
+      const fd = new FormData(); fd.append("audio", blob, `speech.${audioExtension(type)}`);
       caption("", "Transcribing…");
-      const r = await api("/api/stt", { method: "POST", body: fd });
-      if (r.ok) utterance((await r.json()).text || "");
+      try {
+        const r = await api("/api/stt", { method: "POST", body: fd });
+        console.info("[stt] transcription response", { status: r.status, ok: r.ok });
+        let data = {};
+        try { data = await r.json(); } catch { /* non-JSON error body */ }
+        if (!r.ok) { fail("Transcription failed", `Speech-to-text returned ${r.status}${data.detail ? `: ${data.detail}` : ""}. Type your message instead.`); return; }
+        const text = String(data.text || "").trim();
+        if (!text) { fail("Didn't catch that", "Speech-to-text returned no words. Please try again."); return; }
+        caption(text, "");
+        utterance(text);
+      } catch (e) {
+        if (e && e.message === "signed out") return;
+        console.warn("[stt] transcription request failed", e);
+        fail("Transcription failed", (e && e.message) || "Couldn't reach the speech-to-text service.");
+      }
     },
     stop(submit = true) {
       if (!this.on) return;
       clearTimeout(this.silenceTimer); this.silenceTimer = null;
       this.on = false; mic.classList.remove("on");
       if (this.recognition) { const r = this.recognition; this.recognition = null; r.onend = null; r.stop(); }
-      if (this.rec && this.rec.state !== "inactive") this.rec.stop();
+      // Push-to-talk recordings (Whisper etc.) release the mic in rec.onstop, after the final chunk has arrived.
+      const recActive = this.rec && this.rec.state !== "inactive";
+      const deferRelease = recActive && !!this.rec.onstop;
+      if (recActive) this.rec.stop();
       if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; try { ws.send(JSON.stringify({ type: "Finalize" })); } catch { /* closed */ } setTimeout(() => { try { ws.send(JSON.stringify({ type: "CloseStream" })); ws.close(); } catch { /* closed */ } }, 900); }
-      if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+      if (this.stream && !deferRelease) this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null; this.rec = null;
       if (submit && S.voice.stt !== "whisper") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, S.voice.stt === "deepgram" ? 1100 : 300);
       if (S.hudState === "listening") setHud("idle");
