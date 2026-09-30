@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from ..brain import llm
+from ..brain import llm, plugins
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -161,7 +161,8 @@ class SelfImprove:
         if self.s.effective_llm_backend == "max":
             return await self._engineer_max(request, ws)
         params = llm.request_params(self.s, self.s.engineer_effort)
-        system = SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request)
+        system = plugins.with_methodology(
+            SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request), self.s)
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": "Make the requested change to the repository at /repo."}]
         json_retries = 0
@@ -227,10 +228,13 @@ class SelfImprove:
                 "too, and always the right call \nover a risky or half-finished change.",
                 "Finish with outcome 'submit' and the PR details once your change is complete, or outcome "
                 "'give_up' with your analysis if there's no safe change to make - that is a good outcome too.")
+        docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
+        system = plugins.with_methodology(system, self.s) + docs.prompt
         result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
                                 effort=self.s.engineer_effort, tools=["Read", "Edit", "Write", "Glob", "Grep"],
                                 disallowed_tools=ENGINEER_BLOCKED,
-                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root))
+                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
+                                mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():
             return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or "Self-improvement",

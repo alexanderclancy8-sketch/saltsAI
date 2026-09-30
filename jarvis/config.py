@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     # Only ever prefills the input - never sends or approves anything. Off = nothing learned or suggested.
     reply_suggestions_enabled: bool = True
 
+    # --- MCP / plugin integrations (see mcp_plugins.yaml, mandates.yaml and jarvis/brain/plugins.py) ------------
+    # Each is its own switch. Context7 and Superpowers are low risk (read-only docs / a written-down method) so
+    # default on; Browser Use and ThoughtProof stay off until a human has checked and pinned them.
+    plugins_file: Path = ROOT_DIR / "mcp_plugins.yaml"
+    mandates_file: Path = ROOT_DIR / "mandates.yaml"
+    plugin_context7_enabled: bool = True  # engineering agent only: current library docs, read-only
+    plugin_superpowers_enabled: bool = True  # engineering agent only: plan -> test -> review method
+    plugin_browser_use_enabled: bool = False  # conversational Jarvis only, read-only browsing, domain allowlist
+    plugin_browser_allowed_domains: str = ""  # comma-separated; Browser Use may only visit these (and subdomains)
+    plugin_thoughtproof_enabled: bool = False  # extra verification in front of approved write actions
+
     # --- Microsoft 365 (Graph, app-only) --------------------------------
     ms_tenant_id: str = ""
     ms_client_id: str = ""
