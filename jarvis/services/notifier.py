@@ -7,6 +7,7 @@ import logging
 from ..config import Settings
 from ..db import Database
 from ..events import EventBus
+from ..integrations.mail_guard import MANAGEMENT, MailGuardError
 from ..integrations.microsoft365 import TeamsNotifier, text_to_html
 
 log = logging.getLogger(__name__)
@@ -90,7 +91,9 @@ class Notifier:
                 self.bus.publish("issue", self.db.get_issue(issue_id))
 
     async def send_owner_update(self, subject: str, body: str, channels: tuple[str, ...] | list[str] = ("teams",),
-                                email_to: str | None = None) -> str:
+                          email_to: str | None = None, sensitivity: str = MANAGEMENT) -> str:
+        """Owner updates are treated as management content by default (briefings, wrap-up, finance, HR...), so the
+        email only goes out if OWNER_EMAIL is a real management address - never a shared inbox."""
         sent = []
         recipient = email_to or self.s.owner_email
         if "teams" in channels and self.teams.enabled:
@@ -101,8 +104,11 @@ class Notifier:
                 log.warning("Teams update failed: %s", e)
         if "email" in channels and recipient and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([recipient], f"[Jarvis] {subject}", text_to_html(body))
+                await self.mail.send_mail([recipient], f"[Jarvis] {subject}", text_to_html(body),
+                                          sensitivity=sensitivity)
                 sent.append("email")
+            except MailGuardError as e:
+                log.warning("Owner update email blocked by the management-only mail rule: %s", e)
             except Exception as e:  # noqa: BLE001
                 log.warning("Email update failed: %s", e)
         self.bus.publish("owner_update", {"subject": subject, "body": body, "channels": sent})

@@ -27,7 +27,7 @@ class FakeMail:
     def __init__(self):
         self.sent: list[tuple] = []
 
-    async def send_mail(self, to, subject, body_html, cc=None):
+    async def send_mail(self, to, subject, body_html, cc=None, bcc=None, sensitivity=None):
         self.sent.append((to, subject))
 
 
