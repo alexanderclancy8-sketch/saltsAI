@@ -125,23 +125,23 @@ class SelfImprove:
     async def run(self, request: str) -> dict[str, Any]:
         if not self.enabled:
             return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
-        base_sha = await self.gh.branch_sha()
-        with tempfile.TemporaryDirectory(prefix="jarvis-self-") as tmp:
-            root = await self.gh.download_tree(Path(tmp), base_sha)
-            ws = Workspace(root)
-            try:
+        try:
+            base_sha = await self.gh.branch_sha()
+            with tempfile.TemporaryDirectory(prefix="jarvis-self-") as tmp:
+                root = await self.gh.download_tree(Path(tmp), base_sha)
+                ws = Workspace(root)
                 outcome = await self._engineer(request, ws)
-            except Exception as e:  # noqa: BLE001
-                log.exception("Self-improvement attempt failed")
-                await self.notifier.notify("Self-improvement attempt failed", str(e)[:500], level="warning")
-                return {"error": str(e)[:500]}
-            changes = ws.changed_files()
-            if outcome["kind"] != "submit" or not changes:
-                analysis = outcome.get("analysis") or "No change was made."
-                await self.notifier.notify("Nothing to propose", analysis[:800], level="info")
-                return {"outcome": "give_up", "analysis": analysis}
-            fix = outcome["fix"]
-            diff = ws.diff()
+                changes = ws.changed_files()
+                if outcome["kind"] != "submit" or not changes:
+                    analysis = outcome.get("analysis") or "No change was made."
+                    await self.notifier.notify("Nothing to propose", analysis[:800], level="info")
+                    return {"outcome": "give_up", "analysis": analysis}
+                fix = outcome["fix"]
+                diff = ws.diff()
+        except Exception as e:  # noqa: BLE001
+            log.exception("Self-improvement attempt failed")
+            await self.notifier.notify("Self-improvement attempt failed", str(e)[:500], level="warning")
+            return {"error": str(e)[:500]}
 
         branch = f"jarvis/self-{base_sha[:7]}-{int(time.time())}"
         await self.gh.commit_files(branch, base_sha, changes, f"{fix.pr_title}\n\nRequested by {self.s.owner_name}.")

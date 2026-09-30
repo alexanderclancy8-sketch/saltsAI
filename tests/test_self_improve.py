@@ -196,6 +196,33 @@ async def test_run_opens_a_pr_and_never_merges_or_deploys(settings, monkeypatch)
     await j.http.aclose()
 
 
+async def test_run_notifies_on_failure_before_the_engineer_even_starts(settings, monkeypatch):
+    """Regression test: branch_sha()/download_tree() used to sit outside the try/except, so a failure there
+    (bad token, network blip, wrong branch) killed the background task with no notification, no PR, no trace -
+    indistinguishable from the request never having been made at all."""
+    j = make(settings)
+    gh = FakeGitHub({})
+
+    async def broken_branch_sha(branch=None):
+        raise RuntimeError("404 Not Found: no such branch")
+
+    gh.branch_sha = broken_branch_sha
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append((title, body))
+
+    j.notifier.notify = fake_notify
+    result = await si.run("add a tool for X")
+
+    assert result["error"] and "404 Not Found" in result["error"]
+    assert any("Self-improvement attempt failed" in t for t, _ in notified)
+    assert not gh.called("commit_files") and not gh.called("open_pr")
+    await j.http.aclose()
+
+
 async def test_run_with_nothing_to_change_reports_and_opens_no_pr(settings, monkeypatch):
     j = make(settings)
     gh = FakeGitHub({})
