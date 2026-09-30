@@ -26,6 +26,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from ..config import Settings
+from .stt_chain import ENGINE_LABELS, engine_configured, stt_chain
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ WHISPER_API = "https://api.openai.com/v1/audio/transcriptions"
 # Push-to-talk STT limits. A short clip normally comes back in 1-3 s, so 20 s is generous without leaving the
 # owner staring at "Transcribing…" for a minute; OpenAI rejects uploads over 25 MB.
 STT_TIMEOUT_S = 20.0
+# Per-attempt limit when the browser drives the fallback (POST /api/stt?engine=...): it must be shorter than the
+# browser's own ~10 s abort so the server answers with a proper error message rather than being cut off.
+STT_ATTEMPT_TIMEOUT_S = 8.0
 STT_CONNECT_TIMEOUT_S = 5.0
 STT_RETRY_DELAY_S = 0.5
 STT_MAX_BYTES = 25 * 1024 * 1024
@@ -65,12 +69,17 @@ class STTError(VoiceError):
 _SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-*.]{4,}|Token\s+\S+|Bearer\s+\S+)", re.I)
 
 
-def _redact(text: str) -> str:
-    """Strip anything key-shaped from upstream text before it is logged or shown."""
-    return _SECRET_RE.sub("[redacted]", text or "")
+def _redact(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """Strip anything key-shaped - and any configured key value, whatever its format - from upstream text before
+    it is logged or shown."""
+    text = text or ""
+    for secret in secrets:
+        if secret and len(secret) >= 6:  # too-short values would mangle ordinary words
+            text = text.replace(secret, "[redacted]")
+    return _SECRET_RE.sub("[redacted]", text)
 
 
-def _upstream_message(r: httpx.Response) -> str:
+def _upstream_message(r: httpx.Response, secrets: tuple[str, ...] = ()) -> str:
     """The provider's own error text (OpenAI: error.message; Deepgram: err_msg / reason), shortened and redacted."""
     msg: Any = ""
     try:
@@ -86,7 +95,7 @@ def _upstream_message(r: httpx.Response) -> str:
         msg = msg or data.get("err_msg") or data.get("reason") or data.get("message") or ""
     if not msg:
         msg = r.text or ""
-    return _redact(" ".join(str(msg).split()))[:200]
+    return _redact(" ".join(str(msg).split()), secrets)[:200]
 
 
 def speakable(text: str) -> str:
@@ -133,6 +142,7 @@ class Voice:
         return {
             "tts": self.s.effective_tts,
             "stt": self.s.effective_stt,
+            "stt_chain": stt_chain(self.s),  # fallback order the browser walks if an engine fails (stt_chain.py)
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
             "voice": voice,
@@ -269,28 +279,40 @@ class Voice:
         return voices
 
     # ------------------------------------------------------------------ STT (push-to-talk)
-    async def transcribe(self, audio: bytes, mime: str) -> str:
+    def _secrets(self) -> tuple[str, ...]:
+        return (self.s.deepgram_api_key, self.s.openai_api_key)
+
+    async def transcribe(self, audio: bytes, mime: str, provider: str | None = None, *, retry: bool = True,
+                         timeout_s: float | None = None) -> str:
         """Push-to-talk transcription. One retry on a transient failure (timeout, network error, upstream 5xx,
-        non-quota 429); anything else - bad key, billing, bad audio - fails at once with a clear STTError."""
-        provider = self.s.effective_stt
+        non-quota 429); anything else - bad key, billing, bad audio - fails at once with a clear STTError.
+
+        provider: a specific engine (used by the browser-driven fallback); default is the configured one.
+        retry=False / timeout_s: a single bounded attempt - the browser does its own retry and fallback."""
+        provider = provider or self.s.effective_stt
         log.info("STT request: provider=%s bytes=%d mime=%s", provider, len(audio), mime)
         if provider not in ("deepgram", "whisper"):
             raise VoiceError("No server speech-to-text configured - use the browser microphone")
+        if not engine_configured(self.s, provider):
+            key_env = "OPENAI_API_KEY" if provider == "whisper" else "DEEPGRAM_API_KEY"
+            log.warning("STT engine %s selected but no API key is configured (%s is empty)", provider, key_env)
+            raise STTError(f"{ENGINE_LABELS[provider]} has no API key - set {key_env}.", provider, None)
         if len(audio) > STT_MAX_BYTES:
             raise STTError(f"The recording is too large ({len(audio) // (1024 * 1024)} MB; the limit is "
                            f"{STT_MAX_BYTES // (1024 * 1024)} MB) - record a shorter message.", provider, 413)
         for attempt in (1, 2):
             try:
-                return await self._transcribe_once(provider, audio, mime)
+                return await self._transcribe_once(provider, audio, mime, timeout_s or STT_TIMEOUT_S)
             except STTError as e:
-                if not e.transient or attempt == 2:
+                if not retry or not e.transient or attempt == 2:
                     raise
                 log.warning("STT transient failure (attempt 1 of 2), retrying: %s", e)
                 await asyncio.sleep(STT_RETRY_DELAY_S)
         raise AssertionError("unreachable")  # pragma: no cover
 
-    async def _transcribe_once(self, provider: str, audio: bytes, mime: str) -> str:
-        label = "Deepgram" if provider == "deepgram" else "OpenAI Whisper"
+    async def _transcribe_once(self, provider: str, audio: bytes, mime: str,
+                               timeout_s: float = STT_TIMEOUT_S) -> str:
+        label = ENGINE_LABELS[provider]
         if provider == "deepgram":
             request = dict(
                 url=DEEPGRAM_API,
@@ -308,14 +330,16 @@ class Voice:
                 files={"file": (f"speech.{ext}", audio, base_mime)})
         t0 = time.perf_counter()
         try:
-            r = await self.http.post(timeout=httpx.Timeout(STT_TIMEOUT_S, connect=STT_CONNECT_TIMEOUT_S), **request)
+            r = await self.http.post(timeout=httpx.Timeout(timeout_s, connect=min(STT_CONNECT_TIMEOUT_S, timeout_s)),
+                                     **request)
         except httpx.TimeoutException as e:
             log.warning("STT timeout: provider=%s after %.1fs (%s)", provider, time.perf_counter() - t0,
                         type(e).__name__)
-            raise STTError(f"{label} did not answer within {STT_TIMEOUT_S:.0f} seconds.", provider, None,
+            raise STTError(f"{label} did not answer within {timeout_s:.0f} seconds.", provider, None,
                            transient=True) from e
         except httpx.HTTPError as e:
-            log.warning("STT network error: provider=%s %s: %s", provider, type(e).__name__, e)
+            log.warning("STT network error: provider=%s %s: %s", provider, type(e).__name__,
+                        _redact(str(e), self._secrets()))
             raise STTError(f"Couldn't reach {label} ({type(e).__name__}).", provider, None, transient=True) from e
         ms = int((time.perf_counter() - t0) * 1000)
         log.info("STT response: provider=%s status=%s in %d ms", provider, r.status_code, ms)
@@ -327,17 +351,18 @@ class Voice:
                 return data["results"]["channels"][0]["alternatives"][0]["transcript"]
             return data.get("text", "")
         except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
-            log.warning("STT unexpected response shape: provider=%s body=%r", provider, _redact(r.text[:300]))
+            log.warning("STT unexpected response shape: provider=%s body=%r", provider,
+                        _redact(r.text[:300], self._secrets()))
             raise STTError(f"{label} returned a response Jarvis couldn't read.", provider, r.status_code) from e
 
     def _stt_error(self, provider: str, label: str, r: httpx.Response) -> STTError:
         """Logs the real upstream error and turns it into a message that says what to check. Never includes the
         API key; for 401/403 the upstream text is withheld altogether because providers echo part of the key."""
         status = r.status_code
-        upstream = _upstream_message(r)
+        upstream = _upstream_message(r, self._secrets())
         log.warning("STT upstream error: provider=%s status=%s model=%s body=%s", provider, status,
                     self.s.whisper_model if provider == "whisper" else self.s.deepgram_model,
-                    _redact(r.text[:500]).replace("\n", " "))
+                    _redact(r.text[:500], self._secrets()).replace("\n", " "))
         key_env = "OPENAI_API_KEY" if provider == "whisper" else "DEEPGRAM_API_KEY"
         model_env = "WHISPER_MODEL" if provider == "whisper" else "DEEPGRAM_MODEL"
         quota = status == 402 or (status == 429 and any(

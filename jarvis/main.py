@@ -23,8 +23,9 @@ from . import auth
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
+from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
-from .integrations.voice import STTError, VoiceError
+from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .services import connection_tests, documents
 from .settings_store import SECTIONS_BY_ID, SettingsStore
 
@@ -268,16 +269,24 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return StreamingResponse(stream, media_type=mime)
 
     @app.post("/api/stt", dependencies=[Depends(owner)])
-    async def stt(request: Request, audio: UploadFile = File(...)):
+    async def stt(request: Request, audio: UploadFile = File(...), engine: str | None = None):
+        """engine (optional): try exactly this engine once - the browser drives retry and fallback across
+        voice.stt_chain (see web/hud.js). Without it, the configured engine is used with one server-side retry."""
         data = await audio.read()
         if not data:
             log.warning("STT upload was empty (filename=%s)", audio.filename)
             return JSONResponse({"detail": "No audio was received"}, status_code=400)
+        if engine is not None and engine not in SERVER_ENGINES:
+            return JSONResponse({"detail": f"Unknown speech-to-text engine '{engine[:20]}'"}, status_code=400)
         try:
-            text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
+            if engine:
+                text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm", engine,
+                                                         retry=False, timeout_s=STT_ATTEMPT_TIMEOUT_S)
+            else:
+                text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
         except STTError as e:  # the provider failed - already logged in detail; say what went wrong and what to check
-            return JSONResponse({"detail": str(e), "provider": e.provider, "upstream_status": e.status},
-                                status_code=502)
+            return JSONResponse({"detail": str(e), "provider": e.provider, "upstream_status": e.status,
+                                 "transient": e.transient}, status_code=502)
         except VoiceError as e:
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
         except Exception as e:  # noqa: BLE001 - anything unexpected: log it in full, never a bare 500
@@ -285,7 +294,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return JSONResponse({"detail": f"Unexpected speech-to-text error ({type(e).__name__}) - "
                                            "see the Jarvis server log."}, status_code=502)
         log.info("STT ok: %d bytes, %s, %d chars", len(data), audio.content_type, len(text or ""))
-        return {"text": text or ""}
+        return {"text": text or "", "engine": engine or settings.effective_stt}
 
     @app.get("/api/voices", dependencies=[Depends(owner)])
     async def voices(request: Request):
