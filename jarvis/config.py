@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     teams_bot_app_id: str = ""
     teams_bot_app_password: str = ""
     teams_bot_tenant_id: str = ""
+    # Where engineering-agent notifications go (pull request ready, fix ready, deploy/merge results, issue triage,
+    # security review): comma-separated "teams" and/or "email". Default is Teams only - no email at all.
+    engineering_notify_channels: str = "teams"
+    # If Teams delivery fails, also email the owner. Off by default: a failure is logged and shown on the display.
+    engineering_email_fallback: bool = False
     issue_email_tag: str = "[ISSUE]"
     # Out-of-hours answering service: the address/domain (or a subject word) of their call-report emails
     ooh_email_from: str = ""
