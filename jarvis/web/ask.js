@@ -81,7 +81,7 @@
           <kbd>${s.options.length + 1}</kbd><span class="ask-text"><span class="ask-label">Other…</span><span class="ask-desc">Type your own answer</span></span></button>
       </div>
       <div class="ask-otherbox" hidden><textarea rows="2" maxlength="2000" placeholder="Type your answer… (Enter to send)" aria-label="Your own answer"></textarea></div>
-      <div class="ask-actions"><button type="button" class="btn go small ask-send" hidden>Send</button><button type="button" class="btn small ask-dismiss">Dismiss</button></div>`;
+      <div class="ask-actions"><button type="button" class="btn go small ask-send"${multi ? "" : " hidden"}>Send</button><button type="button" class="btn small ask-dismiss">Dismiss</button></div>`;
   }
 
   function show(ev) {
