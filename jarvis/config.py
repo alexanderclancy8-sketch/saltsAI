@@ -208,6 +208,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""  # only for Whisper speech-to-text
     whisper_model: str = "whisper-1"
     wake_word: str = "jarvis"
+    # Voice mode only: if a spoken question hasn't started being answered after ~1.8s, say ONE short
+    # acknowledgment ("Let me check the accounts."). Turn-scoped and off for typed turns - see hud.js's `filler`.
+    voice_ack_fillers: bool = True
 
     # --- Schedules ----------------------------------------------------------
     briefing_cron: str = "45 7 * * 1-5"
