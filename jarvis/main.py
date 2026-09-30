@@ -25,10 +25,12 @@ from .core import Jarvis
 from .integrations.finance import SageFinance
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
 from .integrations.voice import VoiceError
+from .redact import install_log_redaction, redact_text
 from .services import connection_tests, documents
 from .settings_store import SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+install_log_redaction()  # no secrets (webhook signatures, tokens, keys) in the log stream - see jarvis/redact.py
 log = logging.getLogger("jarvis")
 WEB = Path(__file__).parent / "web"
 
@@ -234,7 +236,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return await coro
         except Exception as e:  # noqa: BLE001
             log.warning("status %s failed: %s", label, e)
-            return {"error": f"{type(e).__name__}: {e}"[:200]}
+            return {"error": redact_text(f"{type(e).__name__}: {e}")[:200]}
 
     @app.get("/api/status", dependencies=[Depends(owner)])
     async def status(request: Request):
@@ -264,7 +266,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
         except Exception as e:  # noqa: BLE001 - network trouble reaching the voice service
             log.warning("TTS failed, browser voice used instead: %s", e)
-            return JSONResponse({"fallback": "browser", "detail": f"{type(e).__name__}: {e}"[:300]}, status_code=503)
+            return JSONResponse({"fallback": "browser", "detail": redact_text(f"{type(e).__name__}: {e}")[:300]},
+                                status_code=503)
         return StreamingResponse(stream, media_type=mime)
 
     @app.post("/api/stt", dependencies=[Depends(owner)])
@@ -279,7 +282,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
         except Exception as e:  # noqa: BLE001 - provider rejected the audio or was unreachable
             log.warning("STT failed (%d bytes, %s): %s", len(data), audio.content_type, e)
-            return JSONResponse({"detail": f"{type(e).__name__}: {e}"[:300]}, status_code=502)
+            return JSONResponse({"detail": redact_text(f"{type(e).__name__}: {e}")[:300]}, status_code=502)
         log.info("STT ok: %d bytes, %s, %d chars", len(data), audio.content_type, len(text or ""))
         return {"text": text or ""}
 

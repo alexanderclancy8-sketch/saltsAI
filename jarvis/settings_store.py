@@ -408,6 +408,8 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _hint(value: str) -> str:
+    if "://" in value:
+        return "••••"  # a secret URL (e.g. the Teams/Power Automate webhook) ends in its access signature
     return "•••• " + value[-4:] if len(value) >= 12 else "••••"
 
 

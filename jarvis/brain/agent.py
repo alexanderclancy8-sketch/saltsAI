@@ -19,6 +19,7 @@ import anthropic
 from pydantic import ValidationError
 
 from . import llm
+from ..redact import redact_text
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
 from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, dispatch, serialise
@@ -91,7 +92,7 @@ class JarvisBrain:
             log.exception("Tool %s failed", tool.name)
             bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "error"})
             return {"type": "tool_result", "tool_use_id": block.id, "is_error": True,
-                    "content": f"{type(e).__name__}: {e}"[:2000]}
+                    "content": redact_text(f"{type(e).__name__}: {e}")[:2000]}
 
     # ------------------------------------------------------------------ main entry
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
@@ -190,12 +191,13 @@ class JarvisBrain:
             msg = ("I can't reach my language model right now - check the ANTHROPIC_API_KEY." if status in (401, 403)
                    else "I'm being rate limited - give me a moment and ask again." if status == 429
                    else "Something went wrong talking to my language model. Please try again.")
-            bus.publish("error", {"message": msg, "detail": str(e)[:300]})
+            bus.publish("error", {"message": msg, "detail": redact_text(e)[:300]})
             return msg
         except Exception as e:  # noqa: BLE001
             del self.messages[rollback_to:]
             log.exception("Turn failed")
-            bus.publish("error", {"message": "Sorry, something went wrong on my side.", "detail": str(e)[:300]})
+            bus.publish("error", {"message": "Sorry, something went wrong on my side.",
+                                "detail": redact_text(e)[:300]})
             return "Sorry, something went wrong on my side."
 
         reply = "".join(reply_parts).strip()
