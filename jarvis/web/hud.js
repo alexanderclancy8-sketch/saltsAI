@@ -337,6 +337,10 @@
 
   function say(text) { if (S.speakPref !== "off") { speaker.feed(text + " "); speaker.flush(); } }
 
+  // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
+  // as ordinary chat text - never through decide()/the approvals path.
+  window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode), mode: () => S.lastMode });
+
   // ------------------------------------------------------------------ self-echo guard
   // Without headphones the mic hears Jarvis's own voice. Nothing heard while he's talking, or in the short tail
   // after, may ever be treated as the owner asking something - so every recognised transcript goes through
@@ -586,6 +590,9 @@ function send(text, mode = "typed", opts = {}) {
   if (opts === true) opts = { spoken: true };
   const spoken = !!opts.spoken;
     text = text.trim();
+    // A spoken reply while a question prompt is open: map "the second one" to that option, anything else stays as
+    // free speech ("Other"). The prompt's own click/typed answers pass opts.ask and are sent exactly as given.
+    if (mode === "voice" && !opts.ask && window.JarvisAsk) text = window.JarvisAsk.spokenReply(text);
     if (!text && !S.attachments.length) return;
     S.lastMode = mode;
     S.voiceTurn = false; // only utterance() marks a turn as a spoken one, after this returns
@@ -728,6 +735,7 @@ function send(text, mode = "typed", opts = {}) {
     const d = ev.data;
     switch (ev.type) {
       case "user_message":
+        window.JarvisAsk?.close(); // any new message (typed, spoken, from another tab) answers/supersedes an open question
         addMessage("user", d.text + (d.attachments?.length ? `\n📎 ${d.attachments.join(", ")}` : ""), d.mode === "voice" ? "spoken" : "");
         S.lastMode = d.mode;
         break;
@@ -787,12 +795,13 @@ function send(text, mode = "typed", opts = {}) {
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
       case "display": openDisplay(d.title, d.markdown, d.doc_id); break;
+      case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; renderApprovals(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
-      case "conversation_reset": filler.end(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
+      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
       case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
