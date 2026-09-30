@@ -44,4 +44,7 @@ class SelfLearning:
         # its own last turn waiting for it and reflect on itself forever.
         latest = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
         j.db.set_kv(LAST_ID_KEY, str(latest))
+        if j.settings.weekly_digest_enabled:  # a routine summary: stored for the weekly digest, never sent
+            j.db.add_digest_item("self_learning_summary", "Self-reflection on recent conversations",
+                                 (reply or "")[:500], status="reflected")
         return reply

@@ -871,6 +871,20 @@ async def end_of_day_wrap_up(j, a: NoInput):
     return await j.wrapup.run(deliver=False)
 
 
+async def weekly_digest_now(j, a: NoInput):
+    # Builds from the store now, shows it here and on the display, and marks those items digested. It posts
+    # nothing to Teams/email (you are already looking at it), and approves/merges/deploys nothing.
+    result = await j.weekly_digest.run("on_demand", deliver=False)
+    return result["text"]
+
+
+async def weekly_digest_latest(j, a: NoInput):
+    latest = j.weekly_digest.latest()
+    if not latest:
+        return "No weekly digest has been compiled yet."
+    return f"Digest #{latest['id']} compiled {latest['created_at']} ({latest['delivered']}):\n\n{latest['text']}"
+
+
 async def customer_health(j, a: CustomerIn):
     if a.customer:
         return await j.customers.customer(a.customer)
@@ -1239,6 +1253,14 @@ TOOLS: list[Tool] = [
     Tool("end_of_day_wrap_up", "The end-of-day wrap-up: what got done, what slipped, what's awaiting approval, "
                                "and tomorrow's first jobs and risks.", NoInput, end_of_day_wrap_up,
          "Preparing your wrap-up"),
+    Tool("weekly_digest_now", "Compile the weekly digest of Jarvis' own routine engineering notices (PRs opened, "
+                              "merged or awaiting review, fixes deployed, test failures and recoveries, open issues, "
+                              "anything needing the owner's decision) from the store right now instead of waiting "
+                              "for Monday. Use for 'weekly digest now'. It only reads what's stored and shows it - "
+                              "it does not send anything or approve anything.", NoInput, weekly_digest_now,
+         "Compiling the weekly digest"),
+    Tool("weekly_digest_latest", "Show the most recent stored weekly digest again.", NoInput, weekly_digest_latest,
+         "Fetching the last digest"),
     Tool("customer_health", "Customer health watch: a 0-100 score per customer from spend trend, overdue debt, "
                             "repeat call-outs, declined quotes, overdue service visits, logged problems, inactivity "
                             "and lapsed renewals - who is at risk (especially before renewal), why, and what to do. "

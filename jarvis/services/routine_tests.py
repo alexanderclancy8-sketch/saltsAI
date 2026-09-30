@@ -182,7 +182,9 @@ class RoutineTester:
 
     async def _on_failure(self, r: CheckResult) -> None:
         level = "critical" if r.suite == "system" and r.name.startswith("HTTP") else "warning"
-        await self.notifier.notify(f"Routine test failed: {r.name}", r.detail, level=level)
+        # A failing routine test is on the live system: always immediate (kept in the store for the digest too).
+        await self.notifier.notify(f"Routine test failed: {r.name}", r.detail, level=level,
+                                   kind="routine_test_failed", status="failing", ref=f"test:{r.suite}:{r.name}")
         if r.suite == "system" and self.issues is not None:
             title = f"Routine test failing: {r.name}"
             if not self.db.find_open_issue_by_title(title):
@@ -191,7 +193,8 @@ class RoutineTester:
                                          severity="high", source="routine-test", system="Salts FSM", notify=False)
 
     async def _on_recovery(self, r: CheckResult) -> None:
-        await self.notifier.notify(f"Recovered: {r.name}", r.detail, level="info")
+        await self.notifier.notify(f"Recovered: {r.name}", r.detail, level="info", kind="routine_test_recovered",
+                                   status="recovered", ref=f"test:{r.suite}:{r.name}")
         issue = self.db.find_open_issue_by_title(f"Routine test failing: {r.name}")
         if issue:
             self.db.update_issue(issue["id"], status="resolved", notes=f"Check recovered: {r.detail}")

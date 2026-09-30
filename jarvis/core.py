@@ -31,6 +31,7 @@ from .services.advisor import Advisor
 from .services.automations import AutomationService
 from .services.billing import Billing
 from .services.customers import CustomerHealth
+from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
@@ -123,6 +124,7 @@ class Jarvis:
         self.scheduler = None
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
+        self.weekly_digest = WeeklyDigest(self)
         self.site_access = SiteAccessCodes(self)
         self.recruiter = Recruiter(self)
         self._seed_notes()
@@ -173,6 +175,8 @@ class Jarvis:
             "Automations": (f"{len(self.automations.list_all())} you've set up"
                             if self.automations.list_all() else "none set up yet - just ask"),
             "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
+            "Weekly digest": (f"routine engineering notices sent to Teams {cron_to_english(s.weekly_digest_cron)}"
+                              if s.weekly_digest_enabled else "off - every notice is sent straight away"),
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",

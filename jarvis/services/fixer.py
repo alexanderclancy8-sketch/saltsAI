@@ -134,7 +134,8 @@ class Fixer:
             log.exception("Fix attempt failed for issue %s", issue_id)
             self.db.update_issue(issue_id, status="needs_human", notes=f"Auto-fix failed: {e}")
             self._publish(issue_id)
-            await self.notifier.notify(f"Couldn't auto-fix issue #{issue_id}", str(e)[:500], level="warning")
+            await self.notifier.notify(f"Couldn't auto-fix issue #{issue_id}", str(e)[:500], level="warning",
+                                       kind="fix_failed")
             return f"Auto-fix failed: {e}"
 
     async def _via_claude_action(self, issue: dict[str, Any]) -> str:
@@ -144,7 +145,8 @@ class Fixer:
         gh_issue = await self.gh.create_issue(f"[Jarvis #{issue['id']}] {issue['title']}", body, ["bug", "jarvis"])
         self.db.update_issue(issue["id"], status="fixing", notes=f"Claude Code GitHub Action working on {gh_issue['url']}")
         self._publish(issue["id"])
-        await self.notifier.notify(f"Issue #{issue['id']} sent to Claude Code on GitHub", gh_issue["url"])
+        await self.notifier.notify(f"Issue #{issue['id']} sent to Claude Code on GitHub", gh_issue["url"],
+                                   kind="fix_sent_to_claude", link=gh_issue["url"], status="handed to Claude Code")
         return f"Filed {gh_issue['url']} for the Claude Code GitHub Action."
 
     async def _builtin(self, issue: dict[str, Any]) -> str:
@@ -159,7 +161,8 @@ class Fixer:
                 analysis = outcome.get("analysis") or "The engineering agent did not produce a change."
                 self.db.update_issue(issue_id, status="needs_human", notes=analysis[:4000])
                 self._publish(issue_id)
-                await self.notifier.notify(f"Issue #{issue_id} needs you", analysis[:800], level="warning")
+                await self.notifier.notify(f"Issue #{issue_id} needs you", analysis[:800], level="warning",
+                                           kind="fix_needs_you")
                 return analysis
             fix = outcome["fix"]
             diff = ws.diff()
@@ -181,7 +184,8 @@ class Fixer:
         await self.notifier.notify(
             f"Fix ready for issue #{issue_id}: {fix.pr_title}",
             f"{fix.change_summary}\nPR: {pr['url']}\nCI is running. Approve action #{action_id} on the display to deploy.",
-            level="warning", push=True, speak=True)
+            level="warning", push=True, speak=True, kind="fix_ready", link=pr["url"],
+            status=f"awaiting approval (action #{action_id})", ref=f"fix:{pr['number']}")
         self._spawn(self.watch_ci(issue_id, pr["number"], pr["head_sha"], action_id, fix.risk))
         return f"Opened {pr['url']}; waiting for CI and approval (action #{action_id})."
 
@@ -312,11 +316,13 @@ class Fixer:
             self._publish(issue_id)
             await self.notifier.notify(f"CI failed for the issue #{issue_id} fix",
                                        f"Failing checks: {', '.join(state['failed'])}. I won't deploy it.",
-                                       level="warning")
+                                       level="warning", kind="fix_ci_failed", status="CI failed",
+                                       ref=f"fix:{pr_number}")
             return
         await self.notifier.notify(f"CI {'passed' if state['state'] == 'success' else 'finished'} for the "
                                    f"issue #{issue_id} fix", f"PR #{pr_number} is ready to deploy.", level="info",
-                                   speak=True)
+                                   speak=True, kind="fix_ci_passed", status="CI " + state["state"],
+                                   ref=f"fix:{pr_number}")
 
     async def deploy(self, issue_id: int, pr_number: int) -> str:
         pr = await self.gh.pr(pr_number)
@@ -329,7 +335,8 @@ class Fixer:
             merge_sha = await self.gh.merge_pr(pr_number, f"{pr['title']} (#{pr_number})")
         self.db.update_issue(issue_id, status="deploying")
         self._publish(issue_id)
-        await self.notifier.notify(f"Deploying the fix for issue #{issue_id} to Azure", f"Merged as {merge_sha[:7]}.")
+        await self.notifier.notify(f"Deploying the fix for issue #{issue_id} to Azure", f"Merged as {merge_sha[:7]}.",
+                                   kind="deploy_started", status="merged", ref=f"fix:{pr_number}")
 
         if self.s.azure_deploy_mode == "kudu" and self.kudu is not None and self.kudu.enabled:
             package = strip_top_folder(await self.gh.download_zip(merge_sha))
@@ -352,12 +359,14 @@ class Fixer:
             note = f"Deployed to Azure ({detail}). {test_detail}"
             if self.issues is not None:
                 await self.issues.resolve(issue_id, note)
-            await self.notifier.notify(f"Issue #{issue_id} fixed and live", note, level="info", push=True, speak=True)
+            await self.notifier.notify(f"Issue #{issue_id} fixed and live", note, level="info", push=True, speak=True,
+                                       kind="deploy_succeeded", status="deployed", ref=f"fix:{pr_number}")
             return note
         note = f"Deployment problem: {detail}. {test_detail}"
         self.db.update_issue(issue_id, status="needs_human", notes=note)
         self._publish(issue_id)
-        await self.notifier.notify(f"Deployment of issue #{issue_id} fix needs attention", note, level="critical")
+        await self.notifier.notify(f"Deployment of issue #{issue_id} fix needs attention", note, level="critical",
+                                   kind="deploy_failed", status="deploy failed", ref=f"fix:{pr_number}")
         return note
 
     async def _wait_for_workflow(self, sha: str, timeout_s: int = 1800) -> tuple[bool, str]:
