@@ -138,7 +138,8 @@
     // A turn just started - don't let a sleep check meant for the *previous* lull fire part-way through it.
     if (state === "thinking") clearTimeout(sleepTimer);
   }
-  function caption(text, interim = "") { $("#caption").innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
+  function caption(text, interim = "") { const el = $("#caption"); el.classList.remove("error"); el.innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
+  function captionError(text) { caption(text); $("#caption").classList.add("error"); }
 
   // ------------------------------------------------------------------ dashboard reveal (orb-first HUD)
   // Idle view is just the orb, caption and composer - the three panel columns and the conversation
@@ -1096,7 +1097,8 @@ function send(text, mode = "typed", opts = {}) {
       const type = String(mime || (chunks[0] && chunks[0].type) || "audio/webm").split(";")[0];
       const blob = new Blob(chunks, { type });
       console.info("[stt] recording finished", { bytes: blob.size, type: blob.type, rawMime: mime, chunks: chunks.length });
-      const fail = (title, body) => { toast(title, body, "warning"); caption("", ""); if (S.hudState === "listening") setHud("idle"); };
+      // The error text stays in the caption (red) until the next caption, not just in a toast that fades.
+      const fail = (title, body) => { toast(title, body, "warning"); captionError(`${title}: ${body}`); if (S.hudState === "listening") setHud("idle"); };
       if (blob.size < MIN_AUDIO_BYTES) { fail("Nothing recorded", "No audio was captured. Hold the mic a little longer and check the microphone isn't muted."); return; }
       const fd = new FormData(); fd.append("audio", blob, `speech.${audioExtension(type)}`);
       caption("", "Transcribing…");
@@ -1105,7 +1107,7 @@ function send(text, mode = "typed", opts = {}) {
         console.info("[stt] transcription response", { status: r.status, ok: r.ok });
         let data = {};
         try { data = await r.json(); } catch { /* non-JSON error body */ }
-        if (!r.ok) { fail("Transcription failed", `Speech-to-text returned ${r.status}${data.detail ? `: ${data.detail}` : ""}. Type your message instead.`); return; }
+        if (!r.ok) { fail("Transcription failed", `${data.detail || `Speech-to-text returned ${r.status}`} (HTTP ${r.status}). Type your message instead.`); return; }
         const text = String(data.text || "").trim();
         if (!text) { fail("Didn't catch that", "Speech-to-text returned no words. Please try again."); return; }
         caption(text, "");
