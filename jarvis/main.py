@@ -24,7 +24,7 @@ from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
-from .integrations.voice import VoiceError
+from .integrations.voice import STTError, VoiceError
 from .services import connection_tests, documents
 from .settings_store import SECTIONS_BY_ID, SettingsStore
 
@@ -275,11 +275,15 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return JSONResponse({"detail": "No audio was received"}, status_code=400)
         try:
             text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
+        except STTError as e:  # the provider failed - already logged in detail; say what went wrong and what to check
+            return JSONResponse({"detail": str(e), "provider": e.provider, "upstream_status": e.status},
+                                status_code=502)
         except VoiceError as e:
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
-        except Exception as e:  # noqa: BLE001 - provider rejected the audio or was unreachable
-            log.warning("STT failed (%d bytes, %s): %s", len(data), audio.content_type, e)
-            return JSONResponse({"detail": f"{type(e).__name__}: {e}"[:300]}, status_code=502)
+        except Exception as e:  # noqa: BLE001 - anything unexpected: log it in full, never a bare 500
+            log.exception("STT failed unexpectedly (%d bytes, %s)", len(data), audio.content_type)
+            return JSONResponse({"detail": f"Unexpected speech-to-text error ({type(e).__name__}) - "
+                                           "see the Jarvis server log."}, status_code=502)
         log.info("STT ok: %d bytes, %s, %d chars", len(data), audio.content_type, len(text or ""))
         return {"text": text or ""}
 

@@ -145,6 +145,7 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .caption { min-height: 44px; font-size: 19px; line-height: 1.45; color: var(--text); margin-top: 7px; font-weight: 400; }
 .dash-open .caption { font-size: 17px; }
 .caption .interim { color: var(--muted); }
+.caption.error { color: var(--crit); font-size: 15px; }
 .toolline { font-family: var(--mono); font-size: 12px; color: var(--muted-dim); min-height: 16px; margin-top: 7px; }
 
 /* ---------- conversation ---------- */
