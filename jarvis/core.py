@@ -40,6 +40,7 @@ from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.ppm_planner import PPMPlanner
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
@@ -109,6 +110,7 @@ class Jarvis:
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
+        self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
         self.renewals = Renewals(self)

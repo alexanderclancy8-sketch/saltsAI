@@ -112,6 +112,15 @@ class DaysAheadIn(BaseModel):
     days_ahead: int = 30
 
 
+class PPMPlanIn(BaseModel):
+    days_ahead: int = Field(28, description="Plan service visits due (or overdue) within this many days, max 180")
+    start_date: str | None = Field(None, description="First day to plan on, YYYY-MM-DD; default the next working day")
+    early_window_days: int = Field(28, description="Most days a visit may be brought forward of its due date to "
+                                                   "bundle it with other work (also limited to 15% of the interval)")
+    cluster_radius_miles: float = Field(4.0, description="Sites within this many miles count as close together")
+    risk_margin_days: int = Field(5, description="Flag a visit as at risk if planned this close to its latest date")
+
+
 class QuotesIn(BaseModel):
     status: str | None = Field(None, description="e.g. sent, accepted, declined")
 
@@ -528,16 +537,20 @@ async def fsm_query(j, a: FsmQueryIn):
 
 
 async def fsm_systems_due(j, a: DaysAheadIn):
-    today = date.today()
-    out = []
-    for s in await j.fsm.systems():
-        try:
-            due = date.fromisoformat(str(s.get("next_service_due"))[:10])
-        except ValueError:
-            continue
-        if due <= today + timedelta(days=a.days_ahead):
-            out.append({**s, "days_until_due": (due - today).days})
-    return {"demo": j.fsm.demo, "systems": sorted(out, key=lambda s: s["days_until_due"])}
+    from ..services.ppm_planner import systems_due
+
+    return {"demo": j.fsm.demo, "systems": systems_due(await j.fsm.systems(), date.today(), a.days_ahead)}
+
+
+async def ppm_schedule_plan(j, a: PPMPlanIn):
+    try:
+        start = date.fromisoformat(a.start_date) if a.start_date else None
+    except ValueError:
+        return {"advisory_only": True, "error": f"start_date '{a.start_date}' isn't a YYYY-MM-DD date."}
+    return await j.ppm.plan(days_ahead=max(1, min(a.days_ahead, 180)), start_date=start,
+                            early_window_days=max(0, min(a.early_window_days, 90)),
+                            cluster_radius_miles=max(0.5, min(a.cluster_radius_miles, 30.0)),
+                            risk_margin_days=max(0, min(a.risk_margin_days, 30)))
 
 
 async def fsm_contracts_renewing(j, a: DaysAheadIn):
@@ -1058,6 +1071,15 @@ TOOLS: list[Tool] = [
     Tool("fsm_systems_due", "Maintained systems (fire alarm, emergency lighting, intruder, CCTV, access control) "
                             "overdue or due a service visit within N days.", DaysAheadIn, fsm_systems_due,
          "Checking service schedules"),
+    Tool("ppm_schedule_plan", "READ-ONLY planning advice for PPM scheduling: which service visits are due/overdue, "
+                              "which systems at one site can be bundled into a single visit without breaching "
+                              "service windows (e.g. BS 5839-1 6-monthly), grouped by area, with a proposed per-day / "
+                              "per-engineer plan, load vs expected jobs per day, and flags for anything unschedulable "
+                              "or at risk. Engineer skills: Salts FSM only exposes free-text certifications, not "
+                              "competence per system type - matches are labelled as keyword matches or as role-based "
+                              "inferences, never assumed. It books nothing: to act on the plan use log_job or "
+                              "fsm_change, which are queued for approval.", PPMPlanIn, ppm_schedule_plan,
+         "Planning PPM visits"),
     Tool("fsm_contracts_renewing", "Maintenance contracts due for renewal within N days (or already past renewal).",
          DaysAheadIn, fsm_contracts_renewing, "Checking contract renewals"),
     Tool("fsm_quotes", "Quotes in Salts FSM, optionally filtered by status.", QuotesIn, fsm_quotes, "Checking quotes"),
