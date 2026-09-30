@@ -34,9 +34,9 @@ Also work through these steps in your analysis and show them in the report:
 - UK compliance check (its own section): note the HMRC and wider UK-compliance points that bear on the advice
   (VAT and the construction domestic reverse charge, CIS, PAYE/NIC, corporation tax, employment law, accreditation
   requirements). Final decisions should be checked with the qualified accountant.
-- Always finish with exactly three concrete recommendations, each framed around one of: risk mitigation, tax
-  efficiency, or business development. Label each with its frame and give the action, the expected effect in
-  pounds where possible, and the risk.
+- Always finish with exactly three concrete recommendations, each framed around one of: risk mitigation, tax efficiency,
+  or business development. Label each with its frame and give the action, the expected effect in pounds where
+  possible, and the risk.
 
 If a focus area is given, run a consultant-style deep dive on it (the relevant framework, benchmarks for UK fire &
 security SMEs where you know them - label them as typical ranges - options with cost, payback and risk, then a
