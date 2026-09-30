@@ -72,6 +72,20 @@ class Settings(BaseSettings):
     jarvis_fallbacks: bool = True
     jarvis_compaction: bool = True
     web_search_enabled: bool = True  # lets Jarvis search/fetch the web like Claude chat
+    # Learn the owner's usual typed replies and offer them as ghost text in the chat box (Right Arrow accepts).
+    # Only ever prefills the input - never sends or approves anything. Off = nothing learned or suggested.
+    reply_suggestions_enabled: bool = True
+
+    # --- MCP / plugin integrations (see mcp_plugins.yaml, mandates.yaml and jarvis/brain/plugins.py) ------------
+    # Each is its own switch. Context7 and Superpowers are low risk (read-only docs / a written-down method) so
+    # default on; Browser Use and ThoughtProof stay off until a human has checked and pinned them.
+    plugins_file: Path = ROOT_DIR / "mcp_plugins.yaml"
+    mandates_file: Path = ROOT_DIR / "mandates.yaml"
+    plugin_context7_enabled: bool = True  # engineering agent only: current library docs, read-only
+    plugin_superpowers_enabled: bool = True  # engineering agent only: plan -> test -> review method
+    plugin_browser_use_enabled: bool = False  # conversational Jarvis only, read-only browsing, domain allowlist
+    plugin_browser_allowed_domains: str = ""  # comma-separated; Browser Use may only visit these (and subdomains)
+    plugin_thoughtproof_enabled: bool = False  # extra verification in front of approved write actions
 
     # --- Microsoft 365 (Graph, app-only) --------------------------------
     ms_tenant_id: str = ""
@@ -90,6 +104,13 @@ class Settings(BaseSettings):
     # If Teams delivery fails, also email the owner. Off by default: a failure is logged and shown on the display.
     engineering_email_fallback: bool = False
     issue_email_tag: str = "[ISSUE]"
+
+    # Fix / pull-request notifications (PR ready, CI results, fix live, security-review findings). They always
+    # appear on the display and the issues list; this picks the extra channels, comma-separated from
+    # "teams" and "email" ("none" = display only). Default Teams only - email is off.
+    fix_notify_channels: str = "teams"
+    # Where the fix emails go IF "email" is enabled above. Blank = the owner's email.
+    fix_notify_email: str = ""
     # Out-of-hours answering service: the address/domain (or a subject word) of their call-report emails
     ooh_email_from: str = ""
     ooh_mailbox: str = ""  # mailbox the reports arrive in (e.g. info@...); defaults to MS_MAILBOX
@@ -213,6 +234,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""  # only for Whisper speech-to-text
     whisper_model: str = "whisper-1"
     wake_word: str = "jarvis"
+    # Voice mode only: if a spoken question hasn't started being answered after ~1.8s, say ONE short
+    # acknowledgment ("Let me check the accounts."). Turn-scoped and off for typed turns - see hud.js's `filler`.
+    voice_ack_fillers: bool = True
 
     # --- Schedules ----------------------------------------------------------
     briefing_cron: str = "45 7 * * 1-5"
@@ -236,6 +260,13 @@ class Settings(BaseSettings):
     @property
     def managers(self) -> set[str]:
         return {e.strip().lower() for e in self.manager_emails.split(",") if e.strip()}
+
+
+    @property
+    def fix_channels(self) -> tuple[str, ...]:
+        """Extra channels (besides the display) for fix / PR notifications - a subset of teams and email."""
+        wanted = {c.strip().lower() for c in self.fix_notify_channels.replace(";", ",").replace("+", ",").split(",")}
+        return tuple(c for c in ("teams", "email") if c in wanted)
 
     def person(self, email: str) -> str:
         """Friendly name for a signed-in manager."""

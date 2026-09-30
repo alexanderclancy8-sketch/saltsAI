@@ -8,7 +8,7 @@ from datetime import date
 
 import httpx
 
-from .brain import llm
+from .brain import llm, plugins
 from .brain.agent import JarvisBrain
 from .config import Settings
 from .db import Database
@@ -44,6 +44,7 @@ from .services.ppm_planner import PPMPlanner
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
+from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
 from .services.self_improve import SelfImprove
@@ -52,6 +53,7 @@ from .services.site_access import SiteAccessCodes
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
+from .services.verification import ActionVerifier
 from .services.wrapup import WrapUp
 from .services.tracking import Tracker
 
@@ -100,6 +102,7 @@ class Jarvis:
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
         self.actions.j = self
+        self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
@@ -123,6 +126,7 @@ class Jarvis:
         self.scheduler = None
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
+        self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
         self.recruiter = Recruiter(self)
         self._seed_notes()
@@ -181,6 +185,7 @@ class Jarvis:
             "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
                                  "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY"),
             "Web search": "on" if s.web_search_enabled else "off",
+            "Plugins": plugins.status_line(s, self.verifier),
             "Claude": ("your Claude Max subscription (Agent SDK)" if s.effective_llm_backend == "max"
                        else f"Claude API ({s.jarvis_model})"),
         }

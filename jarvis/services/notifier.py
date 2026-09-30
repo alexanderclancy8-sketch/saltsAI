@@ -21,7 +21,7 @@ class Notifier:
         self.teams = teams
 
     async def notify(self, title: str, body: str = "", level: str = "info", push: bool | None = None,
-                     speak: bool = False, engineering: bool = False, issue_id: int | None = None) -> None:
+                     speak: bool = False, engineering: bool = False, fix: bool = False, issue_id: int | None = None) -> None:
         """`engineering=True` marks fix / pull request / deploy / triage / security-review notifications: those go
         to Teams only (see send_engineering_update) instead of Teams + email. `issue_id` lets a Teams delivery
         failure be shown against that issue on the issues list."""
@@ -32,6 +32,11 @@ class Notifier:
         if push:
             if engineering:
                 await self.send_engineering_update(title, body, issue_id=issue_id)
+            elif fix:
+                channels = self.s.fix_channels
+                if channels:
+                    await self.send_owner_update(title, body, channels=channels,
+                                                   email_to=self.s.fix_notify_email or None)
             else:
                 await self.send_owner_update(title, body, channels=("teams", "email"))
 
@@ -84,17 +89,19 @@ class Notifier:
                 self.db.update_issue(issue_id, notes=notes[:4000])
                 self.bus.publish("issue", self.db.get_issue(issue_id))
 
-    async def send_owner_update(self, subject: str, body: str, channels: tuple[str, ...] | list[str] = ("teams",)) -> str:
+    async def send_owner_update(self, subject: str, body: str, channels: tuple[str, ...] | list[str] = ("teams",),
+                                email_to: str | None = None) -> str:
         sent = []
+        recipient = email_to or self.s.owner_email
         if "teams" in channels and self.teams.enabled:
             try:
                 await self.teams.post(subject, body)
                 sent.append("Teams")
             except Exception as e:  # noqa: BLE001 - never let a notification failure break the caller
                 log.warning("Teams update failed: %s", e)
-        if "email" in channels and self.s.owner_email and not getattr(self.mail, "demo", True):
+        if "email" in channels and recipient and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([self.s.owner_email], f"[Jarvis] {subject}", text_to_html(body))
+                await self.mail.send_mail([recipient], f"[Jarvis] {subject}", text_to_html(body))
                 sent.append("email")
             except Exception as e:  # noqa: BLE001
                 log.warning("Email update failed: %s", e)

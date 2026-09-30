@@ -62,11 +62,28 @@ class ActionExecutor:
             return await self.fixer.deploy(p["issue_id"], p["pr_number"])
         raise ValueError(f"Unknown action kind {action['kind']}")
 
+    async def _blocked_by_verifier(self, action: dict[str, Any]) -> str:
+        """Empty string to go ahead, else why the optional ThoughtProof layer refused. Only ever runs AFTER the owner's
+        approval and can only stop an action, never start, approve or skip one. Off by default."""
+        verifier = getattr(self.j, "verifier", None)
+        if verifier is None or not verifier.enabled:
+            return ""
+        verdict = await verifier.verify(action)
+        return "" if verdict.allowed else (verdict.reason or "blocked by the security mandates")
+
     async def _run(self, action: dict[str, Any]) -> None:
         try:
-            result = await self._execute(action)
-            self.db.set_action_status(action["id"], "done", result)
-            await self.notifier.notify(f"Done: {action['summary'][:120]}", result, level="info", speak=True)
+            blocked = await self._blocked_by_verifier(action)
+            if blocked:
+                self.db.set_action_status(action["id"], "denied", f"Blocked by the security check: {blocked}"[:1000])
+                await self.notifier.notify(
+                    f"Blocked by the security check: {action['summary'][:100]}",
+                    f"Action #{action['id']} was NOT carried out. Reason: {blocked[:400]}", level="warning",
+                    push=True, speak=True)
+            else:
+                result = await self._execute(action)
+                self.db.set_action_status(action["id"], "done", result)
+                await self.notifier.notify(f"Done: {action['summary'][:120]}", result, level="info", speak=True)
         except Exception as e:  # noqa: BLE001
             log.exception("Action %s failed", action["id"])
             self.db.set_action_status(action["id"], "failed", str(e)[:1000])

@@ -153,6 +153,16 @@ CREATE TABLE IF NOT EXISTS automations (
     last_run_at TEXT DEFAULT '',
     last_result TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS reply_habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    norm TEXT NOT NULL,
+    context TEXT NOT NULL,
+    display TEXT NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 1,
+    score REAL NOT NULL DEFAULT 1,
+    last_used TEXT NOT NULL,
+    UNIQUE(norm, context)
+);
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,

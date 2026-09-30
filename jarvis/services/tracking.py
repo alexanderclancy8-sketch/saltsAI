@@ -127,10 +127,13 @@ class Tracker:
             return {"error": f"Couldn't locate '{place}'. Give a site name from Salts FSM or a UK postcode."}
         coords, label = target
         live = await self.live()
-        ranked = sorted(({"engineer": e["engineer"], "distance_miles": round(haversine_m((e["lat"], e["lng"]), coords) / 1609.34, 1),
-                          "eta_mins": drive_minutes(haversine_m((e["lat"], e["lng"]), coords)),
-                          "currently": e.get("current_job") or e.get("status"), "next_job": e.get("next_job")}
-                         for e in live["engineers"]), key=lambda r: r["distance_miles"])
+        # Rank on the exact distance, not the rounded display figure, and break any remaining tie by engineer name
+        # so the suggestion never depends on the order the position feed happened to return.
+        measured = sorted(((haversine_m((e["lat"], e["lng"]), coords), e) for e in live["engineers"]),
+                          key=lambda de: (de[0], str(de[1].get("engineer") or "")))
+        ranked = [{"engineer": e["engineer"], "distance_miles": round(d / 1609.34, 1), "eta_mins": drive_minutes(d),
+                   "currently": e.get("current_job") or e.get("status"), "next_job": e.get("next_job")}
+                  for d, e in measured]
         return {"destination": label, "demo": self.demo, "engineers": ranked,
                 "note": "ETAs are straight-line estimates at typical local speeds, not live traffic."}
 
