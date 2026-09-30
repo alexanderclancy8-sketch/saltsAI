@@ -11,7 +11,7 @@
     status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB" },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
-    lastMode: "typed", followUpUntil: 0, attachments: [], greeted: false,
+    lastMode: "typed", followUpUntil: 0, attachments: [],
     dashOpen: store.get("dashboard", "0") === "1",
   };
 
@@ -213,7 +213,7 @@
       meter();
     } catch (e) { console.warn("audio context", e); }
   }
-  ["click", "keydown", "touchstart"].forEach((ev) => window.addEventListener(ev, () => { ensureAudio(); greet(); }, { once: false, passive: true }));
+  ["click", "keydown", "touchstart"].forEach((ev) => window.addEventListener(ev, () => { ensureAudio(); }, { once: false, passive: true }));
 
   // Say when the real voice fails, instead of silently switching to the browser's robotic one.
   let lastVoiceProblem = 0;
@@ -282,27 +282,8 @@
 
   function say(text) { if (S.speakPref !== "off") { speaker.feed(text + " "); speaker.flush(); } }
 
-  function greet() {
-    if (S.greeted || !S.status) return;
-    S.greeted = true;
-    const h = new Date().getHours();
-    const part = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-    const st = S.status;
-    const bits = [];
-    const unread = st.inbox?.unread?.length || 0;
-    if (unread) bits.push(`${unread} unread email${unread > 1 ? "s" : ""}`);
-    const overdue = st.overdue_jobs?.length || 0;
-    if (overdue) bits.push(`${overdue} overdue job${overdue > 1 ? "s" : ""}`);
-    const issues = st.issues?.length || 0;
-    if (issues) bits.push(`${issues} open issue${issues > 1 ? "s" : ""}`);
-    if (S.approvals.length) bits.push(`${S.approvals.length} thing${S.approvals.length > 1 ? "s" : ""} waiting for your approval`);
-    if (S.suggestions.length) bits.push(`${S.suggestions.length} suggestion${S.suggestions.length > 1 ? "s" : ""} for you`);
-    const failing = (st.tests || []).filter((t) => !t.ok).length;
-    const line = `${part}, ${st.owner || "sir"}. ` + (bits.length ? `You have ${bits.join(", ")}.` : "All quiet on every front.") +
-      (failing ? ` ${failing} routine check${failing > 1 ? "s are" : " is"} failing - details on the left.` : " All systems are running normally.");
-    caption(line);
-    if (store.get("greet", "1") === "1" && S.speakPref !== "off") say(line);
-  }
+  // Jarvis never speaks unprompted: there is deliberately no on-load greeting. Speech (TTS) only ever
+  // follows something the owner asked (typed or voice) or an action they just took on the page.
 
   // ------------------------------------------------------------------ conversation
   let current = null;
@@ -451,8 +432,9 @@
         setHud("idle"); $("#toolline").textContent = ""; extendFollowUp();
         break;
       case "notification":
+        // Displayed only - a pushed notification (briefing, suggestion, alert) never speaks unprompted,
+        // whatever its server-side `speak` flag says.
         toast(d.title, d.body, d.level);
-        if (d.speak && !speaker.active && S.hudState === "idle" && S.speakPref !== "off") say(`Sir, ${d.title}.`);
         refreshSoon();
         break;
       case "owner_update":
