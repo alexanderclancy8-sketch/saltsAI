@@ -4,11 +4,12 @@ sent to Claude and to validate what comes back) and an async handler."""
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Awaitable, Callable, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..humanize import human_datetime
 
@@ -94,6 +95,59 @@ class OwnerUpdateIn(BaseModel):
 class DisplayIn(BaseModel):
     title: str
     markdown: str = Field(description="Markdown content: tables, lists, drafts, figures")
+
+
+ASK_MAX_OPTIONS = 4
+# Labels that would read as an approval decision. Approving/rejecting is only ever done with the Approve / Cancel
+# buttons (or the approvals endpoint), never through a question option - so don't let a question pose as one.
+_ASK_RESERVED_LABELS = {"other", "approve", "approved", "reject", "rejected", "deny", "denied"}
+
+
+class AskOptionIn(BaseModel):
+    label: str = Field(description="Short choice label, a few words (shown as the button text)")
+    description: str = Field("", description="Optional one-line explanation shown under the label")
+    recommended: bool = Field(False, description="Mark at most one option as your recommendation")
+
+
+class AskUserIn(BaseModel):
+    question: str = Field(description="One short question (under ~120 characters). Put any detail in your chat "
+                                      "reply, not here")
+    options: list[AskOptionIn] = Field(min_length=2, max_length=ASK_MAX_OPTIONS,
+                                       description="2-4 preselected answers. Do NOT add an 'Other' option - the "
+                                                   "display always adds one that opens a text box")
+    allow_multiple: bool = Field(False, description="True if several options may be chosen together")
+
+    @field_validator("question")
+    @classmethod
+    def _question(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("question must not be empty")
+        if len(v) > 300:
+            raise ValueError("question is too long - keep it short and put the detail in the chat reply")
+        return v
+
+    @field_validator("options")
+    @classmethod
+    def _options(cls, opts: list[AskOptionIn]) -> list[AskOptionIn]:
+        seen: set[str] = set()
+        for o in opts:
+            o.label = " ".join(o.label.split())
+            o.description = " ".join(o.description.split())
+            key = o.label.lower().rstrip(".…")
+            if not o.label:
+                raise ValueError("every option needs a label")
+            if len(o.label) > 80 or len(o.description) > 240:
+                raise ValueError("option label (max 80 chars) or description (max 240) is too long")
+            if key in _ASK_RESERVED_LABELS:
+                raise ValueError(f"option label '{o.label}' is not allowed: 'Other' is added automatically and "
+                                 "approvals are only ever done with the Approve button")
+            if key in seen:
+                raise ValueError(f"duplicate option label '{o.label}'")
+            seen.add(key)
+        if sum(1 for o in opts if o.recommended) > 1:
+            raise ValueError("mark at most one option as recommended")
+        return opts
 
 
 class JobsIn(BaseModel):
@@ -524,6 +578,19 @@ async def send_update_to_owner(j, a: OwnerUpdateIn):
 async def show_on_display(j, a: DisplayIn):
     j.bus.publish("display", {"title": a.title, "markdown": a.markdown})
     return "Shown on the display."
+
+
+async def ask_user(j, a: AskUserIn):
+    """Put a small question pop-up on the display. It does NOT wait: the owner's choice (or typed/spoken text) comes
+    back as an ordinary chat message on his next turn. It is deliberately unrelated to approvals - nothing here
+    queues, approves or performs an action, so an answer can never stand in for the Approve button."""
+    j.bus.publish("ask", {"id": uuid.uuid4().hex, "question": a.question, "allow_multiple": a.allow_multiple,
+                          "options": [{"label": o.label, "description": o.description, "recommended": o.recommended}
+                                      for o in a.options]})
+    return (f"Question shown on the display. Stop here: put any detail in your chat reply, then end your turn and "
+            f"wait - {j.settings.owner_name}'s answer will arrive as his next message. Don't call more tools or "
+            f"assume an answer. This is only a question, not an approval: anything that changes something still "
+            f"needs the normal approval.")
 
 
 async def fsm_jobs(j, a: JobsIn):
@@ -1064,6 +1131,13 @@ TOOLS: list[Tool] = [
          "Sending you an update"),
     Tool("show_on_display", "Put detailed content (tables, figures, drafts, lists) on the owner's screen. Use for "
                             "anything too detailed to say aloud.", DisplayIn, show_on_display, "Updating the display"),
+    Tool("ask_user", "Ask the owner to choose between 2-4 options with a small pop-up (clickable, keyboard- and "
+                     "voice-selectable; an 'Other' box for a custom answer is always added). Use this whenever you "
+                     "need a decision instead of a long pop-up or an open-ended question; put the detail in your "
+                     "chat reply. Set allow_multiple for pick-several questions and recommended on at most one "
+                     "option. The answer arrives as his next message - end your turn after asking. It is NOT an "
+                     "approval: changes are still queued for the normal Approve button.",
+         AskUserIn, ask_user, "Asking you a question"),
     Tool("fsm_jobs", "Jobs from Salts FSM in a date range (default today), optionally by status or engineer.",
          JobsIn, fsm_jobs, "Checking jobs in Salts FSM"),
     Tool("fsm_query", "Read-only GET against any Salts FSM API path, for details not covered by other tools "

@@ -163,7 +163,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # Same conversation, but for when the live WebSocket isn't available (e.g. it dropped and hasn't
     # reconnected yet): word-by-word as Claude generates it, rather than the client waiting on the full
     # reply. Each line is one of the same {"type", "data"} events the WebSocket already streams.
-    CHAT_STREAM_EVENTS = {"user_message", "thinking", "delta", "tool", "reply", "error", "stopped"}
+    CHAT_STREAM_EVENTS = {"user_message", "thinking", "delta", "tool", "reply", "error", "stopped", "ask"}
     CHAT_STREAM_TERMINAL = {"reply", "error", "stopped"}
 
     @app.post("/api/chat/stream", dependencies=[Depends(owner)])

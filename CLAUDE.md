@@ -140,3 +140,7 @@ Pressing the mic/Space while he speaks cuts the whole turn (`micPressBargeIn()`)
 `voice_silence_ms` setting plus a little extra after trailing fillers (`endOfTurnMs()`); `looksLikeSelfEcho()` also drops
 fuzzy copies of what he said in the last 10s. A user message near-identical to the previous one within 60s gets a
 "[possible repeat: ...]" line under its tag from both brains (`jarvis/brain/repeats.py`). Tests: `tests/test_voice_flow.py`.
+Decisions use the `ask_user` tool (`brain/tools.py`) and the small question pop-up in `jarvis/web/ask.js`/`ask.css`: the tool
+only publishes an `ask` bus event and returns at once (no blocking); the chosen/typed/spoken answer comes back as an ordinary
+chat message. It is separate from, and must never call or imitate, the approval path (`decide()`, `/api/approvals`,
+`ActionExecutor`). Tests: `tests/test_ask_user.py`.
