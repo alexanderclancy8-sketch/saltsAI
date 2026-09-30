@@ -337,6 +337,114 @@ def test_hud_picks_a_supported_recorder_mime_and_reports_stt_errors():
     assert 'console.info("[stt] recording finished"' in hud and 'console.info("[stt] transcription response"' in hud
 
 
+# ---------------------------------------------------------------- STT fallback chain + engine selection
+@pytest.mark.parametrize("provider,deepgram,openai,expected", [
+    ("auto", "dg-key", "sk-key", ["deepgram", "whisper", "browser"]),
+    ("auto", "", "sk-key", ["whisper", "browser"]),
+    ("auto", "", "", ["browser"]),
+    ("whisper", "dg-key", "sk-key", ["whisper", "deepgram", "browser"]),
+    ("whisper", "", "sk-key", ["whisper", "browser"]),
+    ("deepgram", "dg-key", "sk-key", ["deepgram", "whisper", "browser"]),
+    ("deepgram", "", "", ["browser"]),  # selected engine has no key: skipped rather than tried and failed
+    ("browser", "dg-key", "sk-key", ["browser"]),  # an explicit browser choice never sends audio to a paid service
+])
+def test_stt_chain_order(settings, provider, deepgram, openai, expected):
+    from jarvis.integrations.stt_chain import stt_chain
+
+    settings.stt_provider, settings.deepgram_api_key, settings.openai_api_key = provider, deepgram, openai
+    assert stt_chain(settings) == expected
+
+
+def test_client_config_publishes_the_chain(settings):
+    settings.openai_api_key = "sk-key"
+    assert Voice(settings, None).client_config()["stt_chain"] == ["whisper", "browser"]
+
+
+async def test_transcribe_can_target_one_engine_with_a_single_bounded_attempt(settings):
+    from jarvis.integrations.voice import STTError
+
+    settings.deepgram_api_key, settings.openai_api_key = "dg-key-value", "sk-key-value"
+    settings.stt_provider = "deepgram"
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(500, json={"error": {"message": "boom"}})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(STTError) as exc:
+        await Voice(settings, http).transcribe(b"x" * 3000, "audio/webm", "whisper", retry=False, timeout_s=8)
+    assert len(seen) == 1 and "openai.com" in seen[0]  # the requested engine, not the configured one; no retry
+    assert exc.value.provider == "whisper" and exc.value.transient
+    await http.aclose()
+
+
+async def test_transcribe_without_a_key_says_which_setting_to_fill_in(settings):
+    from jarvis.integrations.voice import STTError
+
+    settings.stt_provider, settings.openai_api_key = "whisper", ""
+    voice = Voice(settings, SimpleNamespace(post=lambda *a, **k: pytest.fail("must not call the provider")))
+    with pytest.raises(STTError) as exc:
+        await voice.transcribe(b"x" * 3000, "audio/webm")
+    assert "OPENAI_API_KEY" in str(exc.value) and not exc.value.transient
+
+
+async def test_configured_keys_are_redacted_from_logs_and_messages_whatever_their_format(settings, caplog):
+    from jarvis.integrations.voice import STTError
+
+    settings.deepgram_api_key = "0123456789abcdef0123456789abcdef"  # no sk-/Token prefix for the regex to catch
+    body = {"err_msg": "Invalid credentials 0123456789abcdef0123456789abcdef", "err_code": "X"}
+    http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(400, json=body)))
+    with caplog.at_level("WARNING", logger="jarvis.integrations.voice"), pytest.raises(STTError) as exc:
+        await Voice(settings, http).transcribe(b"x" * 3000, "audio/webm")
+    assert "0123456789abcdef" not in caplog.text and "0123456789abcdef" not in str(exc.value)
+    assert "Invalid credentials" in caplog.text  # the real upstream wording is still there
+    await http.aclose()
+
+
+def test_api_stt_engine_param_is_validated_and_reports_transient_and_engine(settings, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from jarvis.core import Jarvis
+    from jarvis.integrations.voice import STTError
+    from jarvis.main import create_app
+    from tests.fakes import FakeClient
+
+    calls = []
+
+    async def fake(self, audio, mime, provider=None, *, retry=True, timeout_s=None):
+        calls.append((provider, retry, timeout_s))
+        if provider == "whisper":
+            raise STTError("OpenAI Whisper returned 500: the service had a problem on its side.", "whisper", 500,
+                           transient=True)
+        return "hello jarvis"
+
+    monkeypatch.setattr(Voice, "transcribe", fake)
+    app = create_app(settings, Jarvis(settings, client=FakeClient()))
+    files = {"audio": ("speech.webm", b"x" * 3000, "audio/webm")}
+    with TestClient(app) as c:
+        assert c.post("/api/stt?engine=bogus", files=files).status_code == 400
+        r = c.post("/api/stt?engine=whisper", files=files)
+        assert r.status_code == 502 and r.json()["transient"] is True and r.json()["provider"] == "whisper"
+        r = c.post("/api/stt?engine=deepgram", files=files)
+        assert r.status_code == 200 and r.json() == {"text": "hello jarvis", "engine": "deepgram"}
+    assert [(p, retry) for p, retry, _ in calls] == [("whisper", False), ("deepgram", False)]
+    assert all(t and t < 10 for _, _, t in calls)  # server gives up before the browser's 10 s abort
+
+
+def test_hud_has_timeout_fallback_remembered_engine_and_indicator():
+    from pathlib import Path
+
+    web = Path(__file__).resolve().parent.parent / "jarvis" / "web"
+    hud = (web / "hud.js").read_text(encoding="utf-8")
+    assert "STT_TIMEOUT_MS = 10000" in hud and "new AbortController()" in hud and "signal: ctl.signal" in hud
+    assert "/api/stt?engine=" in hud and "S.voice.stt_chain" in hud
+    assert 'store.set("stt_good"' in hud and 'store.get("stt_good"' in hud  # last working engine is remembered
+    assert "showSttEngine(" in hud and 'id="stt-engine"' in (web / "index.html").read_text(encoding="utf-8")
+    assert "Switched to browser voice input" in hud
+    assert '"Transcribing…"' not in hud  # every Transcribing caption now names the engine
+
+
 def test_piper_voices_registry_only_lists_voices_with_a_confirmed_quality_tier():
     assert PIPER_VOICES  # not empty
     assert all(isinstance(q, str) and q for q in PIPER_VOICES.values())

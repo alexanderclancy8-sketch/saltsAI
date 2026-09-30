@@ -835,7 +835,7 @@ function send(text, mode = "typed", opts = {}) {
   async function refresh() {
     try {
       const st = await (await api("/api/status")).json();
-      S.status = st; S.voice = st.voice || S.voice; S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
+      S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
@@ -1009,8 +1009,46 @@ function send(text, mode = "typed", opts = {}) {
     return t.includes("mp4") || t.includes("m4a") || t.includes("aac") ? "mp4"
       : t.includes("ogg") ? "ogg" : t.includes("wav") ? "wav" : t.includes("mpeg") || t.includes("mp3") ? "mp3" : "webm";
   }
+  // Speech-to-text engine choice and fallback. The server publishes the order in voice.stt_chain (selected engine
+  // first, then Deepgram, Whisper, and browser speech recognition last - jarvis/integrations/stt_chain.py). This
+  // object remembers which engine last worked (per browser, preferred for STT_GOOD_TTL_MS so the selected engine
+  // is retried now and then) and which just failed (skipped for STT_COOLDOWN_MS so every press of the mic doesn't
+  // wait on a broken engine). Browser speech recognition is never "remembered": it's the last resort, not a goal.
+  const STT_LABEL = { deepgram: "Deepgram", whisper: "OpenAI Whisper", browser: "Browser speech recognition" };
+  const STT_TIMEOUT_MS = 10000;      // one transcription request never waits longer than this
+  const STT_TOTAL_MS = 25000;        // and the whole retry + fallback sequence stops starting new attempts after this
+  const STT_COOLDOWN_MS = 5 * 60000;
+  const STT_GOOD_TTL_MS = 12 * 3600000;
+  const sttEngine = {
+    failed: {}, good: "",
+    chain() {
+      const selected = S.voice.stt;
+      let order = Array.isArray(S.voice.stt_chain) && S.voice.stt_chain.length ? S.voice.stt_chain.slice() : [selected];
+      const [forSelected, good, at] = String(store.get("stt_good", "")).split(":");
+      if (forSelected === selected && good && good !== "browser" && order.includes(good) && Date.now() - Number(at) < STT_GOOD_TTL_MS) {
+        order = [good, ...order.filter((e) => e !== good)];
+      }
+      const usable = order.filter((e) => e === "browser" || !(this.failed[e] > Date.now() - STT_COOLDOWN_MS));
+      return usable.length ? usable : order;
+    },
+    next() { return this.chain()[0] || "browser"; },
+    markFailed(engine) { if (engine !== "browser") this.failed[engine] = Date.now(); },
+    markGood(engine) {
+      delete this.failed[engine];
+      const value = `${S.voice.stt}:${engine}`;
+      if (engine === "browser" || this.good === value) return; // nothing new to remember (live streams call this per result)
+      this.good = value;
+      store.set("stt_good", `${value}:${Date.now()}`);
+    },
+  };
+  // Says which engine voice input is using right now (and why it changed), so a silent fallback is never a mystery.
+  function showSttEngine(engine, note = "", warn = false) {
+    const el = $("#stt-engine"); if (!el) return;
+    el.hidden = false; el.classList.toggle("warn", warn);
+    el.textContent = `Voice input: ${STT_LABEL[engine] || engine}${note ? ` - ${note}` : ""}`;
+  }
   const stt = {
-    on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
+    mode: null, lastError: "", on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
     // the mic stream is NOT echo-cancelled, which switches barge-in off (see bargeInAllowed()).
     echoCancelled: null,
@@ -1039,7 +1077,9 @@ function send(text, mode = "typed", opts = {}) {
       if (!keepSpeaking) speaker.stop();
       this.on = true; this.finals = ""; mic.classList.add("on");
       if (!keepSpeaking) { setHud("listening"); caption("", "Listening…"); }
-      const mode = S.voice.stt;
+      // Not simply S.voice.stt: skips an engine that just failed and prefers the one that last worked.
+      const mode = sttEngine.next(); this.mode = mode;
+      showSttEngine(mode, mode !== S.voice.stt ? "switched automatically" : "");
       try {
         if (mode === "browser") return this.startBrowser();
         this.stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
@@ -1052,6 +1092,7 @@ function send(text, mode = "typed", opts = {}) {
         if (mode === "deepgram") {
           this.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/stt`);
           this.ws.onmessage = (e) => this.onDeepgram(JSON.parse(e.data));
+          this.ws.onerror = () => this.liveFailed("Couldn't connect to the Deepgram stream.");
           this.ws.onopen = () => { this.rec.ondataavailable = (e) => { if (e.data.size && this.ws.readyState === 1) this.ws.send(e.data); }; this.rec.start(250); };
           this.ws.onclose = () => { if (this.on && S.listenMode === "wake") setTimeout(() => { this.stop(false); this.start({ keepSpeaking: true }); }, 1000); };
         } else {
@@ -1061,7 +1102,7 @@ function send(text, mode = "typed", opts = {}) {
           rec.onerror = (e) => { console.warn("[stt] MediaRecorder error", e); toast("Recording failed", (e.error && e.error.message) || "The microphone recording stopped unexpectedly.", "warning"); };
           // The mic is released here, not in stop(): the final chunk arrives just before "stop", and cutting the
           // tracks first can truncate it (or lose it entirely on Safari).
-          rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); this.transcribeChunks(mime); };
+          rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); this.transcribeChunks(mime, mode); };
           rec.start();
         }
       } catch (e) {
@@ -1071,7 +1112,13 @@ function send(text, mode = "typed", opts = {}) {
     },
     startBrowser() {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) { toast("Voice input not supported", "Use Chrome or Edge, or connect Deepgram.", "warning"); this.stop(false); return; }
+      if (!SR) {
+        toast("Voice input not supported", "Use Chrome or Edge, or connect Deepgram.", "warning");
+        captionError(this.lastError ? `Voice input failed: ${this.lastError} This browser has no built-in speech recognition to fall back on - type your message instead.`
+          : "Voice input isn't supported in this browser - type your message instead.");
+        showSttEngine("browser", "not available in this browser", true);
+        this.stop(false); return;
+      }
       const r = new SR(); this.recognition = r;
       r.lang = S.voice.language || "en-GB"; r.continuous = true; r.interimResults = true;
       r.onresult = (e) => {
@@ -1091,6 +1138,7 @@ function send(text, mode = "typed", opts = {}) {
     },
     onDeepgram(m) {
       if (m.type === "transcript") {
+        if (m.text) sttEngine.markGood("deepgram");
         // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
         if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
         if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
@@ -1099,9 +1147,40 @@ function send(text, mode = "typed", opts = {}) {
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();
       else if (m.type === "speech_started" && speaker.active && S.listenMode === "wake") { /* barge-in handled on words */ }
       else if (m.type === "speech_started" && !echoWindowOpen()) filler.userSpeech(); // VAD heard the owner
-      else if (m.type === "error") { toast("Speech service", m.message, "warning"); }
+      else if (m.type === "error") { this.liveFailed(m.message || "The Deepgram stream reported an error."); }
     },
-    async transcribeChunks(mime) {
+    // The live Deepgram stream failed: skip it for a while and carry on with the next engine in the chain.
+    liveFailed(reason) {
+      if (!this.on || this.mode !== "deepgram") return;
+      console.warn("[stt] live Deepgram stream failed", reason);
+      sttEngine.markFailed("deepgram");
+      this.lastError = `Deepgram: ${reason}`;
+      const next = sttEngine.next();
+      toast("Speech service problem", `${reason} Switching to ${STT_LABEL[next] || next} - please say that again.`, "warning");
+      this.stop(false);
+      this.start();
+    },
+    // One bounded request to one engine. Never throws except when signed out, and never waits past STT_TIMEOUT_MS.
+    async postStt(blob, filename, engine) {
+      const label = STT_LABEL[engine] || engine;
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), STT_TIMEOUT_MS);
+      try {
+        const fd = new FormData(); fd.append("audio", blob, filename);
+        const r = await api(`/api/stt?engine=${encodeURIComponent(engine)}`, { method: "POST", body: fd, signal: ctl.signal });
+        console.info("[stt] transcription response", { engine, status: r.status, ok: r.ok });
+        let data = {};
+        try { data = await r.json(); } catch { /* non-JSON error body */ }
+        if (r.ok) return { ok: true, text: String(data.text || "").trim() };
+        return { ok: false, transient: typeof data.transient === "boolean" ? data.transient : r.status >= 500,
+          error: `${data.detail || `Speech-to-text returned ${r.status}`} (HTTP ${r.status}).` };
+      } catch (e) {
+        if (e && e.message === "signed out") throw e;
+        console.warn("[stt] transcription request failed", engine, e);
+        if (e && e.name === "AbortError") return { ok: false, transient: true, error: `${label} did not answer within ${STT_TIMEOUT_MS / 1000} seconds.` };
+        return { ok: false, transient: true, error: (e && e.message) || `Couldn't reach ${label}.` };
+      } finally { clearTimeout(timer); }
+    },
+    async transcribeChunks(mime, mode) {
       const chunks = this.chunks; this.chunks = [];
       const type = String(mime || (chunks[0] && chunks[0].type) || "audio/webm").split(";")[0];
       const blob = new Blob(chunks, { type });
@@ -1109,23 +1188,49 @@ function send(text, mode = "typed", opts = {}) {
       // The error text stays in the caption (red) until the next caption, not just in a toast that fades.
       const fail = (title, body) => { toast(title, body, "warning"); captionError(`${title}: ${body}`); if (S.hudState === "listening") setHud("idle"); };
       if (blob.size < MIN_AUDIO_BYTES) { fail("Nothing recorded", "No audio was captured. Hold the mic a little longer and check the microphone isn't muted."); return; }
-      const fd = new FormData(); fd.append("audio", blob, `speech.${audioExtension(type)}`);
-      caption("", "Transcribing…");
+      const filename = `speech.${audioExtension(type)}`;
+      // Try the engine that recorded this, retrying once on a transient failure (timeout, network, upstream 5xx) and
+      // then moving to the next server engine in the chain. A bad key / quota / bad audio moves on straight away.
+      const order = sttEngine.chain();
+      const engines = order.slice(Math.max(0, order.indexOf(mode))).filter((e) => e !== "browser");
+      const startedAt = Date.now();
+      let lastError = "";
       try {
-        const r = await api("/api/stt", { method: "POST", body: fd });
-        console.info("[stt] transcription response", { status: r.status, ok: r.ok });
-        let data = {};
-        try { data = await r.json(); } catch { /* non-JSON error body */ }
-        if (!r.ok) { fail("Transcription failed", `${data.detail || `Speech-to-text returned ${r.status}`} (HTTP ${r.status}). Type your message instead.`); return; }
-        const text = String(data.text || "").trim();
-        if (!text) { fail("Didn't catch that", "Speech-to-text returned no words. Please try again."); return; }
-        caption(text, "");
-        utterance(text);
+        attempts: for (let i = 0; i < engines.length; i++) {
+          const engine = engines[i], label = STT_LABEL[engine] || engine;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            if (Date.now() - startedAt > STT_TOTAL_MS) break attempts;
+            showSttEngine(engine, attempt === 2 ? "retrying" : i ? "switched automatically" : "");
+            caption("", `Transcribing with ${label}${attempt === 2 ? " (retrying)" : ""}…`);
+            const res = await this.postStt(blob, filename, engine);
+            if (res.ok) {
+              sttEngine.markGood(engine); this.lastError = "";
+              if (!res.text) { fail("Didn't catch that", "Speech-to-text returned no words. Please try again."); return; }
+              caption(res.text, "");
+              utterance(res.text);
+              return;
+            }
+            lastError = `${label}: ${res.error}`;
+            console.warn("[stt] engine failed", { engine, attempt, transient: res.transient, error: res.error });
+            if (!res.transient) break;
+          }
+          sttEngine.markFailed(engine);
+        }
       } catch (e) {
         if (e && e.message === "signed out") return;
-        console.warn("[stt] transcription request failed", e);
-        fail("Transcription failed", (e && e.message) || "Couldn't reach the speech-to-text service.");
+        lastError = (e && e.message) || "Couldn't reach the speech-to-text service.";
       }
+      // Every server engine failed (or none was left in time): fall back to the browser's own speech recognition
+      // when there is one - it can't transcribe this recording, so the owner has to say it again.
+      this.lastError = lastError;
+      const browserOk = order.includes("browser") && (window.SpeechRecognition || window.webkitSpeechRecognition);
+      if (browserOk && !this.on) {
+        toast("Switched to browser voice input", `${lastError} Please say that again.`, "warning");
+        this.start();
+        return;
+      }
+      showSttEngine(engines[engines.length - 1] || mode, "failed", true);
+      fail("Transcription failed", `${lastError || "No speech-to-text engine is available."} Type your message instead.`);
     },
     stop(submit = true) {
       if (!this.on) return;
@@ -1136,10 +1241,11 @@ function send(text, mode = "typed", opts = {}) {
       const recActive = this.rec && this.rec.state !== "inactive";
       const deferRelease = recActive && !!this.rec.onstop;
       if (recActive) this.rec.stop();
-      if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; try { ws.send(JSON.stringify({ type: "Finalize" })); } catch { /* closed */ } setTimeout(() => { try { ws.send(JSON.stringify({ type: "CloseStream" })); ws.close(); } catch { /* closed */ } }, 900); }
+      if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.onerror = null; try { ws.send(JSON.stringify({ type: "Finalize" })); } catch { /* closed */ } setTimeout(() => { try { ws.send(JSON.stringify({ type: "CloseStream" })); ws.close(); } catch { /* closed */ } }, 900); }
       if (this.stream && !deferRelease) this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null; this.rec = null;
-      if (submit && S.voice.stt !== "whisper") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, S.voice.stt === "deepgram" ? 1100 : 300);
+      const mode = this.mode || S.voice.stt; // the engine actually recording, which may differ from Settings after a fallback
+      if (submit && mode !== "whisper") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, mode === "deepgram" ? 1100 : 300);
       if (S.hudState === "listening") setHud("idle");
     },
   };
