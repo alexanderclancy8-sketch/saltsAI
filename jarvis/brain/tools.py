@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from ..humanize import human_datetime
+from .pr_tools import build_pr_tools
 
 MAX_RESULT_CHARS = 60_000
 
@@ -1445,6 +1446,8 @@ TOOLS: list[Tool] = [
     Tool("morning_briefing", "Generate the full morning briefing now (email, jobs, staff, money, issues).",
          NoInput, morning_briefing, "Preparing your briefing"),
 ]
+
+TOOLS.extend(build_pr_tools(Tool))  # GitHub PR tools for Jarvis's own repo - see brain/pr_tools.py
 
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
