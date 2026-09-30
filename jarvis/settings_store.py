@@ -99,6 +99,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("ms_client_id", "Application (client) ID", placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"),
             Field("ms_client_secret", "Client secret", "secret"),
             Field("ms_mailbox", "Your mailbox", "email", "The mailbox Jarvis reads and sends from."),
+            Field("owner_mail_folder", "Folder for Jarvis's emails to you",
+                  help="Outlook folder name (in your mailbox) Jarvis's own emails to you are filed into instead "
+                       "of the Inbox. Blank = keep them in the Inbox. Falls back to the Inbox if not found."),
             Field("ooh_mailbox", "Out-of-hours reports mailbox", "email",
                   "Where the answering service's reports arrive, e.g. info@. Blank = your mailbox."),
             Field("ooh_email_from", "Out-of-hours reports come from",

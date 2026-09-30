@@ -39,8 +39,16 @@ class Notifier:
                 log.warning("Teams update failed: %s", e)
         if "email" in channels and self.s.owner_email and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([self.s.owner_email], f"[Jarvis] {subject}", text_to_html(body))
-                sent.append("email")
+                # Jarvis's own mail to the owner is filed into his Jarvis folder, not the Inbox (see
+                # GraphMail.send_to_owner). Filing problems never fail the send: the mail just stays in the Inbox.
+                filed, warning = await self.mail.send_to_owner(
+                    self.s.owner_email, f"[Jarvis] {subject}", text_to_html(body))
+                if filed:
+                    sent.append(f"email ('{self.s.owner_mail_folder.strip()}' folder)")
+                elif warning:
+                    sent.append(f"email (Inbox - {warning})")
+                else:
+                    sent.append("email")
             except Exception as e:  # noqa: BLE001
                 log.warning("Email update failed: %s", e)
         self.bus.publish("owner_update", {"subject": subject, "body": body, "channels": sent})

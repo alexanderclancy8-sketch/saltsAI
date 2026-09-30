@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     ms_client_id: str = ""
     ms_client_secret: str = ""
     ms_mailbox: str = ""  # e.g. alex.clancy@saltsfireandsecurity.co.uk
+    # Outlook folder (in MS_MAILBOX) that Jarvis's own emails to the owner are filed into instead of the Inbox.
+    # Matched by display name, case-insensitive. Blank = leave them in the Inbox.
+    owner_mail_folder: str = "salts jarvis"
     teams_webhook_url: str = ""  # Teams "Workflows" incoming webhook for updates
     # Teams chat: a proper conversational bot (Bot Framework) so the owner/partner can message Jarvis from their
     # phone in Teams, not just post one-way updates. Its own Entra app - see `deploy.sh teamsbot`.
