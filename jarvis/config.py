@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     jarvis_fallbacks: bool = True
     jarvis_compaction: bool = True
     web_search_enabled: bool = True  # lets Jarvis search/fetch the web like Claude chat
+    # Learn the owner's usual typed replies and offer them as ghost text in the chat box (Right Arrow accepts).
+    # Only ever prefills the input - never sends or approves anything. Off = nothing learned or suggested.
+    reply_suggestions_enabled: bool = True
 
     # --- Microsoft 365 (Graph, app-only) --------------------------------
     ms_tenant_id: str = ""

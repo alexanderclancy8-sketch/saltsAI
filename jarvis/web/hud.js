@@ -350,7 +350,7 @@
     } catch { /* ignore */ }
   }
 
-  function send(text, mode = "typed") {
+  function send(text, mode = "typed", opts = {}) {
     text = text.trim();
     if (!text && !S.attachments.length) return;
     S.lastMode = mode;
@@ -363,6 +363,8 @@
     // chat message that follows, so ordering is guaranteed.
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
+    // Only text the owner typed into the chat box may be learned as a "usual reply" (never buttons or speech).
+    if (opts.compose && mode === "typed") payload.compose = true;
     S.attachments = []; renderAttachments();
     if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }
     setHud("thinking");
@@ -390,10 +392,65 @@
     }
   }
 
-  $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send($("#input").value, "typed"); $("#input").value = ""; autosize(); });
+  $("#composer").addEventListener("submit", (e) => {
+    e.preventDefault(); send($("#input").value, "typed", { compose: true }); $("#input").value = ""; autosize();
+    RS.dismissed = null; RS.text = null; rsRender();
+  });
   const autosize = () => { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; };
-  $("#input").addEventListener("input", autosize);
+  $("#input").addEventListener("input", () => { autosize(); rsSoon(); });
   $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
+
+  // ------------------------------------------------------------------ learned reply suggestion
+  // The server learns the owner's usual typed replies (services/reply_suggestions.py) and offers the likeliest one
+  // as a small greyed hint above the box. Right Arrow with the caret at the very end copies it into the box;
+  // that is ALL it does - it never sends (Enter does, as normal) and has nothing to do with approvals. Esc dismisses.
+  const RS = { text: null, dismissed: null, seq: 0, timer: null };
+  const rsVisible = () => !$("#reply-hint").hidden;
+  function rsRender() {
+    const v = $("#input").value;
+    const ok = RS.text && RS.text !== RS.dismissed && RS.text.length > v.length && RS.text.toLowerCase().startsWith(v.toLowerCase());
+    $("#reply-hint").hidden = !ok;
+    if (ok) $("#reply-hint-text").textContent = RS.text;
+  }
+  async function rsFetch() {
+    const prefix = $("#input").value;
+    const seq = ++RS.seq;
+    if (prefix.length > 80 || prefix.includes("\n")) { RS.text = null; rsRender(); return; }
+    try {
+      const d = await (await api("/api/reply-suggestion?prefix=" + encodeURIComponent(prefix))).json();
+      if (seq !== RS.seq || $("#input").value !== prefix) return; // typed on meanwhile
+      RS.text = d.text || null;
+    } catch { RS.text = null; }
+    rsRender();
+  }
+  function rsSoon() {
+    clearTimeout(RS.timer);
+    const v = $("#input").value;
+    // Already showing something that still fits what's typed: no need to ask again.
+    if (v && RS.text && RS.text.length > v.length && RS.text.toLowerCase().startsWith(v.toLowerCase())) { rsRender(); return; }
+    RS.text = null; rsRender();
+    RS.timer = setTimeout(rsFetch, 150);
+  }
+  $("#input").addEventListener("keydown", (e) => {
+    if (e.isComposing || !rsVisible()) return;
+    if (e.key === "ArrowRight" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const t = $("#input"), end = t.value.length;
+      if (t.selectionStart !== end || t.selectionEnd !== end) return; // caret isn't at the end: normal cursor movement
+      e.preventDefault();
+      t.value = t.value + RS.text.slice(end);
+      t.setSelectionRange(t.value.length, t.value.length);
+      RS.text = null; rsRender(); autosize();
+    } else if (e.key === "Escape") {
+      RS.dismissed = RS.text; rsRender(); // other Esc handlers (stop speaking, close panels) still run as before
+    }
+  });
+  $("#reply-hint-forget").addEventListener("click", async () => {
+    const text = RS.text; if (!text) return;
+    RS.text = null; rsRender();
+    try { await api("/api/reply-suggestions/forget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) }); toast("Forgotten", `I won't suggest "${text}" again until you've used it a few more times.`); } catch { /* ignore */ }
+    $("#input").focus();
+  });
+  rsSoon();
   // Tapping one of these is standing in for asking it out loud - so it should get spoken back the same way,
   // not go silent just because the question arrived as a click rather than actual speech.
   $("#quick").addEventListener("click", (e) => {
@@ -467,6 +524,7 @@
         caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
         current = null;
         refreshSoon();
+        rsSoon(); // Jarvis's new reply changes the situation the suggestion is matched to
         break;
       case "error":
         if (current) current.remove();
