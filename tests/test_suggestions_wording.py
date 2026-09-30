@@ -20,7 +20,9 @@ def script_wording(j, candidates, transform):
 
 
 def parse_calls(j):
-    return len(j.client.beta.messages.calls)
+    """Only the wording-composition calls - _candidates() also triggers unrelated pre-existing LLM calls
+    (e.g. j.ooh.calls()'s out-of-hours report extraction), which aren't what this counts."""
+    return sum(1 for c in j.client.beta.messages.calls if c.get("output_format") is sug.WordedLines)
 
 
 async def test_fallback_to_template_text_when_llm_output_unusable(settings):
