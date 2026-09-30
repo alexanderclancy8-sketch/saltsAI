@@ -251,6 +251,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("voice_ack_fillers", "Say a short acknowledgment while thinking", "bool",
                   "When you ask something out loud and the answer takes a couple of seconds, Jarvis says one "
                   "short line like \"Let me check the accounts.\" Never for typed questions.", advanced=True),
+            Field("voice_silence_ms", "Pause before Jarvis takes your turn as finished (ms)", "number",
+                  "How long a silence counts as the end of what you're saying when using push-to-talk. 1200 is "
+                  "normal; Jarvis waits a little longer if you trail off on \"and\", \"so\" or \"um\".", advanced=True),
         ),
         test=True,
     ),

@@ -8,7 +8,7 @@
     set(k, v) { try { localStorage.setItem("jarvis." + k, v); } catch { /* private mode */ } },
   };
   const S = {
-    status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB", ack_fillers: true },
+    status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB", ack_fillers: true, silence_ms: 1200 },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
@@ -344,8 +344,51 @@
   const ECHO_TAIL_MS = 2500;      // how long past the end of speech the mic might still be hearing its tail
   const RECENT_TTS_MS = 60000;    // how long we remember what we said
   const RECENT_MATCH_MS = 20000;  // outside the echo window, only compare against very recent speech
-  const PTT_SILENCE_MS = 1200;    // push-to-talk: this long after the last final result counts as end of speech
+  const PTT_SILENCE_MS = 1200;    // push-to-talk: default for how long after the last final result counts as end of speech
   const normWords = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+
+  // ------------------------------------------------------------------ end-of-turn tolerance
+  // The silence that ends a push-to-talk turn is the `voice_silence_ms` setting (S.voice.silence_ms), clamped to a
+  // sane range, and a little longer when the owner has clearly not finished: the last words are a filler/connective
+  // ("and", "so", "um"...) or the text ends on a comma / ellipsis. Only affects how long stt.finalHeard() waits.
+  const SILENCE_MIN_MS = 600, SILENCE_MAX_MS = 5000;
+  const TRAILING_EXTRA_MS = 1200;
+  const TRAILING_FILLERS = new Set(["and", "so", "um", "uh", "er", "erm", "but", "or", "then", "because", "like", "also", "plus", "well"]);
+  function endOfTurnMs(text) {
+    const configured = Number(S.voice.silence_ms);
+    const base = Math.min(SILENCE_MAX_MS, Math.max(SILENCE_MIN_MS, Number.isFinite(configured) && configured > 0 ? configured : PTT_SILENCE_MS));
+    const words = normWords(text);
+    const unfinished = TRAILING_FILLERS.has(words[words.length - 1]) || /(,|…|\.\.\.)\s*$/.test(String(text || "").trim());
+    return base + (unfinished ? TRAILING_EXTRA_MS : 0);
+  }
+
+  // ------------------------------------------------------------------ fuzzy echo match
+  // Speech-to-text often garbles Jarvis's own voice coming back in, so an exact-substring match misses it. Anything
+  // that is a close fuzzy match (word-overlap Dice similarity over the best-aligned stretch) for what Jarvis said in
+  // the last ECHO_SIMILAR_MS is dropped. Needs ECHO_MIN_WORDS words so a bare "yes"/"go on" is never treated as echo.
+  const ECHO_SIMILAR_MS = 10000;
+  const ECHO_SIMILARITY = 0.8;
+  const ECHO_MIN_WORDS = 3;
+  const wordCounts = (words) => { const m = new Map(); words.forEach((w) => m.set(w, (m.get(w) || 0) + 1)); return m; };
+  function windowSimilarity(heard, said) {
+    if (!heard.length || !said.length) return 0;
+    const n = Math.min(heard.length, said.length);
+    const hc = wordCounts(heard);
+    let best = 0;
+    for (let i = 0; i + n <= said.length; i++) {
+      const wc = wordCounts(said.slice(i, i + n));
+      let overlap = 0;
+      hc.forEach((c, w) => { overlap += Math.min(c, wc.get(w) || 0); });
+      best = Math.max(best, (2 * overlap) / (heard.length + n));
+    }
+    return best;
+  }
+  function similarToRecentReply(words) {
+    if (words.length < ECHO_MIN_WORDS) return false;
+    const now = Date.now();
+    const said = speaker.recent.filter((r) => now - r.at < ECHO_SIMILAR_MS).flatMap((r) => normWords(r.text));
+    return windowSimilarity(words, said) >= ECHO_SIMILARITY;
+  }
   const echoWindowOpen = () => speaker.active || speaker.browserSpeaking || Date.now() - speaker.lastSpokeAt < ECHO_TAIL_MS;
 
   // ------------------------------------------------------------------ barge-in
@@ -419,6 +462,7 @@
     if (!content.length) return false;
     // A short, explicit "stop"/"quiet" is always allowed through - that's how the owner interrupts.
     if (content.length <= 4 && STOP_PHRASE_TEST_RE.test(content.join(" "))) return false;
+    if (similarToRecentReply(content)) return true; // a close (fuzzy) copy of what Jarvis said in the last ~10s
     const inWindow = echoWindowOpen();
     const now = Date.now();
     const recent = speaker.recent.filter((r) => now - r.at < (inWindow ? RECENT_TTS_MS : RECENT_MATCH_MS));
@@ -958,7 +1002,7 @@ function send(text, mode = "typed", opts = {}) {
     finalHeard() {
       if (S.listenMode === "wake") { this.commit(); return; }
       clearTimeout(this.silenceTimer);
-      this.silenceTimer = setTimeout(() => this.commit(), PTT_SILENCE_MS);
+      this.silenceTimer = setTimeout(() => this.commit(), endOfTurnMs(this.finals));
     },
     // keepSpeaking: the mic is being opened in the background (follow-up window, reconnect) rather than by the owner
     // pressing the mic - so it must not cut Jarvis off or overwrite the thinking/speaking display. Without it,
@@ -1253,6 +1297,7 @@ function send(text, mode = "typed", opts = {}) {
     // A tap must always have a real "off" to reach. Before this, tapping while the free wake-word listener
     // (sentry) was active jumped straight to starting the real microphone instead of stopping - so in
     // always-listening mode the mic looked permanently lit, since there was never a path back to fully off.
+    if (micPressBargeIn()) return;
     if (stt.on) { stt.stop(true); return; }
     if (sentry.on) { sentry.stop(); return; }
     stt.start();
@@ -1276,12 +1321,25 @@ function send(text, mode = "typed", opts = {}) {
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     else api("/api/interrupt", { method: "POST" }).catch(() => {});
   }
+  // Barge-in by hand: pressing the mic (or holding Space) while Jarvis is speaking cuts him off - audio, queued
+  // sentences and the turn still streaming the rest of the reply - and opens the mic for the owner instead of
+  // toggling it off. Returns true if it handled the press. Deliberately separate from the mic click handler and
+  // stt.start()/stop() so it stays independent of the mic start/stop logic.
+  function micPressBargeIn() {
+    if (!(speaker.active || speaker.queue.length || speaker.browserSpeaking)) return false;
+    stopEverything();
+    sentry.stop();
+    if (!stt.on) stt.start();
+    else { setHud("listening"); caption("", "Listening…"); }
+    return true;
+  }
   $("#btn-stop").addEventListener("click", stopEverything);
   window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#btn-stop").hidden) stopEverything(); });
   let spaceHeld = false;
   window.addEventListener("keydown", (e) => {
     if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
-    e.preventDefault(); spaceHeld = true; stt.start();
+    e.preventDefault(); spaceHeld = true;
+    if (!micPressBargeIn()) stt.start();
   });
   window.addEventListener("keyup", (e) => { if (e.code === "Space" && spaceHeld) { spaceHeld = false; stt.stop(true); } });
 

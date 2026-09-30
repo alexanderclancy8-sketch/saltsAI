@@ -77,6 +77,7 @@ class Voice:
             "language": self.s.stt_language,
             "voice": voice,
             "ack_fillers": bool(self.s.voice_ack_fillers),
+            "silence_ms": int(self.s.voice_silence_ms),
         }
 
     # ------------------------------------------------------------------ TTS

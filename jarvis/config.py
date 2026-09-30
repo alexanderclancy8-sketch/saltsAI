@@ -231,6 +231,9 @@ class Settings(BaseSettings):
     # Voice mode only: if a spoken question hasn't started being answered after ~1.8s, say ONE short
     # acknowledgment ("Let me check the accounts."). Turn-scoped and off for typed turns - see hud.js's `filler`.
     voice_ack_fillers: bool = True
+    # Push-to-talk / browser-mic only: how long (ms) after the last final speech result counts as the end of the
+    # turn. hud.js adds a little extra after trailing fillers ("and", "so", "um") and clamps this to 600-5000.
+    voice_silence_ms: int = 1200
 
     # --- Schedules ----------------------------------------------------------
     briefing_cron: str = "45 7 * * 1-5"
