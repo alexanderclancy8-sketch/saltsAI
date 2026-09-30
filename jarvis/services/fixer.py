@@ -25,7 +25,7 @@ from typing import Any, Literal
 import anthropic
 from pydantic import BaseModel, ValidationError
 
-from ..brain import llm
+from ..brain import llm, plugins
 from ..config import Settings
 from ..db import Database
 from ..events import EventBus
@@ -190,8 +190,8 @@ class Fixer:
         if self.s.effective_llm_backend == "max":
             return await self._run_engineer_max(issue, ws)
         params = llm.request_params(self.s, self.s.engineer_effort)
-        system = ENGINEER_SYSTEM.format(company=self.s.company_name)
-        report = (f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
+        system = plugins.with_methodology(ENGINEER_SYSTEM.format(company=self.s.company_name), self.s)
+        report =(f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
                   f"{issue['description']}\n</problem_report>\n\nTriage notes: {issue.get('triage_json') or 'none'}\n\n"
                   "Find and fix the root cause in /repo.")
         messages: list[dict[str, Any]] = [{"role": "user", "content": report}]
@@ -262,9 +262,12 @@ class Fixer:
                   f"{issue['description']}\n</problem_report>\n\nTriage notes: {issue.get('triage_json') or 'none'}\n\n"
                   "Find and fix the root cause in this repository.")
         tools = ["Read", "Edit", "Write", "Glob", "Grep"]
+        docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
+        system = plugins.with_methodology(system, self.s) + docs.prompt
         result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort, tools=tools,
                                 disallowed_tools=ENGINEER_BLOCKED,
-                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root))
+                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
+                                mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():
             return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or f"Fix issue #{issue['id']}",

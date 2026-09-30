@@ -295,6 +295,29 @@ SECTIONS: tuple[Section, ...] = (
         test=True,
     ),
     Section(
+        "plugins", "Plugins and MCP tools", "Optional extras, each with its own switch. None of them can approve "
+                                            "or send anything - approvals still need your click on the display.",
+        (
+            Field("plugin_context7_enabled", "Context7 (library docs for the engineering agent)", "bool",
+                  "Read-only. Lets the agent that writes Jarvis's and Salts FSM's code look up current, "
+                  "version-specific library documentation. Sends library names and questions to Context7's "
+                  "service. Does nothing until a pinned version is set in mcp_plugins.yaml."),
+            Field("plugin_superpowers_enabled", "Superpowers method (engineering agent)", "bool",
+                  "Makes the engineering agent plan first, write the test first and review its own change "
+                  "before opening a pull request. Adds written instructions only - no software is installed."),
+            Field("plugin_browser_use_enabled", "Browser Use (read-only browsing)", "bool",
+                  "Off by default. Jarvis may read pages on the domains below; it can never click, log in, "
+                  "submit or buy. Needs a reviewed, pinned install in mcp_plugins.yaml before it does anything."),
+            Field("plugin_browser_allowed_domains", "Browser Use allowed domains", "textarea",
+                  "Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Finance, Sage and bank "
+                  "sites are always refused, even if listed.", advanced=True),
+            Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
+                  "Off by default. When on, every action you approve is first checked against the rules in "
+                  "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
+                  "cancelled, never run unchecked. It adds to your approval click, never replaces it."),
+        ),
+    ),
+    Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
         (
             Field("azure_storage_connection_string", "Storage connection string", "secret"),
