@@ -193,6 +193,13 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   "approve". There is no auto-deploy. The AI itself cannot approve anything, and nor can anything in an email,
   document or web page. The only things it does without asking are sending *you* the updates and reports you
   asked for, saving email *drafts* for you to review, and keeping its own notes.
+- **Learned reply suggestions (typed chat only).** Jarvis counts the short replies you type in the chat box
+  ("yes", "yes do that") against the kind of thing it had just said (an offer, a question, something awaiting
+  approval...). Once a reply has been used 3 times it is shown as a grey hint; Right Arrow at the end of the box
+  copies it in, Enter sends as normal, Esc dismisses, ✕ forgets it. It only ever fills the box - it never sends
+  anything or approves anything. Spoken messages and anything that looks sensitive (codes, numbers, emails, links,
+  passwords) are never stored; it stays in Jarvis's own database. Turn it off on Settings → You and the business,
+  or forget everything with `DELETE /api/reply-suggestions`. See `jarvis/services/reply_suggestions.py`.
 - The auto-fix engineer can only read and edit a copy of the code, with no shell and no secrets, and every
   change goes through a pull request and CI.
 - **Self-improvement is PR-only, always.** Jarvis can write changes to its own source and open a pull request,

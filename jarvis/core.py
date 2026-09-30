@@ -44,6 +44,7 @@ from .services.ppm_planner import PPMPlanner
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
+from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
 from .services.self_improve import SelfImprove
@@ -123,6 +124,7 @@ class Jarvis:
         self.scheduler = None
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
+        self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
         self.recruiter = Recruiter(self)
         self._seed_notes()

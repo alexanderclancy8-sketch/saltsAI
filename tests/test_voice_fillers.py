@@ -50,7 +50,11 @@ def test_filler_phrases_follow_the_running_tool_with_a_generic_default():
 
 
 def test_filler_is_only_for_spoken_turns_and_only_begun_from_send():
-    assert "function send(text, mode = \"typed\", spoken = false)" in HUD
+    # PR #11 (reply suggestions) changed the third param from a bare `spoken` bool to an `opts` object
+    # (it needs opts.compose); `true` is still accepted and normalized to { spoken: true } for old callers.
+    assert "function send(text, mode = \"typed\", opts = {}) {" in HUD
+    assert "if (opts === true) opts = { spoken: true };" in HUD
+    assert "const spoken = !!opts.spoken;" in HUD
     assert "filler.begin(spoken && mode === \"voice\")" in HUD
     # utterance() is the only caller that marks a turn as spoken; typed/click shortcuts never do
     assert HUD.count(", \"voice\", true)") == 2

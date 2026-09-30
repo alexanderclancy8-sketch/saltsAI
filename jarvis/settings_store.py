@@ -69,6 +69,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("partner_email", "Business partner's email", "email",
                   "Gets the weekly tax and employment-law watch too."),
             Field("company_name", "Company name"),
+            Field("reply_suggestions_enabled", "Suggest my usual replies in the chat box", "bool",
+                  "Jarvis learns the short replies you type often and shows the likeliest as grey text; press the "
+                  "right arrow to accept it, Enter to send. Learned on this server only. Off stops learning and suggesting."),
             Field("jarvis_notes", "Things Jarvis should know", "notes",
                   "One fact per line, e.g. \"First County Monitoring handle our out-of-hours.\" Added to its memory."),
         ),
