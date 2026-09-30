@@ -112,7 +112,8 @@ class IssueService:
         self.db.update_issue(issue_id, triage_json=t.model_dump_json(), severity=t.severity, status="triaged")
         self.bus.publish("issue", self.db.get_issue(issue_id))
         await self.notifier.notify(f"Issue #{issue_id} triaged: {t.category.replace('_', ' ')}, {t.severity}",
-                                   f"{t.summary}\nNext: " + "; ".join(t.suggested_next_steps[:3]), level="info")
+                                   f"{t.summary}\nNext: " + "; ".join(t.suggested_next_steps[:3]), level="info",
+                                   importance="info")
         if t.software_fixable and self.fixer is not None and self.fixer.enabled and self.actions is not None:
             action_id = self.actions.queue(
                 "tool:issue_fix", f"Prepare a code fix for issue #{issue_id} ('{issue['title']}') - written on a branch "
@@ -132,10 +133,11 @@ class IssueService:
         # Only auto-reply to colleagues; anything external goes through the owner.
         if email.lower().endswith("@" + self.s.company_domain.lower()) and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([email], f"Fixed: {issue['title']}",
-                                          f"<p>Hi {issue['reporter'].split()[0]},</p><p>The problem you reported "
-                                          f"(#{issue_id}) has been fixed and deployed.</p><p>{note}</p>"
-                                          "<p>Thanks for reporting it.<br>Jarvis</p>")
+                # A "fixed" confirmation is routine: through the notifier so it can't clog the shared inbox.
+                await self.notifier.send_email([email], f"Fixed: {issue['title']}",
+                                               f"<p>Hi {issue['reporter'].split()[0]},</p><p>The problem you reported "
+                                               f"(#{issue_id}) has been fixed and deployed.</p><p>{note}</p>"
+                                               "<p>Thanks for reporting it.<br>Jarvis</p>", importance="info")
             except Exception as e:  # noqa: BLE001
                 log.warning("Could not email reporter: %s", e)
 

@@ -66,11 +66,12 @@ class ActionExecutor:
         try:
             result = await self._execute(action)
             self.db.set_action_status(action["id"], "done", result)
-            await self.notifier.notify(f"Done: {action['summary'][:120]}", result, level="info", speak=True)
+            await self.notifier.notify(f"Done: {action['summary'][:120]}", result, level="info", speak=True, importance="info")
         except Exception as e:  # noqa: BLE001
             log.exception("Action %s failed", action["id"])
             self.db.set_action_status(action["id"], "failed", str(e)[:1000])
-            await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning")
+            await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning",
+                                       importance="normal")
         self.bus.publish("approvals", self.db.pending_actions())
 
     async def approve(self, action_id: int, by: str | None = None) -> str:

@@ -134,7 +134,8 @@ class SecurityWatch:
                 result = await self._review(ws)
             except Exception as e:  # noqa: BLE001
                 log.exception("Security review failed")
-                await self.notifier.notify("Security review failed", str(e)[:500], level="warning")
+                await self.notifier.notify("Security review failed", str(e)[:500], level="warning",
+                                           importance="normal")
                 return {"error": str(e)[:500]}
 
         new_issue_ids = []
@@ -157,7 +158,7 @@ class SecurityWatch:
             await self.notifier.notify(f"Security review: {len(new_issue_ids)} new finding(s)", result.summary,
                                        level="warning", push=True, speak=True)
         else:
-            await self.notifier.notify("Security review: nothing new", result.summary, level="info")
+            await self.notifier.notify("Security review: nothing new", result.summary, level="info", importance="info")
         return {"reviewed_sha": sha, "new_issues": new_issue_ids, "summary": result.summary,
                 "findings": [f.model_dump() for f in result.findings]}
 
