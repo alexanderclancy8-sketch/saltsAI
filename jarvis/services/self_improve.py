@@ -209,7 +209,7 @@ class SelfImprove:
     async def _engineer_max(self, request: str, ws: Workspace) -> dict[str, Any]:
         """Same job on the Claude subscription: Claude Code's own Read/Edit/Glob/Grep tools, confined to the
         checkout (no shell, no web). Changes are found by comparing with a pristine copy."""
-        from ..brain.max_backend import parse_structured, run_once
+        from ..brain.max_backend import ENGINEER_BLOCKED, parse_structured, run_once
 
         class Outcome(BaseModel):
             outcome: Literal["submit", "give_up"]
@@ -229,6 +229,7 @@ class SelfImprove:
                 "'give_up' with your analysis if there's no safe change to make - that is a good outcome too.")
         result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
                                 effort=self.s.engineer_effort, tools=["Read", "Edit", "Write", "Glob", "Grep"],
+                                disallowed_tools=ENGINEER_BLOCKED,
                                 output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root))
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():

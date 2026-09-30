@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 SERVER = "jarvis"
 CHAT_BUILTINS = ["WebSearch", "WebFetch", "Read"]
 BLOCKED = ["Bash", "Write", "Edit", "NotebookEdit", "KillShell", "Task"]
+# For the engineer-loop callers of run_once() (self_improve.py, fixer.py) that request Write/Edit on purpose,
+# confined to a throwaway Workspace checkout - everything BLOCKED disallows except those two.
+ENGINEER_BLOCKED = ["Bash", "NotebookEdit", "KillShell", "Task"]
 
 
 def sdk_env(settings) -> dict[str, str]:
@@ -307,9 +310,13 @@ class MaxBrain:
 # ---------------------------------------------------------------------------
 
 async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]], effort: str = "medium",
-                   tools: list[str] | None = None, output_schema: dict[str, Any] | None = None,
+                   tools: list[str] | None = None, disallowed_tools: list[str] | None = None,
+                   output_schema: dict[str, Any] | None = None,
                    max_turns: int = 10, cwd: str | None = None):
-    """Single headless Claude Code run; returns the ResultMessage."""
+    """Single headless Claude Code run; returns the ResultMessage. `disallowed_tools` defaults to `BLOCKED`
+    (no shell, no file writes) - pass `ENGINEER_BLOCKED` for a caller that puts Write/Edit in `tools` on
+    purpose (an engineer loop confined to a throwaway Workspace checkout), otherwise those get silently
+    stripped anyway since disallowed_tools wins over allowed_tools."""
     from claude_agent_sdk import ResultMessage, query
 
     tmp = None
@@ -333,7 +340,9 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                 path.write_bytes(base64.b64decode(block["source"]["data"]))
                 text += f"\n[Attached PDF '{block.get('title', '')}': {path} - read it with the Read tool]\n"
     kw: dict[str, Any] = {"system_prompt": system, "effort": effort, "tools": tools or [],
-                          "allowed_tools": tools or [], "disallowed_tools": BLOCKED, "max_turns": max_turns}
+                          "allowed_tools": tools or [],
+                          "disallowed_tools": BLOCKED if disallowed_tools is None else disallowed_tools,
+                          "max_turns": max_turns}
     if output_schema:
         kw["output_format"] = {"type": "json_schema", "schema": output_schema}
     if cwd:
