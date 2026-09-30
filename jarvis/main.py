@@ -270,11 +270,18 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.post("/api/stt", dependencies=[Depends(owner)])
     async def stt(request: Request, audio: UploadFile = File(...)):
         data = await audio.read()
+        if not data:
+            log.warning("STT upload was empty (filename=%s)", audio.filename)
+            return JSONResponse({"detail": "No audio was received"}, status_code=400)
         try:
             text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
         except VoiceError as e:
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
-        return {"text": text}
+        except Exception as e:  # noqa: BLE001 - provider rejected the audio or was unreachable
+            log.warning("STT failed (%d bytes, %s): %s", len(data), audio.content_type, e)
+            return JSONResponse({"detail": f"{type(e).__name__}: {e}"[:300]}, status_code=502)
+        log.info("STT ok: %d bytes, %s, %d chars", len(data), audio.content_type, len(text or ""))
+        return {"text": text or ""}
 
     @app.get("/api/voices", dependencies=[Depends(owner)])
     async def voices(request: Request):
