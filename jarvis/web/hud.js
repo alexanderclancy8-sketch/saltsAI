@@ -11,7 +11,11 @@
     status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB" },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
-    lastMode: "typed", followUpUntil: 0, attachments: [],
+    // followUpUntil: until when a heard utterance may skip the wake word - only ever set by grantFollowUp(), i.e.
+    // after a genuine exchange. micUntil: until when the real mic is kept open (extendFollowUp) - says nothing
+    // about whether the wake word may be skipped. voiceTurn: false | "pending" (accepted spoken request, no reply
+    // yet) | "replied" (reply received, waiting for Jarvis to finish speaking it).
+    lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
     dashOpen: store.get("dashboard", "0") === "1",
   };
 
@@ -260,7 +264,7 @@
     },
     async next() {
       const item = this.queue.shift();
-      if (!item) { this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (this.onIdle) this.onIdle(); return; }
+      if (!item) { this.active = false; this.browserSpeaking = false; this.lastSpokeAt = Date.now(); if (S.hudState === "speaking") setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); if (this.onIdle) this.onIdle(); return; }
       this.active = true; setHud("speaking");
       const url = item.audio ? await item.audio : null;
       if (!this.active) return;
@@ -354,6 +358,7 @@
     text = text.trim();
     if (!text && !S.attachments.length) return;
     S.lastMode = mode;
+    S.voiceTurn = false; // only utterance() marks a turn as a spoken one, after this returns
     speaker.stop();
     // A barge-in (or any new message sent while Jarvis is still mid-reply) must cancel the turn server-side,
     // not just silence local audio - otherwise the old turn keeps running, its own delta/tool/reply events
@@ -463,7 +468,8 @@
           if (toolsSeen.length) current.insertAdjacentHTML("beforeend", `<div class="tools">${esc([...new Set(toolsSeen)].join(" · "))}</div>`);
         } else addMessage("assistant", d.text);
         if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
-        if (!speaker.active) { setHud("idle"); extendFollowUp(); }
+        if (S.voiceTurn === "pending") S.voiceTurn = "replied";
+        if (!speaker.active) { setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); }
         caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
         current = null;
         refreshSoon();
@@ -475,6 +481,7 @@
         // The transcript panel is hidden by default in the minimal orb view, so the caption is the only
         // place a failed reply is otherwise visible - without this an error would fail completely silently.
         caption(d.message);
+        S.voiceTurn = false; // a failed turn is not a genuine exchange
         setHud("idle"); $("#toolline").textContent = ""; extendFollowUp();
         break;
       case "notification":
@@ -842,8 +849,10 @@
   // back off to the free wake-word listener instead of streaming forever.
   const WAKE_LISTEN_MS = 20000; // a real back-and-forth has pauses for thinking - don't make them say "Jarvis" again
   let sleepTimer = null;
+  // This only keeps the microphone open - it deliberately does NOT open the "no wake word needed" window, since
+  // it is also called for errors, stops and Jarvis's own speech finishing. Only grantFollowUp() does that.
   function extendFollowUp(ms = WAKE_LISTEN_MS) {
-    S.followUpUntil = Date.now() + ms;
+    S.micUntil = Date.now() + ms;
     if (S.listenMode !== "wake" || S.voice.stt === "browser") return;
     if (!stt.on) stt.start();
     clearTimeout(sleepTimer);
@@ -851,10 +860,31 @@
   }
   function checkSleep() {
     if (S.listenMode !== "wake" || S.voice.stt === "browser") return;
-    const remaining = S.followUpUntil - Date.now();
+    const remaining = Math.max(S.micUntil, S.followUpUntil) - Date.now();
     if (remaining > 0) { sleepTimer = setTimeout(checkSleep, remaining + 250); return; }
     if (stt.on) stt.stop(false);
     sentry.start();
+  }
+
+  // A genuine exchange just completed: the owner's spoken request was accepted and Jarvis answered it (and has
+  // finished saying it). Only now may the next heard utterance skip the wake word - and utterance() still
+  // refuses that whenever the echo window is open, so Jarvis's own voice tail can never ride on this.
+  function finishVoiceTurn() {
+    S.voiceTurn = false;
+    S.followUpUntil = Date.now() + WAKE_LISTEN_MS;
+    extendFollowUp(); // make sure the mic stays open for as long as the follow-up window does
+  }
+
+  const DROP_TOAST_MS = 15000;   // at most one "say my name" cue per this long
+  let lastDropToastAt = 0;
+  function missingWakeCue(wake, inEchoWindow) {
+    // Inside the echo window a drop is most likely Jarvis's own voice coming back in - a toast would just turn
+    // his echo into visible noise, so those stay caption-only.
+    if (inEchoWindow) return;
+    const now = Date.now();
+    if (now - lastDropToastAt < DROP_TOAST_MS) return;
+    lastDropToastAt = now;
+    toast("Didn't catch that with my name", `Say '${S.voice.wake_word || wake}' first`);
   }
 
   // Two separate regex objects, deliberately - a single /g-flagged RegExp used with both .test() and .replace()
@@ -872,6 +902,9 @@
     // Jarvis's own voice - repeated wake phrases mashed together, or a close match for what he recently said -
     // is dropped outright, in every listen mode, and can never be treated as the owner asking something.
     if (looksLikeSelfEcho(text)) return;
+    // Sampled once, up front, before anything below (e.g. speaker.stop()) can change it: the follow-up exception
+    // and the drop toast both depend on this, and neither may ever apply while the echo window is open.
+    const inEchoWindow = echoWindowOpen();
     // Echo cancellation is never perfect without headphones, and room echo/output buffering trails on past
     // the moment playback actually stops - so the mic can pick up the tail end of Jarvis's own voice just
     // after speaker.active has already gone false (right when extendFollowUp() opens the real mic back up).
@@ -908,18 +941,28 @@
     }
     if (addressed && S.approvals.length === 1 && /^(deny|cancel|don't|do not|no,? (cancel|don't))\b/.test(bare)) { decide(S.approvals[0].id, "deny"); return; }
     if (S.listenMode === "wake") {
-      // The wake word is required on every single utterance now, with no "quick follow-up, skip repeating
-      // Jarvis" exception - that exception was a real, reported source of false triggers: anything heard
-      // during the old 20s follow-up window (including a stray or delayed echo of Jarvis's own voice) got
-      // treated as a genuine command unconditionally, with none of the active-speech echo protection above
-      // applying to it. extendFollowUp()/WAKE_LISTEN_MS still matter for a different reason - keeping the
-      // real microphone open rather than dropping back to the free wake-word-only spotter - just not for
-      // skipping the wake word itself any more.
+      // The wake word is required unless there has just been a genuine exchange (S.followUpUntil, set only by
+      // finishVoiceTurn()) AND the echo window is closed. The earlier version of this exception was a source of
+      // false triggers because it applied even to a stray/delayed echo of Jarvis's own voice; here it can never
+      // apply while echoWindowOpen(), where the strict wake-word-or-stop-phrase allowlist above still rules.
       const idx = lower.indexOf(wake);
-      if (idx === -1) { caption("", `(heard: "${text.slice(0, 60)}")`); return; }
+      if (idx === -1) {
+        if (inEchoWindow || Date.now() >= S.followUpUntil) {
+          caption("", `(heard: "${text.slice(0, 60)}")`);
+          missingWakeCue(wake, inEchoWindow);
+          return;
+        }
+        send(text, "voice"); S.voiceTurn = "pending"; // accepted follow-up: a real spoken request
+        return;
+      }
       const cmd = text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "");
-      if (!cmd) { setHud("awaiting"); extendFollowUp(); say("Yes, sir?"); return; }
-      send(cmd, "voice");
+      if (!cmd) {
+        setHud("awaiting"); extendFollowUp(); say("Yes, sir?");
+        // The wake word alone and Jarvis's prompt back is an exchange too - the next words are the request.
+        if (S.speakPref === "off" || !speaker.active) finishVoiceTurn(); else S.voiceTurn = "replied";
+        return;
+      }
+      send(cmd, "voice"); S.voiceTurn = "pending";
     } else send(text, "voice");
   }
 
@@ -941,6 +984,7 @@
       if (!current.dataset.raw) current.remove(); else body.innerHTML = md(current.dataset.raw) + `<div class="tools">Stopped.</div>`;
       current = null;
     }
+    S.voiceTurn = false; // an interrupted turn is not a genuine exchange
     setHud("idle");
     $("#toolline").textContent = "";
     // Tell the backend too, so it actually stops generating and the next message doesn't queue behind it.
