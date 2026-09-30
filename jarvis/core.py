@@ -69,7 +69,7 @@ class Jarvis:
         self.kb = KnowledgeBase(settings.knowledge_dir)
 
         # integrations (demo stand-ins where not configured)
-        self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail()
+        self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail(s)
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)

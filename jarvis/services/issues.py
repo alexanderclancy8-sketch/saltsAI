@@ -135,7 +135,7 @@ class IssueService:
                 await self.mail.send_mail([email], f"Fixed: {issue['title']}",
                                           f"<p>Hi {issue['reporter'].split()[0]},</p><p>The problem you reported "
                                           f"(#{issue_id}) has been fixed and deployed.</p><p>{note}</p>"
-                                          "<p>Thanks for reporting it.<br>Jarvis</p>")
+                                          "<p>Thanks for reporting it.<br>Jarvis</p>", sensitivity="general")
             except Exception as e:  # noqa: BLE001
                 log.warning("Could not email reporter: %s", e)
 

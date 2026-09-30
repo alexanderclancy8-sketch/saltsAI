@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # Microsoft 365 accounts let in through Azure's Microsoft sign-in, comma-separated (set by
     # `bash infra/deploy.sh signin ...`). Everyone listed gets full access, including approvals.
     manager_emails: str = ""
+    # Management-only mail rule (jarvis/integrations/mail_guard.py). Finance/management/HR content may only be
+    # emailed to management: OWNER_EMAIL, PARTNER_EMAIL (Chun) and any extra addresses here (comma-separated).
+    management_emails: str = ""
+    # Shared inboxes that must never receive (or be cc'd/bcc'd on) management content. "info@" means that mailbox on
+    # COMPANY_DOMAIN; a full address or "@domain" also works. OOH_MAILBOX is always treated as shared.
+    shared_mailboxes: str = "info@,accounts@,admin@,office@,sales@,enquiries@,support@,hello@,service@"
     timezone: str = "Europe/London"
     public_base_url: str = "http://localhost:8000"
 
@@ -231,6 +237,17 @@ class Settings(BaseSettings):
     @property
     def managers(self) -> set[str]:
         return {e.strip().lower() for e in self.manager_emails.split(",") if e.strip()}
+
+    @property
+    def management_address_entries(self) -> set[str]:
+        """Owner + business partner + MANAGEMENT_EMAILS, lower-cased (mail_guard removes any shared inbox)."""
+        raw = [self.owner_email, self.partner_email, *self.management_emails.split(",")]
+        return {e.strip().lower() for e in raw if e and e.strip()}
+
+    @property
+    def shared_mailbox_entries(self) -> set[str]:
+        raw = [*self.shared_mailboxes.split(","), self.ooh_mailbox]
+        return {e.strip().lower() for e in raw if e and e.strip()}
 
     def person(self, email: str) -> str:
         """Friendly name for a signed-in manager."""

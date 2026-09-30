@@ -83,6 +83,10 @@ class SendIn(BaseModel):
     subject: str
     body: str = Field(description="Plain text body")
     cc: list[str] = []
+    management_only: bool = Field(False, description="Set true for finance/management content (cash, debtors, P&L, "
+                                  "VAT/tax, cashflow, business health, HR/staff performance, renewals pricing, "
+                                  "tenders, audit gaps). Such mail can only go to management (the owner/partner), never "
+                                  "a shared inbox such as info@. Internal-only emails are treated as management anyway.")
 
 
 class OwnerUpdateIn(BaseModel):
@@ -506,8 +510,13 @@ async def email_draft_reply(j, a: DraftIn):
 
 
 async def email_send(j, a: SendIn):
-    await j.mail.send_mail(a.to, a.subject, _html(a.body), a.cc or None)
-    return f"Email sent to {', '.join(a.to)}."
+    # The mail layer enforces the management-only recipient rule (it may rewrite/drop shared inboxes, or refuse).
+    sent = await j.mail.send_mail(a.to, a.subject, _html(a.body), a.cc or None,
+                                  sensitivity="management" if a.management_only else None)
+    to = getattr(sent, "to", None) or a.to
+    note = f" (recipients adjusted by the management-only mail rule: {'; '.join(sent.changes)})" \
+        if getattr(sent, "changes", None) else ""
+    return f"Email sent to {', '.join(to)}.{note}"
 
 
 def _html(text: str) -> str:
