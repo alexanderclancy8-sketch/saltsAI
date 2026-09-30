@@ -80,7 +80,8 @@ class IssueService:
         if notify:
             level = "critical" if severity == "critical" else "warning" if severity == "high" else "info"
             await self.notifier.notify(f"New issue #{issue_id} from {reporter}: {title}", description[:600],
-                                       level=level, push=True, speak=True)
+                                       level=level, push=True, speak=True,
+                                       fix=source == "security_watch")  # security-review findings follow the fix channels
         if process:
             self._spawn(self.process(issue_id))
         return issue

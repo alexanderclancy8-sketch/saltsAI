@@ -134,13 +134,13 @@ class SelfImprove:
                 changes = ws.changed_files()
                 if outcome["kind"] != "submit" or not changes:
                     analysis = outcome.get("analysis") or "No change was made."
-                    await self.notifier.notify("Nothing to propose", analysis[:800], level="info")
+                    await self.notifier.notify("Nothing to propose", analysis[:800], level="info", fix=True)
                     return {"outcome": "give_up", "analysis": analysis}
                 fix = outcome["fix"]
                 diff = ws.diff()
         except Exception as e:  # noqa: BLE001
             log.exception("Self-improvement attempt failed")
-            await self.notifier.notify("Self-improvement attempt failed", str(e)[:500], level="warning")
+            await self.notifier.notify("Self-improvement attempt failed", str(e)[:500], level="warning", fix=True)
             return {"error": str(e)[:500]}
 
         branch = f"jarvis/self-{base_sha[:7]}-{int(time.time())}"
@@ -152,7 +152,7 @@ class SelfImprove:
         await self.notifier.notify(
             f"Pull request ready: {fix.pr_title}",
             f"{fix.summary}\nPR: {pr['url']}\nRisk: {fix.risk}. Review and merge it yourself when you're happy "
-            "with it - I won't touch it further.", level="info", push=True, speak=True)
+            "with it - I won't touch it further.", level="info", push=True, speak=True, fix=True)
         self._spawn(self.watch_ci(pr["number"], pr["head_sha"], fix.pr_title))
         return {"pr_url": pr["url"], "risk": fix.risk, "diff": diff[:20000]}
 
@@ -276,8 +276,8 @@ class SelfImprove:
             await self.notifier.notify(
                 "CI failed on the self-improvement pull request",
                 f"\"{title}\" (PR #{pr_number}) - failing checks: {', '.join(state['failed'])}. Worth a look "
-                "before merging.", level="warning")
+                "before merging.", level="warning", fix=True)
         elif state["state"] == "success":
             await self.notifier.notify(
                 "CI passed on the self-improvement pull request",
-                f"\"{title}\" (PR #{pr_number}) is green and ready for your review.", level="info")
+                f"\"{title}\" (PR #{pr_number}) is green and ready for your review.", level="info", fix=True)

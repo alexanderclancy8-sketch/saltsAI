@@ -120,7 +120,16 @@ SECTIONS: tuple[Section, ...] = (
     ),
     Section(
         "teams", "Teams updates", "Jarvis posts your updates and alerts to a Teams channel.",
-        (Field("teams_webhook_url", "Channel webhook URL", "secret"),),
+        (
+            Field("teams_webhook_url", "Channel webhook URL", "secret"),
+            Field("fix_notify_channels", "Fix and pull request alerts", "select",
+                  "Fixes, pull requests and security findings always show on the display and issues list. "
+                  "This picks what else gets told.",
+                  options=(("teams", "Teams only"), ("teams,email", "Teams and email"),
+                           ("none", "Display only"))),
+            Field("fix_notify_email", "Email for fix alerts", "email",
+                  "Only used if email is switched on above. Blank = your email.", advanced=True),
+        ),
         required=("teams_webhook_url",),
         test=True,
         guide=(

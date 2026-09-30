@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     teams_bot_app_password: str = ""
     teams_bot_tenant_id: str = ""
     issue_email_tag: str = "[ISSUE]"
+    # Fix / pull-request notifications (PR ready, CI results, fix live, security-review findings). They always
+    # appear on the display and the issues list; this picks the extra channels, comma-separated from
+    # "teams" and "email" ("none" = display only). Default Teams only - email is off.
+    fix_notify_channels: str = "teams"
+    # Where the fix emails go IF "email" is enabled above. Blank = the owner's email.
+    fix_notify_email: str = ""
     # Out-of-hours answering service: the address/domain (or a subject word) of their call-report emails
     ooh_email_from: str = ""
     ooh_mailbox: str = ""  # mailbox the reports arrive in (e.g. info@...); defaults to MS_MAILBOX
@@ -234,6 +240,12 @@ class Settings(BaseSettings):
     @property
     def managers(self) -> set[str]:
         return {e.strip().lower() for e in self.manager_emails.split(",") if e.strip()}
+
+    @property
+    def fix_channels(self) -> tuple[str, ...]:
+        """Extra channels (besides the display) for fix / PR notifications - a subset of teams and email."""
+        wanted = {c.strip().lower() for c in self.fix_notify_channels.replace(";", ",").replace("+", ",").split(",")}
+        return tuple(c for c in ("teams", "email") if c in wanted)
 
     def person(self, email: str) -> str:
         """Friendly name for a signed-in manager."""
