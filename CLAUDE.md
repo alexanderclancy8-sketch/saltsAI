@@ -136,3 +136,7 @@ once, not per-transport. Voice wake-word listening for cost-free "always listeni
 Barge-in (talking over Jarvis) lives in `utterance()`'s echo-window block: the window stays a strict allowlist (wake
 word or stop phrase only); stop phrases always cut the turn via `stopEverything()`, the wake word additionally needs
 the `bargein` setting on, `bargeInAllowed()`, and to not match Jarvis's own recent speech. Tests: `tests/test_hud_bargein.py`.
+Pressing the mic/Space while he speaks cuts the whole turn (`micPressBargeIn()`). The push-to-talk silence timeout is the
+`voice_silence_ms` setting plus a little extra after trailing fillers (`endOfTurnMs()`); `looksLikeSelfEcho()` also drops
+fuzzy copies of what he said in the last 10s. A user message near-identical to the previous one within 60s gets a
+"[possible repeat: ...]" line under its tag from both brains (`jarvis/brain/repeats.py`). Tests: `tests/test_voice_flow.py`.

@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 
 from . import plugins
 from .prompts import build_system
+from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ class MaxBrain:
         self._client = None
         self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
+        self._repeats = RepeatDetector()
         self.refresh_system()
 
     def refresh_system(self) -> None:
@@ -247,8 +249,9 @@ class MaxBrain:
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
+        repeat = repeat_note(self._repeats.check(text))
         files = self._save_attachments(attachments)
-        note = ("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
+        note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
         db.add_transcript("user", text)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode})
@@ -260,7 +263,7 @@ class MaxBrain:
         try:
             client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
                                            self.s.model_for(mode))
-            await client.query(f"{tag}\n{text}{note}")
+            await client.query(f"{tag}\n{repeat}{text}{note}")
             async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):
                     ev = msg.event or {}
