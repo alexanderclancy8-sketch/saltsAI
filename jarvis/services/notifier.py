@@ -21,25 +21,35 @@ class Notifier:
         self.teams = teams
 
     async def notify(self, title: str, body: str = "", level: str = "info", push: bool | None = None,
-                     speak: bool = False) -> None:
+                     speak: bool = False, fix: bool = False) -> None:
+        """`fix=True` marks fix / pull-request / security-finding notifications: the display (and issues list) always
+        get them, but any Teams/email push follows the FIX_NOTIFY_CHANNELS setting (default Teams only)."""
         nid = self.db.add_notification(level, title, body)
         self.bus.publish("notification", {"id": nid, "level": level, "title": title, "body": body, "speak": speak})
         if push is None:
             push = level in ("warning", "critical")
         if push:
-            await self.send_owner_update(title, body, channels=("teams", "email"))
+            if fix:
+                channels = self.s.fix_channels
+                if channels:
+                    await self.send_owner_update(title, body, channels=channels,
+                                                 email_to=self.s.fix_notify_email or None)
+            else:
+                await self.send_owner_update(title, body, channels=("teams", "email"))
 
-    async def send_owner_update(self, subject: str, body: str, channels: tuple[str, ...] | list[str] = ("teams",)) -> str:
+    async def send_owner_update(self, subject: str, body: str, channels: tuple[str, ...] | list[str] = ("teams",),
+                                email_to: str | None = None) -> str:
         sent = []
+        recipient = email_to or self.s.owner_email
         if "teams" in channels and self.teams.enabled:
             try:
                 await self.teams.post(subject, body)
                 sent.append("Teams")
             except Exception as e:  # noqa: BLE001 - never let a notification failure break the caller
                 log.warning("Teams update failed: %s", e)
-        if "email" in channels and self.s.owner_email and not getattr(self.mail, "demo", True):
+        if "email" in channels and recipient and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([self.s.owner_email], f"[Jarvis] {subject}", text_to_html(body))
+                await self.mail.send_mail([recipient], f"[Jarvis] {subject}", text_to_html(body))
                 sent.append("email")
             except Exception as e:  # noqa: BLE001
                 log.warning("Email update failed: %s", e)
