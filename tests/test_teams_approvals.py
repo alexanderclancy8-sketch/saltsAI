@@ -332,7 +332,7 @@ def test_an_action_that_ran_automatically_says_so(settings, monkeypatch):
     h = Harness(settings, monkeypatch)
 
     async def go():
-        return h.j.actions.queue("fsm_write", "x", {"method": "POST", "path": "/customers", "body": {"name": "A"}})
+        return h.j.actions.queue("fsm_write", "x", {"method": "POST", "path": "/customers", "body": {"name": "A", "created_by": "Jarvis"}})
 
     # queue() inside a running loop so the standing approval applies
     action_id = asyncio.run(go())
@@ -597,7 +597,7 @@ async def test_an_automatic_run_sends_an_info_message_not_an_approval_card(setti
     j.actions.fsm = type("F", (), {"demo": False, "write": staticmethod(lambda *a, **k: _done())})()
     hello(j, OWNER, "c-owner")
     action_id = j.actions.queue("fsm_write", "x", {"method": "POST", "path": "/customers",
-                                                    "body": {"name": "Acme Fire Ltd"}})
+                                                    "body": {"name": "Acme Fire Ltd", "created_by": "Jarvis"}})
     await drain(j)
     assert j.db.get_action(action_id)["status"] == "done"
     assert wire.cards() == []

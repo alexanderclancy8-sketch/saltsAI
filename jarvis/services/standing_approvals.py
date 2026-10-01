@@ -51,7 +51,8 @@ _URL_LIKE = re.compile(r"(?i)(://|\bwww\.|\bmailto:|\bjavascript:|\bdata:|\bfile
 # C0/C1 controls except tab/newline/carriage return; zero-width, bidi and other invisible formatting characters.
 _ODD_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‏  ‪-‮⁠-⁯﻿]")
 _MAX_PAYLOAD_CHARS = 6000
-LONG_FIELDS = {"text", "description", "note"}
+# multi-line allowed (a billing address is "1 High Street\nLeeds\nLS1 2AB"):
+LONG_FIELDS = {"text", "description", "note", "notes", "address", "billingAddress"}
 SHORT_MAX, LONG_MAX = 200, 2000
 
 
@@ -64,13 +65,21 @@ class Shape:
     required: str
     undo: str
     marked: str = ""  # a field that must start with AUTO_MARK so staff can tell Jarvis wrote it, not a person
+    fixed: tuple[tuple[str, str], ...] = ()  # (key, value) pairs that must be present with exactly this value
 
 
 SHAPES: tuple[Shape, ...] = (
-    Shape("customer", re.compile(r"/customers"), frozenset({"name", "email", "phone", "address", "postcode"}), "name",
-          "Undo: it is only a new record - remove it in Salts FSM (Jarvis cannot delete things)."),
-    Shape("site", re.compile(r"/sites"), frozenset({"name", "customer", "customerId", "address", "postcode"}), "name",
-          "Undo: it is only a new record - remove it in Salts FSM (Jarvis cannot delete things)."),
+    # Exactly the bodies the create_customer / create_site tools queue (brain/tools.py): `created_by` is always
+    # "Jarvis" (the visible authorship marker). `confirmSharedName` - the flag that deliberately creates a namesake
+    # of an existing customer/site - is NOT in the key list, so a payload carrying it is never auto-run.
+    Shape("customer", re.compile(r"/customers"),
+          frozenset({"name", "created_by", "contact", "phone", "email", "billingAddress", "notes"}), "name",
+          "Undo: it is only a new record - remove it in Salts FSM (Jarvis cannot delete things).",
+          fixed=(("created_by", "Jarvis"),)),
+    Shape("site", re.compile(r"/sites"),
+          frozenset({"name", "created_by", "customer", "address", "postcode", "notes"}), "name",
+          "Undo: it is only a new record - remove it in Salts FSM (Jarvis cannot delete things).",
+          fixed=(("created_by", "Jarvis"),)),
     Shape("contact", re.compile(rf"/(?:customers|sites)/{_ID}/contacts"),
           frozenset({"name", "email", "phone", "role"}), "name",
           "Undo: it is only a new record - remove it in Salts FSM (Jarvis cannot delete things)."),
@@ -131,6 +140,8 @@ def _match_record(payload: dict[str, Any]) -> tuple[Shape, str] | None:
     for key, value in body.items():
         if _clean_text(value, key) is None:
             return None
+    if any(body.get(k) != v for k, v in shape.fixed):
+        return None
     if shape.marked and not str(body.get(shape.marked, "")).startswith(AUTO_MARK + " "):
         return None  # a note/task/reminder must visibly say Jarvis wrote it, or it waits for a human
     target = path.strip("/").split("/")

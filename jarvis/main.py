@@ -339,12 +339,17 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         who = speaker(ws)
         q = j.bus.subscribe()
         running: set[asyncio.Task] = set()
+        muted = False  # this session's mute button: Jarvis-initiated messages (see services/proactive.py) are not sent
 
         async def pump():
             while True:
-                await ws.send_json(await q.get())
+                msg = await q.get()
+                if muted and msg["type"] == "proactive":
+                    continue
+                await ws.send_json(msg)
 
         async def listen():
+            nonlocal muted
             while True:
                 msg = await ws.receive_json()
                 if msg.get("type") == "chat" and msg.get("text"):
@@ -357,6 +362,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     task.add_done_callback(running.discard)
                 elif msg.get("type") == "ping":
                     await ws.send_json({"type": "pong"})
+                elif msg.get("type") == "proactive_mute":
+                    muted = msg.get("muted") is True
                 elif msg.get("type") == "stop":
                     stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
                     j.bus.publish("stopped", {"stopped": stopped})

@@ -20,6 +20,9 @@
     // place; the owner can switch it off in Settings if it misfires on speakers. See bargeInAllowed().
     bargeIn: store.get("bargein", "1") !== "0", captureUntil: 0,
     dashOpen: store.get("dashboard", "0") === "1",
+    // Per-session mute for Jarvis-initiated messages (sessionStorage, so another tab or a fresh visit starts unmuted).
+    // The server is told too (sendProactiveMute), so a muted session isn't sent them at all.
+    proactiveMuted: (() => { try { return sessionStorage.getItem("jarvis.pmute") === "1"; } catch { return false; } })(),
   };
 
   // ------------------------------------------------------------------ helpers
@@ -503,7 +506,7 @@
   // First matching pattern wins; matched against the tool name carried on the "tool" start event.
   const FILLER_TOOL_PHRASES = [
     [/^(finance_|unbilled_jobs$|raise_invoices$|draft_credit_control$|business_health$)/, ["Let me check the accounts.", "Checking the accounts."]],
-    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
+    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|create_(customer|site)$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
     [/^email_/, ["Checking your email.", "Let me check your email."]],
     [/^stock_/, ["Let me check the stock.", "Checking the stock."]],
     [/^(web_search|web_fetch|search_rankings$|seo_audit$|competitor_audit$)/, ["Let me look that up.", "Looking that up."]],
@@ -723,9 +726,39 @@ function send(text, mode = "typed", opts = {}) {
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     S.ws = ws;
+    ws.onopen = () => sendProactiveMute();
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onclose = (e) => { if (e.code === 4401) { location.href = "/login"; return; } setTimeout(connect, 2500); };
     setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" })); }, 25000);
+  }
+
+  // ------------------------------------------------------------------ Jarvis speaking up on his own
+  function sendProactiveMute() {
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "proactive_mute", muted: S.proactiveMuted }));
+  }
+  function renderProactiveMute() {
+    const b = $("#btn-proactive-mute");
+    if (!b) return;
+    b.setAttribute("aria-pressed", S.proactiveMuted ? "true" : "false");
+    b.textContent = S.proactiveMuted ? "🔕 Muted" : "🔔 Speaks up";
+    b.title = S.proactiveMuted ? "Jarvis won't post into this session by himself - click to allow it again"
+                                : "Mute Jarvis posting into this session by himself";
+  }
+  $("#btn-proactive-mute")?.addEventListener("click", () => {
+    S.proactiveMuted = !S.proactiveMuted;
+    try { sessionStorage.setItem("jarvis.pmute", S.proactiveMuted ? "1" : "0"); } catch { /* private mode */ }
+    renderProactiveMute(); sendProactiveMute();
+  });
+  renderProactiveMute();
+  // Read aloud only in a voice session, only when nothing else is happening, and never while the owner is typing.
+  // A message that can't be spoken right now is shown, not queued - Jarvis never talks over anyone.
+  const proactiveMaySpeak = () => S.lastMode === "voice" && shouldSpeak("voice") && S.hudState === "idle" && !speaker.active
+    && !S.voiceTurn && !$("#input").value.trim() && !filler.inFlight();
+  function proactive(d) {
+    if (S.proactiveMuted) return; // the server doesn't send these to a muted session; this is only a safety net
+    addMessage("assistant", d.text, "on my own").classList.add("proactive");
+    caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
+    if (d.speak && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280));
   }
 
   let toolsSeen = [];
@@ -792,6 +825,7 @@ function send(text, mode = "typed", opts = {}) {
         toast(d.title, d.body, d.level);
         refreshSoon();
         break;
+      case "proactive": proactive(d); break; // Jarvis-initiated message: appears in the chat, may be read aloud
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;

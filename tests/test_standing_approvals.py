@@ -90,9 +90,14 @@ def post(path, body):
 MARK = sa.AUTO_MARK + " "
 
 ALLOWED_RECORDS = [
-    post("/customers", {"name": "Acme Fire Ltd", "email": "office@acme.example.co.uk", "phone": "01274 555 0100",
-                        "address": "1 High Street, Leeds", "postcode": "LS1 1AA"}),
-    post("/sites", {"name": "Ilkley Grammar Annexe", "customer": "Wharfedale Academy Trust", "postcode": "LS29 8AB"}),
+    # exactly the bodies create_customer / create_site queue
+    post("/customers", {"name": "Acme Fire Ltd", "created_by": "Jarvis", "contact": "Jane Buyer",
+                        "email": "office@acme.example.co.uk", "phone": "01274 555 0100",
+                        "billingAddress": "1 High Street\nLeeds\nLS1 2AB", "notes": "Prefers email."}),
+    post("/customers", {"name": "Bare Minimum Ltd", "created_by": "Jarvis"}),
+    post("/sites", {"name": "Ilkley Grammar Annexe", "created_by": "Jarvis", "customer": "cust-12",
+                    "address": "Station Road\nIlkley", "postcode": "LS29 8AB", "notes": "Key safe at the back."}),
+    post("/sites", {"name": "No Customer Yet", "created_by": "Jarvis"}),
     post("/customers/cust-12/contacts", {"name": "Jane Buyer", "email": "jane@customer.example.co.uk",
                                          "role": "Site manager"}),
     post("/sites/site_7/contacts", {"name": "Bob Caretaker", "phone": "07700 900123"}),
@@ -257,20 +262,20 @@ async def test_everything_that_is_not_exactly_an_allowed_record_queues_for_a_hum
 async def test_a_payload_that_changes_when_stored_is_judged_as_stored(settings):
     ex, db, notices, fsm, mail = make_executor(settings, record=True)
     # {5: "x"} becomes {"5": "x"} in JSON: judged (and run) in its stored form, where "5" isn't an allowed key.
-    action_id = ex.queue("fsm_write", "x", post("/customers", {"name": "ok", 5: "x"}))
+    action_id = ex.queue("fsm_write", "x", post("/customers", {"name": "ok", "created_by": "Jarvis", 5: "x"}))
     await drain(ex)
     assert db.get_action(action_id)["status"] == "pending" and fsm.writes == []
 
 
 async def test_the_payload_that_matched_is_the_payload_that_runs(settings):
     ex, db, notices, fsm, mail = make_executor(settings, record=True)
-    payload = post("/customers", {"name": "Before"})
+    payload = post("/customers", {"name": "Before", "created_by": "Jarvis"})
     action_id = ex.queue("fsm_write", "x", payload)
     payload["body"]["name"] = "Mutated after queueing"  # a caller holding the dict can't change what runs
     payload["path"] = "/jobs"
     await drain(ex)
-    assert fsm.writes == [("POST", "/customers", {"name": "Before"})]
-    assert db.get_action(action_id)["payload"]["body"] == {"name": "Before"}
+    assert fsm.writes == [("POST", "/customers", {"name": "Before", "created_by": "Jarvis"})]
+    assert db.get_action(action_id)["payload"]["body"] == {"name": "Before", "created_by": "Jarvis"}
 
 
 # --------------------------------------------------------------------------- hard exclusions
@@ -393,7 +398,7 @@ async def test_a_failed_automatic_run_is_recorded_and_reported(settings):
 # --------------------------------------------------------------------------- hourly cap
 async def test_rate_limit_falls_back_to_a_human_and_warns(settings):
     ex, db, notices, fsm, mail = make_executor(settings, record=True, limit=3)
-    ids = [ex.queue("fsm_write", "x", post("/customers", {"name": f"Customer {i}"})) for i in range(5)]
+    ids = [ex.queue("fsm_write", "x", post("/customers", {"name": f"Customer {i}", "created_by": "Jarvis"})) for i in range(5)]
     await drain(ex)
     statuses = [db.get_action(i)["status"] for i in ids]
     assert statuses == ["done", "done", "done", "pending", "pending"]
@@ -803,11 +808,13 @@ async def test_create_record_tool_queues_when_the_switch_is_off(tmp_path):
 
     j, fsm = await tool_jarvis(tmp_path, record=False)
     tool = TOOLS_BY_NAME["fsm_create_record"]
-    result = await dispatch(j, tool, tool.model(record="customer", name="Acme Fire Ltd", postcode="LS1 1AA"))
+    result = await dispatch(j, tool, tool.model(record="contact", name="Jane Buyer", parent_type="customer",
+                                                parent_id="cust-12", email="jane@customer.example.co.uk"))
     assert result["note"] == "Queued for approval on the display."
     (action,) = j.db.pending_actions()
     assert action["kind"] == "fsm_write" and action["payload"] == {
-        "method": "POST", "path": "/customers", "body": {"name": "Acme Fire Ltd", "postcode": "LS1 1AA"}}
+        "method": "POST", "path": "/customers/cust-12/contacts",
+        "body": {"name": "Jane Buyer", "email": "jane@customer.example.co.uk"}}
     assert fsm.writes == []
     await j.http.aclose()
 
@@ -969,6 +976,7 @@ def test_ordinary_settings_still_work_for_a_manager(tmp_path, monkeypatch):
 ])
 def test_a_trailing_newline_fails_the_customer_validators(body):
     db = Database(":memory:")
+    body = {"created_by": "Jarvis", **body}
     assert sa.classify("fsm_write", post("/customers", body), db) is None
     assert sa.classify("fsm_write", post("/customers", {k: v.strip() for k, v in body.items()}), db) \
         == sa.RECORD_KEEPING
@@ -1046,6 +1054,122 @@ async def test_a_human_approval_reaches_the_verifier_with_the_persons_name(setti
     assert seen == [("Sam", "approved")]
 
 
+# --------------------------------------------------------------------------- reconciled with create_customer / create_site
+@pytest.mark.parametrize("path,body", [
+    ("/customers", {"name": "Acme", "created_by": "Jarvis", "confirmSharedName": True}),   # deliberate namesake
+    ("/customers", {"name": "Acme", "created_by": "Jarvis", "confirmSharedName": False}),
+    ("/sites", {"name": "Acme Site", "created_by": "Jarvis", "confirmSharedName": True}),
+    ("/sites", {"name": "Acme Site", "created_by": "Jarvis", "confirmSharedName": "true"}),
+    ("/customers", {"name": "Acme"}),                                    # not written by the create_customer tool
+    ("/customers", {"name": "Acme", "created_by": "Someone"}),
+    ("/customers", {"name": "Acme", "created_by": "jarvis"}),
+    ("/sites", {"name": "Acme Site", "created_by": ["Jarvis"]}),
+    ("/customers", {"name": "Acme", "created_by": "Jarvis", "customerId": "1"}),       # key outside the allowlist
+    ("/customers", {"name": "Acme", "created_by": "Jarvis", "address": "1 High St"}),  # customers use billingAddress
+    ("/customers", {"name": "Acme", "created_by": "Jarvis", "creditLimit": "9"}),
+    ("/customers", {"name": "Acme", "created_by": "Jarvis", "status": "active"}),
+    ("/sites", {"name": "Acme Site", "created_by": "Jarvis", "billingAddress": "x"}),
+    ("/sites", {"name": "Acme Site", "created_by": "Jarvis", "customerId": "c1"}),
+    ("/sites", {"name": "Acme Site", "created_by": "Jarvis", "assignee": "Sam"}),
+])
+async def test_namesake_flag_unknown_keys_or_a_missing_marker_never_auto_run(settings, path, body):
+    ex, db, notices, fsm, mail = make_executor(settings, record=True, ack=True)
+    action_id = ex.queue("fsm_write", "x", post(path, body))
+    await drain(ex)
+    assert db.get_action(action_id)["status"] == "pending" and fsm.writes == []
+
+
+async def _jarvis_with_spy(tmp_path, record):
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None, standing_record_keeping=record),
+               client=FakeClient())
+    calls = []
+    real = j.fsm.write
+
+    async def spy(method, path, body=None):
+        calls.append((method, path, body))
+        return await real(method, path, body)
+
+    j.fsm.write = spy
+    return j, calls
+
+
+async def test_create_customer_tool_output_is_exactly_what_record_keeping_allows(tmp_path):
+    """The real tool's queued payload (not a hand-written one) is recognised, runs, and is marked."""
+    from jarvis.brain.tools import CreateCustomerIn, create_customer
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    result = await create_customer(j, CreateCustomerIn(
+        name="  Brightwell Dental Ltd ", contact="Dr Amy Brightwell", phone="0113 555 0100",
+        email="reception@brightwell.example.co.uk", billing_address="1 High Street\nLeeds\nLS1 2AB",
+        notes="Referred by the dentists' association."))
+    await drain(j.actions)
+    assert "automatically" in result["note"]
+    row = j.db.get_action(result["queued_action"])
+    assert row["approved_by"] == PREFIX + "record keeping" and row["status"] == "done"
+    assert calls == [("POST", "/customers", {
+        "name": "Brightwell Dental Ltd", "created_by": "Jarvis", "contact": "Dr Amy Brightwell",
+        "phone": "0113 555 0100", "email": "reception@brightwell.example.co.uk",
+        "billingAddress": "1 High Street\nLeeds\nLS1 2AB", "notes": "Referred by the dentists' association."})]
+    await j.http.aclose()
+
+
+async def test_create_site_tool_output_is_exactly_what_record_keeping_allows(tmp_path):
+    from jarvis.brain.tools import CreateSiteIn, create_site
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    customer = (await j.fsm.customers())[0]
+    result = await create_site(j, CreateSiteIn(name="Brightwell Dental Annexe", customer=customer["name"],
+                                               address="2 High Street\nLeeds", postcode="ls1 2ab"))
+    await drain(j.actions)
+    assert "automatically" in result["note"]
+    assert j.db.get_action(result["queued_action"])["approved_by"] == PREFIX + "record keeping"
+    (method, path, body), = calls
+    assert (method, path) == ("POST", "/sites") and body["customer"] == customer["id"] and body["created_by"] == "Jarvis"
+    await j.http.aclose()
+
+
+async def test_a_confirmed_namesake_customer_waits_for_a_human_even_with_record_keeping_on(tmp_path):
+    """confirmSharedName is the flag that deliberately creates a second customer with an existing name."""
+    from jarvis.brain.tools import CreateCustomerIn, create_customer
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    result = await create_customer(j, CreateCustomerIn(name="aire valley care ltd", confirm_not_duplicate=True))
+    await drain(j.actions)
+    row = j.db.get_action(result["queued_action"])
+    assert row["payload"]["body"]["confirmSharedName"] is True  # the real tool did set it...
+    assert row["status"] == "pending" and row["approved_by"] == "" and calls == []  # ...so it waits for a person
+    assert result["note"] == "Queued for approval on the display."
+    await j.http.aclose()
+
+
+async def test_a_confirmed_namesake_site_waits_for_a_human_even_with_record_keeping_on(tmp_path):
+    from jarvis.brain.tools import CreateSiteIn, create_site
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    site = (await j.fsm.sites())[0]
+    customer = next((c for c in await j.fsm.customers()
+                     if str(c.get("id")) == str(site.get("customer_id")) or c.get("name") == site.get("customer")), None)
+    if customer is None:
+        pytest.skip("demo site has no customer to namesake against")
+    result = await create_site(j, CreateSiteIn(name=site["name"], customer=customer["name"],
+                                               confirm_not_duplicate=True))
+    await drain(j.actions)
+    row = j.db.get_action(result["queued_action"])
+    assert row["payload"]["body"].get("confirmSharedName") is True
+    assert row["status"] == "pending" and calls == []
+    await j.http.aclose()
+
+
+def test_there_is_exactly_one_tool_per_job_customers_and_sites_are_not_in_fsm_create_record():
+    from jarvis.brain.tools import FsmRecordIn, TOOLS_BY_NAME
+
+    kinds = FsmRecordIn.model_fields["record"].annotation.__args__
+    assert set(kinds) == {"contact", "note", "task", "reminder"}
+    assert "create_customer" in TOOLS_BY_NAME and "create_site" in TOOLS_BY_NAME
+    assert not {"customer", "site"} & set(kinds)
+    assert not {"customer", "site"} & set(FsmRecordIn.model_fields)
+
+
 def test_the_self_improve_engineer_is_told_not_to_touch_the_approval_files():
     from jarvis.services.self_improve import SELF_IMPROVE_SYSTEM
 
@@ -1060,13 +1184,14 @@ async def test_create_record_tool_rejects_nonsense_and_cannot_target_other_paths
 
     j, fsm = await tool_jarvis(tmp_path, record=True)
     tool = TOOLS_BY_NAME["fsm_create_record"]
-    assert "error" in await dispatch(j, tool, tool.model(record="customer"))  # no name
+    assert "error" in await dispatch(j, tool, tool.model(record="contact", parent_type="site", parent_id="S1"))
     assert "error" in await dispatch(j, tool, tool.model(record="note", text="x"))  # no parent
     assert "error" in await dispatch(j, tool, tool.model(record="note", text="x", parent_type="job",
                                                          parent_id="../../jobs/J1/delete"))
     assert "error" in await dispatch(j, tool, tool.model(record="contact", name="x", parent_type="job", parent_id="J1"))
     # a URL in the text isn't auto-run: it waits for a human like anything else
-    r = await dispatch(j, tool, tool.model(record="customer", name="Visit https://evil.example.com"))
+    r = await dispatch(j, tool, tool.model(record="contact", name="Visit https://evil.example.com",
+                                           parent_type="site", parent_id="S1"))
     await drain(j.actions)
     assert r["note"] == "Queued for approval on the display." and fsm.writes == []
     await j.http.aclose()

@@ -175,3 +175,32 @@ Decisions use the `ask_user` tool (`brain/tools.py`) and the small question pop-
 only publishes an `ask` bus event and returns at once (no blocking); the chosen/typed/spoken answer comes back as an ordinary
 chat message. It is separate from, and must never call or imitate, the approval path (`decide()`, `/api/approvals`,
 `ActionExecutor`). Tests: `tests/test_ask_user.py`.
+
+**Jarvis speaking up unprompted (`jarvis/services/proactive.py`, `j.proactive`; tests `tests/test_proactive.py`).** There is no
+new transport: a Jarvis-initiated message is a `proactive` event on the same `EventBus`/`/ws` the chat already uses, handled by
+`proactive(d)` in hud.js (shown as a message tagged "on my own"; read aloud by `say()` only when the session is in voice mode and
+idle - see `proactiveMaySpeak()` - and never while the owner has text in the box). Everything proactive goes through
+`Proactive`, which can only *tell*: it never approves, sends, queues or changes anything (a test greps the module for the
+approval path), and every message is run through `history.redact_history` (the same redaction as the stored conversation) first.
+- **Gate** (`held_reason()`/`_clear_to_speak()`): the `proactive_chat_enabled` setting (off by default; Settings > "Jarvis speaking
+  up"), quiet hours (`proactive_quiet_start`/`_end`, HH:MM in `TIMEZONE`, may span midnight), `proactive_max_per_hour`, and not
+  while the owner is mid-conversation (`user_busy()`, from `EventBus.last_event` timestamps: he spoke in the last 45s or a turn is
+  still in flight; a message waits up to two minutes for that). A held message is not lost: `post()` leaves it as a quiet
+  "Held back (...)" notification (no toast), and `announce()` does not remember it as seen, so the next run says it.
+- **`post(text)`** = one message. **`announce(key, title, body)`** = a recurring finding: posted to the chat *and* Teams
+  (`notifier.send_owner_update`, Teams only) only when its fingerprint differs from the last one (kv `proactive:seen:<key>`); an
+  automation's reply starting `NOTHING_TO_REPORT` counts as nothing. Automations (`services/automations.py`) run silently
+  when proactive is on - `events.quiet_turn` (a ContextVar, carried through `MaxBrain`'s worker explicitly) drops the
+  `user_message`/`thinking`/`delta`/`tool`/`reply`/`error` events of that headless turn - and then `announce()` the result;
+  with it off they behave exactly as before.
+- **Background jobs**: `start(name, work)` runs a coroutine after the reply has been sent (max 5 at once, cancelled by
+  `Jarvis.stop()`) and posts the result or the failure; `poller(...)` builds a `work` that polls a `check()` and posts status
+  changes; the tools `watch_ci` (GitHub Actions on a branch of Jarvis's repo) and `watch_action` (a queued action's outcome - it
+  only reads its status) use it. Both are read-only, are in `recruiter.NO_RECURSE`, and say so if proactive messages are off.
+- **Pull request watch**: `pr_watch()` (scheduled every `proactive_pr_watch_min` only when proactive is on and the Jarvis repo is
+  connected) lists the open PRs read-only, compares with the last snapshot (kv `proactive:pr_watch`) and announces new PRs, CI
+  passing/failing, conflicts and closed PRs. The first look only records a baseline.
+- **Mute**: the HUD's per-session mute button (sessionStorage) sends `{"type": "proactive_mute", "muted": bool}` over `/ws`;
+  `ws_events` then doesn't forward `proactive` events to that connection.
+Don't add a path from anything proactive into `ActionExecutor`/`dispatch()` approvals, and keep new proactive sources behind
+`post()`/`announce()` so the gate and redaction apply.

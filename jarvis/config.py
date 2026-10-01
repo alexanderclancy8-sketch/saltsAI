@@ -321,6 +321,15 @@ class Settings(BaseSettings):
     notification_routes: str = ""
     scheduler_enabled: bool = True
 
+    # --- Proactive chat (services/proactive.py) -----------------------------
+    # Jarvis posting into the open chat on its own (background-task follow-ups, automations, the pull request
+    # watch). Off until the owner switches it on. Quiet hours are HH:MM in TIMEZONE and may run past midnight.
+    proactive_chat_enabled: bool = False
+    proactive_quiet_start: str = "21:00"
+    proactive_quiet_end: str = "07:30"
+    proactive_max_per_hour: int = 6  # at most this many proactive messages an hour; 0 = no limit
+    proactive_pr_watch_min: int = 15  # how often the pull request watch looks, in minutes
+
     # --- Derived ------------------------------------------------------------
     @property
     def managers(self) -> set[str]:
