@@ -10,7 +10,11 @@ Security: every incoming request is a JWT signed by Microsoft, verified here aga
 keys before anything in the message is trusted (issuer, audience = our own app id, expiry, signature) - the
 usual protection against someone simply POSTing a fake activity at the webhook. On top of that, only messages
 from someone whose Teams account resolves (via the conversation's own member list) to the owner's or business
-partner's email are answered; everyone else is silently ignored.
+partner's email (or a manager's) are answered; everyone else is silently ignored.
+
+The same connection is used proactively for approvals (services/teams_approvals.py): once an approver has messaged
+the bot, Jarvis can post them an Adaptive Card with Approve / Deny buttons. `send_activity` / `update_activity` /
+`reply` refuse any serviceUrl that isn't a Bot Framework / Teams host before the bearer token is ever sent.
 """
 
 from __future__ import annotations
@@ -121,9 +125,41 @@ class TeamsBot:
         return None
 
     async def reply(self, service_url: str, conversation_id: str, text: str) -> None:
+        base = self._checked(service_url)
         token = await self._access_token()
         r = await self.http.post(
-            f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities",
+            f"{base}/v3/conversations/{conversation_id}/activities",
             headers={"Authorization": f"Bearer {token}"},
             json={"type": "message", "text": text}, timeout=30)
+        r.raise_for_status()
+
+    # -- proactive messages (approvals) ---------------------------------------------------------------------
+    @staticmethod
+    def _checked(service_url: str) -> str:
+        """The serviceUrl we are about to POST a bearer token to - only ever a Bot Framework / Teams host."""
+        if not trusted_service_url(service_url):
+            raise TeamsBotError("untrusted service url")
+        return service_url.rstrip("/")
+
+    async def send_activity(self, service_url: str, conversation_id: str, activity: dict[str, Any]) -> str:
+        """Post a message activity (text and/or an Adaptive Card attachment) into a conversation we already know.
+        Returns the new activity's id ("" if Teams didn't give one)."""
+        base = self._checked(service_url)
+        token = await self._access_token()
+        r = await self.http.post(f"{base}/v3/conversations/{conversation_id}/activities",
+                                 headers={"Authorization": f"Bearer {token}"}, json=activity, timeout=30)
+        r.raise_for_status()
+        try:
+            return str((r.json() or {}).get("id") or "")
+        except ValueError:
+            return ""
+
+    async def update_activity(self, service_url: str, conversation_id: str, activity_id: str,
+                              activity: dict[str, Any]) -> None:
+        """Replace an earlier message of ours (used to turn an approval card into "Approved by ...")."""
+        base = self._checked(service_url)
+        token = await self._access_token()
+        r = await self.http.put(f"{base}/v3/conversations/{conversation_id}/activities/{activity_id}",
+                                headers={"Authorization": f"Bearer {token}"},
+                                json={**activity, "id": activity_id}, timeout=30)
         r.raise_for_status()

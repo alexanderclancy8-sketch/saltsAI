@@ -4,6 +4,7 @@ sent to Claude and to validate what comes back) and an async handler."""
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -250,6 +251,26 @@ class LogJobIn(BaseModel):
     engineer: str = Field("", description="Engineer to assign - leave blank to book it unassigned")
     scheduled_start: str = Field("", description="When to book it for (ISO date or date+time) - blank = unscheduled")
     customer: str = Field("", description="Customer name, only if different from the site name")
+
+
+class FsmRecordIn(BaseModel):
+    record: Literal["customer", "site", "contact", "note", "task", "reminder"] = Field(
+        description="What to create. This only ever CREATES a new record - it can't edit, delete, or touch jobs, "
+                    "quotes, invoices, prices or stock (use the other tools for those).")
+    name: str = Field("", description="customer / site / contact: the name")
+    email: str = Field("", description="customer / contact: email address")
+    phone: str = Field("", description="customer / contact: phone number")
+    address: str = Field("", description="customer / site: address")
+    postcode: str = Field("", description="customer / site: postcode")
+    customer: str = Field("", description="site: the customer's name")
+    role: str = Field("", description="contact: their role, e.g. 'Site manager'")
+    parent_type: Literal["customer", "site", "job", ""] = Field(
+        "", description="contact (customer or site) / note (customer, site or job): what it belongs to")
+    parent_id: str = Field("", description="contact / note: the FSM id of the customer, site or job it belongs to")
+    title: str = Field("", description="task / reminder: the title")
+    text: str = Field("", description="note: the note text")
+    description: str = Field("", description="task: details; reminder: extra note")
+    due: str = Field("", description="task / reminder: due date, ISO e.g. 2026-10-12 (blank = none)")
 
 
 class AcceptQuoteIn(BaseModel):
@@ -812,6 +833,43 @@ async def log_job(j, a: LogJobIn):
         summary += f" for {human_datetime(a.scheduled_start)}"
     action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/jobs", "body": body})
     return {"queued_action": action_id, "job": body, "note": "Queued for approval on the display."}
+
+
+_RECORD_PARENTS = {"contact": ("customer", "site"), "note": ("customer", "site", "job")}
+_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
+
+
+async def fsm_create_record(j, a: FsmRecordIn):
+    """Prepare the creation of ONE new customer/site/contact/note/task/reminder in Salts FSM. This only queues it:
+    whether it then waits for a human or runs at once is decided in ActionExecutor.queue() by the owner's standing
+    approval setting - nothing here can see, set or bypass that."""
+    r = a.record
+    fields = {"customer": {"name": a.name, "email": a.email, "phone": a.phone, "address": a.address,
+                           "postcode": a.postcode},
+              "site": {"name": a.name, "customer": a.customer, "address": a.address, "postcode": a.postcode},
+              "contact": {"name": a.name, "email": a.email, "phone": a.phone, "role": a.role},
+              "note": {"text": a.text, "author": "Jarvis"},
+              "task": {"title": a.title, "description": a.description, "due": a.due},
+              "reminder": {"title": a.title, "note": a.description, "due": a.due}}[r]
+    body = {k: v for k, v in fields.items() if v}
+    if not (body.get("name") or body.get("title") or body.get("text")):
+        return {"error": f"A {r} needs its {'text' if r == 'note' else 'title' if r in ('task', 'reminder') else 'name'}."}
+    if r in _RECORD_PARENTS:
+        if a.parent_type not in _RECORD_PARENTS[r] or not _RECORD_ID.match(a.parent_id):
+            return {"error": f"A {r} must say which {' / '.join(_RECORD_PARENTS[r])} it belongs to (parent_type "
+                             "and parent_id)."}
+        path = f"/{a.parent_type}s/{a.parent_id}/{r}s"
+    else:
+        path = {"customer": "/customers", "site": "/sites", "task": "/tasks", "reminder": "/reminders"}[r]
+    label = body.get("name") or body.get("title") or body.get("text", "")[:60]
+    action_id = j.actions.queue("fsm_write", f"Create {r} '{label[:60]}' in Salts FSM",
+                                {"method": "POST", "path": path, "body": body})
+    action = j.db.get_action(action_id) or {}
+    if action.get("status") == "approved":
+        note = "Recorded automatically under the owner's standing approval for record keeping."
+    else:
+        note = "Queued for approval on the display."
+    return {"queued_action": action_id, "record": r, "note": note}
 
 
 async def accept_quote(j, a: AcceptQuoteIn):
@@ -1389,6 +1447,12 @@ TOOLS: list[Tool] = [
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "
                     "owner's approval, never booked straight away.", LogJobIn, log_job, "Logging a job"),
+    Tool("fsm_create_record", "Create ONE new customer, site, contact, note, task or reminder in Salts FSM (record "
+                              "keeping only - it can't edit or delete anything, or touch jobs, quotes, invoices, "
+                              "prices or stock). Goes through the approval queue like every other change; the owner "
+                              "may have allowed this kind of record to be created without waiting, in which case the "
+                              "result says it was recorded automatically.", FsmRecordIn, fsm_create_record,
+         "Recording that"),
     Tool("accept_quote", "Accept a quote and book the resulting job in Salts FSM, together as one step - use "
                         "this rather than fsm_change/log_job separately whenever a quote has just been won. "
                         "Queued for approval; once approved, order any materials the job needs with "

@@ -28,6 +28,8 @@ from .services.accountant import Accountant
 from .services.accreditations import Accreditations
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
+from .services.standing_approvals import StandingApprovals
+from .services.teams_approvals import TeamsApprovals
 from .services.automations import AutomationService
 from .services.billing import Billing
 from .services.customer_comms import CustomerComms
@@ -109,6 +111,8 @@ class Jarvis:
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
         self.actions.j = self
+        self.actions.standing = StandingApprovals(s, self.db)  # the owner's switches, default off; read-only here
+        self.actions.teams_approvals = TeamsApprovals(s, self.db, self.teamsbot)  # no-op until the bot is set up
         self.po_intake = PoIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
@@ -180,6 +184,9 @@ class Jarvis:
             "Email (Outlook)": "connected" if not self.mail.demo else "DEMO data - connect Microsoft 365",
             "Teams updates": "connected" if self.teams.enabled else "not set up",
             "Teams chat": "connected" if self.teamsbot.configured else "not set up",
+            "Standing approvals": ", ".join(
+                n for n, on in (("record keeping", s.standing_record_keeping),
+                                ("routine acknowledgements", s.standing_acknowledgements)) if on) or "off",
             "Salts FSM": "connected" if not self.fsm.demo else "DEMO data - set FSM_BASE_URL",
             "Accounts": (f"{self.finance.name}" if not getattr(self.finance, "demo", False)
                          else "DEMO data - connect Sage or add CSV exports"),

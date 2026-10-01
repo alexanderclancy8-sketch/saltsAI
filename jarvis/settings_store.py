@@ -180,7 +180,12 @@ SECTIONS: tuple[Section, ...] = (
             "Quickest: in Azure Cloud Shell run  APP_NAME={app_name} bash infra/deploy.sh teamsbot  - it "
             "registers Jarvis as a Bot Framework bot, turns on the Teams channel, fills these boxes in, and "
             "builds an app package for you to add to Teams.",
-            "Only you and the business partner can use it - anyone else who messages the bot is ignored.",
+            "Add the app in Teams (Apps > Manage your apps > Upload a custom app, then open the Jarvis chat) and "
+            "say hello once. That's how Jarvis learns where to send you approvals: when it queues something it "
+            "messages you an Approve / Deny card, so you can decide from your phone. You can also reply "
+            "\"approve 12\" or \"deny 12\".",
+            "Only you, the business partner and your managers can use it or approve - anyone else who messages "
+            "the bot is ignored.",
         ),
     ),
     Section(
@@ -418,6 +423,27 @@ SECTIONS: tuple[Section, ...] = (
                "\"0 17 * * 1-5\" means 5pm on weekdays.",),
     ),
     Section(
+        "standing", "Standing approvals", "Things you let Jarvis do without asking each time. Both are OFF. Only "
+        "you can change these, here - Jarvis, a pending action or a Teams message never can. Everything else "
+        "(money, deletions, job booking or scheduling, supplier orders, stock, other emails, code changes and "
+        "deploys, accreditations, staff and settings) still waits for your approval.",
+        (
+            Field("standing_record_keeping", "Record keeping", "bool",
+                  "ON lets Jarvis go ahead by itself, without waiting for approval, with ONLY these: creating a "
+                  "new customer, site or contact in Salts FSM, and adding a note, task or reminder. It never edits "
+                  "or deletes anything, and never touches jobs, quotes, invoices, prices or stock. Each one shows "
+                  "as \"Done automatically\" on the display and in Teams."),
+            Field("standing_acknowledgements", "Routine acknowledgements", "bool",
+                  "ON lets Jarvis immediately email a customer a receipt-only \"we've received your purchase "
+                  "order\" reply when it has matched their PO email to a quote you sent. It doesn't say a job is "
+                  "booked: the quote is still only accepted and the job still only booked when you approve. "
+                  "That booking approval then sends a second, separate \"your job is booked\" email."),
+            Field("standing_max_per_hour", "Most automatic actions per hour", "number",
+                  "Safety limit across both switches. Past it, actions wait for your approval as normal and you "
+                  "get a warning.", advanced=True),
+        ),
+    ),
+    Section(
         "security", "Security and staff", "Your display password and the staff issue-report link.",
         (
             Field("jarvis_owner_password", "Display password", "secret",
@@ -429,6 +455,9 @@ SECTIONS: tuple[Section, ...] = (
 )
 
 FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
+# Settings that widen what Jarvis may do without asking. The Settings API refuses to change these unless the request
+# comes from the owner themselves (see main.save_settings / auth.is_principal_owner), not any signed-in manager.
+OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields)
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

@@ -75,6 +75,20 @@ def is_owner(settings: Settings, conn: Request | WebSocket) -> bool:
     return valid_session(settings, conn.cookies.get(COOKIE))
 
 
+def is_principal_owner(settings: Settings, conn: Request | WebSocket) -> bool:
+    """The owner themself - stricter than is_owner(), which also lets in any manager signed in through Microsoft.
+
+    Used for settings that widen what Jarvis may do without asking (standing approvals): the display-password
+    session, the owner's own Microsoft sign-in (OWNER_EMAIL), or local-only mode with no password set. Another
+    signed-in manager, the partner included, is not enough."""
+    manager = signed_in_manager(settings, conn)
+    if manager and settings.owner_email and manager == settings.owner_email.strip().lower():
+        return True
+    if settings.jarvis_owner_password:
+        return valid_session(settings, conn.cookies.get(COOKIE))
+    return manager is None and is_owner(settings, conn)
+
+
 def require_owner(settings: Settings, request: Request) -> None:
     if not is_owner(settings, request):
         raise HTTPException(status_code=401, detail="Not signed in")

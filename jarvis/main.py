@@ -27,9 +27,11 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .services import connection_tests, documents
-from .settings_store import SECTIONS_BY_ID, SettingsStore
+from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
+from .settings_store import OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines print every request URL (Teams conversation ids, Graph ids)
 log = logging.getLogger("jarvis")
 WEB = Path(__file__).parent / "web"
 
@@ -397,7 +399,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if decision == "approve":
             return {"result": await j.actions.approve(action_id, by=speaker(request))}
         if decision == "deny":
-            return {"result": await j.actions.deny(action_id)}
+            return {"result": await j.actions.deny(action_id, by=speaker(request))}
         raise HTTPException(400, "decision must be approve or deny")
 
     # ------------------------------------------------------------------ suggestions
@@ -497,6 +499,25 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             except Exception:  # noqa: BLE001
                 pass
 
+    async def _teams_say(j: Jarvis, service_url: str, conversation_id: str, text: str) -> None:
+        try:
+            await j.teamsbot.reply(service_url, conversation_id, text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Teams reply failed (%s)", type(e).__name__)
+
+    async def _teams_decide(j: Jarvis, decision: str, action_id: int, who: str) -> str:
+        """Approve or deny straight through the ActionExecutor, as `who` (an allowlisted, JWT-verified sender)."""
+        if decision == "approve":
+            result = await j.actions.approve(action_id, by=who)
+            done = result.startswith("Approved action #")
+        else:
+            result = await j.actions.deny(action_id, by=who)
+            done = result.startswith("Cancelled action #")
+        if done and j.actions.teams_approvals is not None:
+            return f"{j.actions.teams_approvals.stamp(who, 'Approved' if decision == 'approve' else 'Denied')} " \
+                   f"(action #{action_id})."
+        return result
+
     @app.post("/api/teams/messages")
     async def teams_messages(request: Request):
         # Microsoft calls this directly - there's no session cookie, so the bearer token IS the authentication.
@@ -506,23 +527,59 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         except TeamsBotError as e:
             log.warning("Rejected a Teams request: %s", e)
             raise HTTPException(401, "invalid token") from None
-        activity = await request.json()
-        if activity.get("type") != "message" or not activity.get("text"):
+        try:
+            activity = await request.json()
+        except ValueError:
+            return {}
+        if not isinstance(activity, dict):
+            return {}
+        kind = activity.get("type")
+        is_invoke = kind == "invoke" and activity.get("name") == "adaptiveCard/action"  # Action.Execute buttons
+        if not is_invoke and (kind != "message" or not (activity.get("text") or activity.get("value"))):
             return {}
         service_url = activity.get("serviceUrl", "")
         if not trusted_service_url(service_url):
-            log.warning("Rejected a Teams activity with an untrusted serviceUrl: %s", service_url)
+            log.warning("Rejected a Teams activity with an untrusted serviceUrl")
             return {}
-        conversation_id = (activity.get("conversation") or {}).get("id")
+        conversation = activity.get("conversation") or {}
+        conversation_id = conversation.get("id")
         from_id = (activity.get("from") or {}).get("id")
         if not conversation_id or not from_id:
             return {}
         email = await j.teamsbot.sender_email(service_url, conversation_id, from_id)
-        allowed = {settings.owner_email.lower(), settings.partner_email.lower()} | settings.managers
-        if not email or email.lower() not in {a for a in allowed if a}:
-            log.info("Ignored a Teams message from an unrecognised account (%s)", email or from_id)
+        # The same allowlist that decides who may chat decides who may approve (and who gets approval cards).
+        if not email or email.lower() not in approver_emails(settings):
+            log.info("Ignored a Teams message from an unrecognised account")
             return {}
         name = settings.person(email)
+        if j.actions.teams_approvals is not None:
+            # They've messaged the bot, so Jarvis now knows where to send them approvals (one-to-one chats only).
+            j.actions.teams_approvals.remember(email, service_url, conversation_id, conversation.get("conversationType"))
+
+        # --- Approvals are decided here, deterministically. The language model is never involved, and nothing
+        # below this block can approve anything. A card button press first:
+        value = invoke_value(activity) if is_invoke else activity.get("value")
+        state, decision, action_id = parse_decision_value(value) if value is not None else ("other", "", 0)
+        if state != "other":
+            if state == "bad":
+                text = "I couldn't read that button press, so I did nothing. Reply 'approve 12' or 'deny 12' instead."
+            else:
+                text = await _teams_decide(j, decision, action_id, name)
+            if is_invoke:
+                return JSONResponse({"statusCode": 200, "type": "application/vnd.microsoft.activity.message",
+                                     "value": text})
+            await _teams_say(j, service_url, conversation_id, text)
+            return {}
+        if is_invoke or not activity.get("text"):
+            return {}  # some other card's button, or an empty message: nothing for us to do, never the brain
+
+        # ... then the exact typed commands "approve 12" / "deny #12":
+        command = parse_typed_command(activity["text"]) if isinstance(activity["text"], str) else None
+        if command:
+            await _teams_say(j, service_url, conversation_id, await _teams_decide(j, command[0], command[1], name))
+            return {}
+
+        # Everything else is an ordinary chat message for Jarvis.
         text = str(activity["text"]).strip()[:20000]
         asyncio.create_task(_handle_teams_message(j, service_url, conversation_id, text, name))
         return {}
@@ -549,6 +606,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.post("/api/settings", dependencies=[Depends(owner)])
     async def save_settings(body: SettingsIn, request: Request):
+        # Standing approvals widen what Jarvis may do without asking, so only the owner themself (not just any
+        # signed-in manager) may change them - and only here, never through the AI or a Teams message.
+        if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(settings, request):
+            raise HTTPException(403, "Only the owner can change standing approvals.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

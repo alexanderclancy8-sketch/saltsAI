@@ -455,6 +455,9 @@ teamsbot() {
   echo "your PC, then in Teams: Apps > Manage your apps > Upload a custom app, and pick that file. If Teams"
   echo "won't let you (custom app uploads switched off), ask your Microsoft 365 admin to install it for you, or"
   echo "to turn on custom app uploads in the Teams admin centre first."
+  echo "Approvals: once Jarvis is added, each approver (owner, partner, managers) should open the Jarvis chat in"
+  echo "Teams and say hello ONCE - that is how Jarvis learns where to send them approval cards (Approve / Deny"
+  echo "buttons) when it queues something. Until someone says hello they simply don't get cards."
   if [ -n "$allowed" ]; then
     echo "Only $allowed can actually get a reply - anyone else who messages the bot is ignored."
   else
