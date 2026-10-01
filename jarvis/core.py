@@ -41,6 +41,7 @@ from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.po_intake import PoIntake
 from .services.ppm_planner import PPMPlanner
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
@@ -104,6 +105,7 @@ class Jarvis:
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
         self.actions.j = self
+        self.po_intake = PoIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
@@ -181,6 +183,9 @@ class Jarvis:
                                  if self.self_improve.enabled else "not set up (add a repo + token on Settings)"),
             "Automations": (f"{len(self.automations.list_all())} you've set up"
                             if self.automations.list_all() else "none set up yet - just ask"),
+            "PO intake": (f"scans the inbox every {s.inbox_check_interval_min} min for customer purchase orders, "
+                         "matches them to a sent quote and queues the job for your approval" if not self.mail.demo
+                         else "DEMO data - connect Microsoft 365"),
             "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
             "Weekly digest": (f"routine engineering notices sent to Teams {cron_to_english(s.weekly_digest_cron)}"
                               if s.weekly_digest_enabled else "off - every notice is sent straight away"),
