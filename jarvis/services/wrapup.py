@@ -113,5 +113,5 @@ class WrapUp:
         if deliver:
             await j.notifier.notify("End-of-day wrap-up", text, level="info", push=False, speak=True)
             await j.notifier.send_owner_update(f"End-of-day wrap-up {datetime.now():%a %d %b}", text,
-                                               channels=("teams", "email"))
+                                               channels=("teams", "email"), importance="info")  # digest
         return text

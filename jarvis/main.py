@@ -566,7 +566,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(400, "Sage sign-in failed or expired - try again.")
         await j.finance.exchange_code(code, f"{settings.public_base_url}/auth/sage/callback")
         j.db.set_kv("sage_oauth_state", "")
-        await j.notifier.notify("Sage connected", "Jarvis can now read your accounts.", level="info")
+        await j.notifier.notify("Sage connected", "Jarvis can now read your accounts.", level="info",
+                                   importance="info", management_only=True)
         return RedirectResponse("/")
 
     return app

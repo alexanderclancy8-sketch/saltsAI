@@ -249,7 +249,8 @@ class Suggestions:
         if announce and new:
             await self.j.notifier.notify(
                 f"I have {len(new)} new suggestion{'s' if len(new) > 1 else ''}",
-                "; ".join(c["title"] for c in new[:4]), level="info", speak=True)
+                "; ".join(c["title"] for c in new[:4]), level="info", speak=True,
+                importance="info")
         return current
 
     def decide(self, key: str, status: str) -> dict[str, Any] | None:

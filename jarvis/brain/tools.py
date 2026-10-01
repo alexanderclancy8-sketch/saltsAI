@@ -95,6 +95,8 @@ class OwnerUpdateIn(BaseModel):
     subject: str
     message: str
     channels: list[Literal["teams", "email"]] = ["teams", "email"]
+    importance: Literal["info", "normal", "important", "urgent"] = Field(
+        "normal", description="How much it matters. The shared inbox only takes important/urgent operational items.")
 
 
 class DisplayIn(BaseModel):
@@ -581,7 +583,7 @@ def _html(text: str) -> str:
 
 
 async def send_update_to_owner(j, a: OwnerUpdateIn):
-    via = await j.notifier.send_owner_update(a.subject, a.message, channels=a.channels)
+    via = await j.notifier.send_owner_update(a.subject, a.message, channels=a.channels, importance=a.importance)
     return f"Update delivered via {via}."
 
 

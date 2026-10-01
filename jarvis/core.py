@@ -231,12 +231,13 @@ class Jarvis:
         if result.get("queued"):
             await self.notifier.notify(f"{result['queued']} completed jobs not invoiced",
                                        "Draft invoices are waiting for your approval on the display.", level="warning",
-                                       push=True, speak=True)
+                                       push=True, speak=True, importance="normal", management_only=True)  # finance
 
     async def daily_reviews(self) -> None:
         result = await self.billing.queue_review_requests()
         if result.get("queued"):
-            await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.")
+            await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.",
+                                       importance="normal")
 
     async def lone_worker_sweep(self) -> None:
         for c in await self.tracker.lone_worker_check(self.settings.lone_worker_overrun_min):
@@ -247,4 +248,5 @@ class Jarvis:
             await self.notifier.notify(
                 f"Safety check: {c['engineer']} is still on job {c['job']}",
                 f"{c['site']} - booked to finish {c['booked_end']}, now {c['overrun_minutes']} minutes over. "
-                "Might be worth a quick call to check they're OK.", level="warning", push=True, speak=True)
+                "Might be worth a quick call to check they're OK.", level="warning", push=True, speak=True,
+                importance="urgent")  # lone-worker safety: never held back

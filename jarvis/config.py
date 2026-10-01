@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     ooh_email_from: str = ""
     ooh_mailbox: str = ""  # mailbox the reports arrive in (e.g. info@...); defaults to MS_MAILBOX
     ooh_subject_keyword: str = "out of hours"
+    # The shared inbox is for OPERATIONAL items that matter only. Automated email to it is held back unless
+    # the notification's importance (info < normal < important < urgent) reaches the minimum below - see
+    # jarvis/services/notifier.py. Repeats of the same alert are collapsed and the inbox is rate-limited.
+    shared_inbox: str = "info@saltsfireandsecurity.co.uk"
+    shared_inbox_min_importance: str = "important"  # info | normal | important | urgent
+    shared_inbox_dedupe_minutes: int = 240  # the same alert isn't emailed to the shared inbox again inside this
+    shared_inbox_max_per_hour: int = 6  # cap on automated emails to it (urgent alerts are never capped)
 
     # --- Salts FSM --------------------------------------------------------
     fsm_base_url: str = ""

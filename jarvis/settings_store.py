@@ -122,6 +122,23 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "sharedinbox", "Shared inbox (info@)", "Keeps the shared inbox for important operational items only. "
+        "Everything else goes to Teams and the display.",
+        (
+            Field("shared_inbox", "Shared inbox address", "email",
+                  "Automated emails to this address are filtered by importance. Finance and management items "
+                  "never go here."),
+            Field("shared_inbox_min_importance", "Lowest importance emailed to it", "select",
+                  "Anything below this goes to Teams and the display instead. Urgent (life-safety) alerts are "
+                  "never rate-limited.",
+                  options=(("info", "Info (everything)"), ("normal", "Normal"),
+                           ("important", "Important (recommended)"), ("urgent", "Urgent only"))),
+            Field("shared_inbox_dedupe_minutes", "Don't repeat the same alert within (minutes)", "number",
+                  advanced=True),
+            Field("shared_inbox_max_per_hour", "Most emails to it per hour", "number", advanced=True),
+        ),
+    ),
+    Section(
         "teams", "Teams updates", "Jarvis posts your updates and alerts to a Teams channel.",
         (
             Field("teams_webhook_url", "Channel webhook URL", "secret"),
