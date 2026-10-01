@@ -312,6 +312,34 @@ class SiteAccessCodeUpdateIn(BaseModel):
     notes: str = Field("", description="Anything useful: who set it, when, where the panel is, etc.")
 
 
+class FalseAlarmAnalysisIn(BaseModel):
+    site: str | None = Field(None, description="Limit to one site or customer (partial name ok); omit for all sites")
+    days: int = Field(365, description="Period to look back over, in days (30-730)")
+    repeat_threshold: int = Field(2, description="Flag a site/system as a repeat with this many events or more (2-20)")
+
+
+class FalseAlarmRecordIn(BaseModel):
+    job_ref: str = Field(description="Salts FSM job reference (or id) of the call-out that was a false alarm")
+    site: str = Field("", description="Site name - only needed if the job can't be found in Salts FSM")
+    cause: str = Field("", description="What caused it, as investigated - only what was actually found out")
+    cause_category: Literal["", "environmental", "equipment_fault", "accidental_damage", "malicious", "good_intent",
+                            "cooking_steam_dust", "testing_or_maintenance", "installation_or_design", "unknown"] = ""
+    corrective_action: str = Field("", description="What was or will be done to stop it happening again")
+    action_done_date: str = Field("", description="YYYY-MM-DD the corrective action was completed, if it has been")
+    evidence_ref: str = Field("", description="Where the evidence is, e.g. a job, quote or report reference")
+    investigated_by: str = ""
+    reviewed_by: str = ""
+    review_date: str = Field("", description="YYYY-MM-DD the false alarm was reviewed")
+
+    @field_validator("action_done_date", "review_date")
+    @classmethod
+    def _iso_date(cls, v: str) -> str:
+        v = v.strip()
+        if v:
+            date.fromisoformat(v)  # ValueError -> validation error, so a bad date never reaches the log
+        return v
+
+
 class StockLevelsIn(BaseModel):
     location: str | None = Field(None, description="'Stores' or a van, e.g. 'Van - Dan Harper'")
     search: str | None = Field(None, description="Filter by part code, name or category")
@@ -818,6 +846,25 @@ async def site_access_code_update(j, a: SiteAccessCodeUpdateIn):
     return j.site_access.record(a.site, a.system, a.code, a.notes)
 
 
+def _false_alarm_limits(a) -> tuple[int, int]:
+    return max(30, min(a.days, 730)), max(2, min(a.repeat_threshold, 20))
+
+
+async def false_alarm_analysis(j, a: FalseAlarmAnalysisIn):
+    days, threshold = _false_alarm_limits(a)
+    return await j.false_alarms.analyse(days, threshold, a.site)
+
+
+async def false_alarm_evidence_report(j, a: FalseAlarmAnalysisIn):
+    days, threshold = _false_alarm_limits(a)
+    return await j.false_alarms.report(days, threshold, a.site)
+
+
+async def false_alarm_record(j, a: FalseAlarmRecordIn):
+    # Runs only once the owner has approved it (approval=True); writes Jarvis's own log, never Salts FSM.
+    return await j.false_alarms.record(a.job_ref, a.site, **a.model_dump(exclude={"job_ref", "site"}))
+
+
 async def stock_levels(j, a: StockLevelsIn):
     await j.stores.sync()
     data = j.stores.levels(a.location, a.search)
@@ -1305,6 +1352,26 @@ TOOLS: list[Tool] = [
                                     "or a recorded takeover process. Never invent or search for a code.",
          SiteAccessCodeUpdateIn, site_access_code_update, "Recording the access code", approval=True,
          describe=lambda a: f"Record access code for {a.site} - {a.system}"),
+    Tool("false_alarm_analysis", "READ-ONLY false alarm and repeat call-out analysis from Salts FSM jobs, per site "
+                                 "and per system (BS 5839-1:2025 expects every false alarm to be logged, "
+                                 "investigated and reviewed): flags repeat offenders and shows, for each false "
+                                 "alarm, whether its cause, corrective action, evidence and review are recorded.",
+         FalseAlarmAnalysisIn, false_alarm_analysis, "Analysing false alarms"),
+    Tool("false_alarm_evidence_report", "Draft an audit-ready false alarm evidence report per site: every call-out "
+                                        "and false alarm with system, cause, corrective action, evidence and "
+                                        "review, repeat flags and the gaps still open. Shown on the display; a "
+                                        "DRAFT for a competent person to check and sign. Writes nothing to Salts FSM.",
+         FalseAlarmAnalysisIn, false_alarm_evidence_report, "Drafting the false alarm report"),
+    Tool("false_alarm_record", "Record the investigated cause, corrective action, evidence and review for one false "
+                               "alarm in Jarvis's false alarm log (adds to or updates the entry for that job). Only "
+                               "record what the owner or engineer actually told you - never invent a cause or "
+                               "action. Queued for the owner's approval. Does not change Salts FSM; to put a note "
+                               "on the FSM job use fsm_change, which is also approval-gated.",
+         FalseAlarmRecordIn, false_alarm_record, "Recording the false alarm", approval=True,
+         describe=lambda a: f"Record false alarm investigation for job {a.job_ref}"
+                            + (f": cause - {a.cause[:80]}" if a.cause else "")
+                            + (f"; action - {a.corrective_action[:80]}" if a.corrective_action else "")
+                            + (f"; reviewed by {a.reviewed_by}" if a.reviewed_by else "")),
     Tool("stock_levels", "Stock on hand in the stores and on each van, with value and reorder flags.",
          StockLevelsIn, stock_levels, "Checking stock"),
     Tool("stock_move", "Record a stock movement: goods received, parts used on a job, stores/van transfers, "
