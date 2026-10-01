@@ -364,6 +364,21 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "proactive", "Jarvis speaking up", "Lets Jarvis post into the open chat (and read it aloud in voice mode) when "
+                                          "a background job finishes or something he's watching changes. It can "
+                                          "only tell you things - approvals and changes still need your click.",
+        (
+            Field("proactive_chat_enabled", "Let Jarvis post into the chat by himself", "bool",
+                  "Off by default. There is also a mute button on the chat for the session you have open."),
+            Field("proactive_quiet_start", "Quiet from (HH:MM)", placeholder="21:00",
+                  help="Nothing is posted into the chat or sent to Teams between these times. UK time."),
+            Field("proactive_quiet_end", "Quiet until (HH:MM)", placeholder="07:30"),
+            Field("proactive_max_per_hour", "Most messages an hour", "number",
+                  "Anything over this waits for the next check. 0 means no limit.", advanced=True),
+            Field("proactive_pr_watch_min", "Check pull requests every (minutes)", "number", advanced=True),
+        ),
+    ),
+    Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
         (
             Field("azure_storage_connection_string", "Storage connection string", "secret"),
@@ -514,6 +529,15 @@ class SettingsStore:
                 cron_trigger(value)
             except ValueError:
                 return None, "Use cron format, e.g. 45 7 * * 1-5"
+        if key in ("proactive_quiet_start", "proactive_quiet_end") and not re.fullmatch(
+                r"([01]?\d|2[0-3]):[0-5]\d", str(value)):
+            return None, "Use a time like 21:00"
+        if key in ("proactive_max_per_hour", "proactive_pr_watch_min"):
+            try:
+                if int(value) < 0 or (key == "proactive_pr_watch_min" and int(value) < 1):
+                    return None, "Enter a whole number, not less than " + ("1" if key == "proactive_pr_watch_min" else "0")
+            except (TypeError, ValueError):
+                return None, "Enter a number."
         if key == "jarvis_owner_password" and len(value) < 8:
             return None, "Use at least 8 characters."
         if key == "claude_code_oauth_token" and value and not value.startswith("sk-ant-oat"):
