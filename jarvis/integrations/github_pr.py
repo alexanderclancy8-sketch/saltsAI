@@ -2,14 +2,17 @@
 
 Safety by construction, not just by convention:
 - Reads go through ``_get`` (GET only).
-- The only writes this class can make are a PR comment and a PR merge, through ``_send``, which checks every
-  request against ``_WRITE_ALLOWED``. There is no code path here that deletes a branch, edits repo settings,
-  touches refs or force-pushes; ``_send`` would refuse such a request even if some later change tried one.
+- The only writes this class can make are a PR comment, a PR merge, opening a PR, and closing a PR / changing its
+  base branch, through ``_send``, which checks every request against ``_WRITE_ALLOWED`` (and the body of a PATCH or
+  of a new PR). There is no code path here that deletes a branch, edits repo settings, touches refs or
+  force-pushes; ``_send`` would refuse such a request even if some later change tried one. Every call is made
+  against ``self.repo`` (Jarvis's own repository) - no method takes a repository name.
 - ``merge`` refuses unless the PR is open, not a draft, targets the default branch, has no conflicts and its CI is
   green, and it pins the commit it checked (``sha``) so a late push to the branch can't slip through.
 - Everything read from GitHub is redacted for secrets and labelled as untrusted data (see ``redact.py``).
 
-Callers must ONLY reach ``comment`` and ``merge`` through an approval-gated tool (``brain/pr_tools.py``).
+Callers must ONLY reach ``comment``, ``merge``, ``create_pr``, ``close_pr`` and ``set_base`` through an
+approval-gated tool (``brain/pr_tools.py``).
 """
 
 from __future__ import annotations
@@ -35,6 +38,8 @@ PATCH_SINGLE_FILE = 25_000  # when one file is asked for
 MAX_SEARCH_HITS = 40
 MAX_SEARCH_FILE_BYTES = 400_000
 COMMENT_MAX = 8_000
+PR_TITLE_MAX = 256
+PR_BODY_MAX = 20_000
 
 
 class PRError(RuntimeError):
@@ -61,7 +66,24 @@ _NUM = r"\d+"
 _WRITE_ALLOWED: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("POST", re.compile(rf"^/repos/[^/]+/[^/]+/issues/{_NUM}/comments$")),
     ("PUT", re.compile(rf"^/repos/[^/]+/[^/]+/pulls/{_NUM}/merge$")),
+    ("POST", re.compile(r"^/repos/[^/]+/[^/]+/pulls$")),  # open a PR
+    ("PATCH", re.compile(rf"^/repos/[^/]+/[^/]+/pulls/{_NUM}$")),  # close a PR / change its base - see _check_payload
 )
+_CREATE_KEYS = frozenset({"title", "head", "base", "body"})
+
+
+def _check_payload(method: str, path: str, payload: dict[str, Any]) -> None:
+    """The path allow-list can't tell a harmless PATCH of a PR from a harmful one, so the body is checked too: a PR
+    can only be closed or have its base branch changed, and a new PR can never come from main."""
+    if method == "PATCH":
+        keys = set(payload)
+        if keys not in ({"state"}, {"base"}) or (keys == {"state"} and payload["state"] != "closed"):
+            raise PRError("Refused: a pull request can only be closed or have its base branch changed by Jarvis.")
+    elif method == "POST" and path == "/pulls":
+        if set(payload) - _CREATE_KEYS or not {"title", "head", "base"} <= set(payload):
+            raise PRError("Refused: a new pull request needs exactly a title, head, base and description.")
+        if payload["head"] in PROTECTED_BRANCHES:
+            raise PRError(f"Refused: a pull request can't come from '{payload['head']}'.")
 
 
 def _conflict_state(pr: dict[str, Any]) -> str:
@@ -109,6 +131,7 @@ class PRClient:
         full = f"/repos/{self.repo}{path}"
         if not any(method == m and rx.match(full) for m, rx in _WRITE_ALLOWED):
             raise PRError(f"Refused: {method} {path} is not an allowed GitHub action for Jarvis.")
+        _check_payload(method, path, payload)
         return await self.gh._req(method, full, json=payload)  # noqa: SLF001
 
     # ------------------------------------------------------------------ (1) pr_list
@@ -271,6 +294,79 @@ class PRClient:
             raise PRError(f"The comment is too long ({len(text)} characters; the limit is {COMMENT_MAX}).")
         data = await self._send("POST", f"/issues/{number}/comments", {"body": text})
         return {"commented": True, "pr": number, "url": data.get("html_url")}
+
+    # ------------------------------------------------------------------ pr_create / pr_close / pr_set_base  [WRITE]
+    async def _branch_exists(self, name: str) -> bool:
+        try:
+            await self._get(f"/branches/{quote(name, safe='/')}")
+        except RuntimeError as e:
+            if "-> 404" in str(e):
+                return False
+            raise
+        return True
+
+    async def _open_pr(self, number: int) -> dict[str, Any]:
+        """The PR, if it is still open - otherwise a PRError saying why it can't be changed."""
+        pr = await self._get(f"/pulls/{number}")
+        if pr.get("merged"):
+            raise PRError(f"PR #{number} is already merged.")
+        if pr["state"] != "open":
+            raise PRError(f"PR #{number} is already closed.")
+        return pr
+
+    async def create_pr(self, head: str, base: str, title: str, body: str = "") -> dict[str, Any]:
+        """Open a PR from ``head`` into ``base``, both branches of this repository. ``head`` can never be main/master
+        or the default branch (that would mean pushing to main); nothing is pushed or merged by opening a PR."""
+        head, base = check_ref(head), check_ref(base)
+        if head in PROTECTED_BRANCHES or head == self.gh.default_branch:
+            raise PRError(f"Refused: '{head}' is the main branch. A pull request has to come from a separate branch - "
+                          "Jarvis never pushes to main.")
+        if head == base:
+            raise PRError("The head and base branch are the same, so there is nothing to open a pull request for.")
+        title_text = redact((title or "").strip(), self._secrets)
+        body_text = redact((body or "").strip(), self._secrets)
+        if not title_text:
+            raise PRError("The pull request needs a title.")
+        if len(title_text) > PR_TITLE_MAX:
+            raise PRError(f"The title is too long ({len(title_text)} characters; the limit is {PR_TITLE_MAX}).")
+        if len(body_text) > PR_BODY_MAX:
+            raise PRError(f"The description is too long ({len(body_text)} characters; the limit is {PR_BODY_MAX}).")
+        for label, branch in (("head", head), ("base", base)):
+            if not await self._branch_exists(branch):
+                raise PRError(f"The {label} branch '{branch}' doesn't exist in {self.repo}.")
+        data = await self._send("POST", "/pulls", {"title": title_text, "head": head, "base": base, "body": body_text})
+        return {"created": True, "pr": data.get("number"), "url": data.get("html_url"), "head": head, "base": base}
+
+    async def close_pr(self, number: int, comment: str | None = None) -> dict[str, Any]:
+        """Close (never merge) an open PR, then post the optional comment. Branches are left alone."""
+        text = redact((comment or "").strip(), self._secrets)
+        if len(text) > COMMENT_MAX:
+            raise PRError(f"The comment is too long ({len(text)} characters; the limit is {COMMENT_MAX}).")
+        await self._open_pr(number)
+        data = await self._send("PATCH", f"/pulls/{number}", {"state": "closed"})
+        result: dict[str, Any] = {"closed": True, "pr": number, "url": data.get("html_url"), "commented": False}
+        if text:
+            try:
+                await self.comment(number, text)
+            except Exception as e:  # noqa: BLE001
+                raise PRError(f"PR #{number} was closed, but posting the comment failed: {redact(str(e), self._secrets)}") from e
+            result["commented"] = True
+        return result
+
+    async def set_base(self, number: int, base: str) -> dict[str, Any]:
+        """Point an open PR at a different base branch of this repository."""
+        base = check_ref(base)
+        pr = await self._open_pr(number)
+        old = pr["base"]["ref"]
+        if old == base:
+            raise PRError(f"PR #{number} already targets {base}.")
+        if pr["head"]["ref"] == base:
+            raise PRError(f"PR #{number} comes from {base}, so it can't also be its base.")
+        if not await self._branch_exists(base):
+            raise PRError(f"The branch '{base}' doesn't exist in {self.repo}.")
+        data = await self._send("PATCH", f"/pulls/{number}", {"base": base})
+        return {"updated": True, "pr": number, "previous_base": old, "base": (data.get("base") or {}).get("ref", base),
+                "url": data.get("html_url")}
 
     # ------------------------------------------------------------------ (7) run_tests (reads CI results)
     async def ci_results(self, ref: str) -> dict[str, Any]:
