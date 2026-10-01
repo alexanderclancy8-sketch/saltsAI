@@ -30,9 +30,11 @@ from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.automations import AutomationService
 from .services.billing import Billing
+from .services.customer_comms import CustomerComms
 from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
+from .services.false_alarms import FalseAlarmLog
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
 from .services.briefing import Briefings
@@ -41,7 +43,9 @@ from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.po_intake import PoIntake
 from .services.ppm_planner import PPMPlanner
+from .services.route_advisor import RouteAdvisor
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
@@ -66,6 +70,7 @@ class Jarvis:
                  client=None):
         s = self.settings = settings
         self.db = db or Database(settings.db_path)
+        self.db.maintain_transcript()  # 2-year retention; older rows are redacted once
         self.bus = EventBus()
         self.http = http or httpx.AsyncClient(timeout=30, headers={"User-Agent": "salts-jarvis/1.0"})
         self.client = client or llm.make_client(settings)
@@ -76,7 +81,7 @@ class Jarvis:
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)
-        self.ram = (RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key and s.ram_client_id
+        self.ram = (RamTracking(s, self.http) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
                     else DemoRamTracking(self.fsm))
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None
@@ -104,6 +109,7 @@ class Jarvis:
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
         self.actions.j = self
+        self.po_intake = PoIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
@@ -116,9 +122,11 @@ class Jarvis:
         self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
         self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
+        self.route_advisor = RouteAdvisor(self.fsm, self.tracker, self.register)  # read-only route advice
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
         self.renewals = Renewals(self)
+        self.customer_comms = CustomerComms(self)  # drafts lifecycle emails; each is queued for approval, never sent
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
@@ -131,6 +139,7 @@ class Jarvis:
         self.weekly_digest = WeeklyDigest(self)
         self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
+        self.false_alarms = FalseAlarmLog(self)  # BS 5839-1 false alarm log; writes to FSM never happen from here
         self.recruiter = Recruiter(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
@@ -181,6 +190,9 @@ class Jarvis:
                                  if self.self_improve.enabled else "not set up (add a repo + token on Settings)"),
             "Automations": (f"{len(self.automations.list_all())} you've set up"
                             if self.automations.list_all() else "none set up yet - just ask"),
+            "PO intake": (f"scans the inbox every {s.inbox_check_interval_min} min for customer purchase orders, "
+                         "matches them to a sent quote and queues the job for your approval" if not self.mail.demo
+                         else "DEMO data - connect Microsoft 365"),
             "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
             "Weekly digest": (f"routine engineering notices sent to Teams {cron_to_english(s.weekly_digest_cron)}"
                               if s.weekly_digest_enabled else "off - every notice is sent straight away"),
@@ -190,7 +202,7 @@ class Jarvis:
             "Socials / Google": ", ".join(k for k, v in presence.items() if v) or "DEMO data - not connected",
             "Stores / stock": self.stores.source + (" (DEMO stock)" if self.stores.demo else ""),
             "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
-                                 "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY / RAM_CLIENT_ID"),
+                                 "DEMO journeys - set RAM_CLIENT_ID / RAM_API_KEY / RAM_USERNAME / RAM_PASSWORD"),
             "Web search": "on" if s.web_search_enabled else "off",
             "Plugins": plugins.status_line(s, self.verifier),
             "Claude": ("your Claude Max subscription (Agent SDK)" if s.effective_llm_backend == "max"
@@ -242,6 +254,13 @@ class Jarvis:
         result = await self.billing.queue_review_requests()
         if result.get("queued"):
             await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.",
+                                       importance="normal")
+
+    async def customer_comms_sweep(self) -> None:
+        result = await self.customer_comms.draft_all()
+        if result.get("queued"):
+            await self.notifier.notify(f"{len(result['queued'])} customer email(s) drafted",
+                                       "Approve or cancel them on the display - nothing has been sent.",
                                        importance="normal")
 
     async def lone_worker_sweep(self) -> None:

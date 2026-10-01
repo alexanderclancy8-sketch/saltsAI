@@ -9,7 +9,8 @@ owner has clicked Approve. Guard rails, all enforced here:
   hunks) and aborts. To resolve, the complete resolved text of every conflicted file is passed back in
   ``resolutions``; only files that really conflict may be supplied, leftover conflict markers are refused, and
   CI/workflow files are never edited by this tool.
-- The merged tree is exported WITHOUT its .git folder and its tests run in a scratch directory with a scrubbed
+- The merged tree (every tracked file, as a checkout would write it - not ``git archive``, which skips
+  export-ignore'd files) is exported WITHOUT its .git folder and its tests run in a scratch directory with a scrubbed
   environment (no Jarvis settings, tokens or API keys) and a hard time limit. If they don't pass - or can't run
   at all - nothing is pushed and what failed is reported.
 - The GitHub token is only ever given to git for the clone/fetch/push commands (as an HTTP header on the command
@@ -23,14 +24,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import logging
 import os
 import re
 import shutil
 import signal
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -47,6 +46,7 @@ HUNK_LIMIT = 3000
 MAX_RESOLUTION_CHARS = 400_000
 BLOCKED_PREFIXES = (".github/",)
 DEFAULT_TEST_COMMANDS: tuple[tuple[str, ...], ...] = ((sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"),)
+_CONFIG_YAML = re.compile(r"""ROOT_DIR\s*/\s*["']([\w.\-]+\.ya?ml)["']""")
 _MARKER = re.compile(r"^(<{7}|>{7})(?: |$)", re.M)  # a lone ======= line can be legitimate text
 
 
@@ -75,6 +75,27 @@ def _clean_env(home: Path, extra: dict[str, str] | None = None) -> dict[str, str
 
 def _git_env(home: Path) -> dict[str, str]:
     return _clean_env(home, {"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
+
+
+def _missing_config_files(export: Path) -> list[str]:
+    """Root *.yaml files that jarvis/config.py reads via ROOT_DIR but which aren't in the exported tree."""
+    try:
+        text = (export / "jarvis" / "config.py").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return sorted({n for n in _CONFIG_YAML.findall(text) if not (export / n).is_file()})
+
+
+def _failure_reason(output: str, rc: int, timeout: int) -> str:
+    """One plain sentence on why the tests failed, from the test run's own output."""
+    if rc == 124 and "Timed out" in output:
+        return f"They ran past the {timeout}s time limit and were stopped."
+    failed = [line.strip()[:200] for line in output.splitlines() if line.startswith(("FAILED ", "ERROR "))]
+    if failed:
+        more = f" (and {len(failed) - 3} more)" if len(failed) > 3 else ""
+        return "Failing: " + "; ".join(failed[:3]) + more + "."
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return f"Last line of output: {lines[-1][:200]}" if lines else "They produced no output."
 
 
 def _report(status: str, summary: str, **extra: Any) -> dict[str, Any]:
@@ -197,11 +218,26 @@ async def resolve_pr(pc: PRClient, number: int, resolutions: dict[str, str] | No
             # ---- tests, on an export of the merged tree with no .git and no credentials
             export = tmp / "export"
             export.mkdir()
-            rc, tar_bytes = await _run(["git", *ident, "archive", "--format=tar", "HEAD"], work, genv, GIT_TIMEOUT)
+            # Every file git tracks for the merged commit, written out exactly as a checkout would (NOT `git archive`,
+            # which leaves out anything marked export-ignore in .gitattributes), just without a .git folder.
+            rc, out = await _run(["git", *ident, "checkout-index", "--all", "--force", f"--prefix={export}/"],
+                                 work, genv, GIT_TIMEOUT)
             if rc != 0:
-                raise PRError(f"git archive failed: {clean(tar_bytes, 500)}")
-            with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tar:
-                tar.extractall(export, members=[m for m in tar.getmembers() if m.isfile() or m.isdir()], filter="data")
+                raise PRError(f"Couldn't write out the merged files to test them: {clean(out, 500)}")
+            rc, listing = await _run(["git", *ident, "ls-files", "-z"], work, genv, GIT_TIMEOUT)
+            if rc != 0:
+                raise PRError(f"git ls-files failed: {clean(listing, 500)}")
+            absent = [n for n in listing.decode("utf-8", errors="replace").split("\0")
+                      if n and not os.path.lexists(export / n)]
+            if absent:
+                raise PRError(f"The test copy of the merged branch is missing {len(absent)} file(s) that git tracks "
+                              f"({', '.join(absent[:10])}), so the tests were not run. Nothing was pushed.")
+            missing = _missing_config_files(export)
+            if missing:
+                return _report("error", f"The tests were not run: the merged branch has no {', '.join(missing)}, which "
+                                        "jarvis/config.py reads from the repository root and the tests need. Check the "
+                                        f"file exists on {head_ref} and on {base}. Nothing was pushed.",
+                               missing_files=missing)
             (tmp / "testhome").mkdir()
             tenv = _clean_env(tmp / "testhome")
             ran: list[str] = []
@@ -209,9 +245,10 @@ async def resolve_pr(pc: PRClient, number: int, resolutions: dict[str, str] | No
                 rc, out = await _run(list(cmd), export, tenv, test_timeout)
                 ran.append(" ".join(Path(cmd[0]).name if i == 0 else c for i, c in enumerate(cmd)))
                 if rc != 0:
+                    why = clean(_failure_reason(out.decode("utf-8", errors="replace"), rc, test_timeout), 600)
                     return _report("tests_failed", f"Merged {base} into {head_ref} locally"
                                    + (f" (resolved {', '.join(resolved)})" if resolved else "")
-                                   + f", but the tests did not pass ({ran[-1]} exited {rc}). Nothing was pushed.",
+                                   + f", but the tests did not pass ({ran[-1]} exited {rc}). {why} Nothing was pushed.",
                                    output_tail=clean(out), conflicts_resolved=resolved)
 
             # ---- push to the PR's own branch only: plain push, never forced

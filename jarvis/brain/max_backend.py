@@ -120,15 +120,18 @@ class MaxBrain:
         self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
         self._repeats = RepeatDetector()
+        self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
         self.refresh_system()
 
     def refresh_system(self) -> None:
-        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary())
+        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
+                              history_before_id=self._history_before)
         self.system = "\n\n".join(b["text"] for b in blocks)
 
     def reset(self) -> None:
         self.session_id = None
         self._fresh_start = True  # the worker restarts Claude Code without the old conversation
+        self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
         self.j.bus.publish("conversation_reset", None)
 

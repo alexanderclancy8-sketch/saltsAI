@@ -366,15 +366,17 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # ------------------------------------------------------------------ drafted documents (PDF / Word)
     @app.get("/api/documents/{doc_id}/{fmt}", dependencies=[Depends(owner)])
     async def download_document(doc_id: str, fmt: str, request: Request):
-        if fmt not in ("pdf", "docx"):
-            raise HTTPException(404, "No such format - use pdf or docx.")
+        renderers = {"pdf": (documents.render_pdf, documents.PDF_MIME),
+                     "docx": (documents.render_docx, documents.DOCX_MIME),
+                     "xlsx": (documents.render_xlsx, documents.XLSX_MIME)}
+        if fmt not in renderers:
+            raise HTTPException(404, "No such format - use pdf, docx or xlsx.")
         if not documents.valid_doc_id(doc_id):
             raise HTTPException(400, "Invalid document id")
         doc = J(request).documents.get(doc_id)
         if not doc:
             raise HTTPException(404, "No such document")
-        render, mime = (documents.render_pdf, documents.PDF_MIME) if fmt == "pdf" else \
-            (documents.render_docx, documents.DOCX_MIME)
+        render, mime = renderers[fmt]
         try:
             data = await asyncio.to_thread(render, doc, settings.company_name)
         except ImportError:

@@ -123,11 +123,13 @@ class Suggestions:
                 return None
 
         from .remedials import remedial_pipeline
+        from .risk_scoring import quote_pipeline
 
-        unbilled, remedials, overdue, credit, certs, health = await asyncio.gather(
+        unbilled, remedials, overdue, credit, certs, health, pay_risk, quote_scores = await asyncio.gather(
             safe(j.billing.unbilled_jobs(30)), safe(remedial_pipeline(j.fsm)), safe(j.staff.overdue_jobs()),
             safe(j.accountant.credit_control()), safe(j.staff.expiring_certifications(30)),
-            safe(j.customers.scores(refresh=True)))
+            safe(j.customers.scores(refresh=True)), safe(j.accountant.payment_risk()),
+            safe(quote_pipeline(j.fsm)))
 
         for cust in ((health or {}).get("customers") or []):
             renewal = cust.get("renewal_in_days")
@@ -196,6 +198,39 @@ class Suggestions:
                 add("credit", f"Chase {len(late)} invoice{'s' if len(late) > 1 else ''} over 30 days overdue (£{sum(a['amount_due'] for a in late):,.0f})?",
                     "Worst first; statutory interest can be added on business debts.",
                     "Draft credit-control chasers for invoices more than 30 days overdue, worst first, for my approval.", 2)
+        # invoices over 30 days overdue already get the "credit" chase above; this is the early warning
+        risky = [r for r in ((pay_risk or {}).get("invoices") or [])
+                 if r["band"] == "high" and r["days_overdue"] <= 30]
+        def timing(r: dict[str, Any]) -> str:
+            d = r["days_overdue"]
+            return f"due in {-d} days" if d < 0 else f"{d} days overdue" if d else "due today"
+
+        if risky:
+            total = sum(r["amount_due"] for r in risky)
+            add("payrisk", f"{len(risky)} invoice{'s' if len(risky) > 1 else ''} at high risk of paying late "
+                           f"(£{total:,.0f}) - contact early?",
+                "; ".join(f"{r['customer']} {r['invoice']} £{r['amount_due']:,.0f} (risk {r['score']})"
+                          for r in risky[:3]),
+                "These invoices score high for late-payment risk from the customer's payment history: "
+                + "; ".join(f"{r['invoice']} {r['customer']} £{r['amount_due']:,.2f} ({timing(r)}, "
+                            f"score {r['score']}: {'; '.join(r['reasons'][:2])})" for r in risky[:5])
+                + ". Explain who to contact first and why. For any already overdue, use draft_credit_control to "
+                  "prepare the reminder; for those not yet due, draft a friendly early payment nudge. Drafts only, "
+                  "for my approval - don't send anything.", 2)
+        chase_quotes = [r for r in ((quote_scores or {}).get("open") or [])
+                        if r["follow_up"].startswith("due") and not r["remedial"]]
+        if chase_quotes:  # already ranked by expected value, so the best chance of a win comes first
+            top = chase_quotes[0]
+            add("quote-priority",
+                f"Follow up {len(chase_quotes)} open quote{'s' if len(chase_quotes) > 1 else ''} - best first is "
+                f"{top['quote']} ({top['customer']}, £{top['value']:,.0f}, {top['win_score']}% to win)?",
+                "; ".join(f"{r['quote']} {r['customer']} £{r['value']:,.0f} ({r['win_score']}% to win)"
+                          for r in chase_quotes[:3]),
+                "These open quotes are due a follow-up, ranked by expected value (chance of winning x value): "
+                + "; ".join(f"{r['quote']} {r['customer']} £{r['value']:,.2f}, {r['win_score']}% to win "
+                            f"({'; '.join(r['reasons'][:2])})" for r in chase_quotes[:5])
+                + ". Work down in that order: use draft_sales_followup for each and show me the drafts for my "
+                  "approval - don't send anything.", 2)
         try:
             await j.stores.sync()
             for po in j.stores.reorder_list()["purchase_orders"][:3]:

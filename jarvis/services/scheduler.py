@@ -61,6 +61,10 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("review requests", j.daily_reviews),
                   cron_trigger(s.review_requests_cron, timezone=s.timezone), id="reviews",
                   max_instances=1, coalesce=True)
+    if s.customer_comms_enabled:  # drafts only - every email still waits for the owner's approval
+        sched.add_job(_guard("customer emails", j.customer_comms_sweep),
+                      cron_trigger(s.customer_comms_cron, timezone=s.timezone), id="customer_comms",
+                      max_instances=1, coalesce=True)
     sched.add_job(_guard("suggestions", j.suggestions.sweep),
                   cron_trigger(s.suggestions_cron, timezone=s.timezone), id="suggestions",
                   max_instances=1, coalesce=True)
@@ -78,4 +82,6 @@ def build_scheduler(j) -> AsyncIOScheduler:
     if not getattr(j.mail, "demo", True):
         sched.add_job(_guard("inbox scan", j.issues.scan_inbox), "interval", minutes=s.inbox_check_interval_min,
                       id="inbox_scan", max_instances=1, coalesce=True)
+        sched.add_job(_guard("PO intake scan", j.po_intake.scan_inbox), "interval",
+                      minutes=s.inbox_check_interval_min, id="po_intake_scan", max_instances=1, coalesce=True)
     return sched

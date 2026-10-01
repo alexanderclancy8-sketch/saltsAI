@@ -47,7 +47,8 @@ on `main` that blocks force-pushes and deletion (and ideally requires a pull req
   base branch; plain `git push` to the PR's own branch (never `--force`; a moved branch makes the push fail); merge
   only (a rebase would need a force-push). Conflicts are reported, not guessed: to resolve, Jarvis passes the full
   resolved text of each conflicted file back in `resolutions`; leftover conflict markers, files that don't actually
-  conflict, and anything under `.github/` are refused. The merged tree is exported with no `.git` and tested in a scratch
+  conflict, and anything under `.github/` are refused. The merged tree is exported (every tracked file, via `git checkout-index`, so
+  `export-ignore` can't hide files like the root `*.yaml` configs) with no `.git` and tested in a scratch
   directory with a scrubbed environment (no Jarvis settings or tokens) and a time limit. Tests failing, timing out or
   being unable to run means nothing is pushed. This is a scratch directory and clean environment, **not** an OS-level
   sandbox - hence the approval on every run.
