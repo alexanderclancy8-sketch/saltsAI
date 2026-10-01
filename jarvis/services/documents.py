@@ -20,6 +20,7 @@ from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
 
 from ..brain import llm
+from .risk_scoring import score_quotes
 
 log = logging.getLogger(__name__)
 
@@ -525,6 +526,10 @@ do not mention them at all (for a Letter Before Action, say in the checklist tha
 calculated). The interest figures are the accountant tool's estimate as at today - say "as at [date]" and that
 interest continues to accrue; do not compute a daily rate yourself.
 
+Each invoice may carry `late_payment_risk` (score, band and reasons from Jarvis's internal payment-history
+scoring). It is INTERNAL guidance for {owner} only: use it to judge how firm to be within the stage and what to put in
+the checklist, but never quote the score, band or reasons to the customer and never imply a judgement about them.
+
 Match the requested channel and the escalation stage (`stage_key`):
 - reminder (1-7 days overdue): warm, friendly, assume an oversight. Short. Ask for payment or a payment date.
 - second_reminder (8-21 days): polite but firmer. Reference the earlier reminder only if the data says one was
@@ -576,6 +581,9 @@ Use ONLY the quote data in the JSON provided (quote ref, customer, site, value, 
 title). Never invent prices, discounts, dates, deadlines, stock levels, competitor activity, contact names or
 scope details. Anything missing becomes a marked placeholder, e.g. [TO CONFIRM: contact name], and is repeated in a
 short "Missing / to confirm" list at the end (including everything in the `missing` array).
+
+`internal_win_likelihood` (score, band, reasons) is Jarvis's internal estimate of the chance of winning this quote.
+It is for {owner}'s prioritisation only: never mention it, or any probability, to the customer.
 
 Write one touch per entry in `touches` (in order), for the requested channel:
 - Each touch names the specific quote (ref, site, scope, value as given) and is brief - an email of 4-8 lines, or
@@ -632,7 +640,8 @@ def _match_overdue(actions: list[dict[str, Any]], query: str) -> tuple[list[dict
 
 
 def build_credit_control_context(cc: dict[str, Any], aged: dict[str, Any] | None, query: str,
-                                 channel: str | None, today: date, base_rate_pct: float | None = None
+                                 channel: str | None, today: date, base_rate_pct: float | None = None,
+                                 risk: list[dict[str, Any]] | None = None
                                  ) -> tuple[dict[str, Any] | None, str | None]:
     """Turn accountant.credit_control() (+ aged detail) into the exact facts a chaser may use.
 
@@ -648,6 +657,7 @@ def build_credit_control_context(cc: dict[str, Any], aged: dict[str, Any] | None
         return None, (f"I couldn't find an overdue invoice or customer matching '{query}' in credit control - "
                       "it may be paid, not yet due, or the name/reference is different. Nothing to draft.")
     details = {str(i.get("number")): i for i in ((aged or {}).get("overdue_invoices") or [])}
+    risks = {str(r.get("invoice")): r for r in (risk or [])}
     invoices, missing = [], []
     for a in sorted(matched, key=lambda x: -(x.get("days_overdue") or 0)):
         ref = str(a.get("invoice"))
@@ -658,6 +668,10 @@ def build_credit_control_context(cc: dict[str, Any], aged: dict[str, Any] | None
         for key in ("statutory_interest", "fixed_compensation"):
             if a.get(key) is not None:
                 row[key] = a[key]
+        if ref in risks:
+            r = risks[ref]
+            row["late_payment_risk"] = {"score": r.get("score"), "band": r.get("band"),
+                                        "reasons": list(r.get("reasons") or [])}
         for label, key in (("invoice date", "invoice_date"), ("due date", "due_date")):
             if not row.get(key):
                 missing.append(f"{label} for {ref}")
@@ -697,7 +711,8 @@ def build_credit_control_context(cc: dict[str, Any], aged: dict[str, Any] | None
 
 
 def build_followup_context(quotes: list[dict[str, Any]], quote_ref: str, channel: str | None,
-                           today: date) -> tuple[dict[str, Any] | None, str | None]:
+                           today: date, win: dict[str, Any] | None = None
+                           ) -> tuple[dict[str, Any] | None, str | None]:
     """Facts for a sales follow-up from an FSM quote; (None, message) if it can't/shouldn't be drafted."""
     from .remedials import LOST, WON
 
@@ -745,6 +760,9 @@ def build_followup_context(quotes: list[dict[str, Any]], quote_ref: str, channel
                      "scope": quote.get("title"), "status": quote.get("status"),
                      "prepared_by": quote.get("created_by")},
            "touches": touches, "missing": missing}
+    if win:
+        ctx["internal_win_likelihood"] = {"score": win.get("win_score"), "band": win.get("band"),
+                                          "reasons": list(win.get("reasons") or [])}
     return ctx, None
 
 
@@ -844,8 +862,10 @@ class Documents:
         aged = await _safe(j.accountant.aged("receivable"), "aged debtors")
         if "error" in aged:
             aged = None  # dates then show up as missing rather than being guessed
+        risk = await _safe(j.accountant.payment_risk(), "payment risk")
+        risk_rows = None if "error" in risk else risk.get("invoices")  # no score is better than a wrong one
         ctx, problem = build_credit_control_context(cc, aged, target, channel, date.today(),
-                                                    getattr(j.settings, "boe_base_rate", None))
+                                                    getattr(j.settings, "boe_base_rate", None), risk_rows)
         if problem:
             return problem
         text = await llm.write(
@@ -863,7 +883,14 @@ class Documents:
             quotes = await j.fsm.quotes()
         except Exception as e:  # noqa: BLE001
             return f"I couldn't read quotes from Salts FSM just now ({type(e).__name__}), so I haven't drafted anything."
-        ctx, problem = build_followup_context(quotes, quote_ref, channel, date.today())
+        win = None
+        try:
+            ref = (quote_ref or "").strip().lower()
+            win = next((r for r in score_quotes(quotes, date.today()).get("open", [])
+                        if ref and str(r.get("quote") or "").lower() == ref), None)
+        except Exception as e:  # noqa: BLE001 - the score is a bonus; the draft doesn't depend on it
+            log.info("quote scoring skipped: %s", e)
+        ctx, problem = build_followup_context(quotes, quote_ref, channel, date.today(), win)
         if problem:
             return problem
         text = await llm.write(
