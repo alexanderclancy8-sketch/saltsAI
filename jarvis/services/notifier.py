@@ -168,8 +168,16 @@ class Notifier:
         want_email = "email" in channels or (teams_failed and self.s.engineering_email_fallback)
         if want_email and self.s.owner_email and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([self.s.owner_email], f"[Jarvis] {subject}", text_to_html(body))
-                sent.append("email")
+                # Jarvis's own mail to the owner is filed into his Jarvis folder, not the Inbox (see
+                # GraphMail.send_to_owner). Filing problems never fail the send: the mail just stays in the Inbox.
+                filed, warning = await self.mail.send_to_owner(
+                    self.s.owner_email, f"[Jarvis] {subject}", text_to_html(body))
+                if filed:
+                    sent.append(f"email ('{self.s.owner_mail_folder.strip()}' folder)")
+                elif warning:
+                    sent.append(f"email (Inbox - {warning})")
+                else:
+                    sent.append("email")
             except Exception as e:  # noqa: BLE001
                 log.warning("Email engineering update failed (%s): %s", subject, e)
         if teams_failed and "email" not in sent:
