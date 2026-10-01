@@ -197,11 +197,14 @@ class Settings(BaseSettings):
     target_revenue_growth_pct: float = 0.0
 
     # --- RAM Tracking (vehicle trackers) ----------------------------------------
-    ram_api_base_url: str = ""  # from RAM's External API / Swagger docs
-    ram_api_key: str = ""
-    ram_api_key_header: str = "X-Api-Key"  # or "Authorization" to send "Bearer <key>"
-    ram_client_id: str = ""  # RAM's External API needs both the key and the client ID, sent as separate headers
-    ram_client_id_header: str = "ClientId"
+    # RAM's External API is OAuth2 (see jarvis/integrations/ramtracking.py's docstring) - client ID
+    # and secret authenticate the token request, not the data requests themselves.
+    ram_auth_url: str = "https://auth.qaifn.co.uk/oauth/token"
+    ram_api_base_url: str = "https://api.qaifn.co.uk"
+    ram_client_id: str = ""
+    ram_api_key: str = ""  # this is RAM's "Client Secret" - kept as ram_api_key so existing saved settings still apply
+    ram_username: str = ""
+    ram_password: str = ""
     timesheet_tolerance_min: int = 30
 
     # --- Marketing: socials, Google reviews, search ranking -------------------
