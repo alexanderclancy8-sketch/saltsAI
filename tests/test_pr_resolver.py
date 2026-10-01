@@ -138,6 +138,61 @@ async def test_failing_tests_mean_nothing_is_pushed_and_failure_is_reported_reda
     assert origin.sha("feature") == before
 
 
+NEEDS_YAML = [[sys.executable, "-c",
+               "import os, sys; sys.exit(0 if os.path.isfile('mcp_plugins.yaml') and os.path.isfile('mandates.yaml') "
+               "and os.path.islink('link.yaml') and not os.path.exists('.git') else 1)"]]
+
+
+async def test_test_copy_contains_every_tracked_file_even_those_git_archive_would_skip(tmp_path):
+    """Regression: the scratch copy used `git archive`, which silently leaves out anything marked export-ignore in
+    .gitattributes (and symlinks were dropped), so tests that read the root *.yaml files failed with a missing file."""
+    origin = Origin(tmp_path, {**FILES, "mcp_plugins.yaml": "context7: {}\n", "mandates.yaml": "mandates: []\n",
+                               ".gitattributes": "*.yaml export-ignore\n"})
+    (origin.seed / "link.yaml").symlink_to("mcp_plugins.yaml")
+    git(origin.seed, "add", "-A")
+    git(origin.seed, "commit", "-m", "link")
+    git(origin.seed, "push", "origin", "main")
+    origin.branch("feature")
+    origin.commit("feature", {"app.py": "line1\nline2\nline3\nfeature-line\n"})
+    origin.commit("main", {"new.txt": "from main\n"})
+    m, pc = api(origin)
+    out = await run(origin, pc, tests=NEEDS_YAML)
+    assert out["status"] == "pushed", out
+
+
+async def test_missing_config_yaml_is_reported_plainly_and_nothing_is_pushed(tmp_path):
+    config = 'plugins_file: Path = ROOT_DIR / "mcp_plugins.yaml"\nmandates_file: Path = ROOT_DIR / "mandates.yaml"\n'
+    origin = Origin(tmp_path, {**FILES, "jarvis/config.py": config, "mandates.yaml": "mandates: []\n"})
+    origin.branch("feature")
+    origin.commit("feature", {"app.py": "line1\nline2\nline3\nfeature-line\n"})
+    origin.commit("main", {"new.txt": "from main\n"})
+    before = origin.sha("feature")
+    m, pc = api(origin)
+    out = await run(origin, pc)
+    assert out["status"] == "error", out
+    assert "mcp_plugins.yaml" in out["summary"] and "mandates.yaml" not in out["summary"]
+    assert "jarvis/config.py" in out["summary"] and "Nothing was pushed" in out["summary"]
+    assert origin.sha("feature") == before
+
+
+async def test_failed_tests_are_named_in_the_summary_the_approver_sees(origin):
+    diverge_cleanly(origin)
+    m, pc = api(origin)
+    script = ("print('FAILED tests/test_plugins.py::test_shipped_specs_are_never_unpinned - assert {'); "
+              "print('1 failed in 0.2s'); import sys; sys.exit(1)")
+    out = await run(origin, pc, tests=[[sys.executable, "-c", script]])
+    assert out["status"] == "tests_failed"
+    assert "tests/test_plugins.py::test_shipped_specs_are_never_unpinned" in out["summary"]
+    assert "Nothing was pushed" in out["summary"]
+
+
+async def test_a_timeout_says_so_in_the_summary(origin):
+    diverge_cleanly(origin)
+    m, pc = api(origin)
+    out = await run(origin, pc, tests=[[sys.executable, "-c", "import time; time.sleep(30)"]], test_timeout=1)
+    assert out["status"] == "tests_failed" and "time limit" in out["summary"]
+
+
 async def test_a_test_timeout_is_a_failure_not_a_push(origin):
     diverge_cleanly(origin)
     before = origin.sha("feature")
