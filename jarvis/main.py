@@ -23,8 +23,9 @@ from . import auth
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
+from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
-from .integrations.voice import VoiceError
+from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .services import connection_tests, documents
 from .settings_store import SECTIONS_BY_ID, SettingsStore
 
@@ -37,6 +38,11 @@ class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
     mode: str = "typed"  # typed | voice
     attachments: list[dict[str, str]] = []
+    compose: bool = False  # true only when the owner typed this into the chat box (not a quick button / voice)
+
+
+class ForgetIn(BaseModel):
+    text: str = Field(min_length=1, max_length=200)
 
 
 class TTSIn(BaseModel):
@@ -137,8 +143,20 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return FileResponse(WEB / "report.html")
 
     # ------------------------------------------------------------------ chat
+    def learn_reply(j: Jarvis, text: str, mode: str, compose: bool, attachments: list | None) -> None:
+        """Count a message the owner typed in the chat box towards their usual replies (see
+        services/reply_suggestions.py). Must run before the turn so Jarvis's previous reply is the context.
+        Never stores spoken text, quick-button text or attachments, and can never break a chat turn."""
+        if not compose or mode != "typed" or attachments:
+            return
+        try:
+            j.reply_suggestions.record(text, "typed")
+        except Exception as e:  # noqa: BLE001
+            log.warning("reply learning skipped: %s", e)
+
     @app.post("/api/chat", dependencies=[Depends(owner)])
     async def chat(body: ChatIn, request: Request):
+        learn_reply(J(request), body.text, body.mode, body.compose, body.attachments)
         reply = await J(request).brain.ask(body.text, "voice" if body.mode == "voice" else "typed", body.attachments,
                                            speaker=speaker(request))
         return {"reply": reply}
@@ -146,13 +164,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # Same conversation, but for when the live WebSocket isn't available (e.g. it dropped and hasn't
     # reconnected yet): word-by-word as Claude generates it, rather than the client waiting on the full
     # reply. Each line is one of the same {"type", "data"} events the WebSocket already streams.
-    CHAT_STREAM_EVENTS = {"user_message", "thinking", "delta", "tool", "reply", "error", "stopped"}
+    CHAT_STREAM_EVENTS = {"user_message", "thinking", "delta", "tool", "reply", "error", "stopped", "ask"}
     CHAT_STREAM_TERMINAL = {"reply", "error", "stopped"}
 
     @app.post("/api/chat/stream", dependencies=[Depends(owner)])
     async def chat_stream(body: ChatIn, request: Request):
         j = J(request)
         mode = "voice" if body.mode == "voice" else "typed"
+        learn_reply(j, body.text, mode, body.compose, body.attachments)
         q = j.bus.subscribe()
         task = asyncio.create_task(j.brain.ask(body.text, mode, body.attachments, speaker=speaker(request)))
 
@@ -186,6 +205,24 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
         j.bus.publish("stopped", {"stopped": stopped})
         return {"stopped": stopped}
+
+    # Learned replies for the chat box. A suggestion is only text the HUD may put in the input; nothing here sends
+    # a message or touches the approval queue.
+    @app.get("/api/reply-suggestion", dependencies=[Depends(owner)])
+    async def reply_suggestion(request: Request, prefix: str = ""):
+        return J(request).reply_suggestions.suggest(prefix[:200])
+
+    @app.get("/api/reply-suggestions", dependencies=[Depends(owner)])
+    async def reply_suggestions_learned(request: Request):
+        return J(request).reply_suggestions.summary()
+
+    @app.post("/api/reply-suggestions/forget", dependencies=[Depends(owner)])
+    async def reply_suggestions_forget(body: ForgetIn, request: Request):
+        return {"forgotten": J(request).reply_suggestions.forget(body.text)}
+
+    @app.delete("/api/reply-suggestions", dependencies=[Depends(owner)])
+    async def reply_suggestions_clear(request: Request):
+        return {"forgotten": J(request).reply_suggestions.clear()}
 
     @app.get("/api/transcript", dependencies=[Depends(owner)])
     async def transcript(request: Request):
@@ -232,13 +269,32 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return StreamingResponse(stream, media_type=mime)
 
     @app.post("/api/stt", dependencies=[Depends(owner)])
-    async def stt(request: Request, audio: UploadFile = File(...)):
+    async def stt(request: Request, audio: UploadFile = File(...), engine: str | None = None):
+        """engine (optional): try exactly this engine once - the browser drives retry and fallback across
+        voice.stt_chain (see web/hud.js). Without it, the configured engine is used with one server-side retry."""
         data = await audio.read()
+        if not data:
+            log.warning("STT upload was empty (filename=%s)", audio.filename)
+            return JSONResponse({"detail": "No audio was received"}, status_code=400)
+        if engine is not None and engine not in SERVER_ENGINES:
+            return JSONResponse({"detail": f"Unknown speech-to-text engine '{engine[:20]}'"}, status_code=400)
         try:
-            text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
+            if engine:
+                text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm", engine,
+                                                         retry=False, timeout_s=STT_ATTEMPT_TIMEOUT_S)
+            else:
+                text = await J(request).voice.transcribe(data, audio.content_type or "audio/webm")
+        except STTError as e:  # the provider failed - already logged in detail; say what went wrong and what to check
+            return JSONResponse({"detail": str(e), "provider": e.provider, "upstream_status": e.status,
+                                 "transient": e.transient}, status_code=502)
         except VoiceError as e:
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
-        return {"text": text}
+        except Exception as e:  # noqa: BLE001 - anything unexpected: log it in full, never a bare 500
+            log.exception("STT failed unexpectedly (%d bytes, %s)", len(data), audio.content_type)
+            return JSONResponse({"detail": f"Unexpected speech-to-text error ({type(e).__name__}) - "
+                                           "see the Jarvis server log."}, status_code=502)
+        log.info("STT ok: %d bytes, %s, %d chars", len(data), audio.content_type, len(text or ""))
+        return {"text": text or "", "engine": engine or settings.effective_stt}
 
     @app.get("/api/voices", dependencies=[Depends(owner)])
     async def voices(request: Request):
@@ -286,7 +342,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             while True:
                 msg = await ws.receive_json()
                 if msg.get("type") == "chat" and msg.get("text"):
-                    task = asyncio.create_task(j.brain.ask(msg["text"][:20000],
+                    learn_reply(j, str(msg["text"])[:20000], "voice" if msg.get("mode") == "voice" else "typed",
+                                msg.get("compose") is True, msg.get("attachments"))
+                    task =asyncio.create_task(j.brain.ask(msg["text"][:20000],
                                                            "voice" if msg.get("mode") == "voice" else "typed",
                                                            msg.get("attachments") or [], speaker=who))
                     running.add(task)

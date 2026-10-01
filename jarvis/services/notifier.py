@@ -17,6 +17,7 @@ from time import monotonic as _now  # a module-level name so tests can move the 
 from ..config import Settings
 from ..db import Database
 from ..events import EventBus
+from ..integrations.mail_guard import MANAGEMENT, MailGuardError
 from ..integrations.microsoft365 import TeamsNotifier, text_to_html
 
 log = logging.getLogger(__name__)
@@ -50,19 +51,31 @@ class Notifier:
         self._shared_sent: deque[float] = deque()  # when each recent email reached the shared inbox
 
     async def notify(self, title: str, body: str = "", level: str = "info", push: bool | None = None,
-                     speak: bool = False, importance: str | None = None, dedupe_key: str | None = None,
-                     management_only: bool = False) -> None:
+
+                      speak: bool = False, importance: str | None = None, dedupe_key: str | None = None,
+                      management_only: bool = False, engineering: bool = False, fix: bool = False,
+                      issue_id: int | None = None) -> None:
+        """`engineering=True` marks fix / pull request / deploy / triage / security-review notifications: those go
+        to Teams only (see send_engineering_update) instead of Teams + email. `issue_id` lets a Teams delivery
+        failure be shown against that issue on the issues list."""
         importance = importance_for(level, importance)
         nid = self.db.add_notification(level, title, body)
         self.bus.publish("notification", {"id": nid, "level": level, "importance": importance, "title": title,
-                                          "body": body, "speak": speak})
+                                            "body": body, "speak": speak})
         if push is None:
             push = level in ("warning", "critical")
         if push:
-            await self.send_owner_update(title, body, channels=("teams", "email"), importance=importance,
-                                         dedupe_key=dedupe_key, management_only=management_only)
+            if engineering:
+                await self.send_engineering_update(title, body, issue_id=issue_id)
+            elif fix:
+                channels = self.s.fix_channels
+                if channels:
+                    await self.send_owner_update(title, body, channels=channels,
+                                                   email_to=self.s.fix_notify_email or None)
+            else:
+                await self.send_owner_update(title, body, channels=("teams", "email"), importance=importance,
+                                               dedupe_key=dedupe_key, management_only=management_only)
 
-    # ------------------------------------------------------------------ the shared inbox guard
     def is_shared_inbox(self, address: str) -> bool:
         shared = (self.s.shared_inbox or "").strip().lower()
         return bool(shared) and address.strip().lower() == shared
@@ -100,7 +113,8 @@ class Notifier:
             self._shared_seen = {k: t for k, t in self._shared_seen.items() if now - t < horizon}
 
     async def send_email(self, to: list[str], subject: str, body_html: str, importance: str = "normal",
-                         dedupe_key: str | None = None, management_only: bool = False) -> tuple[list[str], list[str]]:
+                         dedupe_key: str | None = None, management_only: bool = False,
+                      sensitivity: str = MANAGEMENT) -> tuple[list[str], list[str]]:
         """Email automated updates, through the shared inbox guard.
 
         Returns (addresses emailed, addresses held back). management_only items (finance, pay, performance) are
@@ -123,24 +137,79 @@ class Notifier:
             else:
                 deliver.append(addr)
         if deliver:
-            await self.mail.send_mail(deliver, subject, body_html)
+            await self.mail.send_mail(deliver, subject, body_html, sensitivity=sensitivity)
             if any(self.is_shared_inbox(a) for a in deliver):
                 self._record_shared_send(subject, dedupe_key)
         return deliver, held
+    def engineering_channels(self) -> tuple[str, ...]:
+        """Channels for engineering notifications, from ENGINEERING_NOTIFY_CHANNELS (default Teams only)."""
+        wanted = [c.strip().lower() for c in (self.s.engineering_notify_channels or "").split(",")]
+        channels = tuple(dict.fromkeys(c for c in wanted if c in ("teams", "email")))
+        return channels or ("teams",)
+
+    async def send_engineering_update(self, subject: str, body: str, issue_id: int | None = None) -> str:
+        """Teams only by default. Email is used only if listed in the engineering channels setting, or as a
+        fallback when Teams delivery fails AND ENGINEERING_EMAIL_FALLBACK is explicitly on. Otherwise a Teams
+        failure is logged and shown on the display (and against the issue, if there is one) - never silently
+        re-routed to email."""
+        channels = self.engineering_channels()
+        sent: list[str] = []
+        teams_failed = ""
+        if "teams" in channels:
+            if not self.teams.enabled:
+                teams_failed = "Teams updates aren't configured"
+            else:
+                try:
+                    await self.teams.post(subject, body)
+                    sent.append("Teams")
+                except Exception as e:  # noqa: BLE001 - never let a notification failure break the caller
+                    teams_failed = f"Teams delivery failed: {e}"
+                    log.warning("Teams engineering update failed (%s): %s", subject, e)
+        want_email = "email" in channels or (teams_failed and self.s.engineering_email_fallback)
+        if want_email and self.s.owner_email and not getattr(self.mail, "demo", True):
+            try:
+                await self.mail.send_mail([self.s.owner_email], f"[Jarvis] {subject}", text_to_html(body))
+                sent.append("email")
+            except Exception as e:  # noqa: BLE001
+                log.warning("Email engineering update failed (%s): %s", subject, e)
+        if teams_failed and "email" not in sent:
+            self._surface_delivery_failure(subject, teams_failed, issue_id)
+        self.bus.publish("owner_update", {"subject": subject, "body": body, "channels": sent})
+        return ", ".join(sent) if sent else "the display only (Teams not delivered)"
+
+    def _surface_delivery_failure(self, subject: str, reason: str, issue_id: int | None) -> None:
+        msg = f"{reason[:300]}. Not emailed. Update was: {subject}"
+        log.warning("Engineering update not delivered: %s", msg)
+        nid = self.db.add_notification("warning", "Update not delivered to Teams", msg)
+        self.bus.publish("notification", {"id": nid, "level": "warning", "title": "Update not delivered to Teams",
+                                          "body": msg, "speak": False})
+        if issue_id is not None:
+            issue = self.db.get_issue(issue_id)
+            if issue:
+                notes = f"{issue.get('notes') or ''}\n\n[Teams delivery] {msg}".strip()
+                self.db.update_issue(issue_id, notes=notes[:4000])
+                self.bus.publish("issue", self.db.get_issue(issue_id))
 
     async def send_owner_update(self, subject: str, body: str, channels: tuple[str, ...] | list[str] = ("teams",),
-                                importance: str = "normal", dedupe_key: str | None = None,
-                                management_only: bool = False) -> str:
+                                  email_to: str | None = None, sensitivity: str = MANAGEMENT,
+                                  importance: str = "normal", dedupe_key: str | None = None,
+                                  management_only: bool = False) -> str:
+        """Owner updates are treated as management content by default (briefings, wrap-up, finance, HR...), so the
+        email only goes out if OWNER_EMAIL is a real management address - never a shared inbox."""
         sent = []
+        recipient = email_to or self.s.owner_email
         held_back = False
-        if "email" in channels and self.s.owner_email:
+        if "email" in channels and recipient and not getattr(self.mail, "demo", True):
             try:
-                emailed, held = await self.send_email([self.s.owner_email], f"[Jarvis] {subject}", text_to_html(body),
-                                                      importance=importance, dedupe_key=dedupe_key,
-                                                      management_only=management_only)
-                if emailed:
+                deliver, _held = await self.send_email([recipient], f"[Jarvis] {subject}", text_to_html(body),
+                                                          importance=importance, dedupe_key=dedupe_key,
+                                                          management_only=management_only,
+                                                          sensitivity=sensitivity)
+                if deliver:
                     sent.append("email")
-                held_back = bool(held)
+                held_back = not deliver
+            except MailGuardError as e:
+                log.warning("Owner update email blocked by the management-only mail rule: %s", e)
             except Exception as e:  # noqa: BLE001
                 log.warning("Email update failed: %s", e)
         # Something the shared inbox wouldn't take still reaches Teams, even if only email was asked for.

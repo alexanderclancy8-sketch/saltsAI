@@ -135,7 +135,7 @@ class SecurityWatch:
             except Exception as e:  # noqa: BLE001
                 log.exception("Security review failed")
                 await self.notifier.notify("Security review failed", str(e)[:500], level="warning",
-                                           importance="normal")
+                                           importance="normal", engineering=True)
                 return {"error": str(e)[:500]}
 
         new_issue_ids = []
@@ -150,15 +150,16 @@ class SecurityWatch:
                 reporter="Jarvis (security watch)", title=f"Security: {finding.title}",
                 description=(f"{finding.description}\n\nFile: {finding.file}\n"
                             f"Suggested fix: {finding.suggested_fix or 'see description above'}"),
-                severity=finding.severity, system="Salts FSM", source="security_watch", notify=True, process=True)
+                severity=finding.severity, system="Salts FSM", source="security_watch", notify=True, process=True,
+                engineering=True)
             self.db.set_kv(f"security_finding:{key}", str(issue["id"]))
             new_issue_ids.append(issue["id"])
 
         if new_issue_ids:
             await self.notifier.notify(f"Security review: {len(new_issue_ids)} new finding(s)", result.summary,
-                                       level="warning", push=True, speak=True)
+                                       level="warning", push=True, speak=True, engineering=True)
         else:
-            await self.notifier.notify("Security review: nothing new", result.summary, level="info", importance="info")
+            await self.notifier.notify("Security review: nothing new", result.summary, level="info", importance="info", engineering=True)
         return {"reviewed_sha": sha, "new_issues": new_issue_ids, "summary": result.summary,
                 "findings": [f.model_dump() for f in result.findings]}
 

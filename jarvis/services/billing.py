@@ -109,7 +109,7 @@ class Billing:
         sent = 0
         for req in requests:
             subject, body = self.review_email(req)
-            await mail.send_mail([req["email"]], subject, text_to_html(body))
+            await mail.send_mail([req["email"]], subject, text_to_html(body), sensitivity="general")
             self.db.set_kv(f"review_asked:{req['email'].lower()}", date.today().isoformat())
             sent += 1
         return f"Sent {sent} review request(s)."
