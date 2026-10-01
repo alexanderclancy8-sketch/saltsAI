@@ -16,8 +16,10 @@
   --crit: #f0596b;
   --crit-dim: rgba(240, 89, 107, 0.1);
   --text: #e7ebf0;
-  --muted: #838d9c;
-  --muted-dim: #565f6d;
+  /* Secondary text: muted >= 7:1, muted-dim >= 4.7:1 on --bg/--panel/--bg2 (WCAG AA for small text). The old
+     #565f6d was ~3:1 and made every label/sub-line hard to read. */
+  --muted: #9ba5b4;
+  --muted-dim: #7d8797;
   --radius: 8px;
   --radius-sm: 6px;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
@@ -36,6 +38,14 @@ body {
   -webkit-font-smoothing: antialiased;
   transition: background .3s ease;
 }
+/* App shell (index.html only): exactly one screen tall, nothing scrolls except the panels inside it, so the
+   composer stays pinned and the page itself never grows past the viewport. 100vh is the fallback; dvh tracks the
+   mobile browser's collapsing URL bar and --app-h (set from visualViewport in hud.js) tracks the on-screen keyboard. */
+body.app { height: 100vh; height: var(--app-h, 100dvh); display: flex; flex-direction: column; overflow: hidden; }
+body.app .topbar { flex: none; }
+::placeholder { color: var(--muted-dim); opacity: 1; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button, a, summary, label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 /* Calm ambient backdrop for the minimal orb-first view - a very faint glow behind where the orb sits,
    nothing distracting. The full dashboard drops back to a flat background since it's a working view. */
 body:not(.dash-open) {
@@ -51,7 +61,7 @@ button { font-family: var(--ui); }
 /* ---------- top bar ---------- */
 .topbar {
   position: relative; z-index: 2; display: flex; align-items: center; gap: 18px;
-  padding: 14px 22px; border-bottom: 1px solid var(--line);
+  padding: 14px max(22px, env(safe-area-inset-right)) 14px max(22px, env(safe-area-inset-left)); border-bottom: 1px solid var(--line);
 }
 .brand { font-family: var(--ui); font-weight: 600; letter-spacing: 0.03em; font-size: 15px; color: var(--text); }
 .brand small { display: block; font-weight: 400; letter-spacing: 0.05em; font-size: 10px; color: var(--muted-dim); margin-top: 2px; }
@@ -73,13 +83,15 @@ button { font-family: var(--ui); }
    #btn-dashboard, persisted to localStorage as jarvis.dashboard, applied inline in <head> to avoid a
    flash) restores the full three-column operations HUD. */
 .hud { position: relative; z-index: 1; display: grid; gap: 28px; padding: 22px;
-  grid-template-columns: 1fr;
-  height: calc(100vh - 62px); }
-.dash-open .hud { grid-template-columns: minmax(260px, 1fr) minmax(420px, 1.6fr) minmax(260px, 1fr); }
+  grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  flex: 1; min-height: 0; }
+/* minmax(0, ...) not bare fr: a grid track's automatic minimum is its content's min-content width, which is what
+   let the columns push past the viewport and overlap each other. Below 1150px this is replaced by the tabbed layout. */
+.dash-open .hud { grid-template-columns: minmax(240px, 1fr) minmax(380px, 1.6fr) minmax(240px, 1fr); }
 .col { display: flex; flex-direction: column; gap: 26px; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
 .col.left, .col.right { display: none; }
 .dash-open .col.left, .dash-open .col.right { display: flex; }
-.center { overflow: hidden; justify-content: center; }
+.center { overflow-y: auto; overflow-x: hidden; justify-content: center; justify-content: safe center; }
 .dash-open .center { justify-content: flex-start; }
 .center .panel { max-width: 720px; margin: 0 auto; width: 100%; }
 .dash-open .center .panel { max-width: none; margin: 0; }
@@ -128,7 +140,7 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 
 /* ---------- reactor / status core ---------- */
 .core-wrap { display: grid; grid-template-columns: 1fr; justify-items: center; text-align: center; gap: 20px; align-items: center; padding: 40px 0; }
-.dash-open .core-wrap { grid-template-columns: auto 1fr; justify-items: stretch; text-align: left; padding: 0; }
+.dash-open .core-wrap { grid-template-columns: auto minmax(0, 1fr); justify-items: stretch; text-align: left; padding: 0; }
 .orb-wrap { position: relative; display: inline-flex; }
 #reactor { width: 220px; height: 220px; transition: width .2s ease, height .2s ease; }
 .dash-open #reactor { width: 140px; height: 140px; }
@@ -150,27 +162,28 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 /* ---------- conversation ---------- */
 .conversation { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-right: 4px;
   scrollbar-width: thin; }
-.msg { max-width: 92%; padding: 2px 0; border-radius: 0; line-height: 1.5; font-size: 15px; }
-.msg.user { align-self: flex-end; background: none; border: none; }
+.msg { max-width: 92%; padding: 2px 0; border-radius: 0; line-height: 1.5; font-size: 15px; min-width: 0; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--accent-dim); border: none; border-radius: 14px 14px 4px 14px; padding: 8px 13px; }
 .msg.assistant { align-self: flex-start; background: none; border: none; }
 .msg .meta { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-dim); margin-bottom: 4px; font-weight: 600; }
 .msg.error { color: #ffc7cd; }
+.conversation { overscroll-behavior: contain; }
 .md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3 { font-family: var(--ui); color: var(--text); margin: 10px 0 6px; font-size: 16px; font-weight: 600; }
 .md ul, .md ol { margin: 4px 0 8px 18px; padding: 0; }
 .md code { font-family: var(--mono); font-size: 13px; background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 4px; }
 .md pre { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
-.md table { border-collapse: collapse; margin: 6px 0; font-size: 13.5px; display: block; overflow-x: auto; }
+.md table { border-collapse: collapse; margin: 6px 0; font-size: 13.5px; display: block; overflow-x: auto; overflow-wrap: normal; max-width: 100%; }  /* normal: .msg's anywhere-wrapping would otherwise crush cells to one letter per line instead of letting the table scroll */
 .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
 .md th { color: var(--text); background: none; font-weight: 600; }
 
 .composer { display: flex; gap: 8px; align-items: flex-end; margin-top: 12px; }
-.composer textarea { flex: 1; resize: none; min-height: 46px; max-height: 180px; background: none;
+.composer textarea { flex: 1; resize: none; min-height: 46px; line-height: 1.35; max-height: 180px; background: none;
   border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); padding: 12px; font-family: var(--ui);
   font-size: 15px; outline: none; transition: border-color .15s; }
 .composer textarea:focus { border-color: var(--accent); }
-.mic { width: 48px; height: 46px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong); background: none;
+.mic { flex: none; width: 48px; height: 46px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong); background: none;
   color: var(--muted); cursor: pointer; font-size: 17px; transition: border-color .15s, color .15s; }
 .mic:hover { border-color: var(--accent); color: var(--accent-text); }
 .mic.on { background: none; border-color: var(--ok); color: var(--ok); }
@@ -194,14 +207,16 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .display { position: fixed; z-index: 20; inset: 6vh 8vw; background: var(--bg2); border: 1px solid var(--line-strong);
   border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column;
   opacity: 0; transform: translateY(10px) scale(0.985); pointer-events: none;
-  transition: opacity .18s ease, transform .18s ease; }
-.display.open { opacity: 1; transform: none; pointer-events: auto; }
-.display header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); }
-.display-downloads { display: inline-flex; gap: 6px; margin-right: 8px; }
+  visibility: hidden; transition: opacity .18s ease, transform .18s ease, visibility 0s .18s; }
+/* visibility (delayed on the way out) takes the closed overlay out of the tab order and the accessibility tree -
+   opacity + pointer-events alone left invisible Close/Download buttons focusable. */
+.display.open { opacity: 1; transform: none; pointer-events: auto; visibility: visible; transition-delay: 0s; }
+.display header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.display-downloads { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-right: 8px; }
 .display-downloads[hidden] { display: none; }
 .display-downloads .icon-btn { text-decoration: none; border-color: var(--line); color: var(--accent-text); }
-.display header h3 { margin: 0; font-family: var(--ui); font-size: 15px; color: var(--text); font-weight: 600; flex: 1; }
-.display .body { padding: 18px 22px; overflow-y: auto; font-size: 15px; }
+.display header h3 { margin: 0; font-family: var(--ui); font-size: 15px; color: var(--text); font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.display .body { padding: 18px 22px; overflow-y: auto; overflow-wrap: anywhere; font-size: 15px; overscroll-behavior: contain; }
 
 /* ---------- toasts ---------- */
 .toasts { position: fixed; right: 18px; bottom: 18px; z-index: 30; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
@@ -212,10 +227,11 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 @keyframes slide { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* ---------- settings drawer ---------- */
-.drawer { position: fixed; z-index: 25; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: var(--bg2);
-  border-left: 1px solid var(--line-strong); transform: translateX(100%); transition: transform 0.25s; overflow-y: auto;
+.drawer { position: fixed; z-index: 25; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--bg2);
+  border-left: 1px solid var(--line-strong); transform: translateX(100%); visibility: hidden;
+  transition: transform 0.25s, visibility 0s 0.25s; overflow-y: auto; overscroll-behavior: contain;
   box-shadow: var(--shadow); display: flex; flex-direction: column; }
-.drawer.open { transform: none; }
+.drawer.open { transform: none; visibility: visible; transition-delay: 0s; }
 .drawer-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 18px 22px;
   background: var(--bg2); border-bottom: 1px solid var(--line); }
 .drawer-head h2 { flex: 1; font-family: var(--ui); font-size: 15px; font-weight: 600; margin: 0; }
@@ -295,28 +311,9 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .set-problem { background: none; color: var(--warn); border: 1px solid rgba(245,185,66,0.25); border-radius: var(--radius-sm);
   padding: 11px 13px; font-size: 13px; margin-bottom: 16px; }
 
-/* ---------- responsive ---------- */
-@media (max-width: 1150px) {
-  .hud { grid-template-columns: 1fr; height: auto; }
-  .center { order: -1; min-height: 80vh; }
-  .col { overflow: visible; }
-}
-@media (max-width: 600px) {
-  .hud { padding: 16px 18px; gap: 22px; }
-  .topbar { padding: 12px 16px; gap: 8px; flex-wrap: wrap; }
-  .brand { font-size: 15px; }
-  #reactor, .dash-open #reactor { width: 140px; height: 140px; }
-  .caption { font-size: 15.5px; }
-  .display { inset: 2vh 3vw; }
-  .kpis { grid-template-columns: 1fr 1fr; }
-  .pills { display: none; }
-  .drawer { width: 100vw; }
-  #btn-dashboard { padding: 7px 9px; }
-  .quick { grid-template-columns: repeat(2, 1fr); }
-}
-
 /* ---------- additions ---------- */
 .center .panel:first-child { flex: 0 0 auto; }
+.panel[hidden] { display: none !important; }  /* panel display rules below must not un-hide the approvals/suggestions panels */
 .convo-panel { display: flex; flex-direction: column; min-height: 0; }
 .dash-open .convo-panel { flex: 1; }
 #transcript-wrap { display: none; }
@@ -331,25 +328,170 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .linkish { background: none; border: none; cursor: pointer; font-family: var(--ui); text-decoration: none; color: var(--muted-dim); font-size: 12.5px; font-weight: 500; }
 .linkish:hover { color: var(--accent-text); }
 .mic.attach { width: 44px; font-size: 16px; }
-#map { height: 220px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--bg2); }
+#map { height: 220px; z-index: 0; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--bg2); }
 .leaflet-container { background: var(--bg2); font-family: var(--ui); }
 .leaflet-tooltip { background: var(--bg2); color: var(--text); border: 1px solid var(--line-strong); }
 .msg .tools { font-family: var(--mono); font-size: 11px; color: var(--muted-dim); margin-top: 6px; }
 .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--accent); }
 @keyframes blink { 50% { opacity: 0; } }
-@media (max-width: 1150px) { .convo-panel { min-height: 60vh; } }
 .col, .panel, .conversation, .composer { min-width: 0; }
 .composer textarea { min-width: 0; width: 100%; }
 .map-fallback { font-size: 14px; color: var(--muted-dim); }
-@media (max-width: 600px) {
-  .mic { width: 42px; }
-  .mic.attach { width: 38px; }
-  .composer { gap: 6px; }
-  .msg { max-width: 100%; }
-}
-
 .suggestion { border: none; border-left: 2px solid var(--accent); border-radius: 0; padding: 4px 0 4px 12px; margin-bottom: 12px;
   background: none; font-size: 13.5px; }
 .suggestion .sub { display: block; color: var(--muted-dim); font-size: 12px; margin-top: 2px; }
 .suggestion .row { display: flex; gap: 8px; margin-top: 8px; }
 .suggestion.p1 { border-color: var(--fire); }
+
+/* ---------- responsive ----------
+   Three tiers, one rule of thumb: the conversation and composer are always reachable.
+   >= 1150px  three-column dashboard (unchanged).
+   768-1149   chat on the left, ONE dashboard section at a time on the right (tab bar), so nothing is squeezed or overlaps.
+   < 768      phone: a full-screen chat with a pinned composer; with the dashboard on, a tab bar swaps the screen between
+              Chat / Comms / Issues / Ops / Fleet / Finance instead of one endless scroll.
+   (The old max-width:1150px block never took effect: `.dash-open .hud` outranked `.hud`, so the three columns stayed
+   at every width and overlapped from ~1100px down.) */
+.dtabs { display: none; }
+.dtab { flex: 1 0 auto; min-height: 44px; padding: 0 8px; background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); font: 600 13px var(--ui); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.dtab:hover { color: var(--text); }
+.dtab[aria-selected="true"] { color: var(--accent-text); border-bottom-color: var(--accent); }
+.dtab-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 99px; background: var(--crit); color: #1a0507;
+  font: 700 11px/18px var(--mono); text-align: center; }
+.dtab-badge[hidden] { display: none; }
+
+@media (max-width: 1149px) {
+  .dash-open .hud { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0 24px; padding-top: 0; }
+  .dash-open .dtabs { display: flex; grid-column: 1 / -1; grid-row: 1; gap: 2px; overflow-x: auto; scrollbar-width: none;
+    border-bottom: 1px solid var(--line); margin: 0 -22px; padding: 0 22px 0; }
+  .dash-open .dtabs::-webkit-scrollbar { display: none; }
+  .dash-open .col.left, .dash-open .col.right, .dash-open .col.center { grid-column: 1; grid-row: 2; }
+  .dash-open .col.left, .dash-open .col.right { display: none; padding: 18px 0 24px; }
+  .dash-open .col.center { display: none; padding-top: 14px; }
+  .dash-open[data-dash-tab="chat"] .col.center { display: flex; }
+  .dash-open[data-dash-tab="comms"] .col.left, .dash-open[data-dash-tab="issues"] .col.left,
+  .dash-open[data-dash-tab="ops"] .col.right, .dash-open[data-dash-tab="fleet"] .col.right,
+  .dash-open[data-dash-tab="finance"] .col.right { display: flex; }
+  .dash-open .col.left > .panel, .dash-open .col.right > .panel { display: none; }
+  .dash-open[data-dash-tab="comms"] .panel[data-dtab="comms"], .dash-open[data-dash-tab="issues"] .panel[data-dtab="issues"],
+  .dash-open[data-dash-tab="ops"] .panel[data-dtab="ops"], .dash-open[data-dash-tab="fleet"] .panel[data-dtab="fleet"],
+  .dash-open[data-dash-tab="finance"] .panel[data-dtab="finance"] { display: block; }
+  /* The fleet map is the only thing on its tab, so let it use the screen rather than a 220px postage stamp. */
+  .dash-open #map { height: min(62dvh, 520px); }
+}
+
+@media (min-width: 768px) and (max-width: 1149px) {
+  .dash-open .hud { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .dash-open .dtabs { grid-column: 2; margin: 0; padding: 0; }
+  .dash-open .col.center { display: flex; grid-column: 1; grid-row: 1 / span 2; padding-top: 22px; }
+  .dash-open .col.left, .dash-open .col.right { grid-column: 2; }
+  .dtab[data-dtab="chat"] { display: none; }
+}
+
+/* Narrow tablet with the dashboard open: the chat column is only ~390px, so use the compact orb strip there too. */
+@media (min-width: 768px) and (max-width: 899px) {
+  .dash-open .quick { display: none; }
+  .dash-open #reactor { width: 84px; height: 84px; }
+}
+
+/* Short landscape screens (phones on their side): keep the orb from eating the whole height. */
+@media (max-height: 520px) {
+  #reactor, .dash-open #reactor { width: 96px; height: 96px; }
+  .core-wrap { padding: 8px 0; }
+  .caption { min-height: 0; }
+}
+
+/* Phones, and phones on their side (short + touch), get the chat-first layout. */
+@media (max-width: 767px), (max-height: 520px) and (pointer: coarse) {
+  .topbar { padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); gap: 4px; flex-wrap: nowrap; }
+  .brand small, .pills, .clock { display: none; }
+  .brand { white-space: nowrap; }
+  .hud, .dash-open .hud { padding: 8px max(16px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); gap: 0; }
+  .dash-open .dtabs { margin: 0 -16px; padding: 0 6px; }
+  .center { gap: 8px; }
+  .dash-open .col.left, .dash-open .col.right { padding: 14px 0 24px; }
+
+  /* Chat column: status block centred in whatever room the pinned composer leaves. */
+  .center, .dash-open .center { justify-content: flex-start; overflow: hidden; }
+  .center > .panel:first-child { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; justify-content: center; justify-content: safe center; }
+  .convo-panel, .dash-open .convo-panel { flex: 0 0 auto; }
+  .core-wrap, .dash-open .core-wrap { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; padding: 12px 0; gap: 12px; }
+  #reactor, .dash-open #reactor { width: 132px; height: 132px; }
+  .caption, .dash-open .caption { font-size: 16px; min-height: 0; }
+  .dash-open:not(.has-chat) #transcript-wrap { display: none; }
+  .composing:not(.has-chat) .quick { display: none; }
+  .composing:not(.has-chat) #reactor { width: 72px; height: 72px; }
+
+  /* Conversation under way: compact orb + caption strip, transcript fills the screen, composer pinned. */
+  .has-chat .center > .panel:first-child { flex: 0 0 auto; overflow: visible; }
+  .has-chat .core-wrap, .has-chat.dash-open .core-wrap { grid-template-columns: auto minmax(0, 1fr); justify-items: stretch; text-align: left; padding: 4px 0 10px; gap: 12px; }
+  .has-chat #reactor, .has-chat.dash-open #reactor { width: 56px; height: 56px; }
+  .has-chat .orb-badge { top: -6px; right: -6px; }
+  .has-chat .quick, .has-chat .stt-engine, .has-chat .toolline:empty { display: none; }
+  .has-chat .caption, .has-chat.dash-open .caption { font-size: 14px; line-height: 1.35; margin-top: 2px; display: -webkit-box;
+    -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .has-chat .convo-panel, .has-chat.dash-open .convo-panel { flex: 1 1 auto; min-height: 0; }
+  .has-chat #transcript-wrap, .has-chat.dash-open #transcript-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .has-chat #transcript-wrap h2 { margin-bottom: 0; }
+  .has-chat .conversation { padding-bottom: 8px; }
+
+  .quick { grid-template-columns: repeat(2, 1fr); margin-top: 8px; }
+  .composer { margin-top: 8px; gap: 6px; }
+  .composer textarea { font-size: 16px; min-height: 44px; max-height: 120px; padding: 10px 12px; }  /* >=16px: iOS zooms the page on focus below that */
+  .mic, .mic.attach { width: 44px; height: 44px; }
+  /* While a turn is running the Stop button appears; drop Attach so the text box isn't squeezed to nothing. */
+  .composer:has(#btn-stop:not([hidden])) #btn-attach { display: none; }
+  .reply-hint { margin-top: 6px; }
+  .msg { max-width: 100%; }
+  .msg.user { max-width: 88%; }
+
+  .display { inset: 0; border-radius: 0; border: none; transform: translateY(16px);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .display header { padding: 8px 8px 8px 16px; }
+  .display-downloads { order: 3; width: 100%; margin-right: 0; }
+  .display .body { padding: 14px 16px 24px; }
+
+  /* Toasts go to the top: at the bottom they sat on top of the composer and under the ask pop-up. */
+  .toasts { right: 12px; left: 12px; bottom: auto; top: calc(env(safe-area-inset-top) + 56px); max-width: none; }
+
+  .drawer-head { padding: max(12px, env(safe-area-inset-top)) 16px 12px; }
+  .drawer-tabs { padding: 4px 8px 0; }
+  .drawer-body { padding: 16px 16px 24px; }
+  .set-save-bar { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
+  .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email],
+  .drawer input[type=url], .drawer input[type=number], .drawer input[type=time], .drawer textarea { font-size: 16px; }
+}
+@media (max-width: 419px) { .btn-label { display: none; } }
+/* 320px-wide phones: tab labels a touch smaller so all six fit, and the text box gets its own row above the buttons. */
+@media (max-width: 359px) {
+  .dtab { font-size: 12px; padding: 0 5px; gap: 3px; }
+  .dtab-badge { min-width: 16px; height: 16px; font-size: 10px; line-height: 16px; padding: 0 4px; }
+  .composer { flex-wrap: wrap; justify-content: flex-end; }
+  .composer textarea { order: -1; flex: 1 1 100%; }
+  #btn-attach { margin-right: auto; }
+}
+@media (min-width: 360px) and (max-width: 767px) { .quick { grid-template-columns: repeat(3, 1fr); } }
+
+/* Touch targets: 44px minimum on phones and on any coarse pointer (tablets, touch laptops). Small inline controls
+   (the x on a chip, the badge) keep their look and get an invisible 44px hit area instead. */
+@media (max-width: 767px), (pointer: coarse) {
+  .icon-btn { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .btn, .btn.small { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .chip-btn, .drawer-tab, .cron-day, .linkish, .set-advanced-toggle, details.diff summary { min-height: 44px; }
+  .linkish { min-width: 44px; }
+  details.diff summary { display: flex; align-items: center; }
+  .chip button, .reply-hint button, .cron-time-remove { position: relative; }
+  .chip button::after, .reply-hint button::after, .cron-time-remove::after { content: ""; position: absolute; inset: -14px; }
+  .orb-badge::after { content: ""; position: absolute; inset: -12px; }
+  .set-checkbox input { width: 22px; height: 22px; }
+  .set-checkbox label { padding: 11px 0; flex: 1; }
+  .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email],
+  .drawer input[type=url], .drawer input[type=number], .drawer input[type=time] { min-height: 44px; }
+  .cron-dom input[type=number] { width: 64px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
+  .typing::after { animation: none; }
+}

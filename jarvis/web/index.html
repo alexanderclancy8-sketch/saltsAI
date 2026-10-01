@@ -2,7 +2,8 @@
 <html lang="en-GB">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- interactive-widget=resizes-content: on Chrome/Android the on-screen keyboard shrinks the layout, so the pinned composer rides above it. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>JARVIS · Salts Fire and Security</title>
   <meta name="theme-color" content="#0a0d12">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -15,43 +16,53 @@
   <link rel="stylesheet" href="/static/hud.css">
   <link rel="stylesheet" href="/static/ask.css">
 </head>
-<body>
+<body class="app" data-dash-tab="chat">
 <script>try{if(localStorage.getItem("jarvis.dashboard")==="1")document.body.classList.add("dash-open");}catch(e){}</script>
 <header class="topbar">
   <div class="brand">J.A.R.V.I.S.<small id="company">SALTS FIRE AND SECURITY</small></div>
   <div class="pills" id="pills"></div>
   <div class="spacer"></div>
-  <button class="icon-btn" id="btn-dashboard" title="Show dashboard" aria-pressed="false" aria-label="Toggle dashboard">▤ Dashboard</button>
+  <button class="icon-btn" id="btn-dashboard" title="Show dashboard" aria-pressed="false" aria-label="Toggle dashboard"><span aria-hidden="true">▤</span><span class="btn-label"> Dashboard</span></button>
   <button class="icon-btn" id="btn-briefing" title="Morning briefing">Briefing</button>
   <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
   <div class="clock" id="clock"></div>
 </header>
 
 <main class="hud">
+  <!-- Dashboard section switcher: only shown (CSS) when the dashboard is open on a screen too narrow for three columns.
+       On phones it also carries "Chat", so the conversation is one tap away instead of buried under the panels. -->
+  <nav class="dtabs" id="dtabs" role="tablist" aria-label="Dashboard sections">
+    <button type="button" class="dtab" role="tab" data-dtab="chat" aria-selected="true">Chat</button>
+    <button type="button" class="dtab" role="tab" data-dtab="comms" aria-selected="false">Comms<span class="dtab-badge" id="dtab-comms-badge" hidden></span></button>
+    <button type="button" class="dtab" role="tab" data-dtab="issues" aria-selected="false">Issues</button>
+    <button type="button" class="dtab" role="tab" data-dtab="ops" aria-selected="false">Ops</button>
+    <button type="button" class="dtab" role="tab" data-dtab="fleet" aria-selected="false">Fleet</button>
+    <button type="button" class="dtab" role="tab" data-dtab="finance" aria-selected="false">Finance</button>
+  </nav>
   <!-- LEFT -->
   <section class="col left">
-    <div class="panel" id="approvals-panel" hidden>
+    <div class="panel" data-dtab="comms" id="approvals-panel" hidden>
       <h2>AWAITING YOUR APPROVAL <span class="count" id="approvals-count"></span></h2>
       <div id="approvals"></div>
     </div>
-    <div class="panel" id="suggestions-panel" hidden>
+    <div class="panel" data-dtab="comms" id="suggestions-panel" hidden>
       <h2>SUGGESTIONS <span class="count" id="suggestions-count"></span></h2>
       <div id="suggestions"></div>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="comms">
       <h2>COMMS <span class="count" id="inbox-count"></span></h2>
       <ul class="list" id="inbox"><li class="empty">Loading…</li></ul>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="issues">
       <h2>ISSUES &amp; FIXES <span class="count" id="issues-count"></span></h2>
       <ul class="list" id="issues"></ul>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="issues">
       <h2>ROUTINE TESTS <span class="count" id="tests-count"></span></h2>
       <ul class="list" id="tests"></ul>
       <div style="margin-top:8px"><button class="btn" id="btn-run-tests">Run tests now</button></div>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="issues">
       <h2>ALERTS</h2>
       <ul class="list" id="notifications"></ul>
     </div>
@@ -62,7 +73,7 @@
     <div class="panel">
       <div class="core-wrap">
         <div class="orb-wrap">
-          <canvas id="reactor" width="340" height="340" aria-label="Jarvis status"></canvas>
+          <canvas id="reactor" width="340" height="340" role="img" aria-label="Jarvis status"></canvas>
           <button type="button" class="orb-badge" id="orb-badge" hidden aria-label="Approvals and suggestions waiting - tap to view"></button>
         </div>
         <div>
@@ -87,7 +98,7 @@
     <div class="panel convo-panel">
       <div class="transcript-wrap" id="transcript-wrap">
         <h2>CONVERSATION <button class="count linkish" id="btn-new-convo">new conversation</button></h2>
-        <div class="conversation" id="conversation"></div>
+        <div class="conversation" id="conversation" role="log" aria-live="polite" aria-label="Conversation"></div>
       </div>
       <div class="attachments" id="attachments"></div>
       <div class="reply-hint" id="reply-hint" hidden>
@@ -98,7 +109,7 @@
       <form class="composer" id="composer">
         <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach">📎</button>
         <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
-        <textarea id="input" rows="1" placeholder="Ask Jarvis anything… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <textarea id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis…"></textarea>
         <button type="button" class="mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone">🎙</button>
         <button type="button" class="mic stop" id="btn-stop" title="Stop" aria-label="Stop" hidden>◼</button>
         <button type="submit" class="mic" id="btn-send" title="Send" aria-label="Send">➤</button>
@@ -108,28 +119,28 @@
 
   <!-- RIGHT -->
   <section class="col right">
-    <div class="panel">
+    <div class="panel" data-dtab="ops">
       <h2>OPERATIONS <span class="count" id="ops-date"></span></h2>
       <div class="kpis" id="ops-kpis"></div>
       <ul class="list" id="ops" style="margin-top:10px"></ul>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="fleet">
       <h2>FLEET <span class="count" id="map-note"></span></h2>
       <div id="map"></div>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="finance">
       <h2>FINANCE <span class="count" id="finance-source"></span></h2>
       <div class="kpis" id="finance"></div>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="ops">
       <h2>CUSTOMER WATCH <span class="count" id="customers-count"></span></h2>
       <ul class="list" id="customers"></ul>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="ops">
       <h2>PRESENCE</h2>
       <ul class="list" id="presence"></ul>
     </div>
-    <div class="panel">
+    <div class="panel" data-dtab="ops">
       <h2>COMING UP</h2>
       <ul class="list" id="deadlines"></ul>
     </div>
@@ -147,7 +158,7 @@
   <div class="body md" id="display-body"></div>
 </div>
 
-<aside class="drawer" id="drawer" aria-label="Settings">
+<aside class="drawer" id="drawer" role="dialog" aria-label="Settings">
   <div class="drawer-head">
     <h2>Settings</h2>
     <button class="icon-btn" id="drawer-close" aria-label="Close settings">✕</button>
