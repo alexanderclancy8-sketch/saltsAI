@@ -463,6 +463,21 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def briefing(request: Request):
         return {"text": await J(request).briefings.morning_briefing(deliver=False)}
 
+    @app.get("/api/digests", dependencies=[Depends(owner)])
+    async def digests(request: Request, limit: int = 20):
+        return J(request).db.list_digests(max(1, min(limit, 100)))
+
+    @app.get("/api/digests/{digest_id}", dependencies=[Depends(owner)])
+    async def digest(digest_id: int, request: Request):
+        d = J(request).db.get_digest(digest_id)
+        if not d:
+            raise HTTPException(404, "No such digest")
+        return d
+
+    @app.post("/api/digests/now", dependencies=[Depends(owner)])
+    async def digest_now(request: Request):
+        return await J(request).weekly_digest.run("on_demand", deliver=False)
+
     @app.post("/api/wrapup", dependencies=[Depends(owner)])
     async def wrapup(request: Request):
         return {"text": await J(request).wrapup.run(deliver=False)}

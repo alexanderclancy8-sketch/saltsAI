@@ -41,6 +41,28 @@ CREATE TABLE IF NOT EXISTS notifications (
     body TEXT DEFAULT '',
     read INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS digest_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    link TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    ref TEXT DEFAULT '',
+    level TEXT DEFAULT 'info',
+    delivery TEXT NOT NULL DEFAULT 'digest',
+    digested_at TEXT DEFAULT '',
+    digest_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    item_count INTEGER DEFAULT 0,
+    text TEXT NOT NULL,
+    delivered TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS test_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -245,6 +267,42 @@ class Database:
 
     def recent_notifications(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,))
+
+    # -- weekly digest store ----------------------------------------------------
+    # `delivery` is how the notice itself was handled: 'digest' (held for the weekly summary) or 'immediate'
+    # (already sent straight away, kept only so the summary is complete).
+    def add_digest_item(self, kind: str, title: str, body: str = "", link: str = "", status: str = "",
+                        ref: str = "", level: str = "info", delivery: str = "digest") -> int:
+        return self.execute(
+            "INSERT INTO digest_items (created_at, kind, title, body, link, status, ref, level, delivery)"
+            " VALUES (?,?,?,?,?,?,?,?,?)", (now_iso(), kind, title, body, link, status, ref, level, delivery))
+
+    def pending_digest_items(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM digest_items WHERE digested_at = '' ORDER BY id")
+
+    def digest_items_by_kind(self, kinds: list[str] | tuple[str, ...] | set[str]) -> list[dict[str, Any]]:
+        kinds = list(kinds)
+        if not kinds:
+            return []
+        marks = ",".join("?" for _ in kinds)
+        return self.query(f"SELECT * FROM digest_items WHERE kind IN ({marks}) ORDER BY id", tuple(kinds))
+
+    def mark_digested(self, item_ids: list[int], digest_id: int) -> None:
+        if not item_ids:
+            return
+        marks = ",".join("?" for _ in item_ids)
+        self.execute(f"UPDATE digest_items SET digested_at = ?, digest_id = ? WHERE id IN ({marks})"
+                     f" AND digested_at = ''", (now_iso(), digest_id, *item_ids))
+
+    def add_digest(self, source: str, item_count: int, text: str, delivered: str = "") -> int:
+        return self.execute("INSERT INTO digests (created_at, source, item_count, text, delivered) VALUES (?,?,?,?,?)",
+                            (now_iso(), source, item_count, text, delivered))
+
+    def list_digests(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM digests ORDER BY id DESC LIMIT ?", (limit,))
+
+    def get_digest(self, digest_id: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM digests WHERE id = ?", (digest_id,))
 
     # -- routine test runs ------------------------------------------------------
     def add_test_run(self, suite: str, name: str, ok: bool, detail: str, duration_ms: int) -> None:

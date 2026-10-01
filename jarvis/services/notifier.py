@@ -19,6 +19,7 @@ from ..db import Database
 from ..events import EventBus
 from ..integrations.mail_guard import MANAGEMENT, MailGuardError
 from ..integrations.microsoft365 import TeamsNotifier, text_to_html
+from .digest import DIGEST, IMMEDIATE, parse_route_overrides, route_for
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +52,17 @@ class Notifier:
         self._shared_sent: deque[float] = deque()  # when each recent email reached the shared inbox
 
     async def notify(self, title: str, body: str = "", level: str = "info", push: bool | None = None,
-
                       speak: bool = False, importance: str | None = None, dedupe_key: str | None = None,
                       management_only: bool = False, engineering: bool = False, fix: bool = False,
-                      issue_id: int | None = None) -> None:
-        """`engineering=True` marks fix / pull request / deploy / triage / security-review notifications: those go
+                      issue_id: int | None = None, kind: str | None = None, link: str = "", status: str = "",
+                      ref: str = "") -> None:
+        """Always shows on the display. Teams/email go out straight away EXCEPT for routine notices.
+
+        `kind` names the type of notice (see services/digest.py NOTIFICATION_ROUTES). A routine kind is written
+        to the digest store instead of being sent; every other notice (no kind, an unknown kind, an urgent kind,
+        or level "critical") is sent immediately exactly as before. If the store write fails it is sent immediately.
+
+        `engineering=True` marks fix / pull request / deploy / triage / security-review notifications: those go
         to Teams only (see send_engineering_update) instead of Teams + email. `issue_id` lets a Teams delivery
         failure be shown against that issue on the issues list."""
         importance = importance_for(level, importance)
@@ -64,6 +71,16 @@ class Notifier:
                                             "body": body, "speak": speak})
         if push is None:
             push = level in ("warning", "critical")
+        if kind and self.s.weekly_digest_enabled:
+            route = route_for(kind, level, parse_route_overrides(self.s.notification_routes))
+            try:
+                self.db.add_digest_item(kind, title, body, link=link, status=status, ref=ref, level=level,
+                                        delivery=route)
+            except Exception:  # noqa: BLE001 - if we can't store it, don't lose it: send it now
+                log.exception("Could not store the %s notice for the weekly digest", kind)
+                route = IMMEDIATE
+            if route == DIGEST:
+                return
         if push:
             if engineering:
                 await self.send_engineering_update(title, body, issue_id=issue_id)

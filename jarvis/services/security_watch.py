@@ -24,6 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from ..brain import llm
+from .digest import security_kind
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -135,10 +136,11 @@ class SecurityWatch:
             except Exception as e:  # noqa: BLE001
                 log.exception("Security review failed")
                 await self.notifier.notify("Security review failed", str(e)[:500], level="warning",
-                                           importance="normal", engineering=True)
+                                           importance="normal", engineering=True, kind="security_review_failed")
                 return {"error": str(e)[:500]}
 
         new_issue_ids = []
+        urgent = False
         for finding in result.findings:
             key = hashlib.sha256(f"{finding.file}:{finding.title}".lower().encode()).hexdigest()[:16]
             existing_id = self.db.get_kv(f"security_finding:{key}")
@@ -151,15 +153,20 @@ class SecurityWatch:
                 description=(f"{finding.description}\n\nFile: {finding.file}\n"
                             f"Suggested fix: {finding.suggested_fix or 'see description above'}"),
                 severity=finding.severity, system="Salts FSM", source="security_watch", notify=True, process=True,
-                engineering=True)
+                kind=security_kind(finding.severity), engineering=True)  # critical/high go out now; low/medium wait for the digest
             self.db.set_kv(f"security_finding:{key}", str(issue["id"]))
             new_issue_ids.append(issue["id"])
+            if security_kind(finding.severity) == "security_finding_urgent":
+                urgent = True
 
         if new_issue_ids:
             await self.notifier.notify(f"Security review: {len(new_issue_ids)} new finding(s)", result.summary,
-                                       level="warning", push=True, speak=True, engineering=True)
+                                       level="warning", push=True, speak=True, engineering=True,
+                                       kind="security_finding_urgent" if urgent else "security_finding_minor",
+                                       status="new findings")
         else:
-            await self.notifier.notify("Security review: nothing new", result.summary, level="info", importance="info", engineering=True)
+            await self.notifier.notify("Security review: nothing new", result.summary, level="info",
+                                       importance="info", engineering=True, kind="security_review_clean")
         return {"reviewed_sha": sha, "new_issues": new_issue_ids, "summary": result.summary,
                 "findings": [f.model_dump() for f in result.findings]}
 
