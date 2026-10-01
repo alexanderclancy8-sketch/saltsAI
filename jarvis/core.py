@@ -45,6 +45,7 @@ from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
+from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
 from .services.recruiter import Recruiter
@@ -138,6 +139,7 @@ class Jarvis:
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
+        self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
         self.weekly_digest = WeeklyDigest(self)
@@ -197,6 +199,9 @@ class Jarvis:
             "PO intake": (f"scans the inbox every {s.inbox_check_interval_min} min for customer purchase orders, "
                          "matches them to a sent quote and queues the job for your approval" if not self.mail.demo
                          else "DEMO data - connect Microsoft 365"),
+            "Speaking up in chat": (f"on - quiet {s.proactive_quiet_start} to {s.proactive_quiet_end}, at most "
+                                    f"{s.proactive_max_per_hour or 'any number'} an hour"
+                                    if s.proactive_chat_enabled else "off - Jarvis only answers when you ask"),
             "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
             "Weekly digest": (f"routine engineering notices sent to Teams {cron_to_english(s.weekly_digest_cron)}"
                               if s.weekly_digest_enabled else "off - every notice is sent straight away"),
@@ -241,6 +246,7 @@ class Jarvis:
             log.exception("Initial routine test run failed")
 
     async def stop(self) -> None:
+        await self.proactive.stop()
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
         if hasattr(self.brain, "close"):
