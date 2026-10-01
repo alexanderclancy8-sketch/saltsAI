@@ -17,7 +17,9 @@ import logging
 
 from ..cron import cron_trigger
 from ..db import now_iso
+from ..events import quiet_turn
 from ..humanize import cron_to_english, human_datetime
+from .proactive import NOTHING
 
 log = logging.getLogger(__name__)
 MAX_AUTOMATIONS = 25  # generous, but stops a runaway conversation from scheduling hundreds of jobs
@@ -90,9 +92,20 @@ class AutomationService:
         automation = self.j.db.get_automation(automation_id)
         if not automation:
             return f"No automation #{automation_id}."
+        proactive = self.j.proactive.enabled
         prompt = (f"[Scheduled check you set up: \"{automation['description']}\"]\n{automation['prompt']}\n\n"
                  "This is an automation running on its own schedule, not something typed live - if there's "
                  "nothing worth mentioning, say so briefly rather than manufacturing a finding.")
-        reply = await self.j.brain.ask(prompt, "typed")
+        if proactive:
+            prompt += f" If there is nothing worth mentioning, start your reply with {NOTHING}."
+        # With proactive chat on, the check runs silently and only what changed is posted (below), instead of the
+        # whole headless turn being typed into whatever chat happens to be open.
+        token = quiet_turn.set(proactive)
+        try:
+            reply = await self.j.brain.ask(prompt, "typed")
+        finally:
+            quiet_turn.reset(token)
         self.j.db.update_automation(automation_id, last_run_at=now_iso(), last_result=reply[:2000])
+        if proactive:
+            await self.j.proactive.announce(f"automation:{automation_id}", automation["description"], reply)
         return reply

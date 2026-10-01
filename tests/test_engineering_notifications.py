@@ -30,6 +30,10 @@ class FakeMail:
     async def send_mail(self, to, subject, body_html, cc=None, bcc=None, sensitivity=None):
         self.sent.append((to, subject))
 
+    async def send_to_owner(self, to, subject, body_html):
+        self.sent.append(([to], subject))
+        return True, ""
+
 
 def make(settings, teams=None, mail=None):
     settings.owner_email = "alex.clancy@saltsfireandsecurity.co.uk"
@@ -66,7 +70,7 @@ async def test_non_engineering_push_still_uses_teams_and_email(settings):
 async def test_send_owner_update_for_non_engineering_is_unchanged(settings):
     j = make(settings)
     via = await j.notifier.send_owner_update("Hi", "there", channels=("teams", "email"))
-    assert via == "Teams, email"
+    assert via == "Teams, email ('salts jarvis' folder)"  # owner-folder filing added by PR16
     await j.http.aclose()
 
 
@@ -115,7 +119,7 @@ async def test_email_fallback_only_when_explicitly_enabled(settings):
     await j.http.aclose()
 
 
-async def test_self_improve_pull_request_ready_is_teams_only(settings, monkeypatch):
+async def test_self_improve_pull_request_ready_is_held_for_weekly_digest(settings, monkeypatch):
     j = make(settings)
     gh = FakeGitHub(finding_files())
     si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
@@ -133,8 +137,10 @@ async def test_self_improve_pull_request_ready_is_teams_only(settings, monkeypat
     monkeypatch.setattr(si, "watch_ci", no_watch)
     await si.run("add a new tool")
 
-    assert [t for t, _ in j.notifier.teams.posts] == ["Pull request ready: Add a tool"]
+    # pr_ready is a digested kind (PR17): held for the weekly digest, not posted immediately.
+    assert [t for t, _ in j.notifier.teams.posts] == []
     assert j.notifier.mail.sent == []
+    assert [i["title"] for i in j.db.pending_digest_items()] == ["Pull request ready: Add a tool"]
     assert not gh.called("merge_pr")
     await j.http.aclose()
 

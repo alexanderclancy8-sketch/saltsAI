@@ -335,12 +335,17 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         who = speaker(ws)
         q = j.bus.subscribe()
         running: set[asyncio.Task] = set()
+        muted = False  # this session's mute button: Jarvis-initiated messages (see services/proactive.py) are not sent
 
         async def pump():
             while True:
-                await ws.send_json(await q.get())
+                msg = await q.get()
+                if muted and msg["type"] == "proactive":
+                    continue
+                await ws.send_json(msg)
 
         async def listen():
+            nonlocal muted
             while True:
                 msg = await ws.receive_json()
                 if msg.get("type") == "chat" and msg.get("text"):
@@ -353,6 +358,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     task.add_done_callback(running.discard)
                 elif msg.get("type") == "ping":
                     await ws.send_json({"type": "pong"})
+                elif msg.get("type") == "proactive_mute":
+                    muted = msg.get("muted") is True
                 elif msg.get("type") == "stop":
                     stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
                     j.bus.publish("stopped", {"stopped": stopped})
@@ -368,15 +375,17 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # ------------------------------------------------------------------ drafted documents (PDF / Word)
     @app.get("/api/documents/{doc_id}/{fmt}", dependencies=[Depends(owner)])
     async def download_document(doc_id: str, fmt: str, request: Request):
-        if fmt not in ("pdf", "docx"):
-            raise HTTPException(404, "No such format - use pdf or docx.")
+        renderers = {"pdf": (documents.render_pdf, documents.PDF_MIME),
+                     "docx": (documents.render_docx, documents.DOCX_MIME),
+                     "xlsx": (documents.render_xlsx, documents.XLSX_MIME)}
+        if fmt not in renderers:
+            raise HTTPException(404, "No such format - use pdf, docx or xlsx.")
         if not documents.valid_doc_id(doc_id):
             raise HTTPException(400, "Invalid document id")
         doc = J(request).documents.get(doc_id)
         if not doc:
             raise HTTPException(404, "No such document")
-        render, mime = (documents.render_pdf, documents.PDF_MIME) if fmt == "pdf" else \
-            (documents.render_docx, documents.DOCX_MIME)
+        render, mime = renderers[fmt]
         try:
             data = await asyncio.to_thread(render, doc, settings.company_name)
         except ImportError:
@@ -464,6 +473,21 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.post("/api/briefing", dependencies=[Depends(owner)])
     async def briefing(request: Request):
         return {"text": await J(request).briefings.morning_briefing(deliver=False)}
+
+    @app.get("/api/digests", dependencies=[Depends(owner)])
+    async def digests(request: Request, limit: int = 20):
+        return J(request).db.list_digests(max(1, min(limit, 100)))
+
+    @app.get("/api/digests/{digest_id}", dependencies=[Depends(owner)])
+    async def digest(digest_id: int, request: Request):
+        d = J(request).db.get_digest(digest_id)
+        if not d:
+            raise HTTPException(404, "No such digest")
+        return d
+
+    @app.post("/api/digests/now", dependencies=[Depends(owner)])
+    async def digest_now(request: Request):
+        return await J(request).weekly_digest.run("on_demand", deliver=False)
 
     @app.post("/api/wrapup", dependencies=[Depends(owner)])
     async def wrapup(request: Request):
@@ -568,7 +592,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(400, "Sage sign-in failed or expired - try again.")
         await j.finance.exchange_code(code, f"{settings.public_base_url}/auth/sage/callback")
         j.db.set_kv("sage_oauth_state", "")
-        await j.notifier.notify("Sage connected", "Jarvis can now read your accounts.", level="info")
+        await j.notifier.notify("Sage connected", "Jarvis can now read your accounts.", level="info",
+                                   importance="info", management_only=True)
         return RedirectResponse("/")
 
     return app

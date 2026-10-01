@@ -1,7 +1,5 @@
-# RAM Tracking External API paths, relative to RAM_API_BASE_URL.
-# Match these to the endpoint list in RAM's Swagger documentation (Help Center -> APIs).
-# Responses may be a JSON array or an object with an items/data/results array; common
-# field names (vehicleId, registration, driverName, latitude, startTime...) are recognised.
-vehicles: /vehicles
-positions: /vehicles/positions     # latest position per vehicle
-journeys: /journeys                # GET ?vehicleId=&from=<ISO>&to=<ISO>
+# RAM Tracking External API paths, relative to RAM_API_BASE_URL (https://api.qaifn.co.uk).
+# Confirmed against RAM's own Swagger docs (https://api.qaifn.co.uk/swagger/docs) - only
+# override these if RAM changes their API.
+vehicles: /api/v1/vehicle/for-account
+history: /api/v1/history/{id}/{from}/{to}   # {from}/{to} are ISO8601, filled in by jarvis

@@ -101,5 +101,6 @@ class Advisor:
                                effort="high", max_tokens=16000)
         self.bus.publish("display", {"title": "Business advisory report", "markdown": text})
         if deliver:
-            await self.notifier.notify("Monthly business advisory report", text[:3000], level="info", push=True)
+            await self.notifier.notify("Monthly business advisory report", text[:3000], level="info", push=True,
+                                       importance="info", management_only=True)  # finance: Alex/Chun only
         return text

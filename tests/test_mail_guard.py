@@ -102,7 +102,7 @@ async def test_owner_update_email_not_sent_to_shared_owner_address(s):
     j.mail.demo = False
     j.mail.send_mail = send_mail
     out = await j.notifier.send_owner_update("Cash position", "figures", channels=("email",))
-    assert sent == [([INFO], MANAGEMENT)] and out.startswith("the display only")  # blocked by the guard, nothing delivered
+    assert sent == [] and out.startswith("the display only")  # held back by the shared-inbox guard before reaching mail.send_mail
     await j.http.aclose()
 
 

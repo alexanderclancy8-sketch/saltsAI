@@ -20,6 +20,9 @@
     // place; the owner can switch it off in Settings if it misfires on speakers. See bargeInAllowed().
     bargeIn: store.get("bargein", "1") !== "0", captureUntil: 0,
     dashOpen: store.get("dashboard", "0") === "1",
+    // Per-session mute for Jarvis-initiated messages (sessionStorage, so another tab or a fresh visit starts unmuted).
+    // The server is told too (sendProactiveMute), so a muted session isn't sent them at all.
+    proactiveMuted: (() => { try { return sessionStorage.getItem("jarvis.pmute") === "1"; } catch { return false; } })(),
   };
 
   // ------------------------------------------------------------------ helpers
@@ -723,9 +726,39 @@ function send(text, mode = "typed", opts = {}) {
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     S.ws = ws;
+    ws.onopen = () => sendProactiveMute();
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onclose = (e) => { if (e.code === 4401) { location.href = "/login"; return; } setTimeout(connect, 2500); };
     setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" })); }, 25000);
+  }
+
+  // ------------------------------------------------------------------ Jarvis speaking up on his own
+  function sendProactiveMute() {
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "proactive_mute", muted: S.proactiveMuted }));
+  }
+  function renderProactiveMute() {
+    const b = $("#btn-proactive-mute");
+    if (!b) return;
+    b.setAttribute("aria-pressed", S.proactiveMuted ? "true" : "false");
+    b.textContent = S.proactiveMuted ? "🔕 Muted" : "🔔 Speaks up";
+    b.title = S.proactiveMuted ? "Jarvis won't post into this session by himself - click to allow it again"
+                                : "Mute Jarvis posting into this session by himself";
+  }
+  $("#btn-proactive-mute")?.addEventListener("click", () => {
+    S.proactiveMuted = !S.proactiveMuted;
+    try { sessionStorage.setItem("jarvis.pmute", S.proactiveMuted ? "1" : "0"); } catch { /* private mode */ }
+    renderProactiveMute(); sendProactiveMute();
+  });
+  renderProactiveMute();
+  // Read aloud only in a voice session, only when nothing else is happening, and never while the owner is typing.
+  // A message that can't be spoken right now is shown, not queued - Jarvis never talks over anyone.
+  const proactiveMaySpeak = () => S.lastMode === "voice" && shouldSpeak("voice") && S.hudState === "idle" && !speaker.active
+    && !S.voiceTurn && !$("#input").value.trim() && !filler.inFlight();
+  function proactive(d) {
+    if (S.proactiveMuted) return; // the server doesn't send these to a muted session; this is only a safety net
+    addMessage("assistant", d.text, "on my own").classList.add("proactive");
+    caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
+    if (d.speak && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280));
   }
 
   let toolsSeen = [];
@@ -792,6 +825,7 @@ function send(text, mode = "typed", opts = {}) {
         toast(d.title, d.body, d.level);
         refreshSoon();
         break;
+      case "proactive": proactive(d); break; // Jarvis-initiated message: appears in the chat, may be read aloud
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
@@ -821,6 +855,7 @@ function send(text, mode = "typed", opts = {}) {
     if (docId && /^[0-9a-f]{32}$/.test(docId)) {
       $("#display-pdf").href = `/api/documents/${docId}/pdf`;
       $("#display-docx").href = `/api/documents/${docId}/docx`;
+      $("#display-xlsx").href = `/api/documents/${docId}/xlsx`;
       dl.hidden = false;
     } else {
       dl.hidden = true;
@@ -863,7 +898,8 @@ function send(text, mode = "typed", opts = {}) {
     $("#issues").innerHTML = issues.length ? issues.slice(0, 8).map((i) => {
       const cls = ["critical", "high"].includes(i.severity) ? "bad" : i.status === "fix_ready" ? "ok" : "warn";
       const pr = i.fix_pr_url ? ` · <a href="${esc(i.fix_pr_url)}" target="_blank" rel="noopener">PR</a>` : "";
-      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))} · ${esc(i.severity)}${pr}</span></li>`;
+      // severity is already shown by the row's accent colour - naming it again in text was noise.
+      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span></li>`;
     }).join("") : `<li class="empty">No open issues.</li>`;
   }
 
@@ -871,7 +907,7 @@ function send(text, mode = "typed", opts = {}) {
     const failing = tests.filter((t) => !t.ok);
     $("#tests-count").textContent = tests.length ? `${tests.length - failing.length}/${tests.length} passing` : "";
     const rows = [...failing, ...tests.filter((t) => t.ok)].slice(0, 10);
-    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}"><span class="dot ${t.ok ? "ok" : "bad"}"></span>${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
+    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}">${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
       : `<li class="empty">No results yet.</li>`;
   }
 
@@ -942,7 +978,9 @@ function send(text, mode = "typed", opts = {}) {
     const list = S.suggestions || [];
     $("#suggestions-panel").hidden = !list.length;
     $("#suggestions-count").textContent = list.length ? String(list.length) : "";
-    $("#suggestions").innerHTML = list.map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
+    // Every other panel caps what it shows at once (issues 8, notifications 6) - suggestions didn't,
+    // so a busy day's list of full-width action cards could bury COMMS/ISSUES/TESTS below the fold.
+    $("#suggestions").innerHTML = list.slice(0, 4).map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
       ${s.detail ? `<span class="sub">${esc(s.detail)}</span>` : ""}
       <div class="row"><button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button></div></div>`).join("");
     updateOrbBadge();
@@ -976,7 +1014,10 @@ function send(text, mode = "typed", opts = {}) {
     }
     if (!map) {
       map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.83, -1.78], 10);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© OpenStreetMap, © CARTO", maxZoom: 18 }).addTo(map);
+      // CARTO's basemaps now require a signed-up API key and render an "API KEY REQUIRED" watermark
+      // without one - Esri's dark canvas is free, keyless, and still matches the dark theme.
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxZoom: 16 }).addTo(map);
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
@@ -1052,6 +1093,17 @@ function send(text, mode = "typed", opts = {}) {
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
     // the mic stream is NOT echo-cancelled, which switches barge-in off (see bargeInAllowed()).
     echoCancelled: null,
+    // Some recognisers (e.g. Chrome on Android) send each "final" as the whole utterance so far ("ladder",
+    // "ladder inspection", "ladder inspection jobs"). When a final just extends the previous one, replace it
+    // instead of stacking them, so only the final version of the utterance is submitted and stored.
+    lastFinal: "",
+    addFinal(text) {
+      const words = (s) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, "").split(/\s+/).filter(Boolean);
+      const prev = words(this.lastFinal), next = words(text), tail = this.lastFinal + " ";
+      if (prev.length && next.length >= prev.length && prev.every((w, i) => w === next[i]) && this.finals.endsWith(tail))
+        this.finals = this.finals.slice(0, this.finals.length - tail.length);
+      this.finals += text + " "; this.lastFinal = text;
+    },
     // Hands whatever final text has built up to utterance(). In wake mode the mic stays open for the next
     // wake phrase; in every other mode this is the end of the turn, so the mic closes rather than sitting on
     // "Listening…" with nothing ever submitted.
@@ -1128,7 +1180,7 @@ function send(text, mode = "typed", opts = {}) {
           if (e.results[i].isFinal) {
             if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
             filler.userSpeech();
-            this.finals += heard + " "; this.finalHeard();
+            this.addFinal(heard); this.finalHeard();
           } else if (!echoWindowOpen()) { interim += heard; filler.userSpeech(); }
         }
         caption(this.finals, interim);
@@ -1141,7 +1193,7 @@ function send(text, mode = "typed", opts = {}) {
         if (m.text) sttEngine.markGood("deepgram");
         // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
         if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
-        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
+        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.addFinal(m.text); if (S.listenMode !== "wake") this.finalHeard(); }
         caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
         if (m.speech_final && this.finals.trim()) this.commit();
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();

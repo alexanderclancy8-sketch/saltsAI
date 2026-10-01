@@ -1,7 +1,8 @@
 """Microsoft 365: read/send Outlook mail via Microsoft Graph and post Teams updates.
 
 Graph uses app-only auth (client credentials). Required application permissions:
-Mail.ReadWrite and Mail.Send. Restrict the app to the owner's mailbox with an
+Mail.ReadWrite and Mail.Send (Mail.ReadWrite also covers listing folders and moving Jarvis's own emails to the
+owner into the "salts jarvis" folder - no extra permission needed). Restrict the app to the owner's mailbox with an
 Exchange Online application access policy (see README).
 """
 
@@ -13,6 +14,7 @@ import html
 import io
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -24,7 +26,8 @@ from .mail_guard import GuardedMessage, guard_message
 
 log = logging.getLogger(__name__)
 GRAPH = "https://graph.microsoft.com/v1.0"
-MESSAGE_FIELDS = "id,subject,from,toRecipients,receivedDateTime,isRead,importance,bodyPreview,hasAttachments,webLink"
+FOLDER_MISS_TTL_S = 300  # how long a "folder not found" answer is trusted before looking again
+MESSAGE_FIELDS ="id,subject,from,toRecipients,receivedDateTime,isRead,importance,bodyPreview,hasAttachments,webLink"
 
 
 def _strip(text: str, limit: int = 6000) -> str:
@@ -48,6 +51,20 @@ def _summarise(msg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+OFFICE_EXTENSIONS = (".docx", ".xlsx")  # macro-enabled (.docm/.xlsm) and legacy formats are deliberately not read
+
+
+def select_office_attachments(items: list[dict[str, Any]], max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+    """The Word/Excel file attachments (name + base64 data) from a Graph /attachments listing."""
+    out = []
+    for a in items:
+        name = a.get("name") or ""
+        if a.get("@odata.type") == "#microsoft.graph.fileAttachment" and name.lower().endswith(OFFICE_EXTENSIONS) \
+                and a.get("contentBytes") and int(a.get("size") or 0) <= max_bytes:
+            out.append({"name": name, "data": a["contentBytes"]})
+    return out
+
+
 class GraphMail:
     demo = False
 
@@ -59,6 +76,10 @@ class GraphMail:
             authority=f"https://login.microsoftonline.com/{settings.ms_tenant_id}",
             client_credential=settings.ms_client_secret,
         )
+        self._folder_ids: dict[str, str] = {}  # lower-cased folder name -> Graph folder id
+        self._folder_missing_until: dict[str, float] = {}  # lower-cased folder name -> monotonic time to retry
+        # Seconds to wait between looks for a freshly sent email to arrive in the Inbox (so: up to ~10s in all).
+        self.owner_folder_retry_delays: tuple[float, ...] = (1.0, 2.0, 3.0, 4.0)
 
     async def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         result = await asyncio.to_thread(self._app.acquire_token_for_client,
@@ -127,6 +148,14 @@ class GraphMail:
                 out.append({"name": name, "data": a["contentBytes"]})
         return out
 
+    async def office_attachments(self, message_id: str, mailbox: str | None = None,
+                                 max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        """Word (.docx) and Excel (.xlsx) attachments of a message as base64 - read-only, nothing is changed."""
+        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
+        r.raise_for_status()
+        return select_office_attachments(r.json().get("value", []), max_bytes)
+
     async def mark_read(self, message_id: str) -> None:
         r = await self.http.patch(f"{self._mbx}/messages/{message_id}", json={"isRead": True},
                                   headers=await self._headers())
@@ -149,6 +178,92 @@ class GraphMail:
                                  headers=await self._headers())
         r.raise_for_status()
         return g
+
+    # -- Jarvis's own emails to the owner: filed into a dedicated Outlook folder ------------
+    async def _folder_pages(self, url: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        params: dict[str, str] | None = {"$top": "100", "$select": "id,displayName"}
+        for _ in range(5):  # a mailbox has a handful of folders; don't page forever
+            r = await self.http.get(url, params=params, headers=await self._headers())
+            r.raise_for_status()
+            data = r.json()
+            out.extend(data.get("value", []))
+            url = data.get("@odata.nextLink") or ""
+            if not url:
+                break
+            params = None  # the next link already carries the query
+        return out
+
+    async def owner_folder_id(self, name: str) -> str | None:
+        """Id of the mail folder with this display name (case-insensitive), or None if there isn't one.
+
+        Looks at the top-level folders, then the Inbox's sub-folders. The id is cached; a miss is also cached for
+        a few minutes so a missing folder doesn't cost extra Graph calls on every email. Graph errors propagate
+        (and are not cached)."""
+        wanted = name.strip().lower()
+        if wanted in self._folder_ids:
+            return self._folder_ids[wanted]
+        if self._folder_missing_until.get(wanted, 0.0) > time.monotonic():
+            return None
+        for url in (f"{self._mbx}/mailFolders", f"{self._mbx}/mailFolders/inbox/childFolders"):
+            for f in await self._folder_pages(url):
+                if (f.get("displayName") or "").strip().lower() == wanted and f.get("id"):
+                    self._folder_ids[wanted] = f["id"]
+                    return f["id"]
+        self._folder_missing_until[wanted] = time.monotonic() + FOLDER_MISS_TTL_S
+        return None
+
+    async def _file_into_folder(self, folder_id: str, subject: str, sent_at: datetime) -> bool:
+        """Move the just-delivered Inbox copy of `subject` into the folder. Delivery is asynchronous, so retry
+        briefly until it turns up. Moves (not copies), so nothing is left behind in the Inbox."""
+        since = (sent_at - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for delay in (0.0, *self.owner_folder_retry_delays):
+            if delay:
+                await asyncio.sleep(delay)
+            r = await self.http.get(
+                f"{self._mbx}/mailFolders/inbox/messages", headers=await self._headers(),
+                params={"$top": "15", "$select": "id,subject,receivedDateTime",
+                        "$filter": f"receivedDateTime ge {since}", "$orderby": "receivedDateTime desc"})
+            r.raise_for_status()
+            hits = [m for m in r.json().get("value", []) if m.get("subject") == subject and m.get("id")]
+            if hits:
+                for m in hits:  # identical subject sent twice in the same window: they're all ours
+                    mv = await self.http.post(f"{self._mbx}/messages/{m['id']}/move",
+                                              json={"destinationId": folder_id}, headers=await self._headers())
+                    if mv.status_code == 404:
+                        self._folder_ids.clear()  # folder deleted/renamed since we cached it
+                    mv.raise_for_status()
+                return True
+        return False
+
+    async def send_to_owner(self, to: str, subject: str, body_html: str) -> tuple[bool, str]:
+        """Email the owner and file it straight into the owner's Jarvis folder instead of the Inbox.
+
+        Sends normally (so it is always delivered), then moves the delivered copy out of the Inbox - creating the
+        message in the folder via POST /mailFolders/{id}/messages would only make an unsent *draft*, not a received
+        message. Returns (filed, warning): filed=False means it is sitting in the Inbox, and `warning` says why
+        (empty when filing wasn't wanted). Only a failure of the send itself raises, exactly as send_mail does;
+        nothing in the folder step can stop or lose the message."""
+        sent_at = datetime.now(timezone.utc)
+        await self.send_mail([to], subject, body_html)
+        name = (self.s.owner_mail_folder or "").strip()
+        if not name:
+            return False, ""
+        if to.strip().lower() != (self.s.ms_mailbox or "").strip().lower():
+            return False, ""  # delivered to somebody else's mailbox, which Jarvis's mailbox can't file into
+        try:
+            folder_id = await self.owner_folder_id(name)
+            if not folder_id:
+                msg = f"Outlook folder '{name}' not found - the email was left in the Inbox"
+                log.warning(msg)
+                return False, msg
+            if await self._file_into_folder(folder_id, subject, sent_at):
+                return True, ""
+            msg = f"Email not seen in the Inbox in time to file into '{name}' - it stays in the Inbox"
+        except Exception as e:  # noqa: BLE001 - the message is already sent; never fail the caller over filing
+            msg = f"Couldn't file the email into '{name}' ({e}) - it stays in the Inbox"
+        log.warning(msg)
+        return False, msg
 
     async def create_reply_draft(self, message_id: str, comment: str) -> dict[str, Any]:
         r = await self.http.post(f"{self._mbx}/messages/{message_id}/createReply", json={"comment": comment},
@@ -306,6 +421,10 @@ class DemoMail:
                               max_bytes: int = 15_000_000) -> list[dict[str, str]]:
         return []
 
+    async def office_attachments(self, message_id: str, mailbox: str | None = None,
+                                 max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        return []
+
     async def mark_read(self, message_id: str) -> None:
         for m in self._messages:
             if m["id"] == message_id:
@@ -318,6 +437,10 @@ class DemoMail:
             list(to), list(cc or []), list(bcc or []), sensitive=False)
         log.info("[DEMO] would send email to %s: %s", g.to, subject)
         return g
+
+    async def send_to_owner(self, to: str, subject: str, body_html: str) -> tuple[bool, str]:
+        await self.send_mail([to], subject, body_html)
+        return False, ""
 
     async def create_reply_draft(self, message_id: str, comment: str) -> dict[str, Any]:
         return {"draft_id": "demo-draft", "link": ""}
