@@ -200,6 +200,8 @@ class Settings(BaseSettings):
     ram_api_base_url: str = ""  # from RAM's External API / Swagger docs
     ram_api_key: str = ""
     ram_api_key_header: str = "X-Api-Key"  # or "Authorization" to send "Bearer <key>"
+    ram_client_id: str = ""  # RAM's External API needs both the key and the client ID, sent as separate headers
+    ram_client_id_header: str = "ClientId"
     timesheet_tolerance_min: int = 30
 
     # --- Marketing: socials, Google reviews, search ranking -------------------

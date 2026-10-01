@@ -85,7 +85,7 @@ async def _sage(j) -> tuple[bool, str]:
 
 async def _ram(j) -> tuple[bool, str]:
     if j.ram.demo:
-        return False, "Add the RAM API address and key first."
+        return False, "Add the RAM API address, key and client ID first."
     vehicles = await j.ram.vehicles()
     return True, f"RAM Tracking answered: {len(vehicles)} vehicles."
 

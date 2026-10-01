@@ -94,7 +94,10 @@ class RamTracking:
 
     def _headers(self) -> dict[str, str]:
         h = self.s.ram_api_key_header
-        return {"Authorization": f"Bearer {self.s.ram_api_key}"} if h.lower() == "authorization" else {h: self.s.ram_api_key}
+        headers = {"Authorization": f"Bearer {self.s.ram_api_key}"} if h.lower() == "authorization" else {h: self.s.ram_api_key}
+        if self.s.ram_client_id:
+            headers[self.s.ram_client_id_header] = self.s.ram_client_id
+        return headers
 
     async def _get(self, key: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         r = await self.http.get(self.s.ram_api_base_url.rstrip("/") + self.endpoints[key], params=params,

@@ -219,12 +219,14 @@ SECTIONS: tuple[Section, ...] = (
         (
             Field("ram_api_base_url", "API address", "url", "From RAM's External API documentation."),
             Field("ram_api_key", "API key", "secret"),
+            Field("ram_client_id", "Client ID", "secret"),
             Field("ram_api_key_header", "API key header", advanced=True),
+            Field("ram_client_id_header", "Client ID header", advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
         ),
-        required=("ram_api_base_url", "ram_api_key"),
+        required=("ram_api_base_url", "ram_api_key", "ram_client_id"),
         test=True,
-        guide=("Ask RAM Tracking support for External API access. They'll give you an API address and key.",),
+        guide=("In the RAM Tracking portal: profile - integrations - the API key and client ID are both there.",),
     ),
     Section(
         "voice", "Voice", "How Jarvis sounds, and how it hears you.",

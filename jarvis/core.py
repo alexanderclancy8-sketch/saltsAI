@@ -76,7 +76,8 @@ class Jarvis:
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)
-        self.ram = RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key else DemoRamTracking(self.fsm)
+        self.ram = (RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key and s.ram_client_id
+                    else DemoRamTracking(self.fsm))
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None
         self.self_github = (GitHub(s.jarvis_github_token or s.github_token, s.jarvis_repo, self.http,
@@ -189,7 +190,7 @@ class Jarvis:
             "Socials / Google": ", ".join(k for k, v in presence.items() if v) or "DEMO data - not connected",
             "Stores / stock": self.stores.source + (" (DEMO stock)" if self.stores.demo else ""),
             "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
-                                 "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY"),
+                                 "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY / RAM_CLIENT_ID"),
             "Web search": "on" if s.web_search_enabled else "off",
             "Plugins": plugins.status_line(s, self.verifier),
             "Claude": ("your Claude Max subscription (Agent SDK)" if s.effective_llm_backend == "max"

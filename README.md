@@ -114,9 +114,9 @@ Do these in any order; each one replaces demo data as soon as it's set.
      and reconnect.
    - *Sage 50 (desktop):* export sales and purchase invoices (and bank balances) to CSV into `finance_data/`, as
      `sales_invoices.csv`, `purchase_invoices.csv` and `bank.csv`. Sage's usual column names are recognised.
-4. **RAM Tracking.** Ask RAM for External API access, put the address and key on the Settings page, and match
-   `ram_endpoints.yaml` to the paths in RAM's Swagger docs. Put each engineer's van registration in the staff
-   register.
+4. **RAM Tracking.** Ask RAM for External API access, put the address, API key and client ID on the Settings page
+   (in the RAM Tracking portal: profile > integrations), and match `ram_endpoints.yaml` to the paths in RAM's
+   Swagger docs. Put each engineer's van registration in the staff register.
 5. **Staff register.** Copy `staff_roles.example.yaml` to `data/staff_roles.yaml` and describe everyone's role,
    duties and targets, or just tell Jarvis ("Jarvis, Josh should be sending 14 quotes a week").
 6. **Accreditations.** Copy `accreditations.example.yaml` to `data/accreditations.yaml` and add your real
