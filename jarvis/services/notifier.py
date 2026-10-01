@@ -136,8 +136,17 @@ class Notifier:
                     held.append(addr)
             else:
                 deliver.append(addr)
+        self._last_owner_file_note = None
         if deliver:
-            await self.mail.send_mail(deliver, subject, body_html, sensitivity=sensitivity)
+            if (deliver == [self.s.owner_email] and not self.is_shared_inbox(deliver[0])
+                    and hasattr(self.mail, "send_to_owner")):
+                filed, warning = await self.mail.send_to_owner(deliver[0], subject, body_html)
+                if filed:
+                    self._last_owner_file_note = f"('{self.s.owner_mail_folder.strip()}' folder)"
+                elif warning:
+                    self._last_owner_file_note = f"(Inbox - {warning})"
+            else:
+                await self.mail.send_mail(deliver, subject, body_html, sensitivity=sensitivity)
             if any(self.is_shared_inbox(a) for a in deliver):
                 self._record_shared_send(subject, dedupe_key)
         return deliver, held
@@ -210,11 +219,12 @@ class Notifier:
         if "email" in channels and recipient and not getattr(self.mail, "demo", True):
             try:
                 deliver, _held = await self.send_email([recipient], f"[Jarvis] {subject}", text_to_html(body),
-                                                          importance=importance, dedupe_key=dedupe_key,
-                                                          management_only=management_only,
-                                                          sensitivity=sensitivity)
+                                                         importance=importance, dedupe_key=dedupe_key,
+                                                         management_only=management_only,
+                                                         sensitivity=sensitivity)
                 if deliver:
-                    sent.append("email")
+                    note = getattr(self, "_last_owner_file_note", None)
+                    sent.append(f"email {note}" if note else "email")
                 held_back = not deliver
             except MailGuardError as e:
                 log.warning("Owner update email blocked by the management-only mail rule: %s", e)

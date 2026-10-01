@@ -30,6 +30,10 @@ class FakeMail:
     async def send_mail(self, to, subject, body_html, cc=None, bcc=None, sensitivity=None):
         self.sent.append((to, subject))
 
+    async def send_to_owner(self, to, subject, body_html):
+        self.sent.append(([to], subject))
+        return True, None
+
 
 def make(settings, teams=None, mail=None):
     settings.owner_email = "alex.clancy@saltsfireandsecurity.co.uk"
@@ -66,7 +70,7 @@ async def test_non_engineering_push_still_uses_teams_and_email(settings):
 async def test_send_owner_update_for_non_engineering_is_unchanged(settings):
     j = make(settings)
     via = await j.notifier.send_owner_update("Hi", "there", channels=("teams", "email"))
-    assert via == "Teams, email"
+    assert via == "Teams, email ('salts jarvis' folder)"  # owner-folder filing added by PR16
     await j.http.aclose()
 
 
