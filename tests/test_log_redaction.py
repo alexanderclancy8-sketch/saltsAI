@@ -72,7 +72,10 @@ async def test_current_style_url_still_works_but_signature_is_masked_in_logs(cap
         logging.getLogger("jarvis.test").warning("Teams update failed: %s", err.value)
         logging.getLogger("jarvis.test").error("boom", exc_info=err.value)
 
-    assert seen == [FLOW_URL, FLOW_URL]  # the real request still carries the full, unmodified signature
+    # The real request still carries the full, unmodified signature. Compared as URLs because httpx normalises the
+    # string (it drops an explicit default :443), which is not something the redaction changes.
+    assert [httpx.URL(u) for u in seen] == [httpx.URL(FLOW_URL)] * 2
+    assert all(SIG in u for u in seen)
     assert teams.url == FLOW_URL
     assert caplog.records, "expected the httpx / warning records to be captured"
     assert SIG not in caplog.text
