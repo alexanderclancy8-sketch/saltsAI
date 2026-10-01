@@ -12,7 +12,7 @@ them takes a repository name: they only ever act on `JARVIS_REPO`.
 | `repo_search` | automatic | Literal text search on any branch, tag or commit (downloads that ref's tarball; GitHub's code search only covers the default branch) |
 | `run_tests` | automatic | Reports the GitHub Actions checks and workflow runs on a branch's latest commit. It does **not** start a run (that would need `Actions: write`) |
 | `pr_comment` | **owner approval** | Posts a comment on a PR |
-| `pr_resolve_conflicts` | **owner approval** | Merges main into the PR's own branch, runs the tests, pushes to that branch only if they pass |
+| `pr_resolve_conflicts` | **owner approval** | Merges main into the PR's own branch. With git: runs the tests first and pushes only if they pass. Without git: merges via the GitHub API and reports the CI result after |
 | `pr_merge` | **owner approval** | Squash-merges a PR into main - refused, even after approval, unless CI is green and there are no conflicts |
 | `pr_create` | **owner approval** | Opens a PR from a head branch into a base branch (e.g. `jarvis-updates-2026-09-29` into `main`) with a title and description. Both branches must exist; the head can never be `main`/`master` |
 | `pr_close` | **owner approval** | Closes an open PR without merging it (e.g. a superseded one), with an optional comment. The branch is left alone |
@@ -69,6 +69,18 @@ on `main` that blocks force-pushes and deletion (and ideally requires a pull req
   directory with a scrubbed environment (no Jarvis settings or tokens) and a time limit. Tests failing, timing out or
   being unable to run means nothing is pushed. This is a scratch directory and clean environment, **not** an OS-level
   sandbox - hence the approval on every run.
+- **Conflict resolution without git:** if the host has no `git` binary, `pr_resolve_conflicts` uses the GitHub REST
+  API instead (same guards: open PR from this repo, never main/the base branch, never forced, no `.github/` files, no
+  leftover markers). (1) `POST /merges` (base = the PR branch, head = the base branch) brings the branch up to date;
+  a 409 means real conflicts. (2) For conflicts it compares both sides, lists files changed on both sides to different
+  results (a file-level check, so stricter than git: there is no line-level merge), shows each side's text via the
+  contents API, and once `resolutions` carry the full text it builds the merge commit with blobs/trees/commits (two
+  parents) and moves the PR branch ref forward with `force: false`. A file deleted on one side is left to a person.
+  (3) There is **no local test run**: the merge is pushed first, then the GitHub Actions result on the new commit is
+  polled for about two minutes and reported (`ci_state`; a failing CI also sends an engineering notification). `pr_merge`
+  still needs green CI. The extra allowed writes (`POST /merges`, `POST /git/blobs|trees|commits`, `PATCH
+  /git/refs/heads/<branch>`) are in the `_send` allow-list, which still refuses main/master/the default branch and
+  any forced ref update. With git installed the local flow above is unchanged. The token needs Contents: write for this.
 - **Token hygiene:** the token is never returned or logged. For git it is passed as a per-command HTTP header (never in a
   remote URL or `.git/config`), and all output is redacted.
 - **Secrets in output:** everything read from GitHub (diffs, files, logs, PR text, errors) goes through

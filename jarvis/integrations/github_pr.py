@@ -2,10 +2,12 @@
 
 Safety by construction, not just by convention:
 - Reads go through ``_get`` (GET only).
-- The only writes this class can make are a PR comment, a PR merge, opening a PR, and closing a PR / changing its
-  base branch, through ``_send``, which checks every request against ``_WRITE_ALLOWED`` (and the body of a PATCH or
-  of a new PR). There is no code path here that deletes a branch, edits repo settings, touches refs or
-  force-pushes; ``_send`` would refuse such a request even if some later change tried one. Every call is made
+- The only writes this class can make are a PR comment, a PR merge, opening a PR, closing a PR / changing its
+  base branch, and (for pr_resolve_conflicts on a host without git) merging main into a PR branch via the merges
+  API or building a merge commit with blobs/trees/commits and moving that one branch ref forward, through
+  ``_send``, which checks every request against ``_WRITE_ALLOWED`` (and the body of a PATCH, a merge or a new PR).
+  There is no code path here that deletes a branch, edits repo settings, creates refs, moves main/master/the
+  default branch or force-pushes; ``_send`` would refuse such a request even if some later change tried one. Every call is made
   against ``self.repo`` (Jarvis's own repository) - no method takes a repository name.
 - ``merge`` refuses unless the PR is open, not a draft, targets the default branch, has no conflicts and its CI is
   green, and it pins the commit it checked (``sha``) so a late push to the branch can't slip through.
@@ -68,14 +70,33 @@ _WRITE_ALLOWED: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PUT", re.compile(rf"^/repos/[^/]+/[^/]+/pulls/{_NUM}/merge$")),
     ("POST", re.compile(r"^/repos/[^/]+/[^/]+/pulls$")),  # open a PR
     ("PATCH", re.compile(rf"^/repos/[^/]+/[^/]+/pulls/{_NUM}$")),  # close a PR / change its base - see _check_payload
+    # pr_resolve_conflicts without a git binary: merge via the API, or build the merge commit from blobs/trees/commits
+    # and move the PR branch (never main/master, never forced - see _check_payload and PRClient.update_branch).
+    ("POST", re.compile(r"^/repos/[^/]+/[^/]+/merges$")),
+    ("POST", re.compile(r"^/repos/[^/]+/[^/]+/git/(?:blobs|trees|commits)$")),
+    ("PATCH", re.compile(r"^/repos/[^/]+/[^/]+/git/refs/heads/(?!(?:main|master)$)[A-Za-z0-9][A-Za-z0-9._/\-]*$")),
 )
 _CREATE_KEYS = frozenset({"title", "head", "base", "body"})
+_REF_PREFIX = "/git/refs/heads/"
 
 
-def _check_payload(method: str, path: str, payload: dict[str, Any]) -> None:
+def _check_payload(method: str, path: str, payload: dict[str, Any], default_branch: str | None = None) -> None:
     """The path allow-list can't tell a harmless PATCH of a PR from a harmful one, so the body is checked too: a PR
-    can only be closed or have its base branch changed, and a new PR can never come from main."""
-    if method == "PATCH":
+    can only be closed or have its base branch changed, a new PR can never come from main, a branch ref can only be
+    moved forward (``force`` false) and never main/master/the default branch, and a merge never lands in one."""
+    protected = PROTECTED_BRANCHES | ({default_branch} if default_branch else set())
+    if method == "PATCH" and path.startswith(_REF_PREFIX):
+        branch = check_ref(path[len(_REF_PREFIX):])
+        if branch in protected:
+            raise PRError(f"Refused: Jarvis never moves '{branch}'.")
+        if set(payload) != {"sha", "force"} or payload["force"] is not False:
+            raise PRError("Refused: a branch can only be moved forward by Jarvis, never forced.")
+    elif method == "POST" and path == "/merges":
+        if set(payload) - {"base", "head", "commit_message"} or not {"base", "head"} <= set(payload):
+            raise PRError("Refused: a branch merge needs exactly a base, head and message.")
+        if payload["base"] in protected:
+            raise PRError(f"Refused: Jarvis never merges into '{payload['base']}'.")
+    elif method == "PATCH":
         keys = set(payload)
         if keys not in ({"state"}, {"base"}) or (keys == {"state"} and payload["state"] != "closed"):
             raise PRError("Refused: a pull request can only be closed or have its base branch changed by Jarvis.")
@@ -131,7 +152,7 @@ class PRClient:
         full = f"/repos/{self.repo}{path}"
         if not any(method == m and rx.match(full) for m, rx in _WRITE_ALLOWED):
             raise PRError(f"Refused: {method} {path} is not an allowed GitHub action for Jarvis.")
-        _check_payload(method, path, payload)
+        _check_payload(method, path, payload, self.gh.default_branch)
         return await self.gh._req(method, full, json=payload)  # noqa: SLF001
 
     # ------------------------------------------------------------------ (1) pr_list
@@ -367,6 +388,110 @@ class PRClient:
         data = await self._send("PATCH", f"/pulls/{number}", {"base": base})
         return {"updated": True, "pr": number, "previous_base": old, "base": (data.get("base") or {}).get("ref", base),
                 "url": data.get("html_url")}
+
+    # ------------------------------------------------------------------ pr_resolve_conflicts without git  [WRITE]
+    def _check_pr_branch(self, branch: str, base: str) -> tuple[str, str]:
+        branch, base = check_ref(branch), check_ref(base)
+        if branch in PROTECTED_BRANCHES or branch in (self.gh.default_branch, base):
+            raise PRError(f"Refused: '{branch}' is main or the base branch - Jarvis never pushes to it.")
+        return branch, base
+
+    async def update_branch(self, branch: str, base: str, message: str) -> dict[str, Any]:
+        """Merge ``base`` into the PR branch ``branch`` with GitHub's merges API. ``result`` is ``merged`` (with the
+        new ``sha``), ``up_to_date`` (nothing to merge) or ``conflict`` (GitHub answered 409: a real conflict)."""
+        branch, base = self._check_pr_branch(branch, base)
+        try:
+            data = await self._send("POST", "/merges", {"base": branch, "head": base, "commit_message": message})
+        except RuntimeError as e:
+            if "-> 409" in str(e):
+                return {"result": "conflict"}
+            raise
+        if not data or not data.get("sha"):
+            return {"result": "up_to_date"}
+        return {"result": "merged", "sha": data["sha"]}
+
+    async def _compare_files(self, basehead: str) -> list[dict[str, Any]]:
+        """Files changed by ``A...B`` (since their merge base), renames split into a removal plus an addition."""
+        files: list[dict[str, Any]] = []
+        for page in range(1, 4):
+            chunk = (await self._get(f"/compare/{basehead}", per_page=100, page=page)).get("files") or []
+            for f in chunk:
+                status = f.get("status")
+                if status == "renamed" and f.get("previous_filename"):
+                    files.append({"filename": f["previous_filename"], "status": "removed", "sha": None})
+                    files.append({"filename": f["filename"], "status": "added", "sha": f.get("sha")})
+                else:
+                    files.append({"filename": f["filename"], "sha": f.get("sha"),
+                                  "status": "removed" if status == "removed" else
+                                  "added" if status in ("added", "copied") else "modified"})
+            if len(chunk) < 100:
+                return files
+        raise PRError("Too many files changed (300+) to merge through the GitHub API; a person needs to resolve this.")
+
+    async def merge_plan(self, branch: str, base: str) -> dict[str, Any]:
+        """File-level three-way plan for merging ``base`` into ``branch``. ``conflicts`` are files changed on both
+        sides to different results (a superset of what git would flag - there is no line-level merge here);
+        ``unsupported`` are those where one side deleted the file; ``theirs_only`` are base-side changes that carry
+        over unchanged."""
+        branch, base = self._check_pr_branch(branch, base)
+        mine = {f["filename"]: f for f in await self._compare_files(f"{quote(base, safe='/')}...{quote(branch, safe='/')}")}
+        theirs = {f["filename"]: f for f in await self._compare_files(f"{quote(branch, safe='/')}...{quote(base, safe='/')}")}
+        conflicts, unsupported = [], []
+        for name in sorted(set(mine) & set(theirs)):
+            m, t = mine[name], theirs[name]
+            m_gone, t_gone = m["status"] == "removed", t["status"] == "removed"
+            if m_gone and t_gone:
+                continue
+            if not m_gone and not t_gone and m.get("sha") == t.get("sha"):
+                continue  # both sides made the same change
+            conflicts.append(name)
+            if m_gone or t_gone:
+                unsupported.append(name)
+        return {"conflicts": conflicts, "unsupported": unsupported,
+                "theirs_only": {n: f for n, f in sorted(theirs.items()) if n not in mine}}
+
+    async def file_text(self, path: str, ref: str) -> str | None:
+        """A file's text at ``ref`` through the contents API; None if it is missing, binary or too big."""
+        try:
+            data = await self._get(f"/contents/{quote(check_path(path), safe='/')}", ref=check_ref(ref))
+        except RuntimeError as e:
+            if "-> 404" in str(e):
+                return None
+            raise
+        if not isinstance(data, dict) or data.get("encoding") != "base64" or data.get("content") is None:
+            return None
+        raw = base64.b64decode(data["content"])
+        return None if b"\x00" in raw[:2000] else raw.decode("utf-8", errors="replace")
+
+    async def commit_merge(self, branch: str, base: str, head_sha: str, resolutions: dict[str, str],
+                           theirs_only: dict[str, dict[str, Any]], message: str) -> str:
+        """Create a two-parent merge commit (``head_sha`` = the PR branch tip, plus the tip of ``base``) through the git
+        data API and move the PR branch to it. The tree is the PR branch's tree plus the base-side-only changes plus the
+        supplied ``resolutions``. The ref update is never forced, so a branch that moved meanwhile makes it fail."""
+        branch, base = self._check_pr_branch(branch, base)
+        head_commit = await self._get(f"/git/commits/{head_sha}")
+        base_commit = await self._get(f"/commits/{quote(base, safe='/')}")
+        base_tree = await self._get(f"/git/trees/{base_commit['commit']['tree']['sha']}", recursive=1)
+        if base_tree.get("truncated"):
+            raise PRError(f"{base} has too many files to merge through the GitHub API; a person needs to do this.")
+        modes = {e["path"]: e["mode"] for e in base_tree.get("tree", []) if e.get("type") == "blob"}
+        entries: list[dict[str, Any]] = []
+        for name, f in theirs_only.items():
+            if f["status"] == "removed":
+                entries.append({"path": name, "mode": "100644", "type": "blob", "sha": None})
+            elif name in modes and f.get("sha"):
+                entries.append({"path": name, "mode": modes[name], "type": "blob", "sha": f["sha"]})
+            else:
+                raise PRError(f"{name} changed on {base} in a way that can't be carried over through the GitHub API "
+                              "(for example a submodule); a person needs to resolve this.")
+        for name, text in sorted(resolutions.items()):
+            blob = await self._send("POST", "/git/blobs", {"content": text, "encoding": "utf-8"})
+            entries.append({"path": name, "mode": modes.get(name, "100644"), "type": "blob", "sha": blob["sha"]})
+        tree = await self._send("POST", "/git/trees", {"base_tree": head_commit["tree"]["sha"], "tree": entries})
+        commit = await self._send("POST", "/git/commits",
+                                  {"message": message, "tree": tree["sha"], "parents": [head_sha, base_commit["sha"]]})
+        await self._send("PATCH", f"{_REF_PREFIX}{branch}", {"sha": commit["sha"], "force": False})
+        return commit["sha"]
 
     # ------------------------------------------------------------------ (7) run_tests (reads CI results)
     async def ci_results(self, ref: str) -> dict[str, Any]:
