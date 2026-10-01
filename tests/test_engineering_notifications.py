@@ -119,7 +119,7 @@ async def test_email_fallback_only_when_explicitly_enabled(settings):
     await j.http.aclose()
 
 
-async def test_self_improve_pull_request_ready_is_teams_only(settings, monkeypatch):
+async def test_self_improve_pull_request_ready_is_held_for_weekly_digest(settings, monkeypatch):
     j = make(settings)
     gh = FakeGitHub(finding_files())
     si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
@@ -137,8 +137,10 @@ async def test_self_improve_pull_request_ready_is_teams_only(settings, monkeypat
     monkeypatch.setattr(si, "watch_ci", no_watch)
     await si.run("add a new tool")
 
-    assert [t for t, _ in j.notifier.teams.posts] == ["Pull request ready: Add a tool"]
+    # pr_ready is a digested kind (PR17): held for the weekly digest, not posted immediately.
+    assert [t for t, _ in j.notifier.teams.posts] == []
     assert j.notifier.mail.sent == []
+    assert [i["title"] for i in j.db.pending_digest_items()] == ["Pull request ready: Add a tool"]
     assert not gh.called("merge_pr")
     await j.http.aclose()
 
