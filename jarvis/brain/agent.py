@@ -37,15 +37,17 @@ class JarvisBrain:
         self._active: set[asyncio.Task] = set()
         self._repeats = RepeatDetector()
         self.tools = [t.definition() for t in TOOLS] + (SERVER_TOOLS if self.s.web_search_enabled else [])
+        self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
         self.refresh_system()
 
     # ------------------------------------------------------------------ setup
     def refresh_system(self) -> None:
         self.system = build_system(self.s, self.j.kb, self.j.db, self.j.connections(),
-                                   self.j.register.prompt_summary())
+                                   self.j.register.prompt_summary(), history_before_id=self._history_before)
 
     def reset(self) -> None:
         self.messages = []
+        self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
         self.j.bus.publish("conversation_reset", None)
 

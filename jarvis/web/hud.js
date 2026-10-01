@@ -1058,6 +1058,17 @@ function send(text, mode = "typed", opts = {}) {
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
     // the mic stream is NOT echo-cancelled, which switches barge-in off (see bargeInAllowed()).
     echoCancelled: null,
+    // Some recognisers (e.g. Chrome on Android) send each "final" as the whole utterance so far ("ladder",
+    // "ladder inspection", "ladder inspection jobs"). When a final just extends the previous one, replace it
+    // instead of stacking them, so only the final version of the utterance is submitted and stored.
+    lastFinal: "",
+    addFinal(text) {
+      const words = (s) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, "").split(/\s+/).filter(Boolean);
+      const prev = words(this.lastFinal), next = words(text), tail = this.lastFinal + " ";
+      if (prev.length && next.length >= prev.length && prev.every((w, i) => w === next[i]) && this.finals.endsWith(tail))
+        this.finals = this.finals.slice(0, this.finals.length - tail.length);
+      this.finals += text + " "; this.lastFinal = text;
+    },
     // Hands whatever final text has built up to utterance(). In wake mode the mic stays open for the next
     // wake phrase; in every other mode this is the end of the turn, so the mic closes rather than sitting on
     // "Listening…" with nothing ever submitted.
@@ -1134,7 +1145,7 @@ function send(text, mode = "typed", opts = {}) {
           if (e.results[i].isFinal) {
             if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
             filler.userSpeech();
-            this.finals += heard + " "; this.finalHeard();
+            this.addFinal(heard); this.finalHeard();
           } else if (!echoWindowOpen()) { interim += heard; filler.userSpeech(); }
         }
         caption(this.finals, interim);
@@ -1147,7 +1158,7 @@ function send(text, mode = "typed", opts = {}) {
         if (m.text) sttEngine.markGood("deepgram");
         // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
         if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
-        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
+        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.addFinal(m.text); if (S.listenMode !== "wake") this.finalHeard(); }
         caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
         if (m.speech_final && this.finals.trim()) this.commit();
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();

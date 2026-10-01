@@ -67,6 +67,7 @@ class Jarvis:
                  client=None):
         s = self.settings = settings
         self.db = db or Database(settings.db_path)
+        self.db.maintain_transcript()  # 2-year retention; older rows are redacted once
         self.bus = EventBus()
         self.http = http or httpx.AsyncClient(timeout=30, headers={"User-Agent": "salts-jarvis/1.0"})
         self.client = client or llm.make_client(settings)
