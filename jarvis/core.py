@@ -10,7 +10,7 @@ import httpx
 
 from .brain import llm, plugins
 from .brain.agent import JarvisBrain
-from .config import Settings
+from .config import Settings, apply_timezone
 from .db import Database
 from .events import EventBus
 from .humanize import cron_to_english
@@ -35,6 +35,7 @@ from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.false_alarms import FalseAlarmLog
+from .services.job_intake import JobIntake
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
 from .services.briefing import Briefings
@@ -69,6 +70,7 @@ class Jarvis:
     def __init__(self, settings: Settings, db: Database | None = None, http: httpx.AsyncClient | None = None,
                  client=None):
         s = self.settings = settings
+        apply_timezone(s.timezone)
         self.db = db or Database(settings.db_path)
         self.db.maintain_transcript()  # 2-year retention; older rows are redacted once
         self.bus = EventBus()
@@ -110,6 +112,8 @@ class Jarvis:
         self.actions.billing = self.billing
         self.actions.j = self
         self.po_intake = PoIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
+        # voicemail / call-transcript emails -> proposed jobs; each is queued for approval, never created directly
+        self.job_intake = JobIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
