@@ -13,6 +13,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/hud.css">
+  <link rel="stylesheet" href="/static/ask.css">
 </head>
 <body>
 <script>try{if(localStorage.getItem("jarvis.dashboard")==="1")document.body.classList.add("dash-open");}catch(e){}</script>
@@ -67,6 +68,7 @@
         <div>
           <div class="state" id="state">Online</div>
           <div class="caption" id="caption">Good to see you. Ask me anything, or tap the microphone.</div>
+          <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
           <div class="toolline" id="toolline"></div>
           <div class="quick" id="quick">
             <button class="chip-btn" data-q="Give me my briefing">Briefing</button>
@@ -88,6 +90,11 @@
         <div class="conversation" id="conversation"></div>
       </div>
       <div class="attachments" id="attachments"></div>
+      <div class="reply-hint" id="reply-hint" hidden>
+        <span class="rh-text" id="reply-hint-text"></span>
+        <kbd title="Press the right arrow key (caret at the end) to put this in the box - Enter still sends, Esc dismisses">→</kbd>
+        <button type="button" id="reply-hint-forget" title="Forget this learned reply" aria-label="Forget this learned reply">✕</button>
+      </div>
       <form class="composer" id="composer">
         <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach">📎</button>
         <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
@@ -161,6 +168,11 @@
         <option value="always">Always</option>
         <option value="off">Never</option>
       </select>
+      <label for="set-bargein" style="margin-top:14px">Talk over Jarvis (always-listening mode)</label>
+      <select id="set-bargein">
+        <option value="1">On - say "Jarvis…" to interrupt him</option>
+        <option value="0">Off - only "Jarvis, stop" interrupts (use this if he cuts himself off on speakers)</option>
+      </select>
       <label for="set-voice" style="margin-top:14px">Voice</label>
       <select id="set-voice"><option value="">Default (British)</option></select>
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px">
@@ -186,6 +198,7 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/ask.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

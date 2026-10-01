@@ -2,10 +2,13 @@
 and any LLM failure falls back to the original template text."""
 
 import asyncio
+from datetime import date, datetime, time
 
 from jarvis.brain import llm
 from jarvis.core import Jarvis
+from jarvis.integrations import fsm as fsm_module
 from jarvis.services import suggestions as sug
+from jarvis.services import tracking as tracking_module
 from tests.fakes import FakeClient
 
 
@@ -36,6 +39,18 @@ async def test_fallback_to_template_text_when_llm_output_unusable(settings):
 
 
 async def test_fallback_when_llm_call_raises_or_times_out(settings, monkeypatch):
+    # The demo FSM places engineers from the wall clock (positions drift every 5 minutes, job statuses follow the
+    # time of day), so "nearest engineer" for J24099 changed if the clock crossed a boundary between the two
+    # _candidates()/sweep() calls below. Pin the clock so the comparison is about wording fallback only.
+    frozen = datetime.combine(date.today(), time(10, 7))
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(fsm_module, "datetime", FrozenDateTime)
+    monkeypatch.setattr(tracking_module, "datetime", FrozenDateTime)
     j = make(settings)
     candidates = await j.suggestions._candidates()  # noqa: SLF001
 

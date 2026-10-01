@@ -27,7 +27,9 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ValidationError
 
+from . import plugins
 from .prompts import build_system
+from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
@@ -115,8 +117,9 @@ class MaxBrain:
         self._jobs: asyncio.Queue | None = None
         self._worker: asyncio.Task | None = None
         self._client = None
-        self._client_key: tuple[str, str] | None = None  # (effort, system prompt) the client was started with
+        self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
+        self._repeats = RepeatDetector()
         self.refresh_system()
 
     def refresh_system(self) -> None:
@@ -207,7 +210,8 @@ class MaxBrain:
 
     async def _connected(self, effort: str, model: str):
         """The running Claude Code client, restarted only if effort, model, instructions or the conversation changed."""
-        key = (effort, model, self.system)
+        extra = plugins.chat_setup(self.s)  # read-only browsing, only if switched on AND every safeguard is met
+        key = (effort, model, self.system, extra.signature)
         if self._client is not None and self._client_key == key and not self._fresh_start:
             return self._client
         from claude_agent_sdk import ClaudeSDKClient
@@ -215,11 +219,13 @@ class MaxBrain:
         await self._disconnect()
         if self._fresh_start:
             self.session_id, self._fresh_start = None, False
+        more: dict[str, Any] = {"hooks": extra.hooks()} if extra.guard is not None else {}
         options = base_options(
-            self.s, model=model, system_prompt=self.system, effort=effort,
-            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server},
-            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS, disallowed_tools=BLOCKED,
-            include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads))
+            self.s, model=model, system_prompt=self.system + extra.prompt, effort=effort,
+            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server, **extra.mcp_servers},
+            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS + extra.allowed_tools,
+            disallowed_tools=BLOCKED,
+            include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads), **more)
         started = time.monotonic()
         client = ClaudeSDKClient(options=options)
         await client.connect()
@@ -243,8 +249,9 @@ class MaxBrain:
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
+        repeat = repeat_note(self._repeats.check(text))
         files = self._save_attachments(attachments)
-        note = ("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
+        note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
         db.add_transcript("user", text)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode})
@@ -256,7 +263,7 @@ class MaxBrain:
         try:
             client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
                                            self.s.model_for(mode))
-            await client.query(f"{tag}\n{text}{note}")
+            await client.query(f"{tag}\n{repeat}{text}{note}")
             async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):
                     ev = msg.event or {}
@@ -312,11 +319,14 @@ class MaxBrain:
 async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]], effort: str = "medium",
                    tools: list[str] | None = None, disallowed_tools: list[str] | None = None,
                    output_schema: dict[str, Any] | None = None,
-                   max_turns: int = 10, cwd: str | None = None):
+                   max_turns: int = 10, cwd: str | None = None,
+                   mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None):
     """Single headless Claude Code run; returns the ResultMessage. `disallowed_tools` defaults to `BLOCKED`
     (no shell, no file writes) - pass `ENGINEER_BLOCKED` for a caller that puts Write/Edit in `tools` on
     purpose (an engineer loop confined to a throwaway Workspace checkout), otherwise those get silently
-    stripped anyway since disallowed_tools wins over allowed_tools."""
+    stripped anyway since disallowed_tools wins over allowed_tools. `mcp_servers` adds external MCP servers
+    (brain/plugins.py builds them pinned and read-only); only the tools named in `extra_allowed` can be called,
+    everything else they expose stays denied."""
     from claude_agent_sdk import ResultMessage, query
 
     tmp = None
@@ -345,6 +355,9 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                           "max_turns": max_turns}
     if output_schema:
         kw["output_format"] = {"type": "json_schema", "schema": output_schema}
+    if mcp_servers and extra_allowed:  # a server with nothing allowed would only add attack surface
+        kw["mcp_servers"] = mcp_servers
+        kw["allowed_tools"] = list(kw["allowed_tools"]) + list(extra_allowed)
     if cwd:
         kw["cwd"] = cwd
     result = None

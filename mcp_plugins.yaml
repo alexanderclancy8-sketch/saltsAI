@@ -1,0 +1,65 @@
+# Launch specs for Jarvis's optional MCP / plugin integrations. Reviewed by a human, changed only by pull request.
+#
+# The on/off switches live on the Settings page ("Plugins and MCP tools"), not here. This file says WHAT each
+# plugin is allowed to be and to reach. jarvis/brain/plugins.py reads it and refuses to start anything that is:
+#   - not pinned to an EXACT version (x.y.z) - "latest", ranges and blanks are all refused,
+#   - launched with a command other than npx or uvx,
+#   - (Browser Use / ThoughtProof) missing the extra safety fields marked REQUIRED below.
+#
+# NOTHING HERE HAS BEEN VERIFIED AGAINST npm / PyPI. Every `version` is deliberately blank: whoever turns a
+# plugin on must look up the current release, read its changelog, put the exact version here and commit it.
+# Until then the plugin is inert (Settings shows it as "on, but not active") - it never floats to "latest".
+#
+# Needs: `npx` (Node) or `uvx` (uv) on the PATH of the machine Jarvis runs on. The shipped Dockerfile
+# (python:3.12-slim) has neither, so on Azure App Service these will not start until the image is extended.
+# That is reported, not silently ignored.
+#
+# Servers are started with an EMPTY extra environment: no Jarvis settings, tokens or company credentials are
+# handed to them.
+
+context7:
+  # Engineering agent only (self_improve / issue_fix), Max (Claude Agent SDK) backend only.
+  # Reads current, version-specific library documentation. Read-only: it has no write tools.
+  scope: engineering
+  command: npx
+  package: "@upstash/context7-mcp"
+  version: ""                      # PIN ME: exact x.y.z from npm
+  args: ["-y", "{spec}"]           # {spec} becomes package@version
+  server_name: context7
+  # Exactly these tools may be called; everything else the server might expose is denied.
+  # Tool names are from memory of Context7's docs and unverified - a wrong name just means the tool is unusable.
+  tools: ["resolve-library-id", "get-library-docs", "query-docs"]
+  # What it can reach: Context7's hosted documentation index over the internet (library names and the question
+  # asked are sent to it). It has no access to the repository checkout, Jarvis's data or any credential.
+
+browser_use:
+  # Conversational Jarvis only, Max backend only. READ-ONLY browsing; see jarvis/brain/plugins.py for the guard.
+  scope: chat
+  command: uvx
+  package: "browser-use"
+  version: ""                      # PIN ME: exact x.y.z from PyPI
+  args: ["--from", "{spec}", "browser-use", "--mcp"]   # unverified invocation - check against the pinned release
+  server_name: browser_use
+  # REQUIRED. Only these tools are exposed, and only these can ever be called. List navigation/reading tools ONLY
+  # (open a URL, read page text, screenshot). Never list click / type / fill / submit / select / script / upload
+  # tools: a click can submit a form, so anything that can change a page is not "reading". Blank = inert.
+  readonly_tools: []
+  # REQUIRED. Set to true only once a human has confirmed the browser runs in a throwaway, credential-free
+  # container/profile (no saved logins, cookies or company SSO) with its own network allowlist as a second wall.
+  sandbox_confirmed: false
+  # Hostnames containing any of these words are refused even if someone adds them to the allowed domains.
+  blocked_host_keywords: [sage, bank, barclays, lloyds, hsbc, natwest, santander, monzo, starling, xero, quickbooks,
+                          paypal, stripe, gocardless, payroll, salts-fsm, sharepoint, onedrive, outlook, office365]
+  max_url_length: 2048
+
+thoughtproof:
+  # A local MCP server that judges a proposed action against the written mandates in mandates.yaml and answers
+  # ALLOW or BLOCK. Runs as a child process on the same machine; nothing is sent anywhere by Jarvis except to it.
+  command: npx
+  package: ""                      # REQUIRED: the ThoughtProof MCP package. Unverified - confirm the name first.
+  version: ""                      # PIN ME: exact x.y.z
+  args: ["-y", "{spec}"]
+  tool: ""                         # REQUIRED: name of its verify tool
+  action_arg: "action"             # argument that receives the JSON description of the proposed action
+  mandates_arg: "mandates"         # argument that receives the mandate rules from mandates.yaml
+  timeout_s: 20
