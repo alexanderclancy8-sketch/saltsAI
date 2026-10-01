@@ -9,9 +9,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from . import history
+
+TRANSCRIPT_REDACTED_KEY = "transcript:redacted_v1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS issues (
@@ -40,6 +44,28 @@ CREATE TABLE IF NOT EXISTS notifications (
     title TEXT NOT NULL,
     body TEXT DEFAULT '',
     read INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS digest_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    link TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    ref TEXT DEFAULT '',
+    level TEXT DEFAULT 'info',
+    delivery TEXT NOT NULL DEFAULT 'digest',
+    digested_at TEXT DEFAULT '',
+    digest_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    item_count INTEGER DEFAULT 0,
+    text TEXT NOT NULL,
+    delivered TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS test_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,7 +196,28 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT NOT NULL,
     markdown TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS false_alarm_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    job_ref TEXT NOT NULL UNIQUE,
+    site TEXT NOT NULL,
+    system TEXT DEFAULT '',
+    event_date TEXT DEFAULT '',
+    cause_category TEXT DEFAULT '',
+    cause TEXT DEFAULT '',
+    corrective_action TEXT DEFAULT '',
+    action_done_date TEXT DEFAULT '',
+    evidence_ref TEXT DEFAULT '',
+    investigated_by TEXT DEFAULT '',
+    reviewed_by TEXT DEFAULT '',
+    review_date TEXT DEFAULT ''
+);
 """
+
+# Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).
+FALSE_ALARM_FIELDS = ("system", "event_date", "cause_category", "cause", "corrective_action", "action_done_date",
+                      "evidence_ref", "investigated_by", "reviewed_by", "review_date")
 
 
 def now_iso() -> str:
@@ -246,6 +293,42 @@ class Database:
     def recent_notifications(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,))
 
+    # -- weekly digest store ----------------------------------------------------
+    # `delivery` is how the notice itself was handled: 'digest' (held for the weekly summary) or 'immediate'
+    # (already sent straight away, kept only so the summary is complete).
+    def add_digest_item(self, kind: str, title: str, body: str = "", link: str = "", status: str = "",
+                        ref: str = "", level: str = "info", delivery: str = "digest") -> int:
+        return self.execute(
+            "INSERT INTO digest_items (created_at, kind, title, body, link, status, ref, level, delivery)"
+            " VALUES (?,?,?,?,?,?,?,?,?)", (now_iso(), kind, title, body, link, status, ref, level, delivery))
+
+    def pending_digest_items(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM digest_items WHERE digested_at = '' ORDER BY id")
+
+    def digest_items_by_kind(self, kinds: list[str] | tuple[str, ...] | set[str]) -> list[dict[str, Any]]:
+        kinds = list(kinds)
+        if not kinds:
+            return []
+        marks = ",".join("?" for _ in kinds)
+        return self.query(f"SELECT * FROM digest_items WHERE kind IN ({marks}) ORDER BY id", tuple(kinds))
+
+    def mark_digested(self, item_ids: list[int], digest_id: int) -> None:
+        if not item_ids:
+            return
+        marks = ",".join("?" for _ in item_ids)
+        self.execute(f"UPDATE digest_items SET digested_at = ?, digest_id = ? WHERE id IN ({marks})"
+                     f" AND digested_at = ''", (now_iso(), digest_id, *item_ids))
+
+    def add_digest(self, source: str, item_count: int, text: str, delivered: str = "") -> int:
+        return self.execute("INSERT INTO digests (created_at, source, item_count, text, delivered) VALUES (?,?,?,?,?)",
+                            (now_iso(), source, item_count, text, delivered))
+
+    def list_digests(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM digests ORDER BY id DESC LIMIT ?", (limit,))
+
+    def get_digest(self, digest_id: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM digests WHERE id = ?", (digest_id,))
+
     # -- routine test runs ------------------------------------------------------
     def add_test_run(self, suite: str, name: str, ok: bool, detail: str, duration_ms: int) -> None:
         self.execute("INSERT INTO test_runs (created_at, suite, name, ok, detail, duration_ms) VALUES (?,?,?,?,?,?)",
@@ -261,14 +344,27 @@ class Database:
                               (suite, name))
 
     # -- memory -------------------------------------------------------------------
-    def remember(self, fact: str) -> int:
-        """Stores a fact; saying the same thing twice (the nightly reflection often re-discovers a preference)
-        returns the existing memory's id instead of growing the system prompt with a duplicate."""
-        fact = fact.strip()
-        key = " ".join(fact.lower().split())
+    @staticmethod
+    def _memory_key(fact: str) -> str:
+        """Comparison form for spotting a fact that is already remembered: case, spacing and a trailing full stop
+        don't make it a different fact."""
+        return " ".join(fact.split()).lower().rstrip(".").strip()
+
+    def find_memory(self, fact: str) -> int | None:
+        """Id of an already-remembered fact that says the same thing as `fact`, if any."""
+        key = self._memory_key(fact)
         for m in self.memories():
-            if " ".join(m["fact"].lower().split()) == key:
+            if self._memory_key(m["fact"]) == key:
                 return m["id"]
+        return None
+
+    def remember(self, fact: str) -> int:
+        """Stores a fact and returns its id - or, if the same fact is already remembered, returns the existing id
+        without adding a duplicate (the scheduled self-reflection can easily re-learn something it already knows)."""
+        fact = fact.strip()
+        existing = self.find_memory(fact)
+        if existing is not None:
+            return existing
         return self.execute("INSERT INTO memory (created_at, fact) VALUES (?,?)", (now_iso(), fact))
 
     def forget(self, memory_id: int) -> None:
@@ -338,10 +434,52 @@ class Database:
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:
+        """Store one turn, redacted (credentials and access codes never reach the table). For the owner's words,
+        cumulative speech-to-text partials are collapsed, and a longer version of the immediately preceding
+        unanswered line replaces it - so only the final version of an utterance is kept."""
+        text = history.redact_history(text)
+        if role == "user":
+            text = history.collapse_cumulative(text)
+            last = self.query_one("SELECT id, role, text, created_at FROM transcript ORDER BY id DESC LIMIT 1")
+            if last and last["role"] == "user" and history.is_partial_of(last["text"], text):
+                try:
+                    age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+                except ValueError:
+                    age = history.PARTIAL_WINDOW_S + 1
+                if age <= history.PARTIAL_WINDOW_S:
+                    self.execute("UPDATE transcript SET text = ? WHERE id = ?", (text, last["id"]))
+                    return
         self.execute("INSERT INTO transcript (created_at, role, text) VALUES (?,?,?)", (now_iso(), role, text))
 
     def recent_transcript(self, limit: int = 30) -> list[dict[str, Any]]:
         return list(reversed(self.query("SELECT * FROM transcript ORDER BY id DESC LIMIT ?", (limit,))))
+
+    def last_transcript_id(self) -> int:
+        return (self.query_one("SELECT MAX(id) AS m FROM transcript") or {}).get("m") or 0
+
+    def transcript_since(self, since_iso: str, before_id: int | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """The latest ``limit`` turns created at or after ``since_iso`` (optionally only ids <= ``before_id``),
+        oldest first."""
+        if before_id is None:
+            rows = self.query("SELECT * FROM transcript WHERE created_at >= ? ORDER BY id DESC LIMIT ?",
+                              (since_iso, limit))
+        else:
+            rows = self.query("SELECT * FROM transcript WHERE created_at >= ? AND id <= ? ORDER BY id DESC LIMIT ?",
+                              (since_iso, before_id, limit))
+        return list(reversed(rows))
+
+    def maintain_transcript(self) -> None:
+        """Retention: drop turns older than the agreed 2 years, and (once) redact rows written before redaction
+        at rest existed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=history.RETENTION_DAYS)).isoformat(timespec="seconds")
+        self.execute("DELETE FROM transcript WHERE created_at < ?", (cutoff,))
+        if self.get_kv(TRANSCRIPT_REDACTED_KEY):
+            return
+        for row in self.query("SELECT id, text FROM transcript"):
+            clean = history.redact_history(row["text"])
+            if clean != row["text"]:
+                self.execute("UPDATE transcript SET text = ? WHERE id = ?", (clean, row["id"]))
+        self.set_kv(TRANSCRIPT_REDACTED_KEY, now_iso())
 
     # -- tracked metrics (followers, reviews, rankings) ----------------------------------
     def record_metric(self, day: str, source: str, metric: str, value: float) -> None:
@@ -418,6 +556,35 @@ class Database:
 
     def delete_site_access_code(self, record_id: int) -> None:
         self.execute("DELETE FROM site_access_codes WHERE id = ?", (record_id,))
+
+    # -- false alarm log (BS 5839-1: log, investigate, review, evidence corrective action) --------------
+    def get_false_alarm_record(self, job_ref: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM false_alarm_log WHERE job_ref = ?", (job_ref,))
+
+    def list_false_alarm_records(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM false_alarm_log ORDER BY event_date, id")
+
+    def upsert_false_alarm_record(self, job_ref: str, site: str, **fields: str) -> dict[str, Any]:
+        """Create the record for a job, or update it. On update only non-empty values overwrite, so adding the
+        review later never blanks the cause that was recorded earlier."""
+        unknown = set(fields) - set(FALSE_ALARM_FIELDS)
+        if unknown:
+            raise ValueError(f"Unknown false alarm log field(s): {', '.join(sorted(unknown))}")
+        values = {k: str(v).strip() for k, v in fields.items() if v is not None and str(v).strip()}
+        ts = now_iso()
+        if self.get_false_alarm_record(job_ref):
+            if site:
+                values["site"] = site
+            if values:
+                values["updated_at"] = ts
+                cols = ", ".join(f"{k} = ?" for k in values)
+                self.execute(f"UPDATE false_alarm_log SET {cols} WHERE job_ref = ?", (*values.values(), job_ref))
+        else:
+            row = {"created_at": ts, "updated_at": ts, "job_ref": job_ref, "site": site, **values}
+            cols = ", ".join(row)
+            marks = ", ".join("?" for _ in row)
+            self.execute(f"INSERT INTO false_alarm_log ({cols}) VALUES ({marks})", tuple(row.values()))
+        return self.get_false_alarm_record(job_ref) or {}
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:

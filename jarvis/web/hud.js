@@ -8,7 +8,7 @@
     set(k, v) { try { localStorage.setItem("jarvis." + k, v); } catch { /* private mode */ } },
   };
   const S = {
-    status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB", ack_fillers: true },
+    status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB", ack_fillers: true, silence_ms: 1200 },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
@@ -20,6 +20,9 @@
     // place; the owner can switch it off in Settings if it misfires on speakers. See bargeInAllowed().
     bargeIn: store.get("bargein", "1") !== "0", captureUntil: 0,
     dashOpen: store.get("dashboard", "0") === "1",
+    // Per-session mute for Jarvis-initiated messages (sessionStorage, so another tab or a fresh visit starts unmuted).
+    // The server is told too (sendProactiveMute), so a muted session isn't sent them at all.
+    proactiveMuted: (() => { try { return sessionStorage.getItem("jarvis.pmute") === "1"; } catch { return false; } })(),
   };
 
   // ------------------------------------------------------------------ helpers
@@ -138,7 +141,8 @@
     // A turn just started - don't let a sleep check meant for the *previous* lull fire part-way through it.
     if (state === "thinking") clearTimeout(sleepTimer);
   }
-  function caption(text, interim = "") { $("#caption").innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
+  function caption(text, interim = "") { const el = $("#caption"); el.classList.remove("error"); el.innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
+  function captionError(text) { caption(text); $("#caption").classList.add("error"); }
 
   // ------------------------------------------------------------------ dashboard reveal (orb-first HUD)
   // Idle view is just the orb, caption and composer - the three panel columns and the conversation
@@ -337,6 +341,10 @@
 
   function say(text) { if (S.speakPref !== "off") { speaker.feed(text + " "); speaker.flush(); } }
 
+  // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
+  // as ordinary chat text - never through decide()/the approvals path.
+  window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode), mode: () => S.lastMode });
+
   // ------------------------------------------------------------------ self-echo guard
   // Without headphones the mic hears Jarvis's own voice. Nothing heard while he's talking, or in the short tail
   // after, may ever be treated as the owner asking something - so every recognised transcript goes through
@@ -344,8 +352,51 @@
   const ECHO_TAIL_MS = 2500;      // how long past the end of speech the mic might still be hearing its tail
   const RECENT_TTS_MS = 60000;    // how long we remember what we said
   const RECENT_MATCH_MS = 20000;  // outside the echo window, only compare against very recent speech
-  const PTT_SILENCE_MS = 1200;    // push-to-talk: this long after the last final result counts as end of speech
+  const PTT_SILENCE_MS = 1200;    // push-to-talk: default for how long after the last final result counts as end of speech
   const normWords = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+
+  // ------------------------------------------------------------------ end-of-turn tolerance
+  // The silence that ends a push-to-talk turn is the `voice_silence_ms` setting (S.voice.silence_ms), clamped to a
+  // sane range, and a little longer when the owner has clearly not finished: the last words are a filler/connective
+  // ("and", "so", "um"...) or the text ends on a comma / ellipsis. Only affects how long stt.finalHeard() waits.
+  const SILENCE_MIN_MS = 600, SILENCE_MAX_MS = 5000;
+  const TRAILING_EXTRA_MS = 1200;
+  const TRAILING_FILLERS = new Set(["and", "so", "um", "uh", "er", "erm", "but", "or", "then", "because", "like", "also", "plus", "well"]);
+  function endOfTurnMs(text) {
+    const configured = Number(S.voice.silence_ms);
+    const base = Math.min(SILENCE_MAX_MS, Math.max(SILENCE_MIN_MS, Number.isFinite(configured) && configured > 0 ? configured : PTT_SILENCE_MS));
+    const words = normWords(text);
+    const unfinished = TRAILING_FILLERS.has(words[words.length - 1]) || /(,|…|\.\.\.)\s*$/.test(String(text || "").trim());
+    return base + (unfinished ? TRAILING_EXTRA_MS : 0);
+  }
+
+  // ------------------------------------------------------------------ fuzzy echo match
+  // Speech-to-text often garbles Jarvis's own voice coming back in, so an exact-substring match misses it. Anything
+  // that is a close fuzzy match (word-overlap Dice similarity over the best-aligned stretch) for what Jarvis said in
+  // the last ECHO_SIMILAR_MS is dropped. Needs ECHO_MIN_WORDS words so a bare "yes"/"go on" is never treated as echo.
+  const ECHO_SIMILAR_MS = 10000;
+  const ECHO_SIMILARITY = 0.8;
+  const ECHO_MIN_WORDS = 3;
+  const wordCounts = (words) => { const m = new Map(); words.forEach((w) => m.set(w, (m.get(w) || 0) + 1)); return m; };
+  function windowSimilarity(heard, said) {
+    if (!heard.length || !said.length) return 0;
+    const n = Math.min(heard.length, said.length);
+    const hc = wordCounts(heard);
+    let best = 0;
+    for (let i = 0; i + n <= said.length; i++) {
+      const wc = wordCounts(said.slice(i, i + n));
+      let overlap = 0;
+      hc.forEach((c, w) => { overlap += Math.min(c, wc.get(w) || 0); });
+      best = Math.max(best, (2 * overlap) / (heard.length + n));
+    }
+    return best;
+  }
+  function similarToRecentReply(words) {
+    if (words.length < ECHO_MIN_WORDS) return false;
+    const now = Date.now();
+    const said = speaker.recent.filter((r) => now - r.at < ECHO_SIMILAR_MS).flatMap((r) => normWords(r.text));
+    return windowSimilarity(words, said) >= ECHO_SIMILARITY;
+  }
   const echoWindowOpen = () => speaker.active || speaker.browserSpeaking || Date.now() - speaker.lastSpokeAt < ECHO_TAIL_MS;
 
   // ------------------------------------------------------------------ barge-in
@@ -419,6 +470,7 @@
     if (!content.length) return false;
     // A short, explicit "stop"/"quiet" is always allowed through - that's how the owner interrupts.
     if (content.length <= 4 && STOP_PHRASE_TEST_RE.test(content.join(" "))) return false;
+    if (similarToRecentReply(content)) return true; // a close (fuzzy) copy of what Jarvis said in the last ~10s
     const inWindow = echoWindowOpen();
     const now = Date.now();
     const recent = speaker.recent.filter((r) => now - r.at < (inWindow ? RECENT_TTS_MS : RECENT_MATCH_MS));
@@ -542,6 +594,9 @@ function send(text, mode = "typed", opts = {}) {
   if (opts === true) opts = { spoken: true };
   const spoken = !!opts.spoken;
     text = text.trim();
+    // A spoken reply while a question prompt is open: map "the second one" to that option, anything else stays as
+    // free speech ("Other"). The prompt's own click/typed answers pass opts.ask and are sent exactly as given.
+    if (mode === "voice" && !opts.ask && window.JarvisAsk) text = window.JarvisAsk.spokenReply(text);
     if (!text && !S.attachments.length) return;
     S.lastMode = mode;
     S.voiceTurn = false; // only utterance() marks a turn as a spoken one, after this returns
@@ -671,9 +726,39 @@ function send(text, mode = "typed", opts = {}) {
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     S.ws = ws;
+    ws.onopen = () => sendProactiveMute();
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onclose = (e) => { if (e.code === 4401) { location.href = "/login"; return; } setTimeout(connect, 2500); };
     setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" })); }, 25000);
+  }
+
+  // ------------------------------------------------------------------ Jarvis speaking up on his own
+  function sendProactiveMute() {
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "proactive_mute", muted: S.proactiveMuted }));
+  }
+  function renderProactiveMute() {
+    const b = $("#btn-proactive-mute");
+    if (!b) return;
+    b.setAttribute("aria-pressed", S.proactiveMuted ? "true" : "false");
+    b.textContent = S.proactiveMuted ? "🔕 Muted" : "🔔 Speaks up";
+    b.title = S.proactiveMuted ? "Jarvis won't post into this session by himself - click to allow it again"
+                                : "Mute Jarvis posting into this session by himself";
+  }
+  $("#btn-proactive-mute")?.addEventListener("click", () => {
+    S.proactiveMuted = !S.proactiveMuted;
+    try { sessionStorage.setItem("jarvis.pmute", S.proactiveMuted ? "1" : "0"); } catch { /* private mode */ }
+    renderProactiveMute(); sendProactiveMute();
+  });
+  renderProactiveMute();
+  // Read aloud only in a voice session, only when nothing else is happening, and never while the owner is typing.
+  // A message that can't be spoken right now is shown, not queued - Jarvis never talks over anyone.
+  const proactiveMaySpeak = () => S.lastMode === "voice" && shouldSpeak("voice") && S.hudState === "idle" && !speaker.active
+    && !S.voiceTurn && !$("#input").value.trim() && !filler.inFlight();
+  function proactive(d) {
+    if (S.proactiveMuted) return; // the server doesn't send these to a muted session; this is only a safety net
+    addMessage("assistant", d.text, "on my own").classList.add("proactive");
+    caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
+    if (d.speak && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280));
   }
 
   let toolsSeen = [];
@@ -684,6 +769,7 @@ function send(text, mode = "typed", opts = {}) {
     const d = ev.data;
     switch (ev.type) {
       case "user_message":
+        window.JarvisAsk?.close(); // any new message (typed, spoken, from another tab) answers/supersedes an open question
         addMessage("user", d.text + (d.attachments?.length ? `\n📎 ${d.attachments.join(", ")}` : ""), d.mode === "voice" ? "spoken" : "");
         S.lastMode = d.mode;
         break;
@@ -739,16 +825,18 @@ function send(text, mode = "typed", opts = {}) {
         toast(d.title, d.body, d.level);
         refreshSoon();
         break;
+      case "proactive": proactive(d); break; // Jarvis-initiated message: appears in the chat, may be read aloud
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
       case "display": openDisplay(d.title, d.markdown, d.doc_id); break;
+      case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; renderApprovals(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
-      case "conversation_reset": filler.end(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
+      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
       case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
@@ -767,6 +855,7 @@ function send(text, mode = "typed", opts = {}) {
     if (docId && /^[0-9a-f]{32}$/.test(docId)) {
       $("#display-pdf").href = `/api/documents/${docId}/pdf`;
       $("#display-docx").href = `/api/documents/${docId}/docx`;
+      $("#display-xlsx").href = `/api/documents/${docId}/xlsx`;
       dl.hidden = false;
     } else {
       dl.hidden = true;
@@ -781,7 +870,7 @@ function send(text, mode = "typed", opts = {}) {
   async function refresh() {
     try {
       const st = await (await api("/api/status")).json();
-      S.status = st; S.voice = st.voice || S.voice; S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
+      S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
@@ -809,7 +898,8 @@ function send(text, mode = "typed", opts = {}) {
     $("#issues").innerHTML = issues.length ? issues.slice(0, 8).map((i) => {
       const cls = ["critical", "high"].includes(i.severity) ? "bad" : i.status === "fix_ready" ? "ok" : "warn";
       const pr = i.fix_pr_url ? ` · <a href="${esc(i.fix_pr_url)}" target="_blank" rel="noopener">PR</a>` : "";
-      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))} · ${esc(i.severity)}${pr}</span></li>`;
+      // severity is already shown by the row's accent colour - naming it again in text was noise.
+      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span></li>`;
     }).join("") : `<li class="empty">No open issues.</li>`;
   }
 
@@ -817,7 +907,7 @@ function send(text, mode = "typed", opts = {}) {
     const failing = tests.filter((t) => !t.ok);
     $("#tests-count").textContent = tests.length ? `${tests.length - failing.length}/${tests.length} passing` : "";
     const rows = [...failing, ...tests.filter((t) => t.ok)].slice(0, 10);
-    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}"><span class="dot ${t.ok ? "ok" : "bad"}"></span>${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
+    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}">${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
       : `<li class="empty">No results yet.</li>`;
   }
 
@@ -888,7 +978,9 @@ function send(text, mode = "typed", opts = {}) {
     const list = S.suggestions || [];
     $("#suggestions-panel").hidden = !list.length;
     $("#suggestions-count").textContent = list.length ? String(list.length) : "";
-    $("#suggestions").innerHTML = list.map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
+    // Every other panel caps what it shows at once (issues 8, notifications 6) - suggestions didn't,
+    // so a busy day's list of full-width action cards could bury COMMS/ISSUES/TESTS below the fold.
+    $("#suggestions").innerHTML = list.slice(0, 4).map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
       ${s.detail ? `<span class="sub">${esc(s.detail)}</span>` : ""}
       <div class="row"><button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button></div></div>`).join("");
     updateOrbBadge();
@@ -922,7 +1014,10 @@ function send(text, mode = "typed", opts = {}) {
     }
     if (!map) {
       map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.83, -1.78], 10);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© OpenStreetMap, © CARTO", maxZoom: 18 }).addTo(map);
+      // CARTO's basemaps now require a signed-up API key and render an "API KEY REQUIRED" watermark
+      // without one - Esri's dark canvas is free, keyless, and still matches the dark theme.
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxZoom: 16 }).addTo(map);
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
@@ -940,11 +1035,75 @@ function send(text, mode = "typed", opts = {}) {
 
   // ------------------------------------------------------------------ speech input
   const mic = $("#btn-mic");
+  // Smallest recording worth sending to speech-to-text: anything below is just container headers / a mic click.
+  const MIN_AUDIO_BYTES = 1000;
+  // First container the browser can actually record, preferring webm/opus (Chrome/Firefox/Edge) and falling back
+  // to mp4 (Safari/iOS). "" means let the browser choose its own default.
+  function pickRecorderMime() {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
+    return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  }
+  // File extension for the upload - Whisper decides the audio format from the filename, so it must match the data.
+  function audioExtension(type) {
+    const t = String(type || "").toLowerCase();
+    return t.includes("mp4") || t.includes("m4a") || t.includes("aac") ? "mp4"
+      : t.includes("ogg") ? "ogg" : t.includes("wav") ? "wav" : t.includes("mpeg") || t.includes("mp3") ? "mp3" : "webm";
+  }
+  // Speech-to-text engine choice and fallback. The server publishes the order in voice.stt_chain (selected engine
+  // first, then Deepgram, Whisper, and browser speech recognition last - jarvis/integrations/stt_chain.py). This
+  // object remembers which engine last worked (per browser, preferred for STT_GOOD_TTL_MS so the selected engine
+  // is retried now and then) and which just failed (skipped for STT_COOLDOWN_MS so every press of the mic doesn't
+  // wait on a broken engine). Browser speech recognition is never "remembered": it's the last resort, not a goal.
+  const STT_LABEL = { deepgram: "Deepgram", whisper: "OpenAI Whisper", browser: "Browser speech recognition" };
+  const STT_TIMEOUT_MS = 10000;      // one transcription request never waits longer than this
+  const STT_TOTAL_MS = 25000;        // and the whole retry + fallback sequence stops starting new attempts after this
+  const STT_COOLDOWN_MS = 5 * 60000;
+  const STT_GOOD_TTL_MS = 12 * 3600000;
+  const sttEngine = {
+    failed: {}, good: "",
+    chain() {
+      const selected = S.voice.stt;
+      let order = Array.isArray(S.voice.stt_chain) && S.voice.stt_chain.length ? S.voice.stt_chain.slice() : [selected];
+      const [forSelected, good, at] = String(store.get("stt_good", "")).split(":");
+      if (forSelected === selected && good && good !== "browser" && order.includes(good) && Date.now() - Number(at) < STT_GOOD_TTL_MS) {
+        order = [good, ...order.filter((e) => e !== good)];
+      }
+      const usable = order.filter((e) => e === "browser" || !(this.failed[e] > Date.now() - STT_COOLDOWN_MS));
+      return usable.length ? usable : order;
+    },
+    next() { return this.chain()[0] || "browser"; },
+    markFailed(engine) { if (engine !== "browser") this.failed[engine] = Date.now(); },
+    markGood(engine) {
+      delete this.failed[engine];
+      const value = `${S.voice.stt}:${engine}`;
+      if (engine === "browser" || this.good === value) return; // nothing new to remember (live streams call this per result)
+      this.good = value;
+      store.set("stt_good", `${value}:${Date.now()}`);
+    },
+  };
+  // Says which engine voice input is using right now (and why it changed), so a silent fallback is never a mystery.
+  function showSttEngine(engine, note = "", warn = false) {
+    const el = $("#stt-engine"); if (!el) return;
+    el.hidden = false; el.classList.toggle("warn", warn);
+    el.textContent = `Voice input: ${STT_LABEL[engine] || engine}${note ? ` - ${note}` : ""}`;
+  }
   const stt = {
-    on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
+    mode: null, lastError: "", on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
     // the mic stream is NOT echo-cancelled, which switches barge-in off (see bargeInAllowed()).
     echoCancelled: null,
+    // Some recognisers (e.g. Chrome on Android) send each "final" as the whole utterance so far ("ladder",
+    // "ladder inspection", "ladder inspection jobs"). When a final just extends the previous one, replace it
+    // instead of stacking them, so only the final version of the utterance is submitted and stored.
+    lastFinal: "",
+    addFinal(text) {
+      const words = (s) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, "").split(/\s+/).filter(Boolean);
+      const prev = words(this.lastFinal), next = words(text), tail = this.lastFinal + " ";
+      if (prev.length && next.length >= prev.length && prev.every((w, i) => w === next[i]) && this.finals.endsWith(tail))
+        this.finals = this.finals.slice(0, this.finals.length - tail.length);
+      this.finals += text + " "; this.lastFinal = text;
+    },
     // Hands whatever final text has built up to utterance(). In wake mode the mic stays open for the next
     // wake phrase; in every other mode this is the end of the turn, so the mic closes rather than sitting on
     // "Listening…" with nothing ever submitted.
@@ -958,7 +1117,7 @@ function send(text, mode = "typed", opts = {}) {
     finalHeard() {
       if (S.listenMode === "wake") { this.commit(); return; }
       clearTimeout(this.silenceTimer);
-      this.silenceTimer = setTimeout(() => this.commit(), PTT_SILENCE_MS);
+      this.silenceTimer = setTimeout(() => this.commit(), endOfTurnMs(this.finals));
     },
     // keepSpeaking: the mic is being opened in the background (follow-up window, reconnect) rather than by the owner
     // pressing the mic - so it must not cut Jarvis off or overwrite the thinking/speaking display. Without it,
@@ -970,24 +1129,33 @@ function send(text, mode = "typed", opts = {}) {
       if (!keepSpeaking) speaker.stop();
       this.on = true; this.finals = ""; mic.classList.add("on");
       if (!keepSpeaking) { setHud("listening"); caption("", "Listening…"); }
-      const mode = S.voice.stt;
+      // Not simply S.voice.stt: skips an engine that just failed and prefers the one that last worked.
+      const mode = sttEngine.next(); this.mode = mode;
+      showSttEngine(mode, mode !== S.voice.stt ? "switched automatically" : "");
       try {
         if (mode === "browser") return this.startBrowser();
         this.stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
         this.echoCancelled = (this.stream.getAudioTracks()[0]?.getSettings?.() || {}).echoCancellation !== false;
         if (!this.echoCancelled && S.bargeIn) toast("Barge-in off for now", "This microphone can't cancel echo, so talking over Jarvis is disabled. \"Jarvis, stop\" still works.", "warning");
-        const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/mp4";
-        this.rec = new MediaRecorder(this.stream, { mimeType: mime });
+        const picked = pickRecorderMime();
+        this.rec = picked ? new MediaRecorder(this.stream, { mimeType: picked }) : new MediaRecorder(this.stream);
+        const mime = this.rec.mimeType || picked || "audio/webm";
+        console.info("[stt] recording", { mode, requested: picked || "(browser default)", actual: mime });
         if (mode === "deepgram") {
           this.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/stt`);
           this.ws.onmessage = (e) => this.onDeepgram(JSON.parse(e.data));
+          this.ws.onerror = () => this.liveFailed("Couldn't connect to the Deepgram stream.");
           this.ws.onopen = () => { this.rec.ondataavailable = (e) => { if (e.data.size && this.ws.readyState === 1) this.ws.send(e.data); }; this.rec.start(250); };
           this.ws.onclose = () => { if (this.on && S.listenMode === "wake") setTimeout(() => { this.stop(false); this.start({ keepSpeaking: true }); }, 1000); };
         } else {
           this.chunks = [];
-          this.rec.ondataavailable = (e) => this.chunks.push(e.data);
-          this.rec.onstop = () => this.transcribeChunks(mime);
-          this.rec.start();
+          const rec = this.rec, stream = this.stream;
+          rec.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
+          rec.onerror = (e) => { console.warn("[stt] MediaRecorder error", e); toast("Recording failed", (e.error && e.error.message) || "The microphone recording stopped unexpectedly.", "warning"); };
+          // The mic is released here, not in stop(): the final chunk arrives just before "stop", and cutting the
+          // tracks first can truncate it (or lose it entirely on Safari).
+          rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); this.transcribeChunks(mime, mode); };
+          rec.start();
         }
       } catch (e) {
         toast("Microphone unavailable", e.message || "Allow microphone access in the browser.", "warning");
@@ -996,7 +1164,13 @@ function send(text, mode = "typed", opts = {}) {
     },
     startBrowser() {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) { toast("Voice input not supported", "Use Chrome or Edge, or connect Deepgram.", "warning"); this.stop(false); return; }
+      if (!SR) {
+        toast("Voice input not supported", "Use Chrome or Edge, or connect Deepgram.", "warning");
+        captionError(this.lastError ? `Voice input failed: ${this.lastError} This browser has no built-in speech recognition to fall back on - type your message instead.`
+          : "Voice input isn't supported in this browser - type your message instead.");
+        showSttEngine("browser", "not available in this browser", true);
+        this.stop(false); return;
+      }
       const r = new SR(); this.recognition = r;
       r.lang = S.voice.language || "en-GB"; r.continuous = true; r.interimResults = true;
       r.onresult = (e) => {
@@ -1006,7 +1180,7 @@ function send(text, mode = "typed", opts = {}) {
           if (e.results[i].isFinal) {
             if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
             filler.userSpeech();
-            this.finals += heard + " "; this.finalHeard();
+            this.addFinal(heard); this.finalHeard();
           } else if (!echoWindowOpen()) { interim += heard; filler.userSpeech(); }
         }
         caption(this.finals, interim);
@@ -1016,34 +1190,114 @@ function send(text, mode = "typed", opts = {}) {
     },
     onDeepgram(m) {
       if (m.type === "transcript") {
+        if (m.text) sttEngine.markGood("deepgram");
         // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
         if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
-        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
+        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.addFinal(m.text); if (S.listenMode !== "wake") this.finalHeard(); }
         caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
         if (m.speech_final && this.finals.trim()) this.commit();
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();
       else if (m.type === "speech_started" && speaker.active && S.listenMode === "wake") { /* barge-in handled on words */ }
       else if (m.type === "speech_started" && !echoWindowOpen()) filler.userSpeech(); // VAD heard the owner
-      else if (m.type === "error") { toast("Speech service", m.message, "warning"); }
+      else if (m.type === "error") { this.liveFailed(m.message || "The Deepgram stream reported an error."); }
     },
-    async transcribeChunks(mime) {
-      const blob = new Blob(this.chunks, { type: mime });
-      if (blob.size < 2000) return;
-      const fd = new FormData(); fd.append("audio", blob, "speech.webm");
-      caption("", "Transcribing…");
-      const r = await api("/api/stt", { method: "POST", body: fd });
-      if (r.ok) utterance((await r.json()).text || "");
+    // The live Deepgram stream failed: skip it for a while and carry on with the next engine in the chain.
+    liveFailed(reason) {
+      if (!this.on || this.mode !== "deepgram") return;
+      console.warn("[stt] live Deepgram stream failed", reason);
+      sttEngine.markFailed("deepgram");
+      this.lastError = `Deepgram: ${reason}`;
+      const next = sttEngine.next();
+      toast("Speech service problem", `${reason} Switching to ${STT_LABEL[next] || next} - please say that again.`, "warning");
+      this.stop(false);
+      this.start();
+    },
+    // One bounded request to one engine. Never throws except when signed out, and never waits past STT_TIMEOUT_MS.
+    async postStt(blob, filename, engine) {
+      const label = STT_LABEL[engine] || engine;
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), STT_TIMEOUT_MS);
+      try {
+        const fd = new FormData(); fd.append("audio", blob, filename);
+        const r = await api(`/api/stt?engine=${encodeURIComponent(engine)}`, { method: "POST", body: fd, signal: ctl.signal });
+        console.info("[stt] transcription response", { engine, status: r.status, ok: r.ok });
+        let data = {};
+        try { data = await r.json(); } catch { /* non-JSON error body */ }
+        if (r.ok) return { ok: true, text: String(data.text || "").trim() };
+        return { ok: false, transient: typeof data.transient === "boolean" ? data.transient : r.status >= 500,
+          error: `${data.detail || `Speech-to-text returned ${r.status}`} (HTTP ${r.status}).` };
+      } catch (e) {
+        if (e && e.message === "signed out") throw e;
+        console.warn("[stt] transcription request failed", engine, e);
+        if (e && e.name === "AbortError") return { ok: false, transient: true, error: `${label} did not answer within ${STT_TIMEOUT_MS / 1000} seconds.` };
+        return { ok: false, transient: true, error: (e && e.message) || `Couldn't reach ${label}.` };
+      } finally { clearTimeout(timer); }
+    },
+    async transcribeChunks(mime, mode) {
+      const chunks = this.chunks; this.chunks = [];
+      const type = String(mime || (chunks[0] && chunks[0].type) || "audio/webm").split(";")[0];
+      const blob = new Blob(chunks, { type });
+      console.info("[stt] recording finished", { bytes: blob.size, type: blob.type, rawMime: mime, chunks: chunks.length });
+      // The error text stays in the caption (red) until the next caption, not just in a toast that fades.
+      const fail = (title, body) => { toast(title, body, "warning"); captionError(`${title}: ${body}`); if (S.hudState === "listening") setHud("idle"); };
+      if (blob.size < MIN_AUDIO_BYTES) { fail("Nothing recorded", "No audio was captured. Hold the mic a little longer and check the microphone isn't muted."); return; }
+      const filename = `speech.${audioExtension(type)}`;
+      // Try the engine that recorded this, retrying once on a transient failure (timeout, network, upstream 5xx) and
+      // then moving to the next server engine in the chain. A bad key / quota / bad audio moves on straight away.
+      const order = sttEngine.chain();
+      const engines = order.slice(Math.max(0, order.indexOf(mode))).filter((e) => e !== "browser");
+      const startedAt = Date.now();
+      let lastError = "";
+      try {
+        attempts: for (let i = 0; i < engines.length; i++) {
+          const engine = engines[i], label = STT_LABEL[engine] || engine;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            if (Date.now() - startedAt > STT_TOTAL_MS) break attempts;
+            showSttEngine(engine, attempt === 2 ? "retrying" : i ? "switched automatically" : "");
+            caption("", `Transcribing with ${label}${attempt === 2 ? " (retrying)" : ""}…`);
+            const res = await this.postStt(blob, filename, engine);
+            if (res.ok) {
+              sttEngine.markGood(engine); this.lastError = "";
+              if (!res.text) { fail("Didn't catch that", "Speech-to-text returned no words. Please try again."); return; }
+              caption(res.text, "");
+              utterance(res.text);
+              return;
+            }
+            lastError = `${label}: ${res.error}`;
+            console.warn("[stt] engine failed", { engine, attempt, transient: res.transient, error: res.error });
+            if (!res.transient) break;
+          }
+          sttEngine.markFailed(engine);
+        }
+      } catch (e) {
+        if (e && e.message === "signed out") return;
+        lastError = (e && e.message) || "Couldn't reach the speech-to-text service.";
+      }
+      // Every server engine failed (or none was left in time): fall back to the browser's own speech recognition
+      // when there is one - it can't transcribe this recording, so the owner has to say it again.
+      this.lastError = lastError;
+      const browserOk = order.includes("browser") && (window.SpeechRecognition || window.webkitSpeechRecognition);
+      if (browserOk && !this.on) {
+        toast("Switched to browser voice input", `${lastError} Please say that again.`, "warning");
+        this.start();
+        return;
+      }
+      showSttEngine(engines[engines.length - 1] || mode, "failed", true);
+      fail("Transcription failed", `${lastError || "No speech-to-text engine is available."} Type your message instead.`);
     },
     stop(submit = true) {
       if (!this.on) return;
       clearTimeout(this.silenceTimer); this.silenceTimer = null;
       this.on = false; mic.classList.remove("on");
       if (this.recognition) { const r = this.recognition; this.recognition = null; r.onend = null; r.stop(); }
-      if (this.rec && this.rec.state !== "inactive") this.rec.stop();
-      if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; try { ws.send(JSON.stringify({ type: "Finalize" })); } catch { /* closed */ } setTimeout(() => { try { ws.send(JSON.stringify({ type: "CloseStream" })); ws.close(); } catch { /* closed */ } }, 900); }
-      if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+      // Push-to-talk recordings (Whisper etc.) release the mic in rec.onstop, after the final chunk has arrived.
+      const recActive = this.rec && this.rec.state !== "inactive";
+      const deferRelease = recActive && !!this.rec.onstop;
+      if (recActive) this.rec.stop();
+      if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.onerror = null; try { ws.send(JSON.stringify({ type: "Finalize" })); } catch { /* closed */ } setTimeout(() => { try { ws.send(JSON.stringify({ type: "CloseStream" })); ws.close(); } catch { /* closed */ } }, 900); }
+      if (this.stream && !deferRelease) this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null; this.rec = null;
-      if (submit && S.voice.stt !== "whisper") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, S.voice.stt === "deepgram" ? 1100 : 300);
+      const mode = this.mode || S.voice.stt; // the engine actually recording, which may differ from Settings after a fallback
+      if (submit && mode !== "whisper") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, mode === "deepgram" ? 1100 : 300);
       if (S.hudState === "listening") setHud("idle");
     },
   };
@@ -1253,6 +1507,7 @@ function send(text, mode = "typed", opts = {}) {
     // A tap must always have a real "off" to reach. Before this, tapping while the free wake-word listener
     // (sentry) was active jumped straight to starting the real microphone instead of stopping - so in
     // always-listening mode the mic looked permanently lit, since there was never a path back to fully off.
+    if (micPressBargeIn()) return;
     if (stt.on) { stt.stop(true); return; }
     if (sentry.on) { sentry.stop(); return; }
     stt.start();
@@ -1276,12 +1531,25 @@ function send(text, mode = "typed", opts = {}) {
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     else api("/api/interrupt", { method: "POST" }).catch(() => {});
   }
+  // Barge-in by hand: pressing the mic (or holding Space) while Jarvis is speaking cuts him off - audio, queued
+  // sentences and the turn still streaming the rest of the reply - and opens the mic for the owner instead of
+  // toggling it off. Returns true if it handled the press. Deliberately separate from the mic click handler and
+  // stt.start()/stop() so it stays independent of the mic start/stop logic.
+  function micPressBargeIn() {
+    if (!(speaker.active || speaker.queue.length || speaker.browserSpeaking)) return false;
+    stopEverything();
+    sentry.stop();
+    if (!stt.on) stt.start();
+    else { setHud("listening"); caption("", "Listening…"); }
+    return true;
+  }
   $("#btn-stop").addEventListener("click", stopEverything);
   window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#btn-stop").hidden) stopEverything(); });
   let spaceHeld = false;
   window.addEventListener("keydown", (e) => {
     if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
-    e.preventDefault(); spaceHeld = true; stt.start();
+    e.preventDefault(); spaceHeld = true;
+    if (!micPressBargeIn()) stt.start();
   });
   window.addEventListener("keyup", (e) => { if (e.code === "Space" && spaceHeld) { spaceHeld = false; stt.stop(true); } });
 

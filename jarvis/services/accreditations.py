@@ -108,7 +108,8 @@ class Accreditations:
             if item["days_left"] in REMIND_AT_DAYS or item["days_left"] == 0 or (item["overdue"] and item["days_left"] % 7 == 0):
                 when = "is OVERDUE" if item["overdue"] else "is today" if item["days_left"] == 0 else f"in {item['days_left']} days"
                 await self.notifier.notify(f"{item['what']} {when}", f"Due {item['date']}. {item['detail']}".strip(),
-                                           level="warning" if item["days_left"] <= 30 else "info", push=True)
+                                           level="warning" if item["days_left"] <= 30 else "info", push=True,
+                                           importance="important")  # compliance: err on the side of delivering
                 sent += 1
         return sent
 

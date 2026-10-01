@@ -28,7 +28,9 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ValidationError
 
 from . import plugins
+from ..events import quiet_turn
 from .prompts import build_system
+from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
@@ -118,15 +120,19 @@ class MaxBrain:
         self._client = None
         self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
+        self._repeats = RepeatDetector()
+        self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
         self.refresh_system()
 
     def refresh_system(self) -> None:
-        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary())
+        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
+                              history_before_id=self._history_before)
         self.system = "\n\n".join(b["text"] for b in blocks)
 
     def reset(self) -> None:
         self.session_id = None
         self._fresh_start = True  # the worker restarts Claude Code without the old conversation
+        self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
         self.j.bus.publish("conversation_reset", None)
 
@@ -158,7 +164,9 @@ class MaxBrain:
 
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
                   speaker: str | None = None) -> str:
-        return await self._submit(("ask", text, mode, attachments, speaker))
+        # The worker task runs the turn, so a background (silent) turn has to say so explicitly - a context variable
+        # set here would not reach it. See events.quiet_turn.
+        return await self._submit(("ask", text, mode, attachments, speaker, quiet_turn.get()))
 
     async def warm(self) -> None:
         """Start Claude Code ahead of the first message, so that one is quick too."""
@@ -240,15 +248,24 @@ class MaxBrain:
                 log.debug("Claude Code client disconnect: %s", e)
 
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
-                    speaker: str | None = None) -> str:
+                    speaker: str | None = None, quiet: bool = False) -> str:
+        token = quiet_turn.set(quiet)
+        try:
+            return await self._turn_events(text, mode, attachments, speaker)
+        finally:
+            quiet_turn.reset(token)
+
+    async def _turn_events(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
+                           speaker: str | None = None) -> str:
         from claude_agent_sdk import ResultMessage, StreamEvent
 
         bus, db = self.j.bus, self.j.db
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
+        repeat = repeat_note(self._repeats.check(text))
         files = self._save_attachments(attachments)
-        note = ("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
+        note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
         db.add_transcript("user", text)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode})
@@ -260,7 +277,7 @@ class MaxBrain:
         try:
             client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
                                            self.s.model_for(mode))
-            await client.query(f"{tag}\n{text}{note}")
+            await client.query(f"{tag}\n{repeat}{text}{note}")
             async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):
                     ev = msg.event or {}

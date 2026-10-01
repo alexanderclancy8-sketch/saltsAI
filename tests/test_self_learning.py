@@ -124,3 +124,39 @@ def test_remember_ignores_duplicates_and_bounds_the_fact(tmp_path):
     with pytest.raises(ValidationError):
         RememberIn(fact="x" * 1001)
     assert RememberIn(fact="Quote ex-VAT").fact == "Quote ex-VAT"
+
+
+async def test_reflect_does_not_skip_turns_beyond_one_batch(settings, monkeypatch):
+    monkeypatch.setattr("jarvis.services.self_learning.BATCH_LIMIT", 2)
+    j = make(settings, [message([text_block("Nothing yet.")]), message([text_block("Nothing else.")])])
+    j.db.add_transcript("user", "First message")
+    j.db.add_transcript("assistant", "Second message")
+    j.db.add_transcript("user", "Third message")
+
+    await j.self_learning.reflect()
+    first_prompt = j.brain.messages[0]["content"][-1]["text"]
+    assert "First message" in first_prompt and "Third message" not in first_prompt
+
+    await j.self_learning.reflect()  # the turn that didn't fit the first batch is picked up, not lost
+    second_prompt = j.brain.messages[2]["content"][-1]["text"]
+    assert "Third message" in second_prompt and "First message" not in second_prompt
+    # the first reflection's own (huge) prompt is never fed back into the next one
+    assert "Scheduled self-reflection" not in second_prompt.split("<transcript>", 1)[1]
+    await j.http.aclose()
+
+
+async def test_remember_does_not_store_the_same_fact_twice(settings):
+    j = make(settings, [
+        message([tool_block("remember", {"fact": "Kestrel Retail deals need the partner looped in."})], "tool_use"),
+        message([text_block("Done.")]),
+        message([tool_block("remember", {"fact": "  kestrel retail deals need the  partner looped in "})], "tool_use"),
+        message([text_block("Done.")]),
+    ])
+    await j.brain.ask("Remember that Kestrel Retail deals need the partner looped in.", "typed")
+    await j.brain.ask("Remember it again.", "typed")
+    assert len(j.db.memories()) == 1
+    first_id = j.db.memories()[0]["id"]
+    assert j.db.remember("KESTREL RETAIL deals need the partner looped in") == first_id  # same row, no new one
+    assert j.db.remember("A genuinely different fact") != first_id
+    assert len(j.db.memories()) == 2
+    await j.http.aclose()

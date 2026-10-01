@@ -280,6 +280,15 @@ class Accountant:
         return {"total_overdue": aged["total_overdue"], "actions": actions,
                 "note": "Statutory interest/compensation only applies to business customers."}
 
+    async def payment_risk(self, upcoming_days: int = 14) -> dict[str, Any]:
+        """Open and soon-due receivables scored by likelihood of going overdue (read-only)."""
+        from .risk_scoring import HISTORY_DAYS, score_payment_risk
+
+        today = self._today()
+        invoices = await self.finance.invoices("receivable", outstanding_only=False,
+                                               since=today - timedelta(days=HISTORY_DAYS))
+        return score_payment_risk(invoices, today, upcoming_days)
+
     def deadlines(self) -> list[dict[str, str]]:
         today = self._today()
         items = []

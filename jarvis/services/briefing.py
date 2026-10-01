@@ -76,5 +76,5 @@ class Briefings:
         if deliver:
             await self.notifier.notify("Morning briefing", text, level="info", push=False, speak=True)
             await self.notifier.send_owner_update(f"Morning briefing {datetime.now():%a %d %b}", text,
-                                                  channels=("teams", "email"))
+                                                  channels=("teams", "email"), importance="info")  # digest
         return text
