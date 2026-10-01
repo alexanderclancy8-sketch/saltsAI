@@ -18,6 +18,11 @@ owner has clicked Approve. Guard rails, all enforced here:
 
 Note: this is a scratch directory and a clean environment, not an operating-system sandbox. That is why the tool
 needs the owner's approval on every run.
+
+No git binary on the host? ``_resolve_via_api`` does the same job through the GitHub REST API (merges endpoint, then
+contents + git data APIs for conflicts), with the same guard rails (PR branch only, never forced, no workflow files,
+no leftover markers). The difference: there is no local test run, so the merge is pushed first and the result of
+GitHub Actions CI on the pushed commit is reported. It can't land on main, and pr_merge still needs green CI.
 """
 
 from __future__ import annotations
@@ -41,6 +46,8 @@ log = logging.getLogger(__name__)
 
 GIT_TIMEOUT = 180
 TEST_TIMEOUT = 900
+CI_WAIT = 120  # seconds to wait for GitHub Actions after an API push before reporting "still running"
+CI_POLL = 15
 OUTPUT_TAIL = 4000
 HUNK_LIMIT = 3000
 MAX_RESOLUTION_CHARS = 400_000
@@ -102,11 +109,138 @@ def _report(status: str, summary: str, **extra: Any) -> dict[str, Any]:
     return {"status": status, "summary": summary, **extra}
 
 
+def git_available() -> bool:
+    return shutil.which("git") is not None
+
+
+def _check_resolutions(resolutions: dict[str, str]) -> tuple[dict[str, str], str | None]:
+    """The cleaned paths -> text, or (…, reason) when one is unusable (size, path, leftover conflict markers)."""
+    clean_res: dict[str, str] = {}
+    for name, text in resolutions.items():
+        path = check_path(name)
+        if len(text) > MAX_RESOLUTION_CHARS:
+            raise PRError(f"The resolution for {path} is too large.")
+        if _MARKER.search(text):
+            return {}, f"The resolution for {path} still contains conflict markers. Nothing was changed."
+        clean_res[path] = text
+    return clean_res, None
+
+
+def _ci_sentence(ci: dict[str, Any]) -> str:
+    state = ci.get("state")
+    if state == "success":
+        return "GitHub Actions CI passed on the new commit."
+    if state == "failure":
+        return f"GitHub Actions CI FAILED on the new commit ({', '.join(ci.get('failed') or ['see the checks'])})."
+    if state == "pending":
+        return "GitHub Actions CI is still running on the new commit; check it with run_tests."
+    if state == "none":
+        return "GitHub Actions hasn't reported any CI results on the new commit yet; check it with run_tests."
+    return "Couldn't read the CI results for the new commit; check them with run_tests."
+
+
+async def _await_ci(pc: PRClient, sha: str, wait: float, poll: float) -> dict[str, Any]:
+    """CI state of ``sha``, polled for up to ``wait`` seconds. Reading CI never turns a finished push into an error."""
+    waited = 0.0
+    while True:
+        try:
+            ci = await pc._checks_detail(sha)  # noqa: SLF001
+        except Exception as e:  # noqa: BLE001
+            log.warning("Couldn't read CI results for %s: %s", sha[:10], e)
+            return {"state": "unknown", "failed": [], "pending": []}
+        if ci["state"] in ("success", "failure") or waited >= wait:
+            return ci
+        await asyncio.sleep(poll)
+        waited += poll
+
+
+async def _resolve_via_api(pc: PRClient, pr: dict[str, Any], number: int, resolutions: dict[str, str] | None, *,
+                           ci_wait: float = CI_WAIT, ci_poll: float = CI_POLL) -> dict[str, Any]:
+    """The no-git route: (1) GitHub's merges API brings the PR branch up to date; a 409 means real conflicts. (2) For
+    conflicts the files changed on both sides are fetched through the contents API and, once ``resolutions`` supply
+    their full text, the merge commit (two parents) is built with the git data API and the PR branch ref moved
+    forward - never forced, never main. (3) There is no local test run: the result of GitHub Actions CI on the pushed
+    commit is reported instead. The caller has already checked the PR (open, same repo, not main)."""
+    head_ref, base, head_sha = pr["head"]["ref"], pr["base"]["ref"], pr["head"]["sha"]
+    message = f"Merge {base} into {head_ref}"
+    step = "merging through the GitHub API"
+    try:
+        if not resolutions:
+            merged = await pc.update_branch(head_ref, base, message)
+            if merged["result"] == "up_to_date":
+                return _report("up_to_date", f"PR #{number} already contains everything on {base}; nothing to do.")
+            if merged["result"] == "merged":
+                return await _api_pushed(pc, number, base, head_ref, merged["sha"], [], ci_wait, ci_poll)
+        step = "working out which files conflict"
+        plan = await pc.merge_plan(head_ref, base)
+        conflicted, theirs_only = plan["conflicts"], plan["theirs_only"]
+        blocked = [n for n in conflicted if n.startswith(BLOCKED_PREFIXES)]
+        extra = sorted(set(resolutions or {}) - set(conflicted))
+        unresolved = [n for n in conflicted if n not in (resolutions or {})]
+        if blocked:
+            return _report("conflicts", f"PR #{number} conflicts with {base} in CI/workflow files "
+                           f"({', '.join(blocked)}), which Jarvis never edits. A person needs to resolve this.",
+                           conflicted_files=conflicted)
+        if plan["unsupported"]:
+            return _report("conflicts", f"PR #{number} conflicts with {base} where a file was deleted on one side "
+                           f"({', '.join(plan['unsupported'])}). Jarvis can't settle that through the GitHub API; a person "
+                           "needs to resolve it.", conflicted_files=conflicted)
+        if extra:
+            return _report("refused", "Resolutions were supplied for files that don't conflict: " + ", ".join(extra)
+                           + ". Nothing was changed.", conflicted_files=conflicted)
+        if not conflicted:
+            return _report("error", f"GitHub reported a merge conflict between {base} and {head_ref} but no file was "
+                                    "changed on both sides, so Jarvis can't tell what to resolve. Nothing was changed; "
+                                    "a person needs to look at it.")
+        if unresolved:
+            step = "reading the conflicted files"
+            hunks = {}
+            for n in unresolved[:10]:
+                mine, theirs = await pc.file_text(n, head_ref), await pc.file_text(n, base)
+                hunks[n] = redact(f"=== on {head_ref} ===\n{mine if mine is not None else '(missing or not text)'}\n"
+                                  f"=== on {base} ===\n{theirs if theirs is not None else '(missing or not text)'}",
+                                  pc._secrets)[:HUNK_LIMIT]  # noqa: SLF001
+            return _report("conflicts", f"PR #{number} conflicts with {base} in {len(conflicted)} file(s): "
+                           f"{', '.join(conflicted)}. Nothing was pushed. Send the full resolved text of each file "
+                           "via `resolutions` to try again.", conflicted_files=conflicted, conflict_hunks=hunks)
+        cleaned, bad = _check_resolutions(resolutions or {})
+        if bad:
+            return _report("refused", bad)
+        step = "committing the merge through the GitHub git data API"
+        sha = await pc.commit_merge(head_ref, base, head_sha, cleaned, theirs_only, message)
+        return await _api_pushed(pc, number, base, head_ref, sha, sorted(cleaned), ci_wait, ci_poll)
+    except PRError as e:
+        return _report("error", redact(str(e), pc._secrets)[:1000])  # noqa: SLF001
+    except RuntimeError as e:  # GitHub answered with an error status
+        text = redact(str(e), pc._secrets)[:700]  # noqa: SLF001
+        if "-> 422" in text and step.startswith("committing"):
+            text += (f" (This usually means {head_ref} moved while Jarvis was working; nothing was overwritten. "
+                     "Try again.)")
+        return _report("error", f"PR #{number} was not updated: the GitHub API failed while {step}. {text}")
+    except Exception as e:  # noqa: BLE001
+        log.exception("PR update via the GitHub API failed")
+        return _report("error", redact(f"PR #{number} was not updated: {type(e).__name__} while {step}: {e}",
+                                       pc._secrets)[:1000])  # noqa: SLF001
+
+
+async def _api_pushed(pc: PRClient, number: int, base: str, head_ref: str, sha: str, resolved: list[str],
+                      ci_wait: float, ci_poll: float) -> dict[str, Any]:
+    ci = await _await_ci(pc, sha, ci_wait, ci_poll)
+    return _report("pushed", f"Merged {base} into {head_ref} for PR #{number}"
+                   + (f" (resolved {', '.join(resolved)})" if resolved else "")
+                   + f" through the GitHub API (this host has no git); pushed {sha[:10]}. No local test run: "
+                   + _ci_sentence(ci), merge_commit=sha, conflicts_resolved=resolved, method="github-api",
+                   ci_state=ci["state"], ci_failed=ci.get("failed", []))
+
+
 async def resolve_pr(pc: PRClient, number: int, resolutions: dict[str, str] | None = None, *,
                      remote_url: str | None = None, test_commands: Sequence[Sequence[str]] | None = None,
-                     test_timeout: int = TEST_TIMEOUT) -> dict[str, Any]:
+                     test_timeout: int = TEST_TIMEOUT, ci_wait: float = CI_WAIT,
+                     ci_poll: float = CI_POLL) -> dict[str, Any]:
     """Merge the base branch into PR ``number``'s branch, run the tests and push if they pass. Never raises for an
-    expected outcome - the ``status`` is one of: refused, up_to_date, conflicts, tests_failed, pushed, error."""
+    expected outcome - the ``status`` is one of: refused, up_to_date, conflicts, tests_failed, pushed, error.
+    With a git binary this is the local clone / scratch-test / push flow; without one it goes through the GitHub API
+    (``_resolve_via_api``), where the tests are GitHub Actions CI on the pushed branch."""
     gh = pc.gh
     resolutions = resolutions or {}
     pr = await pc._get(f"/pulls/{number}")  # noqa: SLF001
@@ -125,8 +259,8 @@ async def resolve_pr(pc: PRClient, number: int, resolutions: dict[str, str] | No
     if head_ref in PROTECTED_BRANCHES or head_ref in (gh.default_branch, base):
         return _report("refused", f"PR #{number}'s branch is '{head_ref}' - Jarvis never pushes to main or the base branch.")
 
-    if shutil.which("git") is None:
-        return _report("error", "git isn't installed on this machine, so the branch can't be updated.")
+    if not git_available():  # no git binary on this host: do it all through the GitHub REST API instead
+        return await _resolve_via_api(pc, pr, number, resolutions, ci_wait=ci_wait, ci_poll=ci_poll)
 
     token = gh.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()

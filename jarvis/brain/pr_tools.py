@@ -171,6 +171,9 @@ async def pr_resolve_conflicts(j, a: PRResolveIn):
     except Exception as e:  # noqa: BLE001 - e.g. GitHub rejecting the very first request for the PR
         raise PRError(redact(f"PR #{a.number} was not updated: {e}", pc._secrets)[:1000]) from e  # noqa: SLF001
     status = result["status"]
+    if status == "pushed" and result.get("ci_state") == "failure":  # API route: pushed first, CI ran afterwards
+        await j.notifier.notify(f"PR #{a.number}: CI failed after the update", result["summary"][:1500],
+                                level="warning", engineering=True)
     if status in ("pushed", "up_to_date"):
         return result
     if status == "conflicts":  # a normal outcome that needs a follow-up call with `resolutions`: report it
@@ -208,14 +211,17 @@ def build_pr_tools(Tool) -> list:
              approval=True,
              describe=lambda a: f"Comment on PR #{a.number}: {redact(a.body)[:200]}"),
         Tool("pr_resolve_conflicts", "Bring a pull request up to date by merging main into the PR's own branch, "
-                                     "run its tests in a scratch directory with no credentials, and push to that "
-                                     "branch only if they pass (never main, never forced). Git conflicts aren't "
+                                     "with git on the host: run its tests in a scratch directory with no credentials "
+                                     "and push to that branch only if they pass; without git: merge through the "
+                                     "GitHub API and report the GitHub Actions CI result on the pushed branch "
+                                     "(never main, never forced). Conflicts aren't "
                                      "guessed at: the first run reports the conflicted files; call again with "
                                      "`resolutions` (full resolved text per file) to try your resolution. "
                                      "Queued for the owner's approval first.", PRResolveIn, pr_resolve_conflicts,
              "Updating the pull request branch", approval=True,
-             describe=lambda a: (f"Merge main into PR #{a.number}'s branch, run the tests locally and push to "
-                                 "that branch only if they pass"
+             describe=lambda a: (f"Merge main into PR #{a.number}'s branch and push to that branch only (tests run "
+                                 "locally before the push if git is installed, otherwise GitHub Actions CI is "
+                                 "reported after it)"
                                  + (f" (with my proposed resolution of {', '.join(sorted(a.resolutions))})"
                                     if a.resolutions else ""))),
         Tool("run_tests", "Report the test-suite and linter results for a branch, tag or commit of Jarvis's own "
