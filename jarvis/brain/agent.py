@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from . import llm
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
+from .utterance import screen_voice
 from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
@@ -96,6 +97,10 @@ class JarvisBrain:
     # ------------------------------------------------------------------ main entry
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
                   speaker: str | None = None) -> str:
+        screened = screen_voice(self.j, text, mode)  # spoken text: stutter collapsed, Jarvis's own echo dropped
+        if screened is None:
+            return ""
+        text = screened
         task = asyncio.current_task()
         if task is not None:
             self._active.add(task)

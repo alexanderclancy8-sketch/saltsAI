@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from . import plugins
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
+from .utterance import screen_voice
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
@@ -160,7 +161,10 @@ class MaxBrain:
 
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
                   speaker: str | None = None) -> str:
-        return await self._submit(("ask", text, mode, attachments, speaker))
+        screened = screen_voice(self.j, text, mode)  # spoken text: stutter collapsed, Jarvis's own echo dropped
+        if screened is None:
+            return ""
+        return await self._submit(("ask", screened, mode, attachments, speaker))
 
     async def warm(self) -> None:
         """Start Claude Code ahead of the first message, so that one is quick too."""

@@ -351,6 +351,17 @@
   const RECENT_MATCH_MS = 20000;  // outside the echo window, only compare against very recent speech
   const PTT_SILENCE_MS = 1200;    // push-to-talk: default for how long after the last final result counts as end of speech
   const normWords = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  // Some engines re-send a growing partial as each "final" ("I", "I just", "I just asked"). Appending every one gave
+  // "I I just I just asked". A result that extends what is already held replaces it (the longest version wins), one
+  // that is only a shorter copy of it is ignored, and anything else is a genuinely new phrase and is appended.
+  function appendFinal(finals, heard) {
+    const held = normWords(finals), next = normWords(heard);
+    if (!held.length) return heard + " ";
+    const startsWith = (long, short) => short.length > 0 && short.length <= long.length && short.every((w, i) => long[i] === w);
+    if (startsWith(next, held)) return heard + " ";
+    if (startsWith(held, next)) return finals;
+    return finals + heard + " ";
+  }
 
   // ------------------------------------------------------------------ end-of-turn tolerance
   // The silence that ends a push-to-talk turn is the `voice_silence_ms` setting (S.voice.silence_ms), clamped to a
@@ -803,7 +814,7 @@ function send(text, mode = "typed", opts = {}) {
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
       case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
-      case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
+      case "stopped": filler.end(); if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
         if (S.ws) { S.ws.onclose = null; S.ws.close(); }
@@ -1134,7 +1145,7 @@ function send(text, mode = "typed", opts = {}) {
           if (e.results[i].isFinal) {
             if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
             filler.userSpeech();
-            this.finals += heard + " "; this.finalHeard();
+            this.finals = appendFinal(this.finals, heard); this.finalHeard();
           } else if (!echoWindowOpen()) { interim += heard; filler.userSpeech(); }
         }
         caption(this.finals, interim);
@@ -1147,7 +1158,7 @@ function send(text, mode = "typed", opts = {}) {
         if (m.text) sttEngine.markGood("deepgram");
         // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
         if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
-        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
+        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals = appendFinal(this.finals, m.text); if (S.listenMode !== "wake") this.finalHeard(); }
         caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
         if (m.speech_final && this.finals.trim()) this.commit();
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();
