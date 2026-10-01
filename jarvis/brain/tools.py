@@ -1232,6 +1232,9 @@ async def knowledge_search(j, a: KnowledgeIn):
 
 
 async def remember(j, a: RememberIn):
+    existing = j.db.find_memory(a.fact)
+    if existing is not None:
+        return f"Already remembered (#{existing})."
     mid = j.db.remember(a.fact)
     j.brain.refresh_system()
     return f"Remembered (#{mid})."
