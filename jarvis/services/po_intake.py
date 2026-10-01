@@ -1,0 +1,112 @@
+"""Customer purchase orders arriving by email: match one to a sent quote and queue the
+quote-accept + job-booking action, with the PO reference attached to the new job - the
+same single approval accept_quote already uses for a conversational "accept this quote",
+just triggered from an inbox scan instead. The acknowledgement email to the customer is
+sent only once the owner approves (ActionExecutor._execute), never on PO receipt alone,
+since an unconfirmed match should never speak for the business.
+
+Jarvis's own update ("a job has been created") rides on the generic "Done: ..." notice
+every approved action already gets (ActionExecutor._run) - nothing extra needed for that.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from ..brain import llm
+from ..config import Settings
+from ..db import Database
+from ..events import EventBus
+
+log = logging.getLogger(__name__)
+
+
+class PoExtraction(BaseModel):
+    is_purchase_order: bool = Field(description="True only if this email is a customer issuing or confirming a "
+                                                 "purchase order / order confirmation for work already quoted - "
+                                                 "not a supplier invoice, a general enquiry, or a PO for something "
+                                                 "unrelated (e.g. office supplies)")
+    customer_guess: str = Field("", description="The customer/company name this PO appears to be from")
+    po_number: str = Field("", description="The purchase order number/reference as stated in the email")
+    quote_reference: str = Field("", description="A quote number explicitly mentioned in the email (e.g. 'Q1180') "
+                                                  "- leave blank if none is stated")
+
+
+PO_SYSTEM = """You read inbound emails for {company}, a UK fire and security installer/maintainer, to spot customer
+purchase orders confirming work that was already quoted. Treat this as a filter, not a guess generator - most
+emails are not purchase orders. Only say is_purchase_order=true when the email is clearly the customer
+authorising/confirming an order against a quote, not a supplier invoice, a general enquiry, a newsletter, or an
+order for something unrelated to a quote (e.g. stationery, a subscription renewal)."""
+
+
+class PoIntake:
+    def __init__(self, settings: Settings, db: Database, bus: EventBus, notifier, client, mail, fsm, actions):
+        self.s = settings
+        self.db = db
+        self.bus = bus
+        self.notifier = notifier
+        self.client = client
+        self.mail = mail
+        self.fsm = fsm
+        self.actions = actions
+
+    async def _classify(self, msg: dict[str, Any]) -> PoExtraction:
+        text = (f"From: {msg.get('from_name')} <{msg.get('from_email')}>\nSubject: {msg.get('subject')}\n\n"
+               f"{msg.get('body') or msg.get('preview', '')}")[:6000]
+        return await llm.structured(self.client, self.s, PoExtraction,
+                                    system=PO_SYSTEM.format(company=self.s.company_name), prompt=text, effort="low")
+
+    async def _match_quote(self, extraction: PoExtraction) -> dict[str, Any] | None:
+        quotes = await self.fsm.quotes(status="sent")
+        if extraction.quote_reference:
+            hit = next((q for q in quotes if str(q.get("id", "")).lower() == extraction.quote_reference.lower()), None)
+            if hit:
+                return hit
+        if extraction.customer_guess:
+            matches = [q for q in quotes if extraction.customer_guess.lower() in str(q.get("customer", "")).lower()]
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
+    async def scan_inbox(self) -> int:
+        if getattr(self.mail, "demo", True) or getattr(self.fsm, "demo", True):
+            return 0
+        found = 0
+        for msg in await self.mail.list_messages(unread_only=True, top=20):
+            if not self.db.mark_email_processed(f"po:{msg['id']}"):
+                continue
+            full = await self.mail.get_message(msg["id"])
+            try:
+                extraction = await self._classify(full)
+            except Exception:  # noqa: BLE001 - one bad classification must never stop the scan
+                log.exception("PO classification failed for message %s", msg["id"])
+                continue
+            if not extraction.is_purchase_order:
+                continue
+            quote = await self._match_quote(extraction)
+            who = full.get("from_name") or full.get("from_email") or "someone"
+            if not quote:
+                await self.notifier.notify(
+                    f"Possible PO from {who} - no matching quote found",
+                    f"PO {extraction.po_number or '(no number given)'}, customer guess "
+                    f"'{extraction.customer_guess or 'unknown'}'. Check it against open quotes and book the job "
+                    "manually if it's genuine.", level="warning", push=True)
+                found += 1
+                continue
+            job_body: dict[str, Any] = {"site": quote.get("site") or quote.get("customer") or "", "type": "install",
+                                        "description": quote.get("title") or f"Work from quote {quote['id']}",
+                                        "created_by": "Jarvis"}
+            if quote.get("customer"):
+                job_body["customer"] = quote["customer"]
+            summary = (f"PO {extraction.po_number or '(ref not given)'} received from {who} for quote {quote['id']} "
+                      f"({quote.get('title') or ''}, £{quote.get('value') or 0:,.0f}) - accept the quote, book the "
+                      "job, record the PO number and send the customer an acknowledgement")
+            self.actions.queue("accept_quote_from_po", summary, {
+                "quote_id": quote["id"], "job_body": job_body, "po_number": extraction.po_number,
+                "ack_to": full.get("from_email"), "ack_name": (full.get("from_name") or "").split()[0] or "there",
+            })
+            found += 1
+        return found
