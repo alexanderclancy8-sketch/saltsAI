@@ -217,16 +217,20 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "ram", "RAM Tracking", "Van locations, set-off and home times, journeys and timesheet checks.",
         (
-            Field("ram_api_base_url", "API address", "url", "From RAM's External API documentation."),
-            Field("ram_api_key", "API key", "secret"),
-            Field("ram_client_id", "Client ID", "secret"),
-            Field("ram_api_key_header", "API key header", advanced=True),
-            Field("ram_client_id_header", "Client ID header", advanced=True),
+            Field("ram_client_id", "Client ID"),
+            Field("ram_api_key", "Client secret", "secret"),
+            Field("ram_username", "API username"),
+            Field("ram_password", "API password", "secret"),
+            Field("ram_api_base_url", "API address", "url", advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
         ),
-        required=("ram_api_base_url", "ram_api_key", "ram_client_id"),
+        required=("ram_client_id", "ram_api_key", "ram_username", "ram_password"),
         test=True,
-        guide=("In the RAM Tracking portal: profile - integrations - the API key and client ID are both there.",),
+        guide=(
+            "In the RAM Tracking portal: profile - integrations - API Keys shows the Client ID and Client secret.",
+            "That page also says you need a dedicated account's username and password for the API - "
+            "RAM recommend a separate login just for this, not your own.",
+        ),
     ),
     Section(
         "voice", "Voice", "How Jarvis sounds, and how it hears you.",
