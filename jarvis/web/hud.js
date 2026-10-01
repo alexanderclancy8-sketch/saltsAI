@@ -863,7 +863,8 @@ function send(text, mode = "typed", opts = {}) {
     $("#issues").innerHTML = issues.length ? issues.slice(0, 8).map((i) => {
       const cls = ["critical", "high"].includes(i.severity) ? "bad" : i.status === "fix_ready" ? "ok" : "warn";
       const pr = i.fix_pr_url ? ` · <a href="${esc(i.fix_pr_url)}" target="_blank" rel="noopener">PR</a>` : "";
-      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))} · ${esc(i.severity)}${pr}</span></li>`;
+      // severity is already shown by the row's accent colour - naming it again in text was noise.
+      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span></li>`;
     }).join("") : `<li class="empty">No open issues.</li>`;
   }
 
@@ -871,7 +872,7 @@ function send(text, mode = "typed", opts = {}) {
     const failing = tests.filter((t) => !t.ok);
     $("#tests-count").textContent = tests.length ? `${tests.length - failing.length}/${tests.length} passing` : "";
     const rows = [...failing, ...tests.filter((t) => t.ok)].slice(0, 10);
-    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}"><span class="dot ${t.ok ? "ok" : "bad"}"></span>${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
+    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}">${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
       : `<li class="empty">No results yet.</li>`;
   }
 
@@ -942,7 +943,9 @@ function send(text, mode = "typed", opts = {}) {
     const list = S.suggestions || [];
     $("#suggestions-panel").hidden = !list.length;
     $("#suggestions-count").textContent = list.length ? String(list.length) : "";
-    $("#suggestions").innerHTML = list.map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
+    // Every other panel caps what it shows at once (issues 8, notifications 6) - suggestions didn't,
+    // so a busy day's list of full-width action cards could bury COMMS/ISSUES/TESTS below the fold.
+    $("#suggestions").innerHTML = list.slice(0, 4).map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
       ${s.detail ? `<span class="sub">${esc(s.detail)}</span>` : ""}
       <div class="row"><button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button></div></div>`).join("");
     updateOrbBadge();
@@ -976,7 +979,10 @@ function send(text, mode = "typed", opts = {}) {
     }
     if (!map) {
       map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.83, -1.78], 10);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© OpenStreetMap, © CARTO", maxZoom: 18 }).addTo(map);
+      // CARTO's basemaps now require a signed-up API key and render an "API KEY REQUIRED" watermark
+      // without one - Esri's dark canvas is free, keyless, and still matches the dark theme.
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxZoom: 16 }).addTo(map);
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
