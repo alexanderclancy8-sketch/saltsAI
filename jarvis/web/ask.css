@@ -1,8 +1,18 @@
 /* Question prompt (ask_user) - see ask.js. A small pop-up, deliberately nothing like the big .display overlay. */
-.ask { position: fixed; z-index: 28; left: 50%; bottom: 120px; transform: translateX(-50%); width: min(460px, 92vw);
+/* z-index sits above everything else on the page (.display 20, .drawer 25, .toasts 30) so nothing can cover the options.
+   The pop-up is UI chrome, not prose: no text selection and a plain arrow cursor, with a hand over the real buttons
+   below. (Chrome showed the text I-beam over the options when they read as selectable text.) */
+.ask { position: fixed; z-index: 40; left: 50%; bottom: 120px; transform: translateX(-50%); width: min(460px, 92vw);
   background: var(--bg2); border: 1px solid var(--line-strong); border-left: 2px solid var(--accent); border-radius: var(--radius);
-  box-shadow: var(--shadow); padding: 14px 16px; }
+  box-shadow: var(--shadow); padding: 14px 16px; pointer-events: auto; cursor: default;
+  -webkit-user-select: none; user-select: none; }
 .ask[hidden] { display: none; }
+.ask button, .ask button * { cursor: pointer; }
+.ask-opt, .ask-opt * { -webkit-user-select: none; user-select: none; }
+.ask-opt { touch-action: manipulation; -webkit-tap-highlight-color: transparent; pointer-events: auto; }
+/* Children never take the pointer themselves: every click or hover lands on the <button>, so the hand cursor shows
+   everywhere on an option and the click always reaches it. */
+.ask-opt > *, .ask-opt > * > * { pointer-events: none; }
 .ask-q { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
 .ask-hint { color: var(--muted); font-size: 12.5px; margin-bottom: 4px; }
 .ask-opts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
@@ -19,6 +29,7 @@
 .ask-otherbox { margin-top: 8px; }
 .ask-otherbox[hidden], .ask-send[hidden] { display: none; }
 .ask-otherbox textarea { width: 100%; resize: vertical; font: inherit; color: var(--text); background: var(--panel); min-height: 52px;
+  cursor: text; -webkit-user-select: text; user-select: text;
   border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
 .ask-otherbox textarea:focus { outline: none; border-color: var(--accent); }
 .ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
