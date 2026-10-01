@@ -3,7 +3,9 @@ sent to Claude and to validate what comes back) and an async handler."""
 
 from __future__ import annotations
 
+import difflib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -250,6 +252,37 @@ class LogJobIn(BaseModel):
     engineer: str = Field("", description="Engineer to assign - leave blank to book it unassigned")
     scheduled_start: str = Field("", description="When to book it for (ISO date or date+time) - blank = unscheduled")
     customer: str = Field("", description="Customer name, only if different from the site name")
+
+
+class CreateCustomerIn(BaseModel):
+    name: str = Field(description="The customer's name exactly as it should appear in Salts FSM, e.g. "
+                                  "'Aire Valley Care Ltd'")
+    contact: str = Field("", description="Main contact person's name - leave blank if not given")
+    phone: str = Field("", description="Main phone number - leave blank if not given")
+    email: str = Field("", description="Main email address (quotes and invoices are sent here) - leave blank if "
+                                       "not given")
+    billing_address: str = Field("", description="Billing address, one line per part with the postcode last, e.g. "
+                                                 "'1 High Street\nLeeds\nLS1 2AB' - leave blank if not given")
+    notes: str = Field("", description="Anything worth recording against the customer - leave blank if none")
+    confirm_not_duplicate: bool = Field(False, description="ONLY set true after the owner has said this really is a "
+                                                           "separate new customer even though a similar or "
+                                                           "same-named one already exists. Never set it to get "
+                                                           "past a duplicate warning on your own.")
+
+
+class CreateSiteIn(BaseModel):
+    name: str = Field(description="The site's name as it should appear in Salts FSM, e.g. 'Aire Valley Care Home'")
+    customer: str = Field("", description="The customer this site belongs to - their name or Salts FSM id. The "
+                                          "customer must already exist (create it first with create_customer and "
+                                          "wait for it to be approved). Leave blank only if the owner says the "
+                                          "site has no customer yet.")
+    address: str = Field("", description="Street address of the site - leave blank if not given")
+    postcode: str = Field("", description="Postcode of the site, e.g. 'LS1 2AB' - leave blank if not given")
+    notes: str = Field("", description="Anything worth recording against the site - leave blank if none")
+    confirm_not_duplicate: bool = Field(False, description="ONLY set true after the owner has said this really is a "
+                                                           "separate new site even though a similar or same-named "
+                                                           "one already exists. Never set it to get past a "
+                                                           "duplicate warning on your own.")
 
 
 class AcceptQuoteIn(BaseModel):
@@ -820,6 +853,193 @@ async def log_job(j, a: LogJobIn):
         summary += f" for {human_datetime(a.scheduled_start)}"
     action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/jobs", "body": body})
     return {"queued_action": action_id, "job": body, "note": "Queued for approval on the display."}
+
+
+# --- creating a customer / site in Salts FSM ---------------------------------------------------------------------
+# Same shape as log_job: all the checking (is it empty? does it already exist? is the customer real?) happens here,
+# read-only, and only the final write is queued as an `fsm_write` for the owner to approve. Nothing is created until
+# then. Salts FSM enforces the same rules again server-side (a namesake customer is refused unless the caller
+# explicitly confirms it), so a mistake here can never silently create a duplicate.
+_PLACEHOLDER_NAMES = {"", "-", "--", "n/a", "na", "none", "null", "unknown", "tbc", "tba", "test", "customer", "site",
+                      "new customer", "new site", "name", "?"}
+_COMPANY_SUFFIXES = {"ltd", "limited", "plc", "llp", "llc", "inc", "co", "company"}
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # the same loose rule Salts FSM applies
+_LIKELY_RATIO = 0.86
+
+
+def _name_key(name: Any) -> str:
+    """A name reduced to what a person would call 'the same': case, punctuation, 'the', and Ltd/Limited/Plc gone."""
+    words = re.sub(r"[^a-z0-9&]+", " ", str(name or "").lower().replace("'", "")).split()
+    if words and words[0] == "the":
+        words = words[1:]
+    while words and words[-1] in _COMPANY_SUFFIXES:
+        words = words[:-1]
+    return " ".join(words)
+
+
+def _loosely_same(a: str, b: str) -> bool:
+    """True when two names are probably the same real-world customer/site: identical once normalised, a close
+    spelling, or one is the other with extra words (>= 2 shared words, e.g. 'Aire Valley Care' / 'Aire Valley
+    Care Home')."""
+    ka, kb = _name_key(a), _name_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb or difflib.SequenceMatcher(None, ka, kb).ratio() >= _LIKELY_RATIO:
+        return True
+    wa, wb = set(ka.split()), set(kb.split())
+    small, big = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+    return len(small) >= 2 and small <= big
+
+
+def _postcode_key(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).upper()
+
+
+def _pending_fsm_creates(j, path: str) -> list[dict[str, Any]]:
+    """Queued-but-not-yet-approved POSTs to `path` (e.g. '/customers'), so the same record isn't queued twice."""
+    return [a for a in j.db.pending_actions()
+            if a["kind"] == "fsm_write" and a["payload"].get("method") == "POST" and a["payload"].get("path") == path]
+
+
+def _brief(row: dict[str, Any], *keys: str) -> dict[str, Any]:
+    return {k: row.get(k) for k in keys if row.get(k) not in (None, "")}
+
+
+async def create_customer(j, a: CreateCustomerIn):
+    name = a.name.strip()
+    if _name_key(name) in _PLACEHOLDER_NAMES or name.lower() in _PLACEHOLDER_NAMES:
+        return {"error": "I need the customer's actual name before I can create them - nothing queued."}
+    email = a.email.strip()
+    if email and not _EMAIL_RE.match(email):
+        return {"error": f"'{email}' doesn't look like an email address - check it, or leave the email blank. "
+                         "Nothing queued."}
+    try:
+        existing = await j.fsm.customers()
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"I couldn't check whether this customer already exists ({str(e)[:150]}), so I haven't "
+                         "queued anything rather than risk a duplicate."}
+
+    for action in _pending_fsm_creates(j, "/customers"):
+        if _loosely_same(name, action["payload"].get("body", {}).get("name", "")):
+            return {"queued": False, "already_pending_action": action["id"],
+                    "note": f"A request to create '{action['payload']['body'].get('name')}' is already waiting "
+                            f"for approval (action #{action['id']}) - nothing new queued."}
+
+    likely = [c for c in existing if _loosely_same(name, c.get("name") or "")]
+    # Salts FSM refuses a same-named customer (any case) unless told it's deliberate; send that only when it applies.
+    namesake = any((c.get("name") or "").strip().lower() == name.lower() for c in likely)
+    if likely and not a.confirm_not_duplicate:
+        return {"queued": False, "likely_existing_customers": [_brief(c, "id", "name", "account_ref", "status",
+                                                                       "billing_address") for c in likely[:8]],
+                "note": "There's already a customer that looks like this one - nothing queued. If it's the same "
+                        "customer, use that record (for a new site use create_site with their name). Only if the "
+                        f"owner confirms it's a genuinely separate customer, call again with confirm_not_duplicate="
+                        "true."}
+
+    body: dict[str, Any] = {"name": name, "created_by": "Jarvis"}
+    for key, value in (("contact", a.contact), ("phone", a.phone), ("email", email),
+                       ("billingAddress", a.billing_address), ("notes", a.notes)):
+        if value and value.strip():
+            body[key] = value.strip()
+    if namesake:
+        body["confirmSharedName"] = True
+    summary = f"Create customer {name}"
+    details = [f"{label} {body[key]}" for key, label in (("contact", "contact"), ("phone", "phone"),
+                                                           ("email", "email")) if key in body]
+    if details:
+        summary += " (" + ", ".join(details) + ")"
+    if namesake:
+        summary += " - NOTE: a customer with this exact name already exists; this makes a second, separate one"
+    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/customers", "body": body})
+    return {"queued_action": action_id, "customer": body, "note": "Queued for approval on the display."}
+
+
+async def create_site(j, a: CreateSiteIn):
+    name = a.name.strip()
+    if _name_key(name) in _PLACEHOLDER_NAMES or name.lower() in _PLACEHOLDER_NAMES:
+        return {"error": "I need the site's actual name before I can create it - nothing queued."}
+    try:
+        customers = await j.fsm.customers()
+        sites = await j.fsm.sites()
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"I couldn't check Salts FSM for existing customers/sites ({str(e)[:150]}), so I haven't "
+                         "queued anything rather than risk a duplicate."}
+
+    customer_ref = a.customer.strip()
+    customer: dict[str, Any] | None = None
+    if customer_ref:
+        by_id = [c for c in customers if str(c.get("id") or "") == customer_ref]
+        by_name = [c for c in customers if (c.get("name") or "").strip().lower() == customer_ref.lower()]
+        found = by_id or by_name
+        if len(found) > 1:
+            return {"queued": False, "ambiguous_customer": [_brief(c, "id", "name", "account_ref", "billing_address")
+                                                              for c in found],
+                    "note": f"More than one customer is called '{customer_ref}' - ask the owner which one, then "
+                            "call again with that customer's id. Nothing queued."}
+        if not found:
+            waiting = next((x for x in _pending_fsm_creates(j, "/customers")
+                            if _name_key(x["payload"].get("body", {}).get("name")) == _name_key(customer_ref)), None)
+            if waiting:
+                return {"queued": False, "customer_pending_action": waiting["id"],
+                        "note": f"The customer '{customer_ref}' is still waiting for approval (action #"
+                                f"{waiting['id']}). Once the owner has approved it, ask me to create the site again "
+                                "- a site can only be linked to a customer that exists. Nothing queued."}
+            close = [c for c in customers if _loosely_same(customer_ref, c.get("name") or "")]
+            return {"queued": False, "error": f"No customer called '{customer_ref}' exists in Salts FSM yet. "
+                                              "Create them first with create_customer (needs approval), or pick one "
+                                              "of the close matches if one is meant.",
+                    "close_matches": [_brief(c, "id", "name", "account_ref") for c in close[:6]]}
+        customer = found[0]
+    customer_id = str(customer.get("id") or "") if customer else ""
+    customer_name = (customer.get("name") if customer else "") or ""
+
+    for action in _pending_fsm_creates(j, "/sites"):
+        pb = action["payload"].get("body", {})
+        if _loosely_same(name, pb.get("name", "")) and (pb.get("customer") or "") == (customer_id or customer_ref):
+            return {"queued": False, "already_pending_action": action["id"],
+                    "note": f"A request to create site '{pb.get('name')}' is already waiting for approval "
+                            f"(action #{action['id']}) - nothing new queued."}
+
+    def same_customer(s: dict[str, Any]) -> bool:
+        sid = str(s.get("customer_id") or "")
+        if customer_id:
+            return sid == customer_id or (not sid and _name_key(s.get("customer")) == _name_key(customer_name))
+        return not sid and not _name_key(s.get("customer"))
+
+    postcode = a.postcode.strip().upper()
+    likely = []
+    for s in sites:
+        sname = s.get("name") or ""
+        if _loosely_same(name, sname) or (postcode and _postcode_key(s.get("postcode")) == _postcode_key(postcode)
+                                          and difflib.SequenceMatcher(None, _name_key(name),
+                                                                      _name_key(sname)).ratio() >= 0.6):
+            likely.append(s)
+    twins = [s for s in likely if (s.get("name") or "").strip().lower() == name.lower() and same_customer(s)]
+    if likely and not a.confirm_not_duplicate:
+        return {"queued": False, "likely_existing_sites": [_brief(s, "id", "name", "customer", "address", "postcode")
+                                                            for s in likely[:8]],
+                "note": "There's already a site that looks like this one - nothing queued. If it's the same "
+                        "place, use that record. Only if the owner confirms it's a genuinely separate site, call "
+                        "again with confirm_not_duplicate=true."}
+
+    body: dict[str, Any] = {"name": name, "created_by": "Jarvis"}
+    if customer_ref:
+        body["customer"] = customer_id or customer_ref  # the id, so a name two customers share can't be mis-resolved
+    for key, value in (("address", a.address.strip()), ("postcode", postcode), ("notes", a.notes.strip())):
+        if value:
+            body[key] = value
+    if twins:
+        body["confirmSharedName"] = True  # only reachable via confirm_not_duplicate - the FSM would refuse a twin
+    summary = f"Create site {name}" + (f" for {customer_name}" if customer_name else " (no customer linked)")
+    if postcode:
+        summary += f" ({postcode})"
+    if twins:
+        summary += " - NOTE: a site with this exact name already exists for this customer; this makes a second one"
+    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/sites", "body": body})
+    result: dict[str, Any] = {"queued_action": action_id, "site": body, "note": "Queued for approval on the display."}
+    if not customer_ref:
+        result["warning"] = "No customer given - a job can't be booked against this site until it has one."
+    return result
 
 
 async def accept_quote(j, a: AcceptQuoteIn):
@@ -1408,6 +1628,16 @@ TOOLS: list[Tool] = [
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "
                     "owner's approval, never booked straight away.", LogJobIn, log_job, "Logging a job"),
+    Tool("create_customer", "Create a new customer in Salts FSM (name, contact, phone, email, billing address). "
+                            "Checks for an existing or similar customer first and tells you instead of creating a "
+                            "duplicate. Queued for the owner's approval, never created straight away. A new "
+                            "customer's sites are added separately with create_site once this is approved.",
+         CreateCustomerIn, create_customer, "Creating a customer"),
+    Tool("create_site", "Create a new site (premises) in Salts FSM against an existing customer. Checks for an "
+                        "existing or similar site first and tells you instead of creating a duplicate. The "
+                        "customer must already exist - if they're new, create_customer first and wait for the "
+                        "owner to approve it. Queued for the owner's approval, never created straight away.",
+         CreateSiteIn, create_site, "Creating a site"),
     Tool("accept_quote", "Accept a quote and book the resulting job in Salts FSM, together as one step - use "
                         "this rather than fsm_change/log_job separately whenever a quote has just been won. "
                         "Queued for approval; once approved, order any materials the job needs with "

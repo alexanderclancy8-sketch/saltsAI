@@ -51,7 +51,7 @@ Customers can accept quotes through a public quote link (`?public=1#quote=...`).
   raw GET) can show field names that look different from what the other FSM tools report - both are correct,
   one is normalised and one isn't. If Salts FSM's API adds a genuinely new field with no equivalent yet, add
   it to `ALIASES` rather than reading it ad hoc each time.
-- **Write:** only through `fsm_change`, which queues a change for Alex's approval.
+- **Write:** only ever queued for Alex's approval, never done straight away - `log_job` (a job), `create_customer` and `create_site` (new records; each checks for an existing or similar one first and won't queue a duplicate), `accept_quote`, and `fsm_change` for anything else the FSM API supports.
 - **Source code:** the GitHub repository in `FSM_REPO` - Jarvis can search and read it to explain features,
   and its engineering agent prepares bug fixes as pull requests.
 - **Routine tests:** HTTP smoke checks in `routine_checks.yaml` run every 15 minutes against the live site.
