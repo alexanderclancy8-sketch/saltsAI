@@ -9,9 +9,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from . import history
+
+TRANSCRIPT_REDACTED_KEY = "transcript:redacted_v1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS issues (
@@ -410,10 +414,52 @@ class Database:
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:
+        """Store one turn, redacted (credentials and access codes never reach the table). For the owner's words,
+        cumulative speech-to-text partials are collapsed, and a longer version of the immediately preceding
+        unanswered line replaces it - so only the final version of an utterance is kept."""
+        text = history.redact_history(text)
+        if role == "user":
+            text = history.collapse_cumulative(text)
+            last = self.query_one("SELECT id, role, text, created_at FROM transcript ORDER BY id DESC LIMIT 1")
+            if last and last["role"] == "user" and history.is_partial_of(last["text"], text):
+                try:
+                    age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+                except ValueError:
+                    age = history.PARTIAL_WINDOW_S + 1
+                if age <= history.PARTIAL_WINDOW_S:
+                    self.execute("UPDATE transcript SET text = ? WHERE id = ?", (text, last["id"]))
+                    return
         self.execute("INSERT INTO transcript (created_at, role, text) VALUES (?,?,?)", (now_iso(), role, text))
 
     def recent_transcript(self, limit: int = 30) -> list[dict[str, Any]]:
         return list(reversed(self.query("SELECT * FROM transcript ORDER BY id DESC LIMIT ?", (limit,))))
+
+    def last_transcript_id(self) -> int:
+        return (self.query_one("SELECT MAX(id) AS m FROM transcript") or {}).get("m") or 0
+
+    def transcript_since(self, since_iso: str, before_id: int | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """The latest ``limit`` turns created at or after ``since_iso`` (optionally only ids <= ``before_id``),
+        oldest first."""
+        if before_id is None:
+            rows = self.query("SELECT * FROM transcript WHERE created_at >= ? ORDER BY id DESC LIMIT ?",
+                              (since_iso, limit))
+        else:
+            rows = self.query("SELECT * FROM transcript WHERE created_at >= ? AND id <= ? ORDER BY id DESC LIMIT ?",
+                              (since_iso, before_id, limit))
+        return list(reversed(rows))
+
+    def maintain_transcript(self) -> None:
+        """Retention: drop turns older than the agreed 2 years, and (once) redact rows written before redaction
+        at rest existed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=history.RETENTION_DAYS)).isoformat(timespec="seconds")
+        self.execute("DELETE FROM transcript WHERE created_at < ?", (cutoff,))
+        if self.get_kv(TRANSCRIPT_REDACTED_KEY):
+            return
+        for row in self.query("SELECT id, text FROM transcript"):
+            clean = history.redact_history(row["text"])
+            if clean != row["text"]:
+                self.execute("UPDATE transcript SET text = ? WHERE id = ?", (clean, row["id"]))
+        self.set_kv(TRANSCRIPT_REDACTED_KEY, now_iso())
 
     # -- tracked metrics (followers, reviews, rankings) ----------------------------------
     def record_metric(self, day: str, source: str, metric: str, value: float) -> None:

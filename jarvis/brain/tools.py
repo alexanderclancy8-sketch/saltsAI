@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .. import history
 from ..humanize import human_datetime
 from .pr_tools import build_pr_tools
 
@@ -578,6 +579,20 @@ class RememberIn(BaseModel):
 
 class ForgetIn(BaseModel):
     memory_id: int
+
+
+class OpenRequestIn(BaseModel):
+    request: str = Field(description="One-line summary of what was asked and what is still outstanding")
+
+
+class CloseOpenRequestIn(BaseModel):
+    request_id: int = Field(description="The number of the open request, as listed in the status section")
+
+
+class HistorySearchIn(BaseModel):
+    query: str = Field("", description="Keywords to look for (e.g. 'ladder inspection'); empty = most recent turns")
+    hours: int = Field(48, description="How far back to look, in hours (up to 2 years)")
+    limit: int = Field(10, description="Max turns to return, up to 30")
 
 
 class RecruitAgentIn(BaseModel):
@@ -1228,6 +1243,22 @@ async def forget(j, a: ForgetIn):
     return "Forgotten."
 
 
+async def note_open_request(j, a: OpenRequestIn):
+    rid = history.add_open_request(j.db, a.request)
+    j.brain.refresh_system()
+    return f"Noted as open request #{rid} - it will be carried forward into later sessions until it is closed."
+
+
+async def close_open_request(j, a: CloseOpenRequestIn):
+    closed = history.close_open_request(j.db, a.request_id)
+    j.brain.refresh_system()
+    return "Closed." if closed else f"No open request #{a.request_id}."
+
+
+async def search_conversation_history(j, a: HistorySearchIn):
+    return history.search_history(j.db, a.query, a.hours, a.limit) or "Nothing matching in the stored history."
+
+
 async def create_automation(j, a: CreateAutomationIn):
     return j.automations.create(a.description, a.cron, a.prompt)
 
@@ -1601,6 +1632,16 @@ TOOLS: list[Tool] = [
     Tool("remember", "Save a fact or preference the owner wants you to remember long term.", RememberIn, remember,
          "Making a note"),
     Tool("forget", "Delete a remembered fact by its number.", ForgetIn, forget, "Forgetting that"),
+    Tool("note_open_request", "Record a request that isn't finished yet (queued for approval, waiting on "
+                              "information, or failed) so it is carried forward into later sessions. Only Jarvis' "
+                              "own to-do list - it does not do or approve anything.", OpenRequestIn,
+         note_open_request, "Noting an open request"),
+    Tool("close_open_request", "Remove an open request once it has really been done or has been dropped.",
+         CloseOpenRequestIn, close_open_request, "Closing an open request"),
+    Tool("search_conversation_history", "Search what the owner and you said in earlier conversations (stored "
+                                        "redacted for 2 years). Use it FIRST when asked 'I just asked you...', "
+                                        "'did you do it?' or 'what did I say about...'.", HistorySearchIn,
+         search_conversation_history, "Checking our earlier conversation"),
     Tool("recruit_agent", "Delegate one well-scoped, self-contained task to a fresh sub-agent with its own "
                           "brief and tools, and get its report back - for a chunk of work worth doing on its "
                           "own rather than inline (a focused piece of research, a draft, an analysis). Not for "
