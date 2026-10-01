@@ -453,6 +453,14 @@ class SalesFollowupIn(BaseModel):
     channel: str | None = Field(None, description="'email' (default) or 'call' (phone script)")
 
 
+class JobSummaryIn(BaseModel):
+    job_ref: str = Field(description="The Salts FSM reference of a COMPLETED job, e.g. 'J24100'")
+
+
+class QuoteScopeIn(BaseModel):
+    quote_ref: str = Field(description="The Salts FSM quote reference, e.g. 'Q1180' or 'RQ700'")
+
+
 class HoursIn(BaseModel):
     hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
                                                "closed (so Monday covers the weekend)")
@@ -1011,6 +1019,16 @@ async def draft_hr_letter(j, a: HRLetterIn):
     return {"shown_on_display": True, "draft": await j.documents.hr_letter(a.kind, a.person, a.details)}
 
 
+async def draft_job_summary(j, a: JobSummaryIn):
+    return {"shown_on_display": True, "draft": await j.documents.job_summary(a.job_ref),
+            "note": "Draft only - nothing has been written to Salts FSM or sent to the customer."}
+
+
+async def draft_quote_scope(j, a: QuoteScopeIn):
+    return {"shown_on_display": True, "draft": await j.documents.quote_scope(a.quote_ref),
+            "note": "Draft only - nothing has been written to Salts FSM or sent to the customer."}
+
+
 async def bid_assessment(j, a: BidAssessmentIn):
     return {"shown_on_display": True, "assessment": await j.documents.bid_assessment(a.opportunity, a.value, a.notes)}
 
@@ -1403,6 +1421,16 @@ TOOLS: list[Tool] = [
                                  "real quote data. Shown on the display; DRAFTS ONLY, never sent by this tool - to "
                                  "send, use email_send, which goes for approval.",
          SalesFollowupIn, draft_sales_followup, "Drafting the quote follow-up"),
+    Tool("draft_job_summary", "Draft a clean, customer-facing summary of a COMPLETED Salts FSM job from its real "
+                              "notes, materials used and status history (internal prices, codes and staff comments "
+                              "left out; gaps flagged, nothing invented). Shown on the display; DRAFTS ONLY - never "
+                              "written to Salts FSM and never sent by this tool. To send it, use email_send, which "
+                              "goes for approval.", JobSummaryIn, draft_job_summary, "Drafting the job summary"),
+    Tool("draft_quote_scope", "Draft a plain-English scope of works description for a Salts FSM quote from the "
+                              "quote's real data (and the source job's notes for a remedial quote). No prices; gaps "
+                              "flagged, nothing invented. Shown on the display; DRAFTS ONLY - never written to "
+                              "Salts FSM and never sent by this tool.", QuoteScopeIn, draft_quote_scope,
+         "Drafting the quote scope"),
     Tool("out_of_hours_calls", "Overnight events from the out-of-hours / alarm monitoring reports emailed to info@ "
                                "(including PDF reports): calls taken and alarm faults, comms failures and "
                                "activations - site, urgency, what was done, and which still need a job in Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),
