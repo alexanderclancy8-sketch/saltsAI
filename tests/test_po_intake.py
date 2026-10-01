@@ -16,9 +16,16 @@ def make(settings):
 class FakeMail:
     demo = False
 
-    def __init__(self, messages):
+    def __init__(self, messages, pdfs=None, pdf_error=None):
         self._messages = messages
+        self._pdfs = pdfs or []
+        self._pdf_error = pdf_error
         self.sent: list[tuple] = []
+
+    async def pdf_attachments(self, message_id, mailbox=None, max_bytes=0):
+        if self._pdf_error:
+            raise self._pdf_error
+        return self._pdfs
 
     async def list_messages(self, unread_only=True, top=20, **kw):
         return [{k: v for k, v in m.items() if k != "body"} for m in self._messages]
@@ -73,6 +80,101 @@ async def test_po_matched_by_quote_reference_queues_combined_action(tmp_path):
     assert action["payload"]["po_number"] == "SAL-0001"
     assert action["payload"]["ack_to"] == "jane@customer.example.co.uk"
     assert action["payload"]["job_body"]["customer"] == "Wharfedale Academy Trust"
+    await j.http.aclose()
+
+
+PO_PARSE = {"is_purchase_order": True, "customer_guess": "Wharfedale Academy Trust", "po_number": "SAL-0001",
+            "quote_reference": "Q1180"}
+
+
+async def test_pdf_attachment_is_sent_to_the_classifier(tmp_path):
+    j = make(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None))
+    msg = po_email(body="Please see attached order")
+    msg["has_attachments"] = True
+    j.po_intake.mail = FakeMail([msg], pdfs=[{"name": "PO-SAL-0001.pdf", "data": "JVBERi0xLjQK"}])
+    j.po_intake.fsm = FakeFSM([{"id": "Q1180", "customer": "Wharfedale Academy Trust", "status": "sent"}])
+    j.client.beta.messages.parse_result = PO_PARSE
+
+    found = await j.po_intake.scan_inbox()
+
+    assert found == 1
+    content = j.client.beta.messages.calls[-1]["messages"][0]["content"]
+    assert content[0]["type"] == "document" and content[0]["title"] == "PO-SAL-0001.pdf"
+    assert content[0]["source"] == {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"}
+    assert content[-1]["type"] == "text" and "Please see attached order" in content[-1]["text"]
+    await j.http.aclose()
+
+
+async def test_email_without_attachments_does_not_fetch_pdfs(tmp_path):
+    j = make(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None))
+    j.po_intake.mail = FakeMail([po_email()], pdf_error=AssertionError("pdf_attachments must not be called"))
+    j.po_intake.fsm = FakeFSM([{"id": "Q1180", "customer": "Wharfedale Academy Trust", "status": "sent"}])
+    j.client.beta.messages.parse_result = PO_PARSE
+
+    assert await j.po_intake.scan_inbox() == 1
+    content = j.client.beta.messages.calls[-1]["messages"][0]["content"]
+    assert [c["type"] for c in content] == ["text"]
+    await j.http.aclose()
+
+
+async def test_pdf_fetch_failure_does_not_stop_the_scan(tmp_path):
+    j = make(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None))
+    msg = po_email()
+    msg["has_attachments"] = True
+    j.po_intake.mail = FakeMail([msg], pdf_error=RuntimeError("graph down"))
+    j.po_intake.fsm = FakeFSM([{"id": "Q1180", "customer": "Wharfedale Academy Trust", "status": "sent"}])
+    j.client.beta.messages.parse_result = PO_PARSE
+
+    assert await j.po_intake.scan_inbox() == 1
+    assert len(j.db.pending_actions()) == 1
+    await j.http.aclose()
+
+
+async def test_po_matches_a_quote_that_is_not_in_sent_status(tmp_path):
+    j = make(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None))
+    j.po_intake.mail = FakeMail([po_email()])
+    j.po_intake.fsm = FakeFSM([{"id": "Q1180", "title": "Vigilon panel upgrade", "customer": "Wharfedale Academy Trust",
+                               "site": "Ilkley Grammar Annexe", "value": 14850, "status": "draft"}])
+    j.client.beta.messages.parse_result = PO_PARSE
+
+    found = await j.po_intake.scan_inbox()
+
+    assert found == 1
+    action = j.db.pending_actions()[0]
+    assert action["payload"]["quote_id"] == "Q1180"
+    assert "status is 'draft'" in action["summary"]  # the owner sees it wasn't a plain sent quote when approving
+    await j.http.aclose()
+
+
+async def test_customer_name_match_prefers_the_single_sent_quote(tmp_path):
+    j = make(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None))
+    j.po_intake.mail = FakeMail([po_email()])
+    j.po_intake.fsm = FakeFSM([
+        {"id": "Q1001", "customer": "Wharfedale Academy Trust", "status": "declined"},
+        {"id": "Q1180", "customer": "Wharfedale Academy Trust", "status": "sent"}])
+    j.client.beta.messages.parse_result = {**PO_PARSE, "quote_reference": ""}
+
+    assert await j.po_intake.scan_inbox() == 1
+    assert j.db.pending_actions()[0]["payload"]["quote_id"] == "Q1180"
+    await j.http.aclose()
+
+
+async def test_ambiguous_customer_match_across_statuses_is_not_guessed(tmp_path):
+    j = make(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None))
+    j.po_intake.mail = FakeMail([po_email()])
+    j.po_intake.fsm = FakeFSM([
+        {"id": "Q1001", "customer": "Wharfedale Academy Trust", "status": "draft"},
+        {"id": "Q1002", "customer": "Wharfedale Academy Trust", "status": "accepted"}])
+    j.client.beta.messages.parse_result = {**PO_PARSE, "quote_reference": ""}
+
+    class FakeNotifier:
+        async def notify(self, *a, **kw):
+            pass
+
+    j.po_intake.notifier = FakeNotifier()
+
+    assert await j.po_intake.scan_inbox() == 1
+    assert j.db.pending_actions() == []
     await j.http.aclose()
 
 
