@@ -20,7 +20,9 @@ from pydantic import ValidationError
 
 log = logging.getLogger(__name__)
 
-NO_RECURSE = {"recruit_agent", "self_improve", "run_security_review", "create_automation"}
+NO_RECURSE = {"recruit_agent", "self_improve", "run_security_review", "create_automation",
+              "watch_ci", "watch_action",  # background jobs that post into the chat
+              "ask_user"}  # ask_user: a background sub-agent has no turn to hand back to the owner mid-question
 MAX_TURNS_CAP = 20
 
 SYSTEM = """You are a specialist agent {owner}'s assistant Jarvis has recruited for one task - you're working

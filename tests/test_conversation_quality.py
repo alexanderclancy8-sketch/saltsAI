@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.core import Jarvis
-from jarvis.integrations.voice import VoiceError
+from jarvis.integrations.voice import STTError, VoiceError
 from jarvis.main import create_app
 from jarvis.services import conversation_quality as cq
 from tests.fakes import FakeClient, message, text_block, tool_block
@@ -130,11 +131,11 @@ async def test_a_metrics_failure_never_breaks_the_conversation(settings):
 
 async def test_a_timed_transcription_is_attached_to_the_next_spoken_turn_only(settings):
     j = make(settings)
-    j.quality.note_stt(850)
+    j.quality.note_stt(850, "How's cash?")
     await j.brain.ask("How's cash?", "voice")
     await j.brain.ask("And the inbox?", "voice")
     assert [r["stt_ms"] for r in turns(j)] == [850, None]
-    j.quality.note_stt(400)
+    j.quality.note_stt(400, "typed question")
     await j.brain.ask("typed question", "typed")  # typed turns never consume (or get) an STT time
     assert turns(j)[-1]["stt_ms"] is None
     await j.http.aclose()
@@ -142,9 +143,29 @@ async def test_a_timed_transcription_is_attached_to_the_next_spoken_turn_only(se
 
 async def test_a_stale_transcription_time_is_ignored(settings):
     j = make(settings)
-    j.quality._pending_stt = (850, time.monotonic() - cq.PENDING_STT_TTL_S - 5)  # noqa: SLF001
+    rid = j.quality.note_stt(850, "How's cash?")
+    words, ms, _ = j.quality._pending_stt[rid]  # noqa: SLF001
+    j.quality._pending_stt[rid] = (words, ms, time.monotonic() - cq.PENDING_STT_TTL_S - 5)  # noqa: SLF001
     await j.brain.ask("How's cash?", "voice")
     assert turns(j)[0]["stt_ms"] is None
+    await j.http.aclose()
+
+
+async def test_concurrent_voice_turns_each_get_their_own_transcription_timing(settings):
+    j = make(settings)
+    q = j.quality
+    # two transcriptions land back to back; their turns then start in the opposite order
+    q.note_stt(300, "How's cash looking?")
+    q.note_stt(1700, "Any faults at Baildon?")
+    q.begin("Any faults at Baildon?", "voice")
+    q.begin("How's cash looking?", "voice")
+    assert [r["stt_ms"] for r in turns(j)] == [1700, 300]
+    # a turn whose text matches no waiting transcription gets no timing (no guessing), and a timing is used once
+    q.note_stt(500, "Book the Kestrel service")
+    q.begin("Something I typed into the mic box", "voice")
+    q.begin("book the Kestrel service", "voice")
+    q.begin("book the Kestrel service", "voice")
+    assert [r["stt_ms"] for r in turns(j)][2:] == [None, 500, None]
     await j.http.aclose()
 
 
@@ -158,9 +179,12 @@ async def test_voice_events_and_first_audio(settings):
     first, second = turns(j)
     q.record_first_audio(1200, first["id"])
     q.record_first_audio(9999, first["id"])       # only the first report counts
-    q.record_first_audio(800)                     # no id: the latest spoken turn
+    assert q.record_first_audio(800) is False     # no turn id: nothing is recorded, the latest turn isn't guessed
     first, second = turns(j)
-    assert first["first_audio_ms"] == 1200 and second["first_audio_ms"] == 800
+    assert first["first_audio_ms"] == 1200 and second["first_audio_ms"] is None
+    assert q.record_first_audio(800, second["id"]) is True
+    first, second = turns(j)
+    assert second["first_audio_ms"] == 800
     s = q.stats(7)
     assert s["events"] == {"stt_failure": 1, "stt_empty": 1, "echo_suppressed": 1}
     assert s["first_audio_ms_p50"] is not None and s["turns"] == 2
@@ -177,8 +201,8 @@ async def test_feedback_defaults_to_the_latest_turn_and_keeps_one_verdict_per_tu
     assert saved["turn_id"] == turns(j)[1]["id"]
     j.quality.feedback("wrong")                       # no note: the earlier one is kept
     row = j.db.query_one("SELECT * FROM turn_feedback")
-    assert row["note"] == "It's booked for Thursday" and row["user_text"] == "Is the Kestrel service booked?"
-    assert row["reply_text"] == "Right, all quiet, sir."
+    assert row["note"] == "It's booked for Thursday"
+    assert "user_text" not in row and "reply_text" not in row   # the text lives once, in turn_metrics
     j.quality.feedback("good", turn_id=turns(j)[1]["id"])  # changed their mind: replaced, old note dropped
     row = j.db.query_one("SELECT * FROM turn_feedback")
     assert row["rating"] == "good" and row["note"] == "" and j.db.query_one("SELECT COUNT(*) AS n FROM turn_feedback")["n"] == 1
@@ -192,12 +216,31 @@ async def test_saying_that_was_wrong_flags_the_previous_turn_and_is_still_answer
                         message([text_block("Apologies - Halifax Road, then.")])])
     await j.brain.ask("Where's the Kestrel job?", "voice")
     reply = await j.brain.ask("That was wrong, sir, it's Halifax Road", "voice")
-    assert reply == "Apologies - Halifax Road, then."   # still a normal turn: Jarvis replies and corrects
-    first, second = turns(j)
+    assert reply == "Apologies - Halifax Road, then."   # still answered: Jarvis replies and corrects
+    [first] = turns(j)                                  # ...but the verdict itself is not a conversation turn
     fb = j.db.query("SELECT * FROM turn_feedback")
     assert len(fb) == 1 and fb[0]["turn_id"] == first["id"] and fb[0]["rating"] == "wrong"
-    assert "Halifax Road" in fb[0]["note"] and fb[0]["user_text"] == "Where's the Kestrel job?"
-    assert second["id"] != first["id"]
+    assert "Halifax Road" in fb[0]["note"] and first["user_text"] == "Where's the Kestrel job?"
+    await j.http.aclose()
+
+
+async def test_feedback_phrases_are_not_counted_as_turns_or_duplicates(settings):
+    j = make(settings)
+    await j.brain.ask("Where's the Kestrel job?", "voice")
+    await j.brain.ask("that was wrong", "voice")
+    await j.brain.ask("that was wrong", "voice")          # said twice: still no turns, and no 'duplicate'
+    await j.brain.ask("Where's the Kestrel job?", "voice")  # the next real turn is not compared with the verdict
+    rows = turns(j)
+    assert [r["user_text"] for r in rows] == ["Where's the Kestrel job?", "Where's the Kestrel job?"]
+    assert j.quality.stats(7)["turns"] == 2 and j.quality.stats(7)["wrong"] == 1
+    assert rows[1]["duplicate"] == 1    # the repeat of the real question is still caught
+    await j.http.aclose()
+
+
+async def test_a_verdict_with_nothing_to_mark_is_just_an_ordinary_message(settings):
+    j = make(settings)
+    await j.brain.ask("that was wrong", "voice")
+    assert len(turns(j)) == 1 and j.db.query("SELECT * FROM turn_feedback") == []
     await j.http.aclose()
 
 
@@ -209,6 +252,7 @@ async def test_a_spoken_good_verdict_and_ordinary_sentences(settings):
     await j.brain.ask("Why was that wrong?", "voice")                     # a question, not a verdict
     ratings = [(f["turn_id"], f["rating"]) for f in j.db.query("SELECT * FROM turn_feedback")]
     assert ratings == [(turns(j)[0]["id"], "good")]
+    assert len(turns(j)) == 3     # the "spot on, thanks" verdict is not a turn
     await j.http.aclose()
 
 
@@ -217,11 +261,15 @@ def test_feedback_and_voice_event_endpoints_and_the_stt_timing(settings):
     j = make(settings)
     app = create_app(settings, j)
 
-    async def fake_transcribe(data, mime):
+    async def fake_transcribe(data, mime, *args, **kwargs):
         if data == b"speech":
             return "how is cash"
         if data == b"silence":
             return ""
+        if data == b"provider":
+            raise STTError("Deepgram rejected the key", "deepgram", 401, transient=False)
+        if data == b"boom":
+            raise RuntimeError("kaput")
         raise VoiceError("Deepgram down")
 
     j.voice.transcribe = fake_transcribe  # type: ignore[method-assign]
@@ -241,13 +289,17 @@ def test_feedback_and_voice_event_endpoints_and_the_stt_timing(settings):
         assert turns(j)[0]["first_audio_ms"] == 640
 
         # /api/stt: a good transcript is timed, an empty one and a failure are counted
-        assert c.post("/api/stt", files={"audio": ("s.webm", b"speech", "audio/webm")}).json() == {"text": "how is cash"}
-        assert j.quality._pending_stt is not None  # noqa: SLF001
-        assert c.post("/api/stt", files={"audio": ("s.webm", b"silence", "audio/webm")}).json() == {"text": ""}
+        assert c.post("/api/stt", files={"audio": ("s.webm", b"speech", "audio/webm")}).json() == {
+            "text": "how is cash", "engine": settings.effective_stt}
+        assert len(j.quality._pending_stt) == 1  # noqa: SLF001
+        assert c.post("/api/stt", files={"audio": ("s.webm", b"silence", "audio/webm")}).json()["text"] == ""
         assert c.post("/api/stt", files={"audio": ("s.webm", b"x", "audio/webm")}).status_code == 503
+        assert c.post("/api/stt", files={"audio": ("s.webm", b"provider", "audio/webm")}).status_code == 502
+        assert c.post("/api/stt", files={"audio": ("s.webm", b"boom", "audio/webm")}).status_code == 502
+        assert c.post("/api/stt", files={"audio": ("s.webm", b"", "audio/webm")}).status_code == 400  # empty upload
 
         data = c.get("/api/quality").json()
-        assert data["stats"]["events"] == {"stt_failure": 1, "stt_empty": 1, "echo_suppressed": 1}
+        assert data["stats"]["events"] == {"stt_failure": 3, "stt_empty": 2, "echo_suppressed": 1}
         assert data["stats"]["wrong"] == 1 and "1 turns" in data["summary"]
 
 
@@ -287,3 +339,107 @@ async def test_the_weekly_summary_is_a_short_display_note_with_the_latest_propos
     [note] = j.db.recent_notifications(1)
     assert note["title"] == "Conversation quality - this week" and note["level"] == "info"
     await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- privacy: excerpts, retention, purge
+def _ago(days: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def seed_old_and_new(j, old_days=100, new_days=1):
+    """One turn (+ verdict) and one voice event at each age; returns the ids of the old and new turns."""
+    ids = []
+    for days in (old_days, new_days):
+        tid = j.db.execute("INSERT INTO turn_metrics (created_at, mode, user_text, reply_text) VALUES (?,?,?,?)",
+                           (_ago(days), "voice", f"asked {days} days ago", "answer"))
+        j.db.execute("INSERT INTO turn_feedback (created_at, turn_id, rating, note) VALUES (?,?,?,?)",
+                     (_ago(days), tid, "wrong", "note"))
+        j.db.execute("INSERT INTO voice_events (created_at, kind, detail) VALUES (?,?,?)",
+                     (_ago(days), "stt_empty", ""))
+        ids.append(tid)
+    return ids
+
+
+def counts(j):
+    return {t: j.db.query_one(f"SELECT COUNT(*) AS n FROM {t}")["n"]
+            for t in ("turn_metrics", "voice_events", "turn_feedback")}
+
+
+async def test_the_metrics_tables_keep_only_short_redacted_excerpts(settings):
+    long_q = "Tell me about the Kestrel site " + "and its panel " * 60
+    j = make(settings, default_text="The alarm code is 4821 and " + "more detail " * 80)
+    await j.brain.ask(long_q, "typed")
+    await j.brain.ask("The alarm code is 7788 at Baildon", "typed")
+    first, second = turns(j)
+    assert len(first["user_text"]) <= cq.EXCERPT_CHARS and len(first["reply_text"]) <= cq.EXCERPT_CHARS
+    assert "4821" not in first["reply_text"] and "7788" not in second["user_text"]   # codes redacted like the transcript
+    # the full text is still in the transcript (own retention), not copied here
+    assert any(len(r["text"]) > cq.EXCERPT_CHARS for r in j.db.recent_transcript(10))
+    j.quality.feedback("wrong", "x" * 1000)
+    assert len(j.db.query_one("SELECT note FROM turn_feedback")["note"]) <= cq.NOTE_CHARS
+    await j.http.aclose()
+
+
+async def test_prune_removes_rows_older_than_the_retention_setting_and_keeps_the_rest(settings):
+    j = make(settings)
+    assert settings.conversation_quality_retention_days == 90
+    old, new = seed_old_and_new(j)
+    j.db.execute("INSERT INTO turn_feedback (created_at, turn_id, rating, note) VALUES (?,?,?,?)",
+                 (_ago(0), 9999, "good", ""))   # a verdict whose turn is gone
+    removed = j.quality.prune()
+    assert removed == {"turn_feedback": 2, "turn_metrics": 1, "voice_events": 1}
+    assert counts(j) == {"turn_metrics": 1, "voice_events": 1, "turn_feedback": 1}
+    assert j.db.query_one("SELECT id FROM turn_metrics")["id"] == new
+    # the window is a setting: rows go once it is shortened to a single day
+    settings.conversation_quality_retention_days = 1
+    j.db.execute("UPDATE turn_metrics SET created_at = ?", (_ago(3),))
+    j.db.execute("UPDATE voice_events SET created_at = ?", (_ago(3),))
+    j.quality.prune()
+    assert counts(j) == {"turn_metrics": 0, "voice_events": 0, "turn_feedback": 0}
+    await j.http.aclose()
+
+
+async def test_old_rows_are_pruned_at_startup_and_by_a_daily_job(settings):
+    from jarvis.services.scheduler import build_scheduler
+    j = make(settings)
+    seed_old_and_new(j)
+    await j.http.aclose()
+    assert counts(j)["turn_metrics"] == 2
+    j2 = make(settings)   # starting up again prunes (same hook family as the transcript's retention)
+    assert counts(j2) == {"turn_metrics": 1, "voice_events": 1, "turn_feedback": 1}
+    seed_old_and_new(j2)
+    job = build_scheduler(j2).get_job("conversation_quality_retention")
+    assert job is not None and job.max_instances == 1 and job.coalesce
+    await job.func()
+    assert counts(j2)["turn_metrics"] == 2
+    await j2.http.aclose()
+
+
+async def test_purge_wipes_the_three_tables_but_not_the_transcript(settings):
+    j = make(settings)
+    await j.brain.ask("How's cash?", "voice")
+    j.quality.feedback("wrong", "bad")
+    j.quality.record_event("stt_empty")
+    j.db.set_kv(cq.LAST_REFLECTION_KEY, "Proposal: x")
+    assert j.quality.purge() == {"turn_feedback": 1, "turn_metrics": 1, "voice_events": 1}
+    assert counts(j) == {"turn_metrics": 0, "voice_events": 0, "turn_feedback": 0}
+    assert j.db.get_kv(cq.LAST_REFLECTION_KEY) is None
+    assert any(r["text"] == "How's cash?" for r in j.db.recent_transcript(10))
+    await j.http.aclose()
+
+
+def test_the_purge_endpoint_is_owner_only_and_not_a_brain_tool(settings):
+    from jarvis.brain.tools import TOOLS
+    assert not [t.name for t in TOOLS if "quality" in t.name or "purge" in t.name]
+    settings.jarvis_owner_password = "s3cret"
+    j = make(settings)
+    seed_old_and_new(j)
+    with TestClient(create_app(settings, j)) as c:
+        assert c.delete("/api/quality").status_code == 401           # not signed in
+        assert counts(j)["turn_metrics"] == 2
+        assert c.post("/login", data={"password": "s3cret"}, follow_redirects=False).status_code == 303
+        r = c.delete("/api/quality", params={"older_than_days": 30})  # only what is older than that
+        assert r.json() == {"removed": {"turn_feedback": 1, "turn_metrics": 1, "voice_events": 1}}
+        assert counts(j)["turn_metrics"] == 1
+        assert c.delete("/api/quality").json()["removed"]["turn_metrics"] == 1   # no argument: everything
+        assert counts(j) == {"turn_metrics": 0, "voice_events": 0, "turn_feedback": 0}

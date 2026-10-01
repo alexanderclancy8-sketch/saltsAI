@@ -248,5 +248,6 @@ class PerformanceReviewer:
             body = "\n".join(lines) + "\n\n" + result["guidance"]
         if self.notifier:
             await self.notifier.notify(f"Weekly team review: {len(flagged)} flagged", body,
-                                       level="warning" if flagged else "info", push=True)
+                                       level="warning" if flagged else "info", push=True,
+                                       importance="normal", management_only=True)  # staff performance
         return body

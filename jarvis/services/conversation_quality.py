@@ -7,6 +7,12 @@ a conversation, and nothing here sends, books or approves anything - so it needs
 reflection (self_learning.py) is handed the numbers and flagged turns and may `remember` durable things as it
 always could; any prompt changes it proposes are only *text in its reply* for a human to read - nothing is applied.
 
+PRIVACY / RETENTION. These tables hold a short, redacted excerpt (<= EXCERPT_CHARS, credentials and access codes
+stripped exactly as for the `transcript` table) of what was said, so a flagged turn can be shown in the summary.
+The full conversation lives only in `transcript` (2-year retention). The metrics tables are pruned after
+`Settings.conversation_quality_retention_days` (default 90) at start-up and by a daily job; `purge()` /
+`DELETE /api/quality` (owner only) wipes them immediately. There is deliberately no brain tool for either.
+
 What is measured and where:
   - server side, per turn (both brains call `begin()` / the returned record's `first_delta()`, `tools()`,
     `finish()`): time to first words, total reply time, tool-call count, duplicate message, failed / interrupted
@@ -21,14 +27,17 @@ What is measured and where:
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from ..db import now_iso
+from ..history import redact_history
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +45,11 @@ SCHEDULED_PREFIX = "[Scheduled"      # self-reflection / automations prompts: no
 PENDING_STT_TTL_S = 60               # a timed transcription only belongs to the turn that follows it straight away
 DUPLICATE_WINDOW_S = 120             # the same message again within this long counts as a duplicate
 EVENT_KINDS = ("stt_failure", "stt_empty", "echo_suppressed")
-TEXT_LIMIT = 2000
+PENDING_STT_MAX = 50                 # bound on timed transcriptions waiting for their turn
+STT_MATCH_RATIO = 0.8                # how closely a turn's text must match a transcript to take its timing
+EXCERPT_CHARS = 300                  # the most user / reply text kept per row; the full text is in `transcript`
+NOTE_CHARS = 300
+DEFAULT_RETENTION_DAYS = 90
 LAST_TURN_KEY = "quality:last_turn_id"
 LAST_EVENT_KEY = "quality:last_event_id"
 LAST_FEEDBACK_KEY = "quality:last_feedback_at"
@@ -163,6 +176,12 @@ def lint_spoken_reply(text: str, wake: str = "jarvis") -> list[str]:
     return flags
 
 
+def excerpt(text: str | None, limit: int = EXCERPT_CHARS) -> str:
+    """A short, redacted copy of `text` for the metrics tables (same redaction as the stored conversation)."""
+    t = redact_history(str(text or "")).strip()
+    return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
+
+
 def _pct(values: list[float], p: float) -> int | None:
     vals = sorted(v for v in values if v is not None)
     if not vals:
@@ -213,7 +232,10 @@ class TurnRecord:
 class ConversationQuality:
     def __init__(self, j):
         self.j = j
-        self._pending_stt: tuple[int, float] | None = None
+        # Timed transcriptions waiting for the turn they belong to, keyed by a per-request id (never one shared
+        # slot, so concurrent voice turns can't take each other's timing): id -> (words, ms, noted_at).
+        self._pending_stt: dict[int, tuple[str, int, float]] = {}
+        self._stt_ids = itertools.count(1)
         self._brief_at = ""
 
     @property
@@ -225,8 +247,9 @@ class ConversationQuality:
 
     # -- recording --------------------------------------------------------------------------------------
     def begin(self, text: str, mode: str) -> TurnRecord:
-        """Start measuring a turn. Also notices a spoken/typed verdict on the previous reply ("that was wrong")
-        and flags that turn. Never raises."""
+        """Start measuring a turn. A spoken/typed verdict on the previous reply ("that was wrong") is recorded as
+        feedback on that reply and is *not* itself a conversation turn (it would skew turn counts and duplicates,
+        and become the "previous turn" the next verdict lands on). Never raises."""
         try:
             if str(text).lstrip().startswith(SCHEDULED_PREFIX):
                 return TurnRecord(self, None, mode)
@@ -236,20 +259,30 @@ class ConversationQuality:
             verdict = detect_feedback_phrase(text, wake)
             if verdict and prev:
                 self.feedback(verdict[0], verdict[1], turn_id=prev["id"])
-            norm = " ".join(norm_words(text))
+                return TurnRecord(self, None, mode)
+            user_text = excerpt(text)
+            norm = " ".join(norm_words(user_text))
             duplicate = bool(prev and norm and " ".join(norm_words(prev["user_text"])) == norm
                              and _age_s(prev["created_at"]) <= DUPLICATE_WINDOW_S)
             voice = mode == "voice"
-            echo = bool(voice and looks_like_self_echo(text, [prev["reply_text"]] if prev else [], wake))
+            echo = bool(voice and looks_like_self_echo(text, self._last_reply(prev), wake))
             turn_id = self.db.execute(
                 "INSERT INTO turn_metrics (created_at, mode, user_text, stt_ms, duplicate, echo_suspect)"
                 " VALUES (?,?,?,?,?,?)",
-                (now_iso(), mode, str(text)[:TEXT_LIMIT], self._take_stt() if voice else None,
+                (now_iso(), mode, user_text, self._take_stt(text) if voice else None,
                  int(duplicate), int(echo)))
             return TurnRecord(self, turn_id, mode)
         except Exception as e:  # noqa: BLE001 - measuring must never break a conversation
             log.warning("turn metrics skipped: %s", e)
             return TurnRecord(self, None, mode)
+
+    def _last_reply(self, prev: dict | None) -> list[str]:
+        """What Jarvis last said, for the echo check: the full reply from `transcript` (the metrics row only keeps
+        an excerpt), falling back to that excerpt."""
+        row = self.db.query_one("SELECT text FROM transcript WHERE role = 'assistant' ORDER BY id DESC LIMIT 1")
+        if row and row["text"]:
+            return [row["text"]]
+        return [prev["reply_text"]] if prev and prev["reply_text"] else []
 
     def _finish(self, rec: TurnRecord, reply: str, ok: bool, interrupted: bool) -> None:
         try:
@@ -257,20 +290,35 @@ class ConversationQuality:
             self.db.execute(
                 "UPDATE turn_metrics SET reply_text = ?, first_delta_ms = ?, total_ms = ?, tool_calls = ?,"
                 " failed = ?, interrupted = ?, format_flags = ? WHERE id = ?",
-                (str(reply or "")[:TEXT_LIMIT], rec.first_delta_ms, int((time.monotonic() - rec.started) * 1000),
+                (excerpt(reply), rec.first_delta_ms, int((time.monotonic() - rec.started) * 1000),
                  rec.tool_count, int(not ok and not interrupted), int(interrupted), ",".join(flags), rec.turn_id))
         except Exception as e:  # noqa: BLE001
             log.warning("turn metrics not saved: %s", e)
 
-    def note_stt(self, ms: float) -> None:
-        """A transcription just took `ms`; it is attributed to the next spoken turn (if it follows promptly)."""
-        self._pending_stt = (int(ms), time.monotonic())
+    def note_stt(self, ms: float, text: str = "") -> int:
+        """A transcription of `text` just took `ms`. It waits, under its own request id, for the spoken turn whose
+        text matches it (see `_take_stt`); a transcript that never becomes a turn simply expires."""
+        now = time.monotonic()
+        self._pending_stt = {k: v for k, v in self._pending_stt.items() if now - v[2] <= PENDING_STT_TTL_S}
+        while len(self._pending_stt) >= PENDING_STT_MAX:
+            self._pending_stt.pop(next(iter(self._pending_stt)))
+        rid = next(self._stt_ids)
+        self._pending_stt[rid] = (" ".join(norm_words(text)), int(ms), now)
+        return rid
 
-    def _take_stt(self) -> int | None:
-        pending, self._pending_stt = self._pending_stt, None
-        if pending and time.monotonic() - pending[1] <= PENDING_STT_TTL_S:
-            return pending[0]
-        return None
+    def _take_stt(self, text: str) -> int | None:
+        """The timing of the transcription that produced `text`, consumed once. Never a guess: with no close
+        match (or only other turns' transcripts waiting) the turn simply has no STT timing."""
+        now = time.monotonic()
+        mine = " ".join(norm_words(text))
+        best, best_ratio = None, STT_MATCH_RATIO
+        for rid, (words, _ms, at) in self._pending_stt.items():
+            if not words or not mine or now - at > PENDING_STT_TTL_S:
+                continue
+            ratio = 1.0 if words == mine else SequenceMatcher(None, words, mine).ratio()
+            if ratio >= best_ratio:
+                best, best_ratio = rid, ratio
+        return self._pending_stt.pop(best)[1] if best is not None else None
 
     def record_event(self, kind: str, detail: str = "") -> bool:
         """An occurrence that isn't a turn: an STT failure, an empty transcript, an echo the browser suppressed."""
@@ -284,16 +332,15 @@ class ConversationQuality:
             log.warning("voice event not saved: %s", e)
             return False
 
-    def record_first_audio(self, ms: float, turn_id: int | None = None) -> None:
-        """Browser-measured: how long after the request was sent the first sound of the reply began."""
+    def record_first_audio(self, ms: float, turn_id: int | None = None) -> bool:
+        """Browser-measured: how long after the request was sent the first sound of the reply began. It must name
+        its turn - with no turn id nothing is recorded, rather than guessing the latest voice turn."""
+        if turn_id is None:
+            return False
         ms = int(max(0, min(ms, 600_000)))
-        if turn_id is not None:
-            self.db.execute("UPDATE turn_metrics SET first_audio_ms = ? WHERE id = ? AND first_audio_ms IS NULL",
-                            (ms, int(turn_id)))
-        else:
-            self.db.execute(
-                "UPDATE turn_metrics SET first_audio_ms = ? WHERE first_audio_ms IS NULL AND id ="
-                " (SELECT MAX(id) FROM turn_metrics WHERE mode = 'voice')", (ms,))
+        self.db.execute("UPDATE turn_metrics SET first_audio_ms = ? WHERE id = ? AND first_audio_ms IS NULL",
+                        (ms, int(turn_id)))
+        return True
 
     # -- feedback ---------------------------------------------------------------------------------------
     def feedback(self, rating: str, note: str = "", turn_id: int | None = None) -> dict[str, Any] | None:
@@ -305,17 +352,15 @@ class ConversationQuality:
                 else self.db.query_one("SELECT * FROM turn_metrics ORDER BY id DESC LIMIT 1"))
         if not turn:
             return None
-        note = str(note or "").strip()[:500]
+        note = excerpt(note, NOTE_CHARS)
         existing = self.db.query_one("SELECT * FROM turn_feedback WHERE turn_id = ?", (turn["id"],))
         if existing:
             note = note or (existing["note"] if existing["rating"] == rating else "")
             self.db.execute("UPDATE turn_feedback SET rating = ?, note = ?, created_at = ? WHERE id = ?",
                             (rating, note, now_iso(), existing["id"]))
         else:
-            self.db.execute(
-                "INSERT INTO turn_feedback (created_at, turn_id, rating, note, user_text, reply_text)"
-                " VALUES (?,?,?,?,?,?)",
-                (now_iso(), turn["id"], rating, note, turn["user_text"], turn["reply_text"]))
+            self.db.execute("INSERT INTO turn_feedback (created_at, turn_id, rating, note) VALUES (?,?,?,?)",
+                            (now_iso(), turn["id"], rating, note))
         return {"turn_id": turn["id"], "rating": rating, "note": note}
 
     # -- statistics -------------------------------------------------------------------------------------
@@ -396,8 +441,10 @@ class ConversationQuality:
         ids = [r["id"] for r in rows]
         # Verdicts are picked up by when they were given (a "wrong" tapped today on yesterday's reply still counts).
         self._brief_at = now_iso()
-        feedback = self.db.query("SELECT * FROM turn_feedback WHERE created_at > ? ORDER BY id",
-                                 (self.db.get_kv(LAST_FEEDBACK_KEY) or "",))
+        feedback = self.db.query(
+            "SELECT f.*, COALESCE(t.user_text, '') AS user_text, COALESCE(t.reply_text, '') AS reply_text"
+            " FROM turn_feedback f LEFT JOIN turn_metrics t ON t.id = f.turn_id"
+            " WHERE f.created_at > ? ORDER BY f.id", (self.db.get_kv(LAST_FEEDBACK_KEY) or "",))
         newest_turn = max(ids + [last_turn])
         newest_event = max([e["id"] for e in events] + [last_event])
         if not rows and not events and not feedback:
@@ -425,3 +472,45 @@ class ConversationQuality:
         self.db.set_kv(LAST_FEEDBACK_KEY, self._brief_at or now_iso())
         if proposals and proposals.strip():
             self.db.set_kv(LAST_REFLECTION_KEY, proposals.strip()[:4000])
+
+    # -- retention ----------------------------------------------------------------------------------------
+    def retention_days(self) -> int:
+        try:
+            return max(1, int(getattr(self.j.settings, "conversation_quality_retention_days", DEFAULT_RETENTION_DAYS)))
+        except (TypeError, ValueError):
+            return DEFAULT_RETENTION_DAYS
+
+    def prune(self, days: int | None = None) -> dict[str, int]:
+        """Delete turn_metrics, voice_events and turn_feedback rows older than `days` (default: the retention
+        setting, 90). Returns how many rows went from each table. Run at start-up and daily; never raises."""
+        days = max(1, int(days)) if days is not None else self.retention_days()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        out: dict[str, int] = {}
+        try:
+            for table in ("turn_feedback", "turn_metrics", "voice_events"):
+                out[table] = self.db.query_one(f"SELECT COUNT(*) AS n FROM {table} WHERE created_at < ?",
+                                               (cutoff,))["n"]
+                self.db.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff,))
+            # a verdict whose turn has gone has nothing left to show (its own timestamp can be newer than the turn's)
+            orphans = "turn_id NOT IN (SELECT id FROM turn_metrics)"
+            out["turn_feedback"] += self.db.query_one(f"SELECT COUNT(*) AS n FROM turn_feedback WHERE {orphans}")["n"]
+            self.db.execute(f"DELETE FROM turn_feedback WHERE {orphans}")
+        except Exception as e:  # noqa: BLE001 - housekeeping must never break start-up or the scheduler
+            log.warning("conversation quality retention skipped: %s", e)
+        if any(out.values()):
+            log.info("conversation quality retention (%d days): removed %s", days, out)
+        return out
+
+    async def prune_job(self) -> dict[str, int]:
+        return self.prune()
+
+    def purge(self) -> dict[str, int]:
+        """Owner-requested wipe: delete every row of all three tables and the stored copy of the latest
+        reflection's proposals. The full conversation in `transcript` is untouched (it has its own retention)."""
+        out: dict[str, int] = {}
+        for table in ("turn_feedback", "turn_metrics", "voice_events"):
+            out[table] = self.db.query_one(f"SELECT COUNT(*) AS n FROM {table}")["n"]
+            self.db.execute(f"DELETE FROM {table}")
+        self._pending_stt.clear()
+        self.db.execute("DELETE FROM kv WHERE key = ?", (LAST_REFLECTION_KEY,))
+        return out

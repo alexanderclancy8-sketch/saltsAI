@@ -58,6 +58,22 @@ class ActionExecutor:
             await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"})
             result = await self.fsm.write("POST", "/jobs", p["job_body"])
             return f"Quote {p['quote_id']} accepted; job booked: {str(result)[:250]}"
+        if action["kind"] == "accept_quote_from_po":
+            await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"})
+            result = await self.fsm.write("POST", "/jobs", p["job_body"])
+            job = result.get("job", result) if isinstance(result, dict) else {}
+            job_id = job.get("id")
+            if job_id and p.get("po_number"):
+                await self.fsm.write("PUT", f"/jobs/{job_id}/customer-po", {"poNumber": p["po_number"]})
+            if p.get("ack_to"):
+                await self.mail.send_mail(
+                    [p["ack_to"]], f"Order received - {p['job_body'].get('description', '')[:80]}",
+                    f"<p>Hi {p.get('ack_name') or 'there'},</p>"
+                    f"<p>Thanks - we've received your purchase order"
+                    f"{' (' + p['po_number'] + ')' if p.get('po_number') else ''} and the job is now booked in.</p>"
+                    "<p>We'll be in touch to confirm scheduling.</p><p>Kind regards</p>")
+            po_note = f" (PO {p['po_number']})" if p.get("po_number") else ""
+            return f"Quote {p['quote_id']} accepted; job booked{po_note}: {str(result)[:250]}"
         if action["kind"] == "deploy_fix":
             return await self.fixer.deploy(p["issue_id"], p["pr_number"])
         raise ValueError(f"Unknown action kind {action['kind']}")
@@ -83,11 +99,13 @@ class ActionExecutor:
             else:
                 result = await self._execute(action)
                 self.db.set_action_status(action["id"], "done", result)
-                await self.notifier.notify(f"Done: {action['summary'][:120]}", result, level="info", speak=True)
+                await self.notifier.notify(f"Done: {action['summary'][:120]}", result, level="info", speak=True,
+                                             importance="info")
         except Exception as e:  # noqa: BLE001
             log.exception("Action %s failed", action["id"])
             self.db.set_action_status(action["id"], "failed", str(e)[:1000])
-            await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning")
+            await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning",
+                                       importance="normal")
         self.bus.publish("approvals", self.db.pending_actions())
 
     async def approve(self, action_id: int, by: str | None = None) -> str:

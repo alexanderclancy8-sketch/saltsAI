@@ -102,6 +102,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("ms_client_id", "Application (client) ID", placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"),
             Field("ms_client_secret", "Client secret", "secret"),
             Field("ms_mailbox", "Your mailbox", "email", "The mailbox Jarvis reads and sends from."),
+            Field("owner_mail_folder", "Folder for Jarvis's emails to you",
+                  help="Outlook folder name (in your mailbox) Jarvis's own emails to you are filed into instead "
+                       "of the Inbox. Blank = keep them in the Inbox. Falls back to the Inbox if not found."),
             Field("ooh_mailbox", "Out-of-hours reports mailbox", "email",
                   "Where the answering service's reports arrive, e.g. info@. Blank = your mailbox."),
             Field("ooh_email_from", "Out-of-hours reports come from",
@@ -122,14 +125,36 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "sharedinbox", "Shared inbox (info@)", "Keeps the shared inbox for important operational items only. "
+        "Everything else goes to Teams and the display.",
+        (
+            Field("shared_inbox", "Shared inbox address", "email",
+                  "Automated emails to this address are filtered by importance. Finance and management items "
+                  "never go here."),
+            Field("shared_inbox_min_importance", "Lowest importance emailed to it", "select",
+                  "Anything below this goes to Teams and the display instead. Urgent (life-safety) alerts are "
+                  "never rate-limited.",
+                  options=(("info", "Info (everything)"), ("normal", "Normal"),
+                           ("important", "Important (recommended)"), ("urgent", "Urgent only"))),
+            Field("shared_inbox_dedupe_minutes", "Don't repeat the same alert within (minutes)", "number",
+                  advanced=True),
+            Field("shared_inbox_max_per_hour", "Most emails to it per hour", "number", advanced=True),
+        ),
+    ),
+    Section(
         "teams", "Teams updates", "Jarvis posts your updates and alerts to a Teams channel.",
         (
             Field("teams_webhook_url", "Channel webhook URL", "secret"),
+            Field("engineering_notify_channels", "Fix and pull request notifications", "select",
+                  "Where fix-ready, pull request, deploy, triage and security-review updates go.",
+                  options=(("teams", "Teams only"), ("teams,email", "Teams and email")), advanced=True),
+            Field("engineering_email_fallback", "Email those if Teams fails", "bool",
+                  "Off: a failed Teams post is shown on the display, not emailed.", advanced=True),
             Field("fix_notify_channels", "Fix and pull request alerts", "select",
                   "Fixes, pull requests and security findings always show on the display and issues list. "
                   "This picks what else gets told.",
                   options=(("teams", "Teams only"), ("teams,email", "Teams and email"),
-                           ("none", "Display only"))),
+                            ("none", "Display only"))),
             Field("fix_notify_email", "Email for fix alerts", "email",
                   "Only used if email is switched on above. Blank = your email.", advanced=True),
         ),
@@ -192,14 +217,20 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "ram", "RAM Tracking", "Van locations, set-off and home times, journeys and timesheet checks.",
         (
-            Field("ram_api_base_url", "API address", "url", "From RAM's External API documentation."),
-            Field("ram_api_key", "API key", "secret"),
-            Field("ram_api_key_header", "API key header", advanced=True),
+            Field("ram_client_id", "Client ID"),
+            Field("ram_api_key", "Client secret", "secret"),
+            Field("ram_username", "API username"),
+            Field("ram_password", "API password", "secret"),
+            Field("ram_api_base_url", "API address", "url", advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
         ),
-        required=("ram_api_base_url", "ram_api_key"),
+        required=("ram_client_id", "ram_api_key", "ram_username", "ram_password"),
         test=True,
-        guide=("Ask RAM Tracking support for External API access. They'll give you an API address and key.",),
+        guide=(
+            "In the RAM Tracking portal: profile - integrations - API Keys shows the Client ID and Client secret.",
+            "That page also says you need a dedicated account's username and password for the API - "
+            "RAM recommend a separate login just for this, not your own.",
+        ),
     ),
     Section(
         "voice", "Voice", "How Jarvis sounds, and how it hears you.",
@@ -251,6 +282,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("voice_ack_fillers", "Say a short acknowledgment while thinking", "bool",
                   "When you ask something out loud and the answer takes a couple of seconds, Jarvis says one "
                   "short line like \"Let me check the accounts.\" Never for typed questions.", advanced=True),
+            Field("voice_silence_ms", "Pause before Jarvis takes your turn as finished (ms)", "number",
+                  "How long a silence counts as the end of what you're saying when using push-to-talk. 1200 is "
+                  "normal; Jarvis waits a little longer if you trail off on \"and\", \"so\" or \"um\".", advanced=True),
         ),
         test=True,
     ),
@@ -330,6 +364,21 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "proactive", "Jarvis speaking up", "Lets Jarvis post into the open chat (and read it aloud in voice mode) when "
+                                          "a background job finishes or something he's watching changes. It can "
+                                          "only tell you things - approvals and changes still need your click.",
+        (
+            Field("proactive_chat_enabled", "Let Jarvis post into the chat by himself", "bool",
+                  "Off by default. There is also a mute button on the chat for the session you have open."),
+            Field("proactive_quiet_start", "Quiet from (HH:MM)", placeholder="21:00",
+                  help="Nothing is posted into the chat or sent to Teams between these times. UK time."),
+            Field("proactive_quiet_end", "Quiet until (HH:MM)", placeholder="07:30"),
+            Field("proactive_max_per_hour", "Most messages an hour", "number",
+                  "Anything over this waits for the next check. 0 means no limit.", advanced=True),
+            Field("proactive_pr_watch_min", "Check pull requests every (minutes)", "number", advanced=True),
+        ),
+    ),
+    Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
         (
             Field("azure_storage_connection_string", "Storage connection string", "secret"),
@@ -377,6 +426,8 @@ SECTIONS: tuple[Section, ...] = (
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
             Field("self_learning_cron", "Self-reflection (what to remember)", "cron", advanced=True),
             Field("conversation_quality_cron", "Weekly conversation quality summary", "cron", advanced=True),
+            Field("conversation_quality_retention_days", "Keep conversation quality records (days)", "number",
+                  advanced=True),
             Field("routine_test_interval_min", "Routine tests every (minutes)", "number", advanced=True),
             Field("inbox_check_interval_min", "Check inbox every (minutes)", "number", advanced=True),
             Field("lone_worker_check_min", "Lone-worker sweep every (minutes)", "number", advanced=True),
@@ -481,6 +532,15 @@ class SettingsStore:
                 cron_trigger(value)
             except ValueError:
                 return None, "Use cron format, e.g. 45 7 * * 1-5"
+        if key in ("proactive_quiet_start", "proactive_quiet_end") and not re.fullmatch(
+                r"([01]?\d|2[0-3]):[0-5]\d", str(value)):
+            return None, "Use a time like 21:00"
+        if key in ("proactive_max_per_hour", "proactive_pr_watch_min"):
+            try:
+                if int(value) < 0 or (key == "proactive_pr_watch_min" and int(value) < 1):
+                    return None, "Enter a whole number, not less than " + ("1" if key == "proactive_pr_watch_min" else "0")
+            except (TypeError, ValueError):
+                return None, "Enter a number."
         if key == "jarvis_owner_password" and len(value) < 8:
             return None, "Use at least 8 characters."
         if key == "claude_code_oauth_token" and value and not value.startswith("sk-ant-oat"):

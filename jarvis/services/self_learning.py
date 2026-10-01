@@ -18,6 +18,7 @@ import logging
 log = logging.getLogger(__name__)
 LAST_ID_KEY = "self_learning:last_transcript_id"
 BATCH_LIMIT = 400  # generous - a busy day's worth of turns, kept bounded so the prompt doesn't balloon
+SELF_PROMPT_TAG = "[Scheduled self-reflection"  # start of the prompt this service sends (and so of its transcript row)
 
 
 class SelfLearning:
@@ -27,9 +28,12 @@ class SelfLearning:
     async def reflect(self) -> str:
         j = self.j
         last_id = int(j.db.get_kv(LAST_ID_KEY) or 0)
-        rows = j.db.query("SELECT * FROM transcript WHERE id > ? ORDER BY id LIMIT ?", (last_id, BATCH_LIMIT))
+        # Earlier reflections' own prompts (each carries a whole transcript) are never fed back in.
+        rows = j.db.query("SELECT * FROM transcript WHERE id > ? AND NOT (role = 'user' AND text LIKE ?) "
+                          "ORDER BY id LIMIT ?", (last_id, SELF_PROMPT_TAG + "%", BATCH_LIMIT))
         if not rows:
             return "Nothing new since the last reflection."
+        newest = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
         transcript = "\n".join(f"{r['role']}: {r['text']}" for r in rows)
         # Conversation-quality measurements and any replies the owner marked wrong since the last reflection.
         # Measurement only: never allowed to stop the reflection itself.
@@ -48,7 +52,7 @@ class SelfLearning:
             "own prompt here, it is only a proposal for the owner to review. Skip this if nothing stands out."
         ) if brief else ""
         prompt = (
-            "[Scheduled self-reflection - nobody typed this, it's you looking back over recent conversations]\n"
+            f"{SELF_PROMPT_TAG} - nobody typed this, it's you looking back over recent conversations]\n"
             "Here's everything said since your last reflection. Look for anything durable worth remembering "
             "long-term: a stated preference, a correction to something you got wrong, a recurring pattern, a "
             "fact about how the business or a person works - that isn't already covered by what you already "
@@ -66,7 +70,15 @@ class SelfLearning:
                 log.warning("conversation quality watermark not saved: %s", e)
         # brain.ask() itself writes this reflection's own prompt and reply into the same transcript table -
         # advance past those too (the real current max, not just rows[-1]), or the next reflection would find
-        # its own last turn waiting for it and reflect on itself forever.
-        latest = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
-        j.db.set_kv(LAST_ID_KEY, str(latest))
+        # its own last turn waiting for it and reflect on itself forever. The exception is a backlog bigger than
+        # one batch: jumping to the max would silently skip the turns that didn't fit, so stop at the batch end
+        # and let the next run pick up the rest.
+        if len(rows) >= BATCH_LIMIT and newest > rows[-1]["id"]:
+            cursor = rows[-1]["id"]
+        else:
+            cursor = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
+        j.db.set_kv(LAST_ID_KEY, str(cursor))
+        if j.settings.weekly_digest_enabled:  # a routine summary: stored for the weekly digest, never sent
+            j.db.add_digest_item("self_learning_summary", "Self-reflection on recent conversations",
+                                 (reply or "")[:500], status="reflected")
         return reply
