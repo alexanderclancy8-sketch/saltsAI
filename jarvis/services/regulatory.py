@@ -81,7 +81,8 @@ class RegulatoryWatch:
         if not focus:
             self.db.set_kv("regwatch_last", text)
         if deliver:
-            await self.notifier.notify("Weekly tax & employment law watch", text[:3000], level="info", push=True)
+            await self.notifier.notify("Weekly tax & employment law watch", text[:3000], level="info", push=True,
+                                       importance="info", management_only=True)
             if self.s.partner_email and self.actions is not None:
                 self.actions.queue("email_send", f"Send this week's tax & employment law update to {self.s.partner_name or self.s.partner_email}",
                                    {"to": [self.s.partner_email], "cc": [], "subject": "[Jarvis] Tax & employment law watch",
@@ -104,7 +105,8 @@ class RegulatoryWatch:
         if not focus:
             self.db.set_kv("technical_watch_last", text)
         if deliver:
-            await self.notifier.notify("Weekly fire & security technical watch", text[:3000], level="info", push=True)
+            await self.notifier.notify("Weekly fire & security technical watch", text[:3000], level="info", push=True,
+                                       importance="info")
         return text
 
     async def technical_weekly(self) -> None:

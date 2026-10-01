@@ -17,13 +17,20 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from urllib.parse import unquote
 
 REDACTED = "[REDACTED]"
 
-# Query-string parameters whose value is a secret. A parameter is redacted if its name contains any of these.
-SENSITIVE_PARAM_WORDS = (
-    "sig", "key", "token", "code", "secret", "pass", "pwd", "auth", "credential", "session", "bearer",
-)
+# Query-string parameters whose value is a secret. The parameter NAME is split into words (on punctuation and
+# camelCase boundaries) and judged word by word - see is_sensitive_param - never by substring, so `postcode`,
+# `keyword`, `design`, `signal` and `passenger` are left alone.
+SENSITIVE_WORDS = frozenset({
+    "sig", "signature", "token", "tokens", "secret", "secrets", "password", "passwords", "passwd", "passcode",
+    "pwd", "pass", "apikey", "auth", "authorization", "credential", "credentials", "sessionid", "jsessionid",
+    "sid", "bearer", "jwt", "otp", "pin",
+})
+# Adjacent-word pairs that are secret together although neither word is on its own (session+id).
+SENSITIVE_PAIRS = frozenset({("session", "id"), ("auth", "code"), ("access", "key"), ("private", "key")})
 
 # Loggers that print full request URLs at INFO. Set to WARNING so routine traffic is not logged at all.
 NOISY_HTTP_LOGGERS = (
@@ -43,16 +50,55 @@ _WEBHOOK_URL = re.compile(
 )
 _OUTLOOK_WEBHOOK_PATH = re.compile(r"/webhook", re.IGNORECASE)
 _QUERY_PARAM = re.compile(r"(?P<sep>\?|&(?:amp;)?)(?P<name>[A-Za-z0-9_.\-$%\[\]]{1,80})=(?P<val>[^&\s\"'<>#]*)")
-_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@:]+:[^\s/@]+@")
-_BEARER = re.compile(r"(?i)\b(?P<kind>Bearer)\s+[A-Za-z0-9._~+/=\-]{8,}")
-_AUTH_HEADER = re.compile(r"(?i)(?P<name>\b(?:authorization|x-api-key|api-key|ocp-apim-subscription-key)[\"']?\s*[:=]\s*[\"']?)"
-                          r"(?P<val>(?:Bearer|Basic|Token)\s+[^\s,\"'}&]{4,}|[^\s,\"'}&]{8,})")
+# The scheme must start at the beginning of a run of scheme characters, otherwise a long run of letters would be
+# rescanned from every position (quadratic time).
+_USERINFO = re.compile(r"(?<![A-Za-z0-9+.\-])(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@:]+:[^\s/@]+@")
+_CRED_CHARS = r"[A-Za-z0-9._~+/=\-]"
+_BEARER = re.compile(r"(?i)\b(?P<kind>Bearer)[ \t]+(?P<tok>" + _CRED_CHARS + r"{8,})")
+_AUTH_HEADER = re.compile(
+    r"(?P<name>\b(?:authorization|x-api-key|api-key|ocp-apim-subscription-key)[\"']?[ \t]*[:=][ \t]*[\"']?)"
+    r"(?P<val>(?:(?P<scheme>Bearer|Basic|Token)[ \t]+(?P<tok>[^\s,\"'}&]{4,})|(?P<opaque>" + _CRED_CHARS + r"{8,})))",
+    re.IGNORECASE)
 _TOKEN_PREFIX = re.compile(r"\b(?:sk-ant-|ghp_|gho_|ghs_|github_pat_|xox[bpas]-)[A-Za-z0-9_\-]{8,}")
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_NAME_SPLIT = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _words(name: str) -> list[str]:
+    """`api_key`, `X-Api-Key`, `apiKey`, `client[secret]` -> ['api', 'key'] ... (lower-cased)."""
+    name = unquote(name)
+    return [w.lower() for w in _NAME_SPLIT.split(_CAMEL.sub("_", name)) if w]
 
 
 def is_sensitive_param(name: str) -> bool:
-    lowered = name.lower()
-    return any(word in lowered for word in SENSITIVE_PARAM_WORDS)
+    """True when the parameter name, read as whole words, names a secret: sig, signature, token, secret, password,
+    apikey, auth, credential(s), session id, sid, bearer, jwt, otp, pin, `key` as a whole name or the last word of a
+    multi-word name (api_key, subscription-key, sas_key) and `code` only as the whole name (OAuth `code`) or
+    auth_code. NOT substrings: postcode, keyword, keyboard, design, signal, passenger, authority are fine."""
+    words = _words(name)
+    if not words:
+        return False
+    if any(w in SENSITIVE_WORDS for w in words):
+        return True
+    if words[-1] == "key":
+        return True
+    if words == ["code"]:
+        return True
+    return any(pair in SENSITIVE_PAIRS for pair in zip(words, words[1:]))
+
+
+def _looks_like_credential(tok: str, scheme: bool) -> bool:
+    """Is `tok` (the value after `Authorization:` / `Bearer`) plausibly a credential rather than an ordinary word?
+    With an explicit scheme (Bearer/Basic/Token) 16+ characters is enough; otherwise a short value must contain a
+    digit, a symbol or inner capitals, and a long one must not be just lower-case words joined by hyphens."""
+    tok = tok.strip("\"'")
+    if len(tok) < 8:
+        return False
+    if scheme and len(tok) >= 16:
+        return True
+    if len(tok) >= 16:
+        return not re.fullmatch(r"[a-z\-]+", tok)
+    return bool(re.search(r"[0-9+/=._]", tok) or re.search(r"[A-Z]", tok[1:]))
 
 
 def _webhook(m: re.Match) -> str:
@@ -68,6 +114,23 @@ def _param(m: re.Match) -> str:
     return m.group(0)
 
 
+def _auth_header(m: re.Match) -> str:
+    if m.group("scheme"):
+        # `Authorization: Token expired` is prose: only mask what could be a credential.
+        if not _looks_like_credential(m.group("tok"), scheme=True):
+            return m.group(0)
+        return f"{m.group('name')}{m.group('scheme')} {REDACTED}"
+    if _looks_like_credential(m.group("opaque"), scheme=False):
+        return f"{m.group('name')}{REDACTED}"
+    return m.group(0)
+
+
+def _bearer(m: re.Match) -> str:
+    if _looks_like_credential(m.group("tok"), scheme=True) and m.group("tok") != REDACTED:
+        return f"{m.group('kind')} {REDACTED}"
+    return m.group(0)
+
+
 def redact_text(text: Any) -> str:
     """`text` with webhook URLs, sensitive query-string values, credentials in URLs and bearer tokens masked."""
     if text is None:
@@ -78,8 +141,8 @@ def redact_text(text: Any) -> str:
     s = _WEBHOOK_URL.sub(_webhook, s)
     s = _USERINFO.sub(lambda m: f"{m.group('scheme')}{REDACTED}@", s)
     s = _QUERY_PARAM.sub(_param, s)
-    s = _AUTH_HEADER.sub(lambda m: f"{m.group('name')}{REDACTED}", s)
-    s = _BEARER.sub(lambda m: f"{m.group('kind')} {REDACTED}", s)
+    s = _AUTH_HEADER.sub(_auth_header, s)
+    s = _BEARER.sub(_bearer, s)
     s = _TOKEN_PREFIX.sub(REDACTED, s)
     return s
 

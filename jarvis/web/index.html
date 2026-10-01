@@ -22,6 +22,7 @@
   <div class="pills" id="pills"></div>
   <div class="spacer"></div>
   <button class="icon-btn" id="btn-dashboard" title="Show dashboard" aria-pressed="false" aria-label="Toggle dashboard">▤ Dashboard</button>
+  <button class="icon-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-pressed="false">🔔 Speaks up</button>
   <button class="icon-btn" id="btn-briefing" title="Morning briefing">Briefing</button>
   <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
   <div class="clock" id="clock"></div>
@@ -68,6 +69,7 @@
         <div>
           <div class="state" id="state">Online</div>
           <div class="caption" id="caption">Good to see you. Ask me anything, or tap the microphone.</div>
+          <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
           <div class="toolline" id="toolline"></div>
           <div class="quick" id="quick">
             <button class="chip-btn" data-q="Give me my briefing">Briefing</button>
@@ -140,6 +142,7 @@
     <span class="display-downloads" id="display-downloads" hidden>
       <a class="icon-btn" id="display-pdf" download>Download PDF</a>
       <a class="icon-btn" id="display-docx" download>Download Word</a>
+      <a class="icon-btn" id="display-xlsx" download>Download Excel</a>
     </span>
     <button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
   <div class="body md" id="display-body"></div>

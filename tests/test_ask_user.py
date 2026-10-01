@@ -3,6 +3,9 @@
 Like the barge-in tests there is no JS runner in this repo, so the front-end checks read ask.js / hud.js / index.html
 and assert the wiring (and, above all, that the question prompt stays apart from the approval mechanism)."""
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +17,7 @@ from jarvis.core import Jarvis
 from jarvis.services.recruiter import NO_RECURSE, Recruiter
 from tests.fakes import FakeClient, message, text_block, tool_block
 
+HARNESS = Path(__file__).resolve().parent / "ask_dom_harness.js"
 WEB = Path(__file__).resolve().parent.parent / "jarvis" / "web"
 ASK_JS = (WEB / "ask.js").read_text(encoding="utf-8")
 HUD = (WEB / "hud.js").read_text(encoding="utf-8")
@@ -193,6 +197,71 @@ def test_voice_reads_the_question_aloud_and_takes_a_spoken_choice():
     assert "NEGATIONS" in ASK_JS  # "not Friday" is free speech, not a pick of Friday
     # Wired to the voice state in hud.js (speak only in a session that is spoken, or when "always" is set).
     assert "speakNow: () => shouldSpeak(S.lastMode)" in HUD
+
+
+ASK_CSS = (WEB / "ask.css").read_text(encoding="utf-8")
+
+
+def css_rule(selector: str) -> str:
+    """The declarations of every rule whose selector list is exactly `selector`, joined."""
+    found = []
+    for block in ASK_CSS.split("}"):
+        head, _, body = block.partition("{")
+        if head.split("*/")[-1].strip() == selector:
+            found.append(body)
+    assert found, f"no rule for {selector!r} in ask.css"
+    return " ".join(found)
+
+
+def test_options_look_and_behave_like_buttons_and_sit_above_everything():
+    # Real <button>s (native Enter/Space/focus) - not text in a div.
+    assert '<button type="button" class="ask-opt"' in ASK_JS and 'class="ask-opt ask-other"' in ASK_JS
+    opt = css_rule(".ask-opt")
+    assert "cursor: pointer" in opt
+    assert "pointer-events: auto" in opt
+    assert "user-select: none" in css_rule(".ask-opt, .ask-opt *")
+    assert "cursor: pointer" in css_rule(".ask button, .ask button *")
+    # The pop-up itself: not selectable prose, reachable, and above the display overlay, drawer and toasts.
+    box = css_rule(".ask")
+    assert "user-select: none" in box and "pointer-events: auto" in box
+    z = int(box.split("z-index:")[1].split(";")[0])
+    hud_css = (WEB / "hud.css").read_text(encoding="utf-8")
+    for other in (".display {", ".drawer {", ".toasts {"):
+        other_z = int(hud_css.split(other)[1].split("z-index:")[1].split(";")[0])
+        assert z > other_z, other
+    # Clicks/hovers on the label text land on the button, never on inert text inside it.
+    assert "pointer-events: none" in css_rule(".ask-opt > *, .ask-opt > * > *")
+    # ...while the "Other" text box stays a normal text field.
+    assert "cursor: text" in css_rule(".ask-otherbox textarea")
+    # The Send button is shown up front for multi-select (it used to stay hidden until "Other" was opened).
+    assert '${multi ? "" : " hidden"}>Send</button>' in ASK_JS
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_clicking_an_option_sends_the_answer_as_a_chat_reply():
+    """Runs the real ask.js in node against a tiny fake DOM (tests/ask_dom_harness.js) and clicks things."""
+    run = subprocess.run(["node", str(HARNESS)], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    r = json.loads(run.stdout)
+    reply = lambda text: [{"text": text, "mode": "typed", "opts": {"ask": True}}]  # noqa: E731
+    # The question is shown, every option (and Other) is a real <button>.
+    assert r["questionShown"] and r["otherPresent"]
+    assert r["optionTags"] == ["button", "button", "button"]
+    assert r["recommendedFocused"] and r["singleSendHidden"]
+    # Click an option (on its label text) -> exactly one reply, sent like typed text, pop-up closes, focus to the chat.
+    assert r["clickSent"] == reply("Thursday")
+    assert r["closedAfterClick"] and r["focusBackInChat"]
+    # Keyboard: arrows move between options, a number key picks one.
+    assert r["arrowMovedFocus"] and r["keySent"] == reply("Tuesday")
+    # "Other": text box + Send; nothing goes out empty; typed text goes out trimmed, Enter works too.
+    assert r["otherBoxOpen"] and r["emptyOtherSent"] == [] and r["stillOpenAfterEmpty"]
+    assert r["otherSent"] == reply("Wednesday at 3pm")
+    assert r["otherEnterSent"] == reply("Next week")
+    # Multi-select: Send is there from the start; toggles alone send nothing.
+    assert r["multiSendVisible"] and r["multiSentEarly"] == []
+    assert r["multiSent"] == reply("Tuesday, Thursday")
+    # Dismiss (button or Escape) closes it and sends nothing.
+    assert r["dismissClosed"] and r["escapeClosed"] and r["dismissSent"] == []
 
 
 def test_hud_follow_up_window_still_has_a_single_writer():
