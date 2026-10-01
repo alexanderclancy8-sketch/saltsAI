@@ -182,6 +182,17 @@ class PPMPlanIn(BaseModel):
     risk_margin_days: int = Field(5, description="Flag a visit as at risk if planned this close to its latest date")
 
 
+class RouteAdviceIn(BaseModel):
+    plan_date: str | None = Field(None, description="Day to plan, YYYY-MM-DD; default today. Live engineer "
+                                                    "locations are only used for today, in working hours")
+    urgent_site: str = Field("", description="Site name (or UK postcode) of an urgent call-out to slot in - blank "
+                                             "if there isn't one")
+    urgent_description: str = Field("", description="What the urgent call-out is, e.g. 'fire alarm panel fault'")
+    urgent_priority: str = Field("", description="SLA of the urgent call-out if known, e.g. '4h'")
+    urgent_system_type: str = Field("", description="fire_alarm, emergency_lighting, intruder, cctv or "
+                                                     "access_control - blank to guess from the description")
+
+
 class QuotesIn(BaseModel):
     status: str | None = Field(None, description="e.g. sent, accepted, declined")
 
@@ -630,6 +641,15 @@ async def ppm_schedule_plan(j, a: PPMPlanIn):
                             early_window_days=max(0, min(a.early_window_days, 90)),
                             cluster_radius_miles=max(0.5, min(a.cluster_radius_miles, 30.0)),
                             risk_margin_days=max(0, min(a.risk_margin_days, 30)))
+
+
+async def route_optimise_advice(j, a: RouteAdviceIn):
+    try:
+        day = date.fromisoformat(a.plan_date) if a.plan_date else None
+    except ValueError:
+        return {"advisory_only": True, "error": f"plan_date '{a.plan_date}' isn't a YYYY-MM-DD date."}
+    return await j.route_advisor.advise(day=day, urgent_site=a.urgent_site, urgent_description=a.urgent_description,
+                                        urgent_priority=a.urgent_priority, urgent_system_type=a.urgent_system_type)
 
 
 async def fsm_contracts_renewing(j, a: DaysAheadIn):
@@ -1180,6 +1200,15 @@ TOOLS: list[Tool] = [
                               "inferences, never assumed. It books nothing: to act on the plan use log_job or "
                               "fsm_change, which are queued for approval.", PPMPlanIn, ppm_schedule_plan,
          "Planning PPM visits"),
+    Tool("route_optimise_advice", "READ-ONLY route-optimised scheduling advice for a day's jobs: proposes a "
+                                  "re-sequenced route per engineer (SLA-priority jobs kept first) with the "
+                                  "drive-time saving against the current order, and - if an urgent call-out site is "
+                                  "given - suggests which skilled engineer and which slot in their route costs the "
+                                  "least extra driving. Live engineer locations are used only in working hours, "
+                                  "for today. Distances are straight-line estimates, not live traffic; customer "
+                                  "appointment times aren't known. It books nothing: to act on it use log_job or "
+                                  "fsm_change, which are queued for approval.", RouteAdviceIn,
+         route_optimise_advice, "Optimising routes"),
     Tool("fsm_contracts_renewing", "Maintenance contracts due for renewal within N days (or already past renewal).",
          DaysAheadIn, fsm_contracts_renewing, "Checking contract renewals"),
     Tool("fsm_quotes", "Quotes in Salts FSM, optionally filtered by status.", QuotesIn, fsm_quotes, "Checking quotes"),
