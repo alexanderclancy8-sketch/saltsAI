@@ -146,7 +146,18 @@ class DemoRamTracking:
         if not driver or day.weekday() >= 5:
             return []
         rng = random.Random(f"{driver}{day}")
-        home = (53.80 + rng.uniform(-0.05, 0.05), -1.80 + rng.uniform(-0.08, 0.08))
+        site_coords = [(s["lat"], s["lng"]) for s in await self.fsm.sites()]
+
+        def pick_home() -> tuple[float, float]:
+            # Stay clear of every demo site: van_day snaps a leg to the nearest site within 400m, so a "home"
+            # that happens to land that close to a real site would wrongly show up as that site instead of "Home".
+            for _ in range(20):
+                candidate = (53.80 + rng.uniform(-0.05, 0.05), -1.80 + rng.uniform(-0.08, 0.08))
+                if all(abs(candidate[0] - lat) > 0.006 or abs(candidate[1] - lng) > 0.009 for lat, lng in site_coords):
+                    return candidate
+            return candidate
+
+        home = pick_home()
         jobs = sorted((j for j in await self.fsm.jobs(day, day, engineer=driver) if j.get("started_at")),
                       key=lambda j: j["started_at"])
         if not jobs:

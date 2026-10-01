@@ -136,7 +136,7 @@ class SecurityWatch:
             except Exception as e:  # noqa: BLE001
                 log.exception("Security review failed")
                 await self.notifier.notify("Security review failed", str(e)[:500], level="warning",
-                                           kind="security_review_failed")
+                                           importance="normal", engineering=True, kind="security_review_failed")
                 return {"error": str(e)[:500]}
 
         new_issue_ids = []
@@ -153,7 +153,7 @@ class SecurityWatch:
                 description=(f"{finding.description}\n\nFile: {finding.file}\n"
                             f"Suggested fix: {finding.suggested_fix or 'see description above'}"),
                 severity=finding.severity, system="Salts FSM", source="security_watch", notify=True, process=True,
-                kind=security_kind(finding.severity))  # critical/high go out now; low/medium wait for the digest
+                kind=security_kind(finding.severity), engineering=True)  # critical/high go out now; low/medium wait for the digest
             self.db.set_kv(f"security_finding:{key}", str(issue["id"]))
             new_issue_ids.append(issue["id"])
             if security_kind(finding.severity) == "security_finding_urgent":
@@ -161,12 +161,12 @@ class SecurityWatch:
 
         if new_issue_ids:
             await self.notifier.notify(f"Security review: {len(new_issue_ids)} new finding(s)", result.summary,
-                                       level="warning", push=True, speak=True,
+                                       level="warning", push=True, speak=True, engineering=True,
                                        kind="security_finding_urgent" if urgent else "security_finding_minor",
                                        status="new findings")
         else:
             await self.notifier.notify("Security review: nothing new", result.summary, level="info",
-                                       kind="security_review_clean")
+                                       importance="info", engineering=True, kind="security_review_clean")
         return {"reviewed_sha": sha, "new_issues": new_issue_ids, "summary": result.summary,
                 "findings": [f.model_dump() for f in result.findings]}
 

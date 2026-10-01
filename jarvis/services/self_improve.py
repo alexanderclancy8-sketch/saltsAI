@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from ..brain import llm
+from ..brain import llm, plugins
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -135,14 +135,14 @@ class SelfImprove:
                 if outcome["kind"] != "submit" or not changes:
                     analysis = outcome.get("analysis") or "No change was made."
                     await self.notifier.notify("Nothing to propose", analysis[:800], level="info",
-                                               kind="self_improve_nothing")
+                                               importance="info", engineering=True, kind="self_improve_nothing")
                     return {"outcome": "give_up", "analysis": analysis}
                 fix = outcome["fix"]
                 diff = ws.diff()
         except Exception as e:  # noqa: BLE001
             log.exception("Self-improvement attempt failed")
             await self.notifier.notify("Self-improvement attempt failed", str(e)[:500], level="warning",
-                                       kind="self_improve_failed")
+                                       importance="normal", engineering=True, kind="self_improve_failed")  # developer chatter, not for the shared inbox
             return {"error": str(e)[:500]}
 
         branch = f"jarvis/self-{base_sha[:7]}-{int(time.time())}"
@@ -154,8 +154,9 @@ class SelfImprove:
         await self.notifier.notify(
             f"Pull request ready: {fix.pr_title}",
             f"{fix.summary}\nPR: {pr['url']}\nRisk: {fix.risk}. Review and merge it yourself when you're happy "
-            "with it - I won't touch it further.", level="info", push=True, speak=True,
-            kind="pr_ready", link=pr["url"], status="awaiting review", ref=f"self:{pr['number']}")
+                "with it - I won't touch it further.", level="info", push=True, speak=True,
+                importance="info", engineering=True,
+                kind="pr_ready", link=pr["url"], status="awaiting review", ref=f"self:{pr['number']}")
         self._spawn(self.watch_ci(pr["number"], pr["head_sha"], fix.pr_title))
         return {"pr_url": pr["url"], "risk": fix.risk, "diff": diff[:20000]}
 
@@ -164,7 +165,8 @@ class SelfImprove:
         if self.s.effective_llm_backend == "max":
             return await self._engineer_max(request, ws)
         params = llm.request_params(self.s, self.s.engineer_effort)
-        system = SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request)
+        system = plugins.with_methodology(
+            SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request), self.s)
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": "Make the requested change to the repository at /repo."}]
         json_retries = 0
@@ -230,10 +232,13 @@ class SelfImprove:
                 "too, and always the right call \nover a risky or half-finished change.",
                 "Finish with outcome 'submit' and the PR details once your change is complete, or outcome "
                 "'give_up' with your analysis if there's no safe change to make - that is a good outcome too.")
+        docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
+        system = plugins.with_methodology(system, self.s) + docs.prompt
         result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
                                 effort=self.s.engineer_effort, tools=["Read", "Edit", "Write", "Glob", "Grep"],
                                 disallowed_tools=ENGINEER_BLOCKED,
-                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root))
+                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
+                                mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():
             return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or "Self-improvement",
@@ -279,10 +284,11 @@ class SelfImprove:
             await self.notifier.notify(
                 "CI failed on the self-improvement pull request",
                 f"\"{title}\" (PR #{pr_number}) - failing checks: {', '.join(state['failed'])}. Worth a look "
-                "before merging.", level="warning", kind="self_improve_ci_failed", status="CI failed",
-                ref=f"self:{pr_number}")
+                "before merging.", level="warning", importance="normal", engineering=True,
+                kind="self_improve_ci_failed", status="CI failed", ref=f"self:{pr_number}")
         elif state["state"] == "success":
             await self.notifier.notify(
                 "CI passed on the self-improvement pull request",
                 f"\"{title}\" (PR #{pr_number}) is green and ready for your review.", level="info",
+                importance="info", engineering=True,
                 kind="self_improve_ci_passed", status="CI passed", ref=f"self:{pr_number}")

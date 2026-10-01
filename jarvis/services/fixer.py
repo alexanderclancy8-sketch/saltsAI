@@ -25,7 +25,7 @@ from typing import Any, Literal
 import anthropic
 from pydantic import BaseModel, ValidationError
 
-from ..brain import llm
+from ..brain import llm, plugins
 from ..config import Settings
 from ..db import Database
 from ..events import EventBus
@@ -135,7 +135,7 @@ class Fixer:
             self.db.update_issue(issue_id, status="needs_human", notes=f"Auto-fix failed: {e}")
             self._publish(issue_id)
             await self.notifier.notify(f"Couldn't auto-fix issue #{issue_id}", str(e)[:500], level="warning",
-                                       kind="fix_failed")
+                                       importance="normal", engineering=True, issue_id=issue_id, kind="fix_failed")
             return f"Auto-fix failed: {e}"
 
     async def _via_claude_action(self, issue: dict[str, Any]) -> str:
@@ -146,6 +146,7 @@ class Fixer:
         self.db.update_issue(issue["id"], status="fixing", notes=f"Claude Code GitHub Action working on {gh_issue['url']}")
         self._publish(issue["id"])
         await self.notifier.notify(f"Issue #{issue['id']} sent to Claude Code on GitHub", gh_issue["url"],
+                                   importance="info", engineering=True, issue_id=issue["id"],
                                    kind="fix_sent_to_claude", link=gh_issue["url"], status="handed to Claude Code")
         return f"Filed {gh_issue['url']} for the Claude Code GitHub Action."
 
@@ -162,7 +163,7 @@ class Fixer:
                 self.db.update_issue(issue_id, status="needs_human", notes=analysis[:4000])
                 self._publish(issue_id)
                 await self.notifier.notify(f"Issue #{issue_id} needs you", analysis[:800], level="warning",
-                                           kind="fix_needs_you")
+                                           importance="normal", engineering=True, issue_id=issue_id, kind="fix_needs_you")
                 return analysis
             fix = outcome["fix"]
             diff = ws.diff()
@@ -184,8 +185,9 @@ class Fixer:
         await self.notifier.notify(
             f"Fix ready for issue #{issue_id}: {fix.pr_title}",
             f"{fix.change_summary}\nPR: {pr['url']}\nCI is running. Approve action #{action_id} on the display to deploy.",
-            level="warning", push=True, speak=True, kind="fix_ready", link=pr["url"],
-            status=f"awaiting approval (action #{action_id})", ref=f"fix:{pr['number']}")
+            level="warning", push=True, speak=True, importance="normal", engineering=True, issue_id=issue_id,
+            kind="fix_ready", link=pr["url"],
+            status=f"awaiting approval (action #{action_id})", ref=f"fix:{pr['number']}")  # approvals chatter
         self._spawn(self.watch_ci(issue_id, pr["number"], pr["head_sha"], action_id, fix.risk))
         return f"Opened {pr['url']}; waiting for CI and approval (action #{action_id})."
 
@@ -194,8 +196,8 @@ class Fixer:
         if self.s.effective_llm_backend == "max":
             return await self._run_engineer_max(issue, ws)
         params = llm.request_params(self.s, self.s.engineer_effort)
-        system = ENGINEER_SYSTEM.format(company=self.s.company_name)
-        report = (f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
+        system = plugins.with_methodology(ENGINEER_SYSTEM.format(company=self.s.company_name), self.s)
+        report =(f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
                   f"{issue['description']}\n</problem_report>\n\nTriage notes: {issue.get('triage_json') or 'none'}\n\n"
                   "Find and fix the root cause in /repo.")
         messages: list[dict[str, Any]] = [{"role": "user", "content": report}]
@@ -266,9 +268,12 @@ class Fixer:
                   f"{issue['description']}\n</problem_report>\n\nTriage notes: {issue.get('triage_json') or 'none'}\n\n"
                   "Find and fix the root cause in this repository.")
         tools = ["Read", "Edit", "Write", "Glob", "Grep"]
+        docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
+        system = plugins.with_methodology(system, self.s) + docs.prompt
         result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort, tools=tools,
                                 disallowed_tools=ENGINEER_BLOCKED,
-                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root))
+                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
+                                mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():
             return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or f"Fix issue #{issue['id']}",
@@ -316,13 +321,13 @@ class Fixer:
             self._publish(issue_id)
             await self.notifier.notify(f"CI failed for the issue #{issue_id} fix",
                                        f"Failing checks: {', '.join(state['failed'])}. I won't deploy it.",
-                                       level="warning", kind="fix_ci_failed", status="CI failed",
-                                       ref=f"fix:{pr_number}")
+                                       level="warning", importance="normal", engineering=True, issue_id=issue_id,
+                                       kind="fix_ci_failed", status="CI failed", ref=f"fix:{pr_number}")
             return
         await self.notifier.notify(f"CI {'passed' if state['state'] == 'success' else 'finished'} for the "
                                    f"issue #{issue_id} fix", f"PR #{pr_number} is ready to deploy.", level="info",
-                                   speak=True, kind="fix_ci_passed", status="CI " + state["state"],
-                                   ref=f"fix:{pr_number}")
+                                   speak=True, importance="info", engineering=True, issue_id=issue_id,
+                                   kind="fix_ci_passed", status="CI " + state["state"], ref=f"fix:{pr_number}")
 
     async def deploy(self, issue_id: int, pr_number: int) -> str:
         pr = await self.gh.pr(pr_number)
@@ -336,6 +341,7 @@ class Fixer:
         self.db.update_issue(issue_id, status="deploying")
         self._publish(issue_id)
         await self.notifier.notify(f"Deploying the fix for issue #{issue_id} to Azure", f"Merged as {merge_sha[:7]}.",
+                                   importance="info", engineering=True, issue_id=issue_id,
                                    kind="deploy_started", status="merged", ref=f"fix:{pr_number}")
 
         if self.s.azure_deploy_mode == "kudu" and self.kudu is not None and self.kudu.enabled:
@@ -360,12 +366,14 @@ class Fixer:
             if self.issues is not None:
                 await self.issues.resolve(issue_id, note)
             await self.notifier.notify(f"Issue #{issue_id} fixed and live", note, level="info", push=True, speak=True,
+                                       importance="info", engineering=True, issue_id=issue_id,
                                        kind="deploy_succeeded", status="deployed", ref=f"fix:{pr_number}")
             return note
         note = f"Deployment problem: {detail}. {test_detail}"
         self.db.update_issue(issue_id, status="needs_human", notes=note)
         self._publish(issue_id)
         await self.notifier.notify(f"Deployment of issue #{issue_id} fix needs attention", note, level="critical",
+                                   importance="important", engineering=True, issue_id=issue_id,  # a failed live deploy needs someone to act
                                    kind="deploy_failed", status="deploy failed", ref=f"fix:{pr_number}")
         return note
 

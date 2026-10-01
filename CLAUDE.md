@@ -87,6 +87,16 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
 
+**Optional MCP/plugin integrations** (`jarvis/brain/plugins.py`, `jarvis/services/verification.py`, specs in
+`mcp_plugins.yaml` and `mandates.yaml`) each have their own `plugin_*` setting. Context7 (read-only docs) and the
+Superpowers-style plan/test/review method go to the engineering agent (`self_improve`/`issue_fix`); Browser Use (read-only,
+allowlisted domains) goes to conversational Jarvis only; ThoughtProof checks an action *after* the owner approves it,
+inside `ActionExecutor._run`, and can only stop it (BLOCK, or fail closed if unavailable) - never approve, queue or skip.
+External MCP servers only reach the Max/Agent SDK backend (the API-backend engineer loop is hand-rolled and has no MCP),
+must be pinned to an exact version in `mcp_plugins.yaml`, and only tools listed in `allowed_tools` are callable
+(`permission_mode="dontAsk"` denies the rest). Never add a plugin tool that can change something without going through
+`dispatch()`'s approval gate.
+
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through
 alias tables so small API differences don't break things - e.g. `jarvis/integrations/fsm.py`'s `ALIASES` maps
 `jobNumber`/`job_number`/`reference`/`number` all onto one `ref` field. `jarvis/db.py` itself only holds Jarvis's
@@ -123,3 +133,14 @@ once, not per-transport. Voice wake-word listening for cost-free "always listeni
 `SpeechRecognition` (`sentry` in hud.js) until it hears the wake word, then hands off to the configured paid STT
 (Deepgram/Whisper) for the actual command, sleeping back to the free listener after a period of silence
 (`extendFollowUp`/`checkSleep`) - don't reintroduce a fully continuous paid stream for "always listening" mode.
+Barge-in (talking over Jarvis) lives in `utterance()`'s echo-window block: the window stays a strict allowlist (wake
+word or stop phrase only); stop phrases always cut the turn via `stopEverything()`, the wake word additionally needs
+the `bargein` setting on, `bargeInAllowed()`, and to not match Jarvis's own recent speech. Tests: `tests/test_hud_bargein.py`.
+Pressing the mic/Space while he speaks cuts the whole turn (`micPressBargeIn()`). The push-to-talk silence timeout is the
+`voice_silence_ms` setting plus a little extra after trailing fillers (`endOfTurnMs()`); `looksLikeSelfEcho()` also drops
+fuzzy copies of what he said in the last 10s. A user message near-identical to the previous one within 60s gets a
+"[possible repeat: ...]" line under its tag from both brains (`jarvis/brain/repeats.py`). Tests: `tests/test_voice_flow.py`.
+Decisions use the `ask_user` tool (`brain/tools.py`) and the small question pop-up in `jarvis/web/ask.js`/`ask.css`: the tool
+only publishes an `ask` bus event and returns at once (no blocking); the chosen/typed/spoken answer comes back as an ordinary
+chat message. It is separate from, and must never call or imitate, the approval path (`decide()`, `/api/approvals`,
+`ActionExecutor`). Tests: `tests/test_ask_user.py`.

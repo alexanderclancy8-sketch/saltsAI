@@ -66,7 +66,8 @@ class IssueService:
     async def report(self, *, reporter: str, title: str, description: str, severity: str = "medium",
                      system: str = "Salts FSM", source: str = "web", reporter_email: str = "",
                      image: bytes | None = None, image_mime: str = "", notify: bool = True,
-                     process: bool = True, kind: str = "issue_reported") -> dict[str, Any]:
+                     process: bool = True, kind: str = "issue_reported",
+                     engineering: bool = False) -> dict[str, Any]:
         issue_id = self.db.create_issue(reporter=reporter, title=title[:200], description=description[:8000],
                                         source=source, reporter_email=reporter_email, system=system,
                                         severity=severity)
@@ -82,7 +83,7 @@ class IssueService:
             level = "critical" if severity == "critical" else "warning" if severity == "high" else "info"
             await self.notifier.notify(f"New issue #{issue_id} from {reporter}: {title}", description[:600],
                                        level=level, push=True, speak=True, kind=kind, status="new",
-                                       ref=f"issue:{issue_id}")
+                                       ref=f"issue:{issue_id}", engineering=engineering, issue_id=issue_id)
         if process:
             self._spawn(self.process(issue_id))
         return issue
@@ -115,6 +116,7 @@ class IssueService:
         self.bus.publish("issue", self.db.get_issue(issue_id))
         await self.notifier.notify(f"Issue #{issue_id} triaged: {t.category.replace('_', ' ')}, {t.severity}",
                                    f"{t.summary}\nNext: " + "; ".join(t.suggested_next_steps[:3]), level="info",
+                                   importance="info", engineering=True, issue_id=issue_id,
                                    kind=triage_kind(t.severity), status="triaged", ref=f"issue:{issue_id}")
         if t.software_fixable and self.fixer is not None and self.fixer.enabled and self.actions is not None:
             action_id = self.actions.queue(
@@ -135,10 +137,11 @@ class IssueService:
         # Only auto-reply to colleagues; anything external goes through the owner.
         if email.lower().endswith("@" + self.s.company_domain.lower()) and not getattr(self.mail, "demo", True):
             try:
-                await self.mail.send_mail([email], f"Fixed: {issue['title']}",
-                                          f"<p>Hi {issue['reporter'].split()[0]},</p><p>The problem you reported "
-                                          f"(#{issue_id}) has been fixed and deployed.</p><p>{note}</p>"
-                                          "<p>Thanks for reporting it.<br>Jarvis</p>")
+                # A "fixed" confirmation is routine: through the notifier so it can't clog the shared inbox.
+                await self.notifier.send_email([email], f"Fixed: {issue['title']}",
+                                               f"<p>Hi {issue['reporter'].split()[0]},</p><p>The problem you reported "
+                                               f"(#{issue_id}) has been fixed and deployed.</p><p>{note}</p>"
+                                               "<p>Thanks for reporting it.<br>Jarvis</p>", importance="info")
             except Exception as e:  # noqa: BLE001
                 log.warning("Could not email reporter: %s", e)
 

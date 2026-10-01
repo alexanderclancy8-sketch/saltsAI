@@ -69,6 +69,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("partner_email", "Business partner's email", "email",
                   "Gets the weekly tax and employment-law watch too."),
             Field("company_name", "Company name"),
+            Field("reply_suggestions_enabled", "Suggest my usual replies in the chat box", "bool",
+                  "Jarvis learns the short replies you type often and shows the likeliest as grey text; press the "
+                  "right arrow to accept it, Enter to send. Learned on this server only. Off stops learning and suggesting."),
             Field("jarvis_notes", "Things Jarvis should know", "notes",
                   "One fact per line, e.g. \"First County Monitoring handle our out-of-hours.\" Added to its memory."),
         ),
@@ -99,6 +102,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("ms_client_id", "Application (client) ID", placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"),
             Field("ms_client_secret", "Client secret", "secret"),
             Field("ms_mailbox", "Your mailbox", "email", "The mailbox Jarvis reads and sends from."),
+            Field("owner_mail_folder", "Folder for Jarvis's emails to you",
+                  help="Outlook folder name (in your mailbox) Jarvis's own emails to you are filed into instead "
+                       "of the Inbox. Blank = keep them in the Inbox. Falls back to the Inbox if not found."),
             Field("ooh_mailbox", "Out-of-hours reports mailbox", "email",
                   "Where the answering service's reports arrive, e.g. info@. Blank = your mailbox."),
             Field("ooh_email_from", "Out-of-hours reports come from",
@@ -119,8 +125,39 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "sharedinbox", "Shared inbox (info@)", "Keeps the shared inbox for important operational items only. "
+        "Everything else goes to Teams and the display.",
+        (
+            Field("shared_inbox", "Shared inbox address", "email",
+                  "Automated emails to this address are filtered by importance. Finance and management items "
+                  "never go here."),
+            Field("shared_inbox_min_importance", "Lowest importance emailed to it", "select",
+                  "Anything below this goes to Teams and the display instead. Urgent (life-safety) alerts are "
+                  "never rate-limited.",
+                  options=(("info", "Info (everything)"), ("normal", "Normal"),
+                           ("important", "Important (recommended)"), ("urgent", "Urgent only"))),
+            Field("shared_inbox_dedupe_minutes", "Don't repeat the same alert within (minutes)", "number",
+                  advanced=True),
+            Field("shared_inbox_max_per_hour", "Most emails to it per hour", "number", advanced=True),
+        ),
+    ),
+    Section(
         "teams", "Teams updates", "Jarvis posts your updates and alerts to a Teams channel.",
-        (Field("teams_webhook_url", "Channel webhook URL", "secret"),),
+        (
+            Field("teams_webhook_url", "Channel webhook URL", "secret"),
+            Field("engineering_notify_channels", "Fix and pull request notifications", "select",
+                  "Where fix-ready, pull request, deploy, triage and security-review updates go.",
+                  options=(("teams", "Teams only"), ("teams,email", "Teams and email")), advanced=True),
+            Field("engineering_email_fallback", "Email those if Teams fails", "bool",
+                  "Off: a failed Teams post is shown on the display, not emailed.", advanced=True),
+            Field("fix_notify_channels", "Fix and pull request alerts", "select",
+                  "Fixes, pull requests and security findings always show on the display and issues list. "
+                  "This picks what else gets told.",
+                  options=(("teams", "Teams only"), ("teams,email", "Teams and email"),
+                            ("none", "Display only"))),
+            Field("fix_notify_email", "Email for fix alerts", "email",
+                  "Only used if email is switched on above. Blank = your email.", advanced=True),
+        ),
         required=("teams_webhook_url",),
         test=True,
         guide=(
@@ -236,6 +273,12 @@ SECTIONS: tuple[Section, ...] = (
             Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True,
                   depends_on=("stt_provider", "whisper")),
             Field("wake_word", "Wake word", placeholder="jarvis"),
+            Field("voice_ack_fillers", "Say a short acknowledgment while thinking", "bool",
+                  "When you ask something out loud and the answer takes a couple of seconds, Jarvis says one "
+                  "short line like \"Let me check the accounts.\" Never for typed questions.", advanced=True),
+            Field("voice_silence_ms", "Pause before Jarvis takes your turn as finished (ms)", "number",
+                  "How long a silence counts as the end of what you're saying when using push-to-talk. 1200 is "
+                  "normal; Jarvis waits a little longer if you trail off on \"and\", \"so\" or \"um\".", advanced=True),
         ),
         test=True,
     ),
@@ -290,6 +333,29 @@ SECTIONS: tuple[Section, ...] = (
         ),
         required=("jarvis_repo",),
         test=True,
+    ),
+    Section(
+        "plugins", "Plugins and MCP tools", "Optional extras, each with its own switch. None of them can approve "
+                                            "or send anything - approvals still need your click on the display.",
+        (
+            Field("plugin_context7_enabled", "Context7 (library docs for the engineering agent)", "bool",
+                  "Read-only. Lets the agent that writes Jarvis's and Salts FSM's code look up current, "
+                  "version-specific library documentation. Sends library names and questions to Context7's "
+                  "service. Does nothing until a pinned version is set in mcp_plugins.yaml."),
+            Field("plugin_superpowers_enabled", "Superpowers method (engineering agent)", "bool",
+                  "Makes the engineering agent plan first, write the test first and review its own change "
+                  "before opening a pull request. Adds written instructions only - no software is installed."),
+            Field("plugin_browser_use_enabled", "Browser Use (read-only browsing)", "bool",
+                  "Off by default. Jarvis may read pages on the domains below; it can never click, log in, "
+                  "submit or buy. Needs a reviewed, pinned install in mcp_plugins.yaml before it does anything."),
+            Field("plugin_browser_allowed_domains", "Browser Use allowed domains", "textarea",
+                  "Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Finance, Sage and bank "
+                  "sites are always refused, even if listed.", advanced=True),
+            Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
+                  "Off by default. When on, every action you approve is first checked against the rules in "
+                  "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
+                  "cancelled, never run unchecked. It adds to your approval click, never replaces it."),
+        ),
     ),
     Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
