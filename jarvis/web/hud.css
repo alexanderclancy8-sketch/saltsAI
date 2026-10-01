@@ -155,6 +155,7 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .msg.assistant { align-self: flex-start; background: none; border: none; }
 .msg .meta { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-dim); margin-bottom: 4px; font-weight: 600; }
 .msg.error { color: #ffc7cd; }
+.msg.proactive { border-left: 2px solid var(--accent); padding-left: 10px; } /* Jarvis spoke up unprompted */
 .md p { margin: 0 0 8px; } .md p:last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3 { font-family: var(--ui); color: var(--text); margin: 10px 0 6px; font-size: 16px; font-weight: 600; }
 .md ul, .md ol { margin: 4px 0 8px 18px; padding: 0; }

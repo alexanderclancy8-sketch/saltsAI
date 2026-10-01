@@ -624,6 +624,14 @@ class DeleteAutomationIn(BaseModel):
     automation_id: int = Field(description="The automation's number, from list_automations")
 
 
+class WatchCIIn(BaseModel):
+    branch: str = Field(description="Branch, tag or commit of Jarvis's own repository whose CI to follow")
+
+
+class WatchActionIn(BaseModel):
+    action_id: int = Field(description="The number of an action waiting for approval, from the approval card")
+
+
 class ArchiveIn(BaseModel):
     filename: str = Field(description="e.g. vat-estimate-q3.md")
     content: str
@@ -1232,6 +1240,9 @@ async def knowledge_search(j, a: KnowledgeIn):
 
 
 async def remember(j, a: RememberIn):
+    existing = j.db.find_memory(a.fact)
+    if existing is not None:
+        return f"Already remembered (#{existing})."
     mid = j.db.remember(a.fact)
     j.brain.refresh_system()
     return f"Remembered (#{mid})."
@@ -1269,6 +1280,14 @@ async def list_automations(j, a: NoInput):
 
 async def delete_automation(j, a: DeleteAutomationIn):
     return j.automations.delete(a.automation_id)
+
+
+async def watch_ci(j, a: WatchCIIn):
+    return j.proactive.watch_ci(a.branch)
+
+
+async def watch_action(j, a: WatchActionIn):
+    return j.proactive.watch_action(a.action_id)
 
 
 async def archive_to_azure(j, a: ArchiveIn):
@@ -1663,6 +1682,16 @@ TOOLS: list[Tool] = [
          "Checking your automations"),
     Tool("delete_automation", "Remove one of the owner's automations by its number.", DeleteAutomationIn,
          delete_automation, "Removing that automation"),
+    Tool("watch_ci", "Keep following the GitHub Actions (CI) result on a branch of your own repository in the "
+                     "background and post a message in the chat when it passes, fails or changes, so the owner "
+                     "doesn't have to ask again. Read-only. Returns at once; say you'll follow up, then carry on. "
+                     "Needs 'Jarvis speaking up' switched on in Settings (the result says if it isn't).",
+         WatchCIIn, watch_ci, "Starting to watch the CI"),
+    Tool("watch_action", "Keep following a queued action in the background and post a message in the chat once the "
+                         "owner has approved or cancelled it and it has run (or failed). It only reads the action's "
+                         "status - it can never approve, deny or run it; that is only the owner's click on the "
+                         "display. Returns at once. Needs 'Jarvis speaking up' switched on in Settings.",
+         WatchActionIn, watch_action, "Starting to follow that action"),
     Tool("archive_to_azure", "Upload a report or document to the company's Azure Blob Storage archive.",
          ArchiveIn, archive_to_azure, "Uploading to Azure",
          approval=True, describe=lambda a: f"Upload {a.filename} to the Azure archive"),
