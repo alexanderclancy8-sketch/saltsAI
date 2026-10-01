@@ -426,6 +426,11 @@ class PrepareRenewalIn(BaseModel):
     uplift_pct: float | None = Field(None, description="Price rise %, default from settings (usually 5)")
 
 
+class CustomerCommsIn(BaseModel):
+    events: list[str] | None = Field(None, description="Limit to some of: booked, on_the_way, complete, certificate, "
+                                                       "service_due, quote_followup. Omit for all.")
+
+
 class MeetingIn(BaseModel):
     meeting: str | None = Field(None, description="Part of a recent Teams meeting's title; omit for the latest")
     transcript: str | None = Field(None, description="Pasted notes/transcript instead of a Teams meeting")
@@ -1067,6 +1072,10 @@ async def prepare_renewal(j, a: PrepareRenewalIn):
     return await j.renewals.prepare(a.contract_id, a.uplift_pct)
 
 
+async def draft_customer_emails(j, a: CustomerCommsIn):
+    return await j.customer_comms.draft_all(a.events)
+
+
 async def lone_worker_check(j, a: NoInput):
     return await j.tracker.lone_worker_check(j.settings.lone_worker_overrun_min) or "Nobody is overrunning."
 
@@ -1502,6 +1511,11 @@ TOOLS: list[Tool] = [
     Tool("prepare_renewal", "Write the renewal letter for a contract with the price uplift and queue it for the "
                             "owner's approval (warns if the customer is at risk).", PrepareRenewalIn, prepare_renewal,
          "Preparing the renewal"),
+    Tool("draft_customer_emails", "Draft customer emails for job lifecycle events - engineer booked / on the way, job "
+                                  "complete with summary, certificate ready, service due, quote follow-up - and queue "
+                                  "each for the owner's approval (sent only via the approved email_send path; this "
+                                  "tool never sends anything).", CustomerCommsIn, draft_customer_emails,
+         "Drafting customer emails"),
     Tool("lone_worker_check", "Engineers still on a job well past its booked end - a safety check prompt.", NoInput,
          lone_worker_check, "Checking on lone workers"),
     Tool("meeting_actions", "Turn the latest (or a named) Teams meeting's transcript - or pasted notes - into a "

@@ -30,6 +30,7 @@ from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.automations import AutomationService
 from .services.billing import Billing
+from .services.customer_comms import CustomerComms
 from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
@@ -124,6 +125,7 @@ class Jarvis:
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
         self.renewals = Renewals(self)
+        self.customer_comms = CustomerComms(self)  # drafts lifecycle emails; each is queued for approval, never sent
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
@@ -251,6 +253,13 @@ class Jarvis:
         result = await self.billing.queue_review_requests()
         if result.get("queued"):
             await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.",
+                                       importance="normal")
+
+    async def customer_comms_sweep(self) -> None:
+        result = await self.customer_comms.draft_all()
+        if result.get("queued"):
+            await self.notifier.notify(f"{len(result['queued'])} customer email(s) drafted",
+                                       "Approve or cancel them on the display - nothing has been sent.",
                                        importance="normal")
 
     async def lone_worker_sweep(self) -> None:
