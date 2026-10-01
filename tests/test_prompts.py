@@ -47,7 +47,10 @@ def test_hud_wake_mode_follow_up_exception_never_applies_in_echo_window():
     hud = _hud_source()
     # The strict allowlist inside the echo window is untouched.
     assert 'if (S.listenMode === "wake" && echoWindowOpen()) {' in hud
-    assert "if (!isStopPhrase) return;" in hud
+    # PR #8 (barge-in) replaced the isStopPhrase boolean with classifyInterrupt(), but the same
+    # strict allowlist still governs the echo window: only a stop phrase or the wake word gets through.
+    assert "const heard = classifyInterrupt(text);" in hud
+    assert "if (!heard.hasWake || !bargeInAllowed())" in hud
     # The follow-up exception is gated on the echo window being closed and on S.followUpUntil.
     assert "const inEchoWindow = echoWindowOpen();" in hud
     assert "if (inEchoWindow || Date.now() >= S.followUpUntil) {" in hud

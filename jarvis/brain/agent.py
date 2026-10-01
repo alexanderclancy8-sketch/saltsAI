@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from . import llm
 from .prompts import build_system
+from .repeats import RepeatDetector, repeat_note
 from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class JarvisBrain:
         self.messages: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._active: set[asyncio.Task] = set()
+        self._repeats = RepeatDetector()
         self.tools = [t.definition() for t in TOOLS] + (SERVER_TOOLS if self.s.web_search_enabled else [])
         self.refresh_system()
 
@@ -119,7 +121,8 @@ class JarvisBrain:
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
-        content = self._attachment_blocks(attachments) + [{"type": "text", "text": f"{tag}\n{text}"}]
+        note = repeat_note(self._repeats.check(text))
+        content = self._attachment_blocks(attachments) + [{"type": "text", "text": f"{tag}\n{note}{text}"}]
         rollback_to = len(self.messages)
         self.messages.append({"role": "user", "content": content})
         db.add_transcript("user", text)

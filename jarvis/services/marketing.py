@@ -284,5 +284,5 @@ class MarketingTracker:
         text = await llm.write(self.client, self.s, system=MARKETING_SYSTEM.format(company=self.s.company_name,
                                                                                 owner=self.s.owner_name),
                                prompt=json.dumps(data, default=str)[:40000], effort="medium")
-        await self.notifier.notify("Weekly marketing report", text, level="info", push=True)
+        await self.notifier.notify("Weekly marketing report", text, level="info", push=True, importance="info")
         return text

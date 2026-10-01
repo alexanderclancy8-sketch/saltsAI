@@ -22,6 +22,7 @@ import httpx
 import msal
 
 from ..config import Settings
+from .mail_guard import GuardedMessage, guard_message
 
 log = logging.getLogger(__name__)
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -138,17 +139,23 @@ class GraphMail:
                                   headers=await self._headers())
         r.raise_for_status()
 
-    async def send_mail(self, to: list[str], subject: str, body_html: str, cc: list[str] | None = None) -> None:
+    async def send_mail(self, to: list[str], subject: str, body_html: str, cc: list[str] | None = None,
+                        bcc: list[str] | None = None, sensitivity: str | None = None) -> GuardedMessage:
+        """Send via Graph. The management-only recipient rule (mail_guard) is enforced here for every caller."""
+        g = guard_message(self.s, to, cc, bcc, sensitivity)
         message = {
             "subject": subject,
             "body": {"contentType": "HTML", "content": body_html},
-            "toRecipients": [{"emailAddress": {"address": a}} for a in to],
+            "toRecipients": [{"emailAddress": {"address": a}} for a in g.to],
         }
-        if cc:
-            message["ccRecipients"] = [{"emailAddress": {"address": a}} for a in cc]
+        if g.cc:
+            message["ccRecipients"] = [{"emailAddress": {"address": a}} for a in g.cc]
+        if g.bcc:
+            message["bccRecipients"] = [{"emailAddress": {"address": a}} for a in g.bcc]
         r = await self.http.post(f"{self._mbx}/sendMail", json={"message": message, "saveToSentItems": True},
                                  headers=await self._headers())
         r.raise_for_status()
+        return g
 
     # -- Jarvis's own emails to the owner: filed into a dedicated Outlook folder ------------
     async def _folder_pages(self, url: str) -> list[dict[str, Any]]:
@@ -333,7 +340,8 @@ class DemoMail:
 
     demo = True
 
-    def __init__(self) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.s = settings
         now = datetime.now(timezone.utc)
         self._messages = [
             {"id": "demo-1", "subject": "Quote request - Vigilon panel upgrade (DEMO)", "from_name": "Facilities Manager",
@@ -396,8 +404,13 @@ class DemoMail:
             if m["id"] == message_id:
                 m["is_read"] = True
 
-    async def send_mail(self, to: list[str], subject: str, body_html: str, cc: list[str] | None = None) -> None:
-        log.info("[DEMO] would send email to %s: %s", to, subject)
+    async def send_mail(self, to: list[str], subject: str, body_html: str, cc: list[str] | None = None,
+                        bcc: list[str] | None = None, sensitivity: str | None = None) -> GuardedMessage:
+        # Same guard as the real mailbox, so the rule is exercised (and logged) in demo mode too.
+        g = guard_message(self.s, to, cc, bcc, sensitivity) if self.s is not None else GuardedMessage(
+            list(to), list(cc or []), list(bcc or []), sensitive=False)
+        log.info("[DEMO] would send email to %s: %s", g.to, subject)
+        return g
 
     async def send_to_owner(self, to: str, subject: str, body_html: str) -> tuple[bool, str]:
         await self.send_mail([to], subject, body_html)
