@@ -821,6 +821,7 @@ function send(text, mode = "typed", opts = {}) {
     if (docId && /^[0-9a-f]{32}$/.test(docId)) {
       $("#display-pdf").href = `/api/documents/${docId}/pdf`;
       $("#display-docx").href = `/api/documents/${docId}/docx`;
+      $("#display-xlsx").href = `/api/documents/${docId}/xlsx`;
       dl.hidden = false;
     } else {
       dl.hidden = true;
