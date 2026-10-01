@@ -192,7 +192,28 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT NOT NULL,
     markdown TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS false_alarm_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    job_ref TEXT NOT NULL UNIQUE,
+    site TEXT NOT NULL,
+    system TEXT DEFAULT '',
+    event_date TEXT DEFAULT '',
+    cause_category TEXT DEFAULT '',
+    cause TEXT DEFAULT '',
+    corrective_action TEXT DEFAULT '',
+    action_done_date TEXT DEFAULT '',
+    evidence_ref TEXT DEFAULT '',
+    investigated_by TEXT DEFAULT '',
+    reviewed_by TEXT DEFAULT '',
+    review_date TEXT DEFAULT ''
+);
 """
+
+# Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).
+FALSE_ALARM_FIELDS = ("system", "event_date", "cause_category", "cause", "corrective_action", "action_done_date",
+                      "evidence_ref", "investigated_by", "reviewed_by", "review_date")
 
 
 def now_iso() -> str:
@@ -469,6 +490,35 @@ class Database:
 
     def delete_site_access_code(self, record_id: int) -> None:
         self.execute("DELETE FROM site_access_codes WHERE id = ?", (record_id,))
+
+    # -- false alarm log (BS 5839-1: log, investigate, review, evidence corrective action) --------------
+    def get_false_alarm_record(self, job_ref: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM false_alarm_log WHERE job_ref = ?", (job_ref,))
+
+    def list_false_alarm_records(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM false_alarm_log ORDER BY event_date, id")
+
+    def upsert_false_alarm_record(self, job_ref: str, site: str, **fields: str) -> dict[str, Any]:
+        """Create the record for a job, or update it. On update only non-empty values overwrite, so adding the
+        review later never blanks the cause that was recorded earlier."""
+        unknown = set(fields) - set(FALSE_ALARM_FIELDS)
+        if unknown:
+            raise ValueError(f"Unknown false alarm log field(s): {', '.join(sorted(unknown))}")
+        values = {k: str(v).strip() for k, v in fields.items() if v is not None and str(v).strip()}
+        ts = now_iso()
+        if self.get_false_alarm_record(job_ref):
+            if site:
+                values["site"] = site
+            if values:
+                values["updated_at"] = ts
+                cols = ", ".join(f"{k} = ?" for k in values)
+                self.execute(f"UPDATE false_alarm_log SET {cols} WHERE job_ref = ?", (*values.values(), job_ref))
+        else:
+            row = {"created_at": ts, "updated_at": ts, "job_ref": job_ref, "site": site, **values}
+            cols = ", ".join(row)
+            marks = ", ".join("?" for _ in row)
+            self.execute(f"INSERT INTO false_alarm_log ({cols}) VALUES ({marks})", tuple(row.values()))
+        return self.get_false_alarm_record(job_ref) or {}
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:
