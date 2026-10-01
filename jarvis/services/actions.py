@@ -44,7 +44,7 @@ class ActionExecutor:
         self.mail = mail
         self.fixer = fixer
         self._tasks: set[asyncio.Task] = set()
-        self._last_rate_warning = 0.0
+        self._last_rate_warning: float | None = None  # None: no warning yet, so the first one is never suppressed
 
     # ------------------------------------------------------------------ small helpers
     @staticmethod
@@ -99,7 +99,8 @@ class ActionExecutor:
 
     def _warn_rate_limited(self, kind: str) -> None:
         now = time.monotonic()
-        if self._loop_running() and now - self._last_rate_warning >= RATE_WARNING_EVERY_S:
+        last = self._last_rate_warning
+        if self._loop_running() and (last is None or now - last >= RATE_WARNING_EVERY_S):
             self._last_rate_warning = now
             limit = getattr(getattr(self.standing, "s", None), "standing_max_per_hour", "?")
             self._spawn(self.notifier.notify(
@@ -243,6 +244,7 @@ class ActionExecutor:
             return self._already(self.db.get_action(action_id), action_id)
         log.info("Action #%s approved by %s", action_id, who)
         self.bus.publish("approvals", self.db.pending_actions())
+        action = {**action, "status": "approved", "approved_by": who}  # what the verifier is told: a person approved
         self._spawn(self._run(action))
         self._cards_decided(action, "Approved", who)
         return f"Approved action #{action_id} ({who}): {action['summary']}"

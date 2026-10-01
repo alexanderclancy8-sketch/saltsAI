@@ -24,7 +24,7 @@ from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
 from .integrations.stt_chain import SERVER_ENGINES
-from .integrations.teamsbot import TeamsBotError, trusted_service_url, verify_activity
+from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .services import connection_tests, documents
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
@@ -68,6 +68,10 @@ def carry_conversation(old: Jarvis, new: Jarvis) -> None:
 def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -> FastAPI:
     settings = settings or get_settings()
     store = SettingsStore(settings)  # what the owner saved on the Settings page, over the Azure settings
+    # The owner's address as configured OUTSIDE the Settings page (OWNER_EMAIL / .env), captured before any saved
+    # override is applied. A Microsoft-signed-in manager counts as "the owner" for the owner-only settings only if
+    # they match this - never the live settings.owner_email, which a manager could otherwise edit to their own.
+    trusted_owner_email = str(store.base.get("owner_email") or "").strip().lower()
     store.apply()
     reload_lock = asyncio.Lock()
 
@@ -523,7 +527,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         # Microsoft calls this directly - there's no session cookie, so the bearer token IS the authentication.
         j = J(request)
         try:
-            await verify_activity(request.headers.get("authorization"), settings.teams_bot_app_id, j.http)
+            claims = await verify_activity(request.headers.get("authorization"), settings.teams_bot_app_id, j.http)
         except TeamsBotError as e:
             log.warning("Rejected a Teams request: %s", e)
             raise HTTPException(401, "invalid token") from None
@@ -540,6 +544,12 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         service_url = activity.get("serviceUrl", "")
         if not trusted_service_url(service_url):
             log.warning("Rejected a Teams activity with an untrusted serviceUrl")
+            return {}
+        # Bot Framework signs the serviceUrl into the token ("serviceurl" claim): if the body names a different one
+        # (a replayed token with a swapped URL), refuse before anything is posted there.
+        signed_url = claims.get("serviceurl") if isinstance(claims, dict) else None
+        if signed_url and not same_service_url(signed_url, service_url):
+            log.warning("Rejected a Teams activity whose serviceUrl differs from the one in its token")
             return {}
         conversation = activity.get("conversation") or {}
         conversation_id = conversation.get("id")
@@ -606,10 +616,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.post("/api/settings", dependencies=[Depends(owner)])
     async def save_settings(body: SettingsIn, request: Request):
-        # Standing approvals widen what Jarvis may do without asking, so only the owner themself (not just any
-        # signed-in manager) may change them - and only here, never through the AI or a Teams message.
-        if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(settings, request):
-            raise HTTPException(403, "Only the owner can change standing approvals.")
+        # Standing approvals widen what Jarvis may do without asking, and the owner/partner emails, display password
+        # and staff key decide who counts as the owner - so only the owner themself (not just any signed-in manager)
+        # may change them, and only here, never through the AI or a Teams message.
+        if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(
+                settings, request, trusted_owner_email):
+            raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
+                                     "or the display password and staff key.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

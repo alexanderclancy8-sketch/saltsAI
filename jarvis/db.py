@@ -440,6 +440,11 @@ class Database:
             self._conn.commit()
             return cur.rowcount == 1
 
+    def count_teams_cards_since(self, email: str, cutoff_iso: str) -> int:
+        row = self.query_one("SELECT COUNT(*) AS n FROM teams_approval_cards WHERE email = ? AND sent_at >= ?",
+                             (email.lower(), cutoff_iso))
+        return int(row["n"]) if row else 0
+
     def set_teams_card_activity(self, action_id: int, email: str, activity_id: str) -> None:
         self.execute("UPDATE teams_approval_cards SET activity_id = ? WHERE action_id = ? AND email = ?",
                      (activity_id, action_id, email.lower()))

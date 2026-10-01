@@ -220,9 +220,12 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   approved by "standing approval: record keeping" (or "...routine acknowledgements"), and is announced on the display
   and to your Teams approvers as "Done automatically (standing approval - ...)", with how to undo it. At most 20
   run automatically per rolling hour (adjustable, 0 turns them off); beyond that they wait for you and you get a
-  warning. Text containing a link, angle brackets or control characters is never run automatically. Only the owner
-  (display password, or the owner's own Microsoft sign-in) can change these switches - another signed-in manager
-  can't, and Jarvis, a queued action or a Teams message never can. See `jarvis/services/standing_approvals.py`.
+  warning. Text containing a link, angle brackets or control characters is never run automatically, and every
+  automatically-written note, task or reminder starts "[Added automatically by Jarvis]" so staff can tell it
+  wasn't typed by a person. Only the owner (display password, or a Microsoft sign-in matching the `OWNER_EMAIL`
+  app setting) can change these switches - and the owner/partner email, display password and staff key, which
+  decide who counts as the owner. Another signed-in manager can't, and Jarvis, a queued action or a Teams message
+  never can. See `jarvis/services/standing_approvals.py`.
 - **Learned reply suggestions (typed chat only).** Jarvis counts the short replies you type in the chat box
   ("yes", "yes do that") against the kind of thing it had just said (an offer, a question, something awaiting
   approval...). Once a reply has been used 3 times it is shown as a grey hint; Right Arrow at the end of the box

@@ -81,8 +81,9 @@ may call `approve()`/`deny()`).
 lets the OWNER, in Settings only, pre-approve two narrow classes: "Record keeping" (a `fsm_write` POST creating a
 customer/site/contact/note/task/reminder, exact path shapes and body keys) and "Routine acknowledgements" (the
 `po_acknowledgement` kind: a fixed receipt-only email to the sender of an already-matched PO). Invariants: both
-switches default off and are in `settings_store.OWNER_ONLY_KEYS` (the Settings API 403s anyone but the owner
-themself - not just any signed-in manager); the allowlist is closed (anything unknown, any other method/path/key, any
+switches default off and are in `settings_store.OWNER_ONLY_KEYS` - along with owner/partner email, display password
+and staff key, so a manager can't promote themselves - and the Settings API 403s anyone but the owner themself
+(`auth.is_principal_owner`, which trusts the OWNER_EMAIL captured at startup, never the editable live value); the allowlist is closed (anything unknown, any other method/path/key, any
 `tool:*`, money, deletes, job booking, `email_send`, `deploy_fix`... simply queues as before); the payload judged is
 the payload stored and run (and re-checked in `_run`); automatic runs use the same `_run` path (ThoughtProof etc.),
 record `approved_by = "standing approval: <category>"`, are announced on the display and in Teams, and are capped per

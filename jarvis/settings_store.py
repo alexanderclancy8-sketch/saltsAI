@@ -455,9 +455,14 @@ SECTIONS: tuple[Section, ...] = (
 )
 
 FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
-# Settings that widen what Jarvis may do without asking. The Settings API refuses to change these unless the request
-# comes from the owner themselves (see main.save_settings / auth.is_principal_owner), not any signed-in manager.
-OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields)
+# Settings that widen what Jarvis may do without asking, plus the ones that decide who counts as the owner (so a
+# manager can't make themselves the owner and then flip the first group). The Settings API refuses to change any of
+# these unless the request comes from the owner themselves (see main.save_settings / auth.is_principal_owner), not
+# any signed-in manager. manager_emails / management_emails are env-only today (not on the page) but are listed so
+# they stay protected if they are ever added.
+OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
+    "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
+    "staff_report_key"})
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

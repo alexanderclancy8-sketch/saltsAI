@@ -87,6 +87,8 @@ def post(path, body):
     return {"method": "POST", "path": path, "body": body}
 
 
+MARK = sa.AUTO_MARK + " "
+
 ALLOWED_RECORDS = [
     post("/customers", {"name": "Acme Fire Ltd", "email": "office@acme.example.co.uk", "phone": "01274 555 0100",
                         "address": "1 High Street, Leeds", "postcode": "LS1 1AA"}),
@@ -94,11 +96,11 @@ ALLOWED_RECORDS = [
     post("/customers/cust-12/contacts", {"name": "Jane Buyer", "email": "jane@customer.example.co.uk",
                                          "role": "Site manager"}),
     post("/sites/site_7/contacts", {"name": "Bob Caretaker", "phone": "07700 900123"}),
-    post("/jobs/J24100/notes", {"text": "Customer rang to say the panel is beeping again.", "author": "Jarvis"}),
-    post("/customers/cust-12/notes", {"text": "Prefers email."}),
-    post("/sites/site_7/notes", {"text": "Key safe by the back door."}),
-    post("/tasks", {"title": "Chase quote Q1180", "description": "Not heard back since Friday", "due": "2026-10-12"}),
-    post("/reminders", {"title": "Renewal call", "note": "Ask about the CCTV add-on", "due": "2026-11-01T09:00"}),
+    post("/jobs/J24100/notes", {"text": MARK + "Customer rang to say the panel is beeping again.", "author": "Jarvis"}),
+    post("/customers/cust-12/notes", {"text": MARK + "Prefers email."}),
+    post("/sites/site_7/notes", {"text": MARK + "Key safe by the back door."}),
+    post("/tasks", {"title": MARK + "Chase quote Q1180", "description": "Not heard back since Friday", "due": "2026-10-12"}),
+    post("/reminders", {"title": MARK + "Renewal call", "note": "Ask about the CCTV add-on", "due": "2026-11-01T09:00"}),
 ]
 
 
@@ -146,8 +148,7 @@ async def test_record_keeping_does_not_enable_acknowledgements(settings):
     ex, db, notices, fsm, mail = make_executor(settings, record=True, ack=False)
     db.set_kv("po_match:m1", json.dumps({"from_email": "jane@customer.example.co.uk", "quote_id": "Q1180"}))
     action_id = ex.queue(sa.PO_ACK_KIND, "ack", {
-        "to": "jane@customer.example.co.uk", "name": "Jane", "po_number": "SAL-1", "quote_id": "Q1180",
-        "source_message_id": "m1"})
+        "to": "jane@customer.example.co.uk", "quote_id": "Q1180", "source_message_id": "m1"})
     await drain(ex)
     assert db.get_action(action_id)["status"] == "pending" and mail.sent == []
 
@@ -405,8 +406,7 @@ async def test_rate_limit_falls_back_to_a_human_and_warns(settings):
 async def test_rate_limit_counts_both_categories_and_survives_a_reload(settings):
     ex, db, notices, fsm, mail = make_executor(settings, record=True, ack=True, limit=2)
     db.set_kv("po_match:m1", json.dumps({"from_email": "jane@customer.example.co.uk", "quote_id": "Q1180"}))
-    ack = {"to": "jane@customer.example.co.uk", "name": "Jane", "po_number": "SAL-1", "quote_id": "Q1180",
-           "source_message_id": "m1"}
+    ack = {"to": "jane@customer.example.co.uk", "quote_id": "Q1180", "source_message_id": "m1"}
     a = ex.queue(sa.PO_ACK_KIND, "ack", ack)
     b = ex.queue("fsm_write", "x", ALLOWED_RECORDS[0])
     await drain(ex)
@@ -461,8 +461,7 @@ async def test_a_person_approving_is_recorded_and_standing_runs_say_so(settings)
 
 # --------------------------------------------------------------------------- acknowledgements (predicate)
 def ack_payload(**over):
-    return {"to": "jane@customer.example.co.uk", "name": "Jane", "po_number": "SAL-0001", "quote_id": "Q1180",
-            "source_message_id": "m1", **over}
+    return {"to": "jane@customer.example.co.uk", "quote_id": "Q1180", "source_message_id": "m1", **over}
 
 
 def prime(db, from_email="jane@customer.example.co.uk", quote_id="Q1180", mid="m1"):
@@ -478,8 +477,9 @@ async def test_acknowledgement_auto_runs_with_fixed_receipt_only_wording(setting
     assert db.get_action(action_id)["status"] == "done"
     (to, subject, html), = mail.sent
     assert to == ["jane@customer.example.co.uk"] and subject == "Purchase order received"
-    assert "SAL-0001" in html and "received your purchase order" in html and "confirm separately" in html
+    assert "received your purchase order" in html and "confirm separately" in html
     assert "booked" not in html  # receipt-only: no claim that any job exists
+    assert html == sa.acknowledgement_email({})[1]  # one fixed template: nothing interpolated from the email
     assert fsm.writes == []
     assert notices.titles()[0].startswith("Done automatically (standing approval - routine acknowledgements)")
 
@@ -491,8 +491,11 @@ async def test_acknowledgement_auto_runs_with_fixed_receipt_only_wording(setting
     {"to": "jane@customer.example.co.uk, boss@salts.example.com"},
     {"to": "Jane <jane@customer.example.co.uk>"},
     {"to": ["jane@customer.example.co.uk"]},
-    {"name": "Jane<script>"}, {"name": "x" * 60}, {"name": 5},
-    {"po_number": "SAL 1; http://evil.example.com"}, {"po_number": "x" * 41},
+    {"to": "jane@customer.example.co.uk\n"}, {"to": "jane@customer.example.co.uk\r\nBcc: x@evil.example.com"},
+    {"to": " jane@customer.example.co.uk"}, {"to": "jane@customer.example.co.uk>"}, {"to": "jane@@customer.co.uk"},
+    {"to": ""}, {"to": None}, {"quote_id": "Q1180\n"}, {"quote_id": "../Q1"},
+    # free text is no longer part of the payload at all: any of these extra keys queues for a human
+    {"name": "Jane"}, {"name": "Jane<script>"}, {"po_number": "SAL-0001"}, {"po_number": "SAL 1; http://evil.example.com"},
     {"extra": "field"},
     {"subject": "Your job is booked", "body": "free text from the model"},
 ])
@@ -588,11 +591,26 @@ async def test_po_flow_with_acknowledgements_on_sends_receipt_now_and_job_booked
     await j.http.aclose()
 
 
-async def test_po_ack_with_an_awkward_sender_name_still_acknowledges(tmp_path):
-    j, mail, fsm = await po_jarvis(tmp_path, ack=True, from_name="")  # no display name at all
+@pytest.mark.parametrize("from_name", ["", "Jane Buyer", "Jane<script>alert(1)</script> Buyer", "Click https://evil.example.com"])
+async def test_po_receipt_is_the_same_fixed_text_whatever_the_sender_called_themselves(tmp_path, from_name):
+    j, mail, fsm = await po_jarvis(tmp_path, ack=True, from_name=from_name)
     assert await j.po_intake.scan_inbox() == 1
     await drain(j.actions)
-    assert len(mail.sent) == 1 and "Hi there," in mail.sent[0][2]
+    (to, subject, html), = mail.sent
+    assert html == sa.acknowledgement_email({})[1] and subject == "Purchase order received"
+    assert "SAL-0001" not in html and "Jane" not in html and "evil" not in html and "<script" not in html
+    await j.http.aclose()
+
+
+@pytest.mark.parametrize("sender", ["Jane Buyer <jane@customer.example.co.uk>", "jane@customer.example.co.uk\r\nBcc: x@evil.example.com",
+                                    "a@b.example.com, c@d.example.com", ""])
+async def test_po_receipt_is_not_sent_automatically_unless_the_sender_is_one_plain_address(tmp_path, sender):
+    j, mail, fsm = await po_jarvis(tmp_path, ack=True)
+    j.po_intake.mail._messages[0]["from_email"] = sender
+    await j.po_intake.scan_inbox()
+    await drain(j.actions)
+    assert mail.sent == []
+    assert [a["kind"] for a in j.db.pending_actions()] == ["accept_quote_from_po"]  # the PO itself isn't lost
     await j.http.aclose()
 
 
@@ -613,7 +631,7 @@ def test_the_two_switches_live_in_an_owner_only_settings_section():
                                                "standing_max_per_hour"}
     assert FIELDS["standing_record_keeping"].kind == "bool" and FIELDS["standing_acknowledgements"].kind == "bool"
     assert "never" in section.blurb.lower() or "only you" in section.blurb.lower()
-    assert OWNER_ONLY_KEYS == {f.key for f in section.fields}
+    assert {f.key for f in section.fields} <= OWNER_ONLY_KEYS
     # each says exactly what it allows
     assert "customer, site or contact" in FIELDS["standing_record_keeping"].help
     assert "never edits or deletes" in FIELDS["standing_record_keeping"].help
@@ -631,7 +649,9 @@ def test_no_brain_tool_can_approve_deny_or_change_settings():
         fields = set(t.model.model_fields)
         assert not [f for f in fields if re.search(r"approv|standing|decision", f, re.I)], (t.name, fields)
     tools_src = _src("brain/tools.py")
-    assert not re.search(r"\.(approve|deny)\(|SettingsStore|standing_", tools_src.replace("fsm_create_record", ""))
+    allowed_import = "from ..services.standing_approvals import AUTO_MARK"  # just the visible-prefix constant
+    assert not re.search(r"\.(approve|deny)\(|SettingsStore|standing_", tools_src.replace(
+        "fsm_create_record", "").replace(allowed_import, ""))
     # the only tool that touches the approval queue for records only calls queue(), never approve()
     assert "actions.queue(" in tools_src
 
@@ -734,12 +754,19 @@ def test_is_principal_owner_unit(settings, monkeypatch):
                                client=SimpleNamespace(host=host))
 
     # local-only mode (no password): the local machine is the owner
-    assert auth.is_principal_owner(settings, conn()) is True
-    assert auth.is_principal_owner(settings, conn(host="203.0.113.9")) is False
+    assert auth.is_principal_owner(settings, conn(), "") is True
+    assert auth.is_principal_owner(settings, conn(host="203.0.113.9"), "") is False
     settings.jarvis_owner_password = "a-long-password"
-    assert auth.is_principal_owner(settings, conn()) is False
-    assert auth.is_principal_owner(settings, conn(cookie=auth.make_session(settings))) is True
-    assert auth.is_principal_owner(settings, conn(cookie="1.badsig")) is False
+    assert auth.is_principal_owner(settings, conn(), "") is False
+    assert auth.is_principal_owner(settings, conn(cookie=auth.make_session(settings)), "") is True
+    assert auth.is_principal_owner(settings, conn(cookie="1.badsig"), "") is False
+    # a Microsoft sign-in counts only if it is the owner address configured OUTSIDE the Settings page
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    settings.manager_emails = "alex@salts.example.com,sam@salts.example.com"
+    sso = lambda who: {"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": who}  # noqa: E731
+    assert auth.is_principal_owner(settings, conn(sso("alex@salts.example.com")), "alex@salts.example.com") is True
+    assert auth.is_principal_owner(settings, conn(sso("sam@salts.example.com")), "alex@salts.example.com") is False
+    assert auth.is_principal_owner(settings, conn(sso("alex@salts.example.com")), "") is False  # no trusted owner
 
 
 def test_standing_save_cannot_be_done_from_a_chat_turn(tmp_path):
@@ -794,10 +821,238 @@ async def test_create_record_tool_runs_at_once_when_the_owner_switched_it_on(tmp
                                                 text="Customer called about the panel."))
     await drain(j.actions)
     assert "automatically" in result["note"]
-    assert fsm.writes == [("POST", "/jobs/J24100/notes", {"text": "Customer called about the panel.",
-                                                          "author": "Jarvis"})]
+    assert fsm.writes == [("POST", "/jobs/J24100/notes", {
+        "text": "[Added automatically by Jarvis] Customer called about the panel.", "author": "Jarvis"})]
     assert j.db.get_action(result["queued_action"])["approved_by"] == PREFIX + "record keeping"
     await j.http.aclose()
+
+
+@pytest.mark.parametrize("kwargs,path,field", [
+    ({"record": "note", "parent_type": "site", "parent_id": "S1", "text": "Key safe round the back"},
+     "/sites/S1/notes", "text"),
+    ({"record": "task", "title": "Chase Q1180", "description": "details"}, "/tasks", "title"),
+    ({"record": "reminder", "title": "Renewal call", "due": "2026-11-01"}, "/reminders", "title"),
+])
+async def test_every_auto_written_note_task_and_reminder_carries_the_visible_prefix(tmp_path, kwargs, path, field):
+    from jarvis.brain.tools import TOOLS_BY_NAME, dispatch
+
+    j, fsm = await tool_jarvis(tmp_path, record=True)
+    tool = TOOLS_BY_NAME["fsm_create_record"]
+    await dispatch(j, tool, tool.model(**kwargs))
+    await drain(j.actions)
+    (method, written_path, body), = fsm.writes
+    assert written_path == path and body[field].startswith("[Added automatically by Jarvis] ")
+    await j.http.aclose()
+
+
+@pytest.mark.parametrize("payload", [
+    post("/jobs/J1/notes", {"text": "A person-looking note with no marker"}),
+    post("/sites/S1/notes", {"text": "Looks marked [Added automatically by Jarvis] but not at the start"}),
+    post("/sites/S1/notes", {"text": "[Added automatically by Jarvis]no-space"}),
+    post("/sites/S1/notes", {"text": " [Added automatically by Jarvis] leading space"}),
+    post("/tasks", {"title": "Chase Q1180", "description": "[Added automatically by Jarvis] only in description"}),
+    post("/reminders", {"title": "Renewal call", "note": "[Added automatically by Jarvis] in the note field"}),
+    post("/tasks", {"description": MARK + "no title at all"}),
+])
+async def test_an_unmarked_note_task_or_reminder_waits_for_a_human(settings, payload):
+    ex, db, notices, fsm, mail = make_executor(settings, record=True)
+    action_id = ex.queue("fsm_write", "x", payload)
+    await drain(ex)
+    assert db.get_action(action_id)["status"] == "pending" and fsm.writes == []
+
+
+def test_the_prefix_is_not_required_for_customers_sites_and_contacts():
+    db = Database(":memory:")
+    for p in ALLOWED_RECORDS[:4]:
+        assert sa.classify("fsm_write", p, db) == sa.RECORD_KEEPING
+
+
+# --------------------------------------------------------------------------- B1: owner-only settings
+OWNER, MANAGER = "alex@salts.example.com", "sam@salts.example.com"
+
+
+def _sso(who):
+    return {"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": who}
+
+
+def test_the_keys_that_decide_who_the_owner_is_are_owner_only():
+    assert {"owner_email", "partner_email", "manager_emails", "jarvis_owner_password",
+            "staff_report_key"} <= OWNER_ONLY_KEYS
+    assert {"standing_record_keeping", "standing_acknowledgements", "standing_max_per_hour"} <= OWNER_ONLY_KEYS
+    assert "company_name" not in OWNER_ONLY_KEYS  # ordinary settings stay open to signed-in managers
+
+
+def test_a_manager_cannot_make_themselves_owner_by_editing_owner_email(tmp_path, monkeypatch):
+    """Reviewer's attack route 1: set owner_email to your own address, then flip the switches."""
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    s, j = settings_app(tmp_path, owner_email=OWNER, manager_emails=f"{OWNER},{MANAGER}")
+    app = create_app(s, j)
+    with TestClient(app) as c:
+        r = c.post("/api/settings", json={"values": {"owner_email": MANAGER}}, headers=_sso(MANAGER))
+        assert r.status_code == 403 and s.owner_email == OWNER
+        r = c.post("/api/settings", json={"values": {"partner_email": MANAGER}}, headers=_sso(MANAGER))
+        assert r.status_code == 403
+        r = c.post("/api/settings", json={"values": {}, "clear": ["owner_email"]}, headers=_sso(MANAGER))
+        assert r.status_code == 403
+        r = c.post("/api/settings", json={"values": {"standing_record_keeping": True}}, headers=_sso(MANAGER))
+        assert r.status_code == 403
+    assert s.standing_record_keeping is False and s.owner_email == OWNER
+
+
+def test_even_if_owner_email_were_changed_it_would_not_make_a_manager_the_principal_owner(tmp_path, monkeypatch):
+    """Defence in depth: the principal-owner check uses the address captured at startup, not the live setting."""
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    s, j = settings_app(tmp_path, owner_email=OWNER, manager_emails=f"{OWNER},{MANAGER}")
+    app = create_app(s, j)
+    s.owner_email = MANAGER  # as if some other path had managed to change the live value
+    with TestClient(app) as c:
+        r = c.post("/api/settings", json={"values": {"standing_acknowledgements": True}}, headers=_sso(MANAGER))
+        assert r.status_code == 403
+        r = c.post("/api/settings", json={"values": {"jarvis_owner_password": "attackers-new-pw"}},
+                   headers=_sso(MANAGER))
+        assert r.status_code == 403
+    assert s.standing_acknowledgements is False
+
+
+def test_a_manager_cannot_set_the_display_password_and_log_in_as_owner(tmp_path, monkeypatch):
+    """Reviewer's attack route 2: set jarvis_owner_password, log in with it, then flip the switches."""
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    s, j = settings_app(tmp_path, owner_email=OWNER, manager_emails=f"{OWNER},{MANAGER}")  # no password yet
+    app = create_app(s, j)
+    with TestClient(app) as c:
+        r = c.post("/api/settings", json={"values": {"jarvis_owner_password": "attackers-new-pw"}},
+                   headers=_sso(MANAGER))
+        assert r.status_code == 403 and not s.jarvis_owner_password
+        r = c.post("/api/settings", json={"values": {"staff_report_key": "attackers-key-1"}}, headers=_sso(MANAGER))
+        assert r.status_code == 403 and not s.staff_report_key
+        # and with no password set, a remote (SSO-only) request is never the principal owner
+        assert c.post("/login", data={"password": "attackers-new-pw"}).status_code in (200, 303)
+        r = c.post("/api/settings", json={"values": {"standing_record_keeping": True}}, headers=_sso(MANAGER))
+        assert r.status_code == 403
+    assert s.standing_record_keeping is False
+
+
+def test_the_real_owner_can_still_change_all_of_them(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    s, j = settings_app(tmp_path, owner_email=OWNER, manager_emails=f"{OWNER},{MANAGER}")
+    app = create_app(s, j)
+    with TestClient(app) as c:
+        # the owner, signed in through Microsoft with the OWNER_EMAIL address
+        assert c.post("/api/settings", json={"values": {"partner_email": "partner@salts.example.com"}},
+                      headers=_sso(OWNER)).status_code == 200
+        assert c.post("/api/settings", json={"values": {"standing_record_keeping": True}},
+                      headers=_sso(OWNER)).status_code == 200
+        assert s.standing_record_keeping is True and s.partner_email == "partner@salts.example.com"
+        assert c.post("/api/settings", json={"values": {"jarvis_owner_password": "the-owners-new-pw"}},
+                      headers=_sso(OWNER)).status_code == 200
+        assert s.jarvis_owner_password == "the-owners-new-pw"
+        # ...and with the (new) display password session
+        c.cookies.set(auth.COOKIE, auth.make_session(s))
+        assert c.post("/api/settings", json={"values": {"standing_acknowledgements": True, "staff_report_key": "k-12345"}}
+                      ).status_code == 200
+        assert s.standing_acknowledgements is True
+
+
+def test_ordinary_settings_still_work_for_a_manager(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    s, j = settings_app(tmp_path, owner_email=OWNER, manager_emails=f"{OWNER},{MANAGER}")
+    app = create_app(s, j)
+    with TestClient(app) as c:
+        assert c.post("/api/settings", json={"values": {"company_name": "Salts Ltd"}},
+                      headers=_sso(MANAGER)).status_code == 200
+
+
+# --------------------------------------------------------------------------- strict (fullmatch) validators
+@pytest.mark.parametrize("body", [
+    {"name": "x", "email": "a@b.example.com\n"}, {"name": "x", "phone": "01274 555 0100\n"},
+    {"name": "x", "email": "a@b.example.com "}, {"name": "x", "phone": "\n01274 555 0100"},
+])
+def test_a_trailing_newline_fails_the_customer_validators(body):
+    db = Database(":memory:")
+    assert sa.classify("fsm_write", post("/customers", body), db) is None
+    assert sa.classify("fsm_write", post("/customers", {k: v.strip() for k, v in body.items()}), db) \
+        == sa.RECORD_KEEPING
+
+
+@pytest.mark.parametrize("due", ["2026-10-12\n", "2026-10-12T09:00\n", "٢٠٢٦-10-12"])
+def test_a_trailing_newline_or_lookalike_digits_fail_the_due_date(due):
+    db = Database(":memory:")
+    assert sa.classify("fsm_write", post("/tasks", {"title": MARK + "x", "due": due}), db) is None
+    assert sa.classify("fsm_write", post("/tasks", {"title": MARK + "x", "due": "2026-10-12"}), db) \
+        == sa.RECORD_KEEPING
+
+
+def test_a_trailing_newline_fails_the_id_and_address_checks_for_acknowledgements():
+    db = Database(":memory:")
+    db.set_kv("po_match:m1", json.dumps({"from_email": "jane@customer.example.co.uk", "quote_id": "Q1180"}))
+    good = ack_payload()
+    assert sa.classify(sa.PO_ACK_KIND, good, db) == sa.ACKNOWLEDGEMENTS
+    for over in ({"to": good["to"] + "\n"}, {"quote_id": "Q1180\n"}):
+        assert sa.classify(sa.PO_ACK_KIND, {**good, **over}, db) is None
+    assert not sa.safe_address("a@b.example.com\n") and sa.safe_address("a@b.example.com")
+
+
+# --------------------------------------------------------------------------- warning, verifier, prompt
+async def test_the_first_rate_limit_warning_is_not_suppressed_after_boot(settings):
+    ex, db, notices, fsm, mail = make_executor(settings, record=True, limit=0)
+    assert ex._last_rate_warning is None
+    ex.queue("fsm_write", "x", ALLOWED_RECORDS[0])
+    await drain(ex)
+    assert [t for t in notices.titles() if "hourly limit" in t]
+
+
+async def test_the_verifier_is_told_whether_an_approval_was_automatic(settings, monkeypatch):
+    from jarvis.services.verification import ActionVerifier
+
+    settings.plugin_thoughtproof_enabled = True
+    v = ActionVerifier(settings)
+    seen = []
+    monkeypatch.setattr(v, "problem", lambda: "")
+    monkeypatch.setattr(v, "_spec", lambda: {"tool": "verify"})
+    monkeypatch.setattr("jarvis.services.verification.launch_config", lambda spec: (object(), ""))
+    monkeypatch.setattr("jarvis.services.verification.load_mandates", lambda path: [{"id": "M1"}])
+
+    async def fake_call(launch, tool, arguments):
+        seen.append(json.loads(arguments["action"]))
+        return "ALLOW"
+
+    monkeypatch.setattr(v, "_call", fake_call)
+    base = {"id": 1, "kind": "fsm_write", "summary": "s", "payload": {}}
+    await v.verify({**base, "approved_by": "Alex"})
+    await v.verify({**base, "approved_by": PREFIX + "record keeping"})
+    human, auto = (s["context"]["approval"] for s in seen)
+    assert human == {"automatic": False, "approved_by": "Alex", "standing_approval_category": None}
+    assert auto["automatic"] is True and auto["standing_approval_category"] == "record keeping"
+    assert all(s["context"]["came_through_approval_queue"] is True for s in seen)
+    mandates = (Path(jarvis.__file__).parent.parent / "mandates.yaml").read_text(encoding="utf-8")
+    assert "approval.automatic" in mandates
+
+
+async def test_a_human_approval_reaches_the_verifier_with_the_persons_name(settings):
+    ex, db, notices, fsm, mail = make_executor(settings)
+    seen = []
+
+    class Verifier:
+        enabled = True
+
+        async def verify(self, action):
+            seen.append((action["approved_by"], action["status"]))
+            return SimpleNamespace(allowed=True, reason="")
+
+    ex.j = SimpleNamespace(verifier=Verifier(), settings=settings)
+    pending = ex.queue("email_send", "x", {"to": ["a@b.example.com"], "subject": "s", "body": "b"})
+    await ex.approve(pending, by="Sam")
+    await drain(ex)
+    assert seen == [("Sam", "approved")]
+
+
+def test_the_self_improve_engineer_is_told_not_to_touch_the_approval_files():
+    from jarvis.services.self_improve import SELF_IMPROVE_SYSTEM
+
+    for path in ("jarvis/services/standing_approvals.py", "jarvis/services/teams_approvals.py",
+                 "jarvis/integrations/teamsbot.py", "jarvis/settings_store.py", "jarvis/services/actions.py",
+                 "jarvis/auth.py"):
+        assert path in SELF_IMPROVE_SYSTEM, path
 
 
 async def test_create_record_tool_rejects_nonsense_and_cannot_target_other_paths(tmp_path):

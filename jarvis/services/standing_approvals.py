@@ -41,12 +41,12 @@ APPROVER_PREFIX = "standing approval: "  # what pending_actions.approved_by hold
 PO_ACK_KIND = "po_acknowledgement"
 
 _ID = r"[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"
-_EMAIL = re.compile(r"^[A-Za-z0-9._%+\-']{1,64}@[A-Za-z0-9.\-]{1,100}\.[A-Za-z]{2,24}$")
-_PHONE = re.compile(r"^[0-9 +()\-]{5,25}$")
-_DUE = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$")
-_NAME = re.compile(r"^[A-Za-z][A-Za-z .'\-]{0,39}$")
-_PO_REF = re.compile(r"^[A-Za-z0-9 ./_\-]{0,40}$")
-_ID_RE = re.compile(rf"^{_ID}$")
+# All of these are used with .fullmatch(): `$` would let a trailing newline through ("a@b.co\n").
+_EMAIL = re.compile(r"[A-Za-z0-9._%+\-']{1,64}@[A-Za-z0-9.\-]{1,100}\.[A-Za-z]{2,24}")
+_PHONE = re.compile(r"[0-9 +()\-]{5,25}")
+_DUE = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?", re.ASCII)
+_ID_RE = re.compile(_ID)
+AUTO_MARK = "[Added automatically by Jarvis]"  # fixed visible prefix on every auto-written note / task / reminder
 _URL_LIKE = re.compile(r"(?i)(://|\bwww\.|\bmailto:|\bjavascript:|\bdata:|\bfile:)")
 # C0/C1 controls except tab/newline/carriage return; zero-width, bidi and other invisible formatting characters.
 _ODD_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‏  ‪-‮⁠-⁯﻿]")
@@ -63,6 +63,7 @@ class Shape:
     keys: frozenset[str]
     required: str
     undo: str
+    marked: str = ""  # a field that must start with AUTO_MARK so staff can tell Jarvis wrote it, not a person
 
 
 SHAPES: tuple[Shape, ...] = (
@@ -74,11 +75,11 @@ SHAPES: tuple[Shape, ...] = (
           frozenset({"name", "email", "phone", "role"}), "name",
           "Undo: it is only a new record - remove it in Salts FSM (Jarvis cannot delete things)."),
     Shape("note", re.compile(rf"/(?:jobs|customers|sites)/{_ID}/notes"), frozenset({"text", "author"}), "text",
-          "Undo: it is only a note - remove it in Salts FSM (Jarvis cannot delete things)."),
+          "Undo: it is only a note - remove it in Salts FSM (Jarvis cannot delete things).", marked="text"),
     Shape("task", re.compile(r"/tasks"), frozenset({"title", "description", "due"}), "title",
-          "Undo: it is only a task - remove it in Salts FSM (Jarvis cannot delete things)."),
+          "Undo: it is only a task - remove it in Salts FSM (Jarvis cannot delete things).", marked="title"),
     Shape("reminder", re.compile(r"/reminders"), frozenset({"title", "note", "due"}), "title",
-          "Undo: it is only a reminder - remove it in Salts FSM (Jarvis cannot delete things)."),
+          "Undo: it is only a reminder - remove it in Salts FSM (Jarvis cannot delete things).", marked="title"),
 )
 
 
@@ -101,12 +102,12 @@ def _clean_text(value: Any, key: str) -> str | None:
     if "<" in value or ">" in value:
         return None
     if key == "email":
-        return value if _EMAIL.match(value) else None
+        return value if _EMAIL.fullmatch(value) else None
     if _URL_LIKE.search(value):
         return None
-    if key == "phone" and not _PHONE.match(value):
+    if key == "phone" and not _PHONE.fullmatch(value):
         return None
-    if key == "due" and not _DUE.match(value):
+    if key == "due" and not _DUE.fullmatch(value):
         return None
     return value
 
@@ -130,26 +131,24 @@ def _match_record(payload: dict[str, Any]) -> tuple[Shape, str] | None:
     for key, value in body.items():
         if _clean_text(value, key) is None:
             return None
+    if shape.marked and not str(body.get(shape.marked, "")).startswith(AUTO_MARK + " "):
+        return None  # a note/task/reminder must visibly say Jarvis wrote it, or it waits for a human
     target = path.strip("/").split("/")
     where = f" ({target[0][:-1]} {target[1]})" if len(target) == 3 and shape.label in ("contact", "note") else ""
-    name = str(body.get(shape.required))[:60].replace("\n", " ")
+    name = str(body.get(shape.required)).removeprefix(AUTO_MARK).strip()[:60].replace("\n", " ")
     return shape, f"Created {shape.label} '{name}'{where}" if shape.label in ("customer", "site", "contact") \
         else f"Added {shape.label} '{name}'{where}"
 
 
 def _match_acknowledgement(payload: dict[str, Any], db) -> bool:
-    if set(payload) - {"to", "name", "po_number", "quote_id", "source_message_id"}:
+    # Exactly these three keys, and no free text at all: the email is a fixed template (acknowledgement_email), so
+    # nothing an outsider wrote (display name, PO number, subject) can end up in it.
+    if set(payload) != {"to", "quote_id", "source_message_id"}:
         return False
     to, source, quote_id = payload.get("to"), payload.get("source_message_id"), payload.get("quote_id")
-    if not (isinstance(to, str) and _EMAIL.match(to) and isinstance(source, str) and 0 < len(source) <= 300
-            and isinstance(quote_id, str) and _ID_RE.match(quote_id)):
-        return False
-    name = payload.get("name", "there")
-    if not isinstance(name, str) or not _NAME.match(name):
-        return False
-    po = payload.get("po_number", "")
-    if not isinstance(po, str) or not _PO_REF.match(po):
-        return False
+    if not (isinstance(to, str) and _EMAIL.fullmatch(to) and isinstance(source, str) and 0 < len(source) <= 300
+            and isinstance(quote_id, str) and _ID_RE.fullmatch(quote_id)):
+        return False  # `to` is one plain address: no CR/LF, commas, spaces, angle brackets or display name
     # "An already-matched PO email": po_intake records which sender / quote it matched under this message id before
     # queueing anything. The reply may only go to that same sender, about that same quote.
     try:
@@ -160,12 +159,9 @@ def _match_acknowledgement(payload: dict[str, Any], db) -> bool:
             and str(match.get("quote_id", "")) == quote_id)
 
 
-def safe_name(value: Any) -> bool:
-    return isinstance(value, str) and bool(_NAME.match(value))
-
-
-def safe_po_ref(value: Any) -> bool:
-    return isinstance(value, str) and bool(_PO_REF.match(value))
+def safe_address(value: Any) -> bool:
+    """A single plain email address (what the receipt may be sent to)."""
+    return isinstance(value, str) and bool(_EMAIL.fullmatch(value))
 
 
 def classify(kind: str, payload: Any, db) -> str | None:
@@ -200,12 +196,11 @@ def undo_hint(kind: str, payload: dict[str, Any]) -> str:
 
 
 def acknowledgement_email(payload: dict[str, Any]) -> tuple[str, str]:
-    """(subject, html) for a receipt-only PO acknowledgement. Fixed wording built from validated fields only - it
-    claims nothing beyond "we have your order"; in particular never that a job is booked."""
-    name = payload.get("name") or "there"
-    po = f" ({payload['po_number']})" if payload.get("po_number") else ""
+    """(subject, html) for a receipt-only PO acknowledgement. A completely fixed template: it interpolates NOTHING
+    from the incoming email (no display name, no PO number), and claims nothing beyond "we have your order" - in
+    particular never that a job is booked."""
     return ("Purchase order received",
-            f"<p>Hi {name},</p><p>Thanks - we've received your purchase order{po}. We're just checking it over "
+            "<p>Hello,</p><p>Thanks - we've received your purchase order. We're just checking it over "
             "and will confirm separately once it has been processed.</p><p>Kind regards</p>")
 
 

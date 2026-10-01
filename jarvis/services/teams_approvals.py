@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -94,17 +94,23 @@ def _tidy(text: Any, limit: int) -> str:
 def _details(action: dict[str, Any]) -> str:
     p = action.get("payload") or {}
     kind = str(action.get("kind", ""))
+    # The summary is written by the model; what a phone approver must see is what will actually run, so show the
+    # real arguments (redacted and truncated), not just the kind or the tool's name.
     try:
         if kind == "email_send":
             return _tidy(f"To {', '.join(map(str, p.get('to', [])))} - subject: {p.get('subject', '')} - "
                          f"{p.get('body', '')}", 420)
         if kind == "fsm_write":
-            return _tidy(f"{p.get('method', '')} {p.get('path', '')} fields: {', '.join(map(str, (p.get('body') or {})))}", 200)
+            return _tidy(f"{p.get('method', '')} {p.get('path', '')} {_dump(p.get('body'))}", 420)
         if kind.startswith("tool:"):
-            return _tidy(f"Tool {p.get('tool', '')}", 100)
+            return _tidy(f"Tool {p.get('tool', '')} with {_dump(p.get('args'))}", 420)
+        return _tidy(f"{kind}: {_dump(p)}", 420)  # accept_quote, sage_invoices, deploy_fix, po_acknowledgement...
     except Exception:  # noqa: BLE001 - details are decoration; never fail a card over them
-        pass
-    return _tidy(kind, 80)
+        return _tidy(kind, 80)
+
+
+def _dump(value: Any) -> str:
+    return json.dumps(value, default=str, ensure_ascii=False)
 
 
 def approval_card(action: dict[str, Any]) -> dict[str, Any]:
@@ -189,8 +195,15 @@ class TeamsApprovals:
         except Exception as e:  # noqa: BLE001
             log.warning("Teams approvals: couldn't list approvers (%s)", self._why(e))
             return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
+        cap = max(0, int(self.s.teams_cards_per_hour))
         for r in recipients:
             try:
+                if self.db.count_teams_cards_since(r["email"], cutoff) >= cap:
+                    # Flood protection: the action is still queued and on the display; the approver gets one
+                    # summary card per hour instead of a card per action.
+                    await self._summary(r, cutoff)
+                    continue
                 if not self.db.claim_teams_card(action["id"], r["email"]):
                     continue
                 activity = card_activity(
@@ -202,6 +215,19 @@ class TeamsApprovals:
             except Exception as e:  # noqa: BLE001 - Teams being down must never matter to the caller
                 log.warning("Teams approval card not delivered (%s)", self._why(e))
         return sent
+
+    async def _summary(self, r: dict[str, Any], cutoff: str) -> None:
+        """At most one "N more actions are waiting" message per approver per hour, once their card cap is hit."""
+        key = f"teams_cards_summary:{r['email'].lower()}"
+        last = self.db.get_kv(key) or ""
+        if last and last >= cutoff:
+            return
+        self.db.set_kv(key, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        waiting = len(self.db.pending_actions())
+        await self.bot.send_activity(
+            r["service_url"], r["conversation_id"],
+            {"type": "message", "text": f"{waiting} actions are waiting for your approval - there are too many to "
+                                        "send as separate cards, so please open the Jarvis display to go through them."})
 
     async def info(self, text: str) -> int:
         """A plain information message to every approver (used for "Done automatically ..."). Never raises."""

@@ -35,7 +35,13 @@ OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfigurati
 CONNECTOR_SCOPE = "https://api.botframework.com/.default"
 # Bot Framework only ever calls back from these domains; anything else claiming to be Teams is rejected
 # before we trust its serviceUrl enough to POST a reply (and the caller's real conversation history) to it.
-TRUSTED_SERVICE_URL_SUFFIXES = (".botframework.com", ".trafficmanager.net", ".teams.microsoft.com")
+#
+# Microsoft's Teams service URLs are https://smba.trafficmanager.net/<region>/ (public cloud), and
+# https://smba.infra.gcc.teams.microsoft.com/... / https://smba.infra.gov.teams.microsoft.us/... (US government
+# clouds); other Bot Framework channels use *.botframework.com. The old open `*.trafficmanager.net` wildcard is gone:
+# anyone can register a trafficmanager.net name, so only the exact Microsoft host is trusted.
+TRUSTED_SERVICE_HOSTS = ("smba.trafficmanager.net",)
+TRUSTED_SERVICE_URL_SUFFIXES = (".botframework.com", ".teams.microsoft.com", ".teams.microsoft.us")
 
 
 class TeamsBotError(RuntimeError):
@@ -56,8 +62,9 @@ async def _openid_metadata(http: httpx.AsyncClient) -> dict[str, Any]:
     return _openid_cache[1]
 
 
-async def verify_activity(auth_header: str | None, app_id: str, http: httpx.AsyncClient) -> None:
-    """Raises TeamsBotError unless `auth_header` is a currently-valid Bot Framework token issued to us."""
+async def verify_activity(auth_header: str | None, app_id: str, http: httpx.AsyncClient) -> dict[str, Any]:
+    """Raises TeamsBotError unless `auth_header` is a currently-valid Bot Framework token issued to us.
+    Returns the token's claims (so the caller can check its `serviceurl` claim against the activity)."""
     global _jwks_client
     if not auth_header or not auth_header.lower().startswith("bearer "):
         raise TeamsBotError("no bearer token")
@@ -67,8 +74,9 @@ async def verify_activity(auth_header: str | None, app_id: str, http: httpx.Asyn
         if _jwks_client is None or _jwks_client.uri != metadata["jwks_uri"]:
             _jwks_client = PyJWKClient(metadata["jwks_uri"])
         signing_key = _jwks_client.get_signing_key_from_jwt(token)
-        jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=app_id,
-                  issuer=metadata.get("issuer", "https://api.botframework.com"))
+        claims = jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=app_id,
+                            issuer=metadata.get("issuer", "https://api.botframework.com"))
+        return claims
     except jwt.PyJWTError as e:
         raise TeamsBotError(f"invalid token: {e}") from None
     except httpx.HTTPError as e:
@@ -76,11 +84,21 @@ async def verify_activity(auth_header: str | None, app_id: str, http: httpx.Asyn
 
 
 def trusted_service_url(url: str) -> bool:
+    """https only, no credentials or odd port in the URL, and an exact Microsoft / Bot Framework host."""
     try:
-        host = httpx.URL(url).host or ""
+        parsed = httpx.URL(url)
     except Exception:  # noqa: BLE001
         return False
-    return host == "botframework.com" or any(host.endswith(suf) for suf in TRUSTED_SERVICE_URL_SUFFIXES)
+    host = (parsed.host or "").lower()
+    if parsed.scheme != "https" or parsed.userinfo or parsed.port not in (None, 443) or not host:
+        return False
+    return (host in TRUSTED_SERVICE_HOSTS or host == "botframework.com"
+            or any(host.endswith(suf) for suf in TRUSTED_SERVICE_URL_SUFFIXES))
+
+
+def same_service_url(a: str, b: str) -> bool:
+    """Whether two serviceUrls are the same (case and a trailing slash don't matter)."""
+    return str(a or "").strip().rstrip("/").lower() == str(b or "").strip().rstrip("/").lower()
 
 
 class TeamsBot:

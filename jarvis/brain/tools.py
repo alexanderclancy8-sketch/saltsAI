@@ -854,6 +854,13 @@ async def fsm_create_record(j, a: FsmRecordIn):
     body = {k: v for k, v in fields.items() if v}
     if not (body.get("name") or body.get("title") or body.get("text")):
         return {"error": f"A {r} needs its {'text' if r == 'note' else 'title' if r in ('task', 'reminder') else 'name'}."}
+    # Everything Jarvis writes as a note / task / reminder carries a fixed visible prefix so staff can tell it wasn't
+    # typed by a person (and the standing-approval allowlist requires it).
+    from ..services.standing_approvals import AUTO_MARK
+
+    marked = {"note": "text", "task": "title", "reminder": "title"}.get(r)
+    if marked:
+        body[marked] = f"{AUTO_MARK} {body[marked]}"
     if r in _RECORD_PARENTS:
         if a.parent_type not in _RECORD_PARENTS[r] or not _RECORD_ID.match(a.parent_id):
             return {"error": f"A {r} must say which {' / '.join(_RECORD_PARENTS[r])} it belongs to (parent_type "
@@ -861,7 +868,7 @@ async def fsm_create_record(j, a: FsmRecordIn):
         path = f"/{a.parent_type}s/{a.parent_id}/{r}s"
     else:
         path = {"customer": "/customers", "site": "/sites", "task": "/tasks", "reminder": "/reminders"}[r]
-    label = body.get("name") or body.get("title") or body.get("text", "")[:60]
+    label = str(body.get("name") or body.get("title") or body.get("text") or "").removeprefix(AUTO_MARK).strip()[:60]
     action_id = j.actions.queue("fsm_write", f"Create {r} '{label[:60]}' in Salts FSM",
                                 {"method": "POST", "path": path, "body": body})
     action = j.db.get_action(action_id) or {}

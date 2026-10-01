@@ -75,14 +75,20 @@ def is_owner(settings: Settings, conn: Request | WebSocket) -> bool:
     return valid_session(settings, conn.cookies.get(COOKIE))
 
 
-def is_principal_owner(settings: Settings, conn: Request | WebSocket) -> bool:
+def is_principal_owner(settings: Settings, conn: Request | WebSocket, owner_email: str) -> bool:
     """The owner themself - stricter than is_owner(), which also lets in any manager signed in through Microsoft.
 
-    Used for settings that widen what Jarvis may do without asking (standing approvals): the display-password
-    session, the owner's own Microsoft sign-in (OWNER_EMAIL), or local-only mode with no password set. Another
-    signed-in manager, the partner included, is not enough."""
+    Used for settings that widen what Jarvis may do without asking (standing approvals) or that decide who counts
+    as the owner (owner/partner email, display password, staff key): the display-password session, the owner's own
+    Microsoft sign-in, or local-only mode with no password set. Another signed-in manager, the partner included,
+    is not enough.
+
+    `owner_email` must be the owner's address as configured OUTSIDE the Settings page (the OWNER_EMAIL app
+    setting / .env value captured when the app started - see main.create_app), never the live, hot-reloaded
+    `settings.owner_email`: that one can be edited on the Settings page, and a principal-owner check that trusts
+    a value a manager can change is no check at all. Blank means no Microsoft sign-in counts as the owner."""
     manager = signed_in_manager(settings, conn)
-    if manager and settings.owner_email and manager == settings.owner_email.strip().lower():
+    if manager and owner_email and manager == owner_email.strip().lower():
         return True
     if settings.jarvis_owner_password:
         return valid_session(settings, conn.cookies.get(COOKIE))

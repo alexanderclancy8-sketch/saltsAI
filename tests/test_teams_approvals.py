@@ -609,3 +609,119 @@ async def test_an_automatic_run_sends_an_info_message_not_an_approval_card(setti
 
 async def _done():
     return {"id": "1"}
+
+
+# --------------------------------------------------------------------------- serviceUrl trust
+@pytest.mark.parametrize("url", [
+    "https://smba.trafficmanager.net/uk/", "https://smba.trafficmanager.net/emea/", "https://smba.trafficmanager.net/amer",
+    "https://SMBA.trafficmanager.net/uk/", "https://smba.trafficmanager.net:443/uk/", "https://europe.botframework.com/",
+    "https://botframework.com/", "https://smba.infra.gcc.teams.microsoft.com/teams/",
+    "https://smba.infra.gov.teams.microsoft.us/teams/", "https://something.teams.microsoft.com/",
+])
+def test_the_real_microsoft_service_urls_are_trusted(url):
+    from jarvis.integrations.teamsbot import trusted_service_url
+
+    assert trusted_service_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "http://smba.trafficmanager.net/uk/",                       # not https
+    "https://evil.trafficmanager.net/uk/",                       # the old open *.trafficmanager.net wildcard
+    "https://trafficmanager.net/", "https://smba.trafficmanager.net.evil.example.com/",
+    "https://evil.example.com/smba.trafficmanager.net/", "https://notbotframework.com/", "https://evilbotframework.com/",
+    "https://user:pw@smba.trafficmanager.net/uk/", "https://smba.trafficmanager.net:8443/uk/",
+    "ftp://smba.trafficmanager.net/", "smba.trafficmanager.net/uk/", "", "https://", "not a url",
+    "https://teams.microsoft.com.evil.example.com/", "https://evilteams.microsoft.com.evil.net/",
+])
+def test_everything_else_is_not_a_trusted_service_url(url):
+    from jarvis.integrations.teamsbot import trusted_service_url
+
+    assert not trusted_service_url(url)
+
+
+def test_a_service_url_that_differs_from_the_one_in_the_token_is_ignored(settings, monkeypatch):
+    h = Harness(settings, monkeypatch)
+    action_id = h.queue()
+
+    async def claims_for_another_url(*a, **k):
+        return {"aud": "app", "serviceurl": "https://smba.trafficmanager.net/emea/"}
+
+    monkeypatch.setattr("jarvis.main.verify_activity", claims_for_another_url)
+    with TestClient(h.app) as c:
+        c.post("/api/teams/messages", json=submit(action_id, "approve"))  # activity says /uk/
+        time.sleep(0.15)
+    assert h.status(action_id) == "pending" and h.replies == [] and h.brain_calls() == 0
+
+
+def test_a_matching_token_service_url_is_accepted_whatever_the_case_or_trailing_slash(settings, monkeypatch):
+    h = Harness(settings, monkeypatch)
+    action_id = h.queue()
+
+    async def claims(*a, **k):
+        return {"aud": "app", "serviceurl": "HTTPS://SMBA.trafficmanager.net/uk"}
+
+    monkeypatch.setattr("jarvis.main.verify_activity", claims)
+    with TestClient(h.app) as c:
+        c.post("/api/teams/messages", json=submit(action_id, "approve"))
+        assert h.wait(lambda: h.status(action_id) == "done")
+
+
+# --------------------------------------------------------------------------- what the approver sees
+def test_the_card_shows_the_real_arguments_of_a_tool_action_not_just_its_name():
+    card = approval_card({"id": 5, "kind": "tool:fsm_change", "summary": "Tidy up some records",
+                          "payload": {"tool": "fsm_change", "args": {"method": "PATCH", "path": "/customers/9",
+                                                                     "body": {"creditLimit": 90000}}}})
+    details = card["body"][2]["text"]
+    assert "fsm_change" in details and "/customers/9" in details and "creditLimit" in details and "90000" in details
+
+
+def test_the_card_shows_what_accept_quote_and_other_kinds_will_actually_do():
+    card = approval_card({"id": 6, "kind": "accept_quote", "summary": "Harmless lookup",
+                          "payload": {"quote_id": "Q1180", "job_body": {"site": "Ilkley", "engineer": "Sam"}}})
+    details = card["body"][2]["text"]
+    assert "accept_quote" in details and "Q1180" in details and "Ilkley" in details
+    card = approval_card({"id": 7, "kind": "tool:x", "summary": "s", "payload": {
+        "tool": "x", "args": {"note": "key sk-abcdef1234567890XYZ " + "z" * 2000}}})
+    details = card["body"][2]["text"]
+    assert "sk-abcdef1234567890XYZ" not in details and len(details) <= 420  # redacted and truncated
+
+
+# --------------------------------------------------------------------------- card flood cap
+async def test_cards_are_capped_per_approver_per_hour_with_one_summary_and_nothing_dropped(settings):
+    settings.teams_cards_per_hour = 3
+    wire = Wire()
+    j = make(settings, wire)
+    hello(j, OWNER, "c-owner")
+    hello(j, PARTNER, "c-partner")
+    ids = [j.actions.queue("email_send", f"Action {i}", EMAIL_ACTION) for i in range(6)]
+    await drain(j)
+    per = {}
+    for url, body in wire.posts:
+        per.setdefault(url.split("/conversations/")[1].split("/")[0], []).append(body)
+    for conv in ("c-owner", "c-partner"):
+        cards = [b for b in per[conv] if b.get("attachments")]
+        summaries = [b for b in per[conv] if not b.get("attachments")]
+        assert len(cards) == 3 and len(summaries) == 1  # three cards, then ONE summary, not one per extra action
+        assert "waiting for your approval" in summaries[0]["text"] and "display" in summaries[0]["text"]
+    # every action is still queued, on the display, and decidable
+    assert [a["id"] for a in j.db.pending_actions()] == ids
+    assert "Approved action" in await j.actions.approve(ids[5], by="Alex")
+    await j.http.aclose()
+
+
+async def test_the_card_cap_frees_up_as_the_hour_rolls_over(settings):
+    settings.teams_cards_per_hour = 1
+    wire = Wire()
+    j = make(settings, wire)
+    hello(j, OWNER, "c-owner")
+    j.actions.queue("email_send", "one", EMAIL_ACTION)
+    await drain(j)
+    j.actions.queue("email_send", "two", EMAIL_ACTION)
+    await drain(j)
+    assert len(wire.cards()) == 1
+    j.db.execute("UPDATE teams_approval_cards SET sent_at = '2020-01-01T00:00:00+00:00'")
+    j.db.set_kv(f"teams_cards_summary:{OWNER}", "2020-01-01T00:00:00+00:00")
+    j.actions.queue("email_send", "three", EMAIL_ACTION)
+    await drain(j)
+    assert len(wire.cards()) == 2
+    await j.http.aclose()
