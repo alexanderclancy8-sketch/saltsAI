@@ -9,6 +9,7 @@ Exchange Online application access policy (see README).
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import html
 import io
@@ -26,6 +27,7 @@ from .mail_guard import GuardedMessage, guard_message
 
 log = logging.getLogger(__name__)
 GRAPH = "https://graph.microsoft.com/v1.0"
+TRANSCRIPT_EXTENSIONS = (".txt", ".vtt", ".srt")  # text attachments treated as call/voicemail transcripts
 FOLDER_MISS_TTL_S = 300  # how long a "folder not found" answer is trusted before looking again
 MESSAGE_FIELDS ="id,subject,from,toRecipients,receivedDateTime,isRead,importance,bodyPreview,hasAttachments,webLink"
 
@@ -132,6 +134,24 @@ class GraphMail:
             if a.get("@odata.type") == "#microsoft.graph.fileAttachment" and is_pdf and a.get("contentBytes") \
                     and int(a.get("size") or 0) <= max_bytes:
                 out.append({"name": name, "data": a["contentBytes"]})
+        return out
+
+    async def text_attachments(self, message_id: str, mailbox: str | None = None,
+                               max_bytes: int = 1_000_000) -> list[dict[str, str]]:
+        """Plain-text attachments (call/voicemail transcripts: .txt, .vtt, .srt) decoded to text. Read-only."""
+        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
+        r.raise_for_status()
+        out = []
+        for a in r.json().get("value", []):
+            name = a.get("name") or ""
+            if a.get("@odata.type") == "#microsoft.graph.fileAttachment" and a.get("contentBytes") \
+                    and name.lower().endswith(TRANSCRIPT_EXTENSIONS) and int(a.get("size") or 0) <= max_bytes:
+                try:
+                    text = base64.b64decode(a["contentBytes"]).decode("utf-8", errors="replace")
+                except ValueError:
+                    continue
+                out.append({"name": name, "text": _strip(text, 40000)})
         return out
 
     async def mark_read(self, message_id: str) -> None:
@@ -397,6 +417,10 @@ class DemoMail:
 
     async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
                               max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        return []
+
+    async def text_attachments(self, message_id: str, mailbox: str | None = None,
+                               max_bytes: int = 1_000_000) -> list[dict[str, str]]:
         return []
 
     async def mark_read(self, message_id: str) -> None:

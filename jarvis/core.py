@@ -41,6 +41,7 @@ from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.call_capture import CallCapture
 from .services.po_intake import PoIntake
 from .services.ppm_planner import PPMPlanner
 from .services.recruiter import Recruiter
@@ -124,6 +125,7 @@ class Jarvis:
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
+        self.call_capture = CallCapture(self)  # proposes jobs (approval-gated) from voicemail / call-transcript emails
         self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)

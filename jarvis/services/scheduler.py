@@ -80,4 +80,6 @@ def build_scheduler(j) -> AsyncIOScheduler:
                       id="inbox_scan", max_instances=1, coalesce=True)
         sched.add_job(_guard("PO intake scan", j.po_intake.scan_inbox), "interval",
                       minutes=s.inbox_check_interval_min, id="po_intake_scan", max_instances=1, coalesce=True)
+        sched.add_job(_guard("call capture scan", j.call_capture.scan_inbox), "interval",
+                      minutes=s.inbox_check_interval_min, id="call_capture_scan", max_instances=1, coalesce=True)
     return sched
