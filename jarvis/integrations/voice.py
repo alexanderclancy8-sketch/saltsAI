@@ -1,19 +1,24 @@
 """Voice I/O.
 
-Speech output (TTS): ElevenLabs (default British "Daniel" voice) or Azure Neural TTS.
-Speech input (STT): Deepgram Nova-3 live streaming (proxied so the API key never
-reaches the browser), Deepgram pre-recorded, or OpenAI Whisper for push-to-talk.
-If nothing is configured the browser's built-in speech engines are used.
+Speech output (TTS): ElevenLabs or Azure Neural TTS if a key is configured, otherwise Piper - a free,
+local neural TTS engine (runs on the server itself, no external API, no cost) - which is why it, not the
+browser's own robotic voice, is the default whenever nothing paid is set up. Speech input (STT): Deepgram
+Nova-3 live streaming (proxied so the API key never reaches the browser), Deepgram pre-recorded, or OpenAI
+Whisper for push-to-talk. If nothing is configured the browser's built-in speech engines are used.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import re
+import time
+import wave
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from xml.sax.saxutils import escape
@@ -21,6 +26,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from ..config import Settings
+from .stt_chain import ENGINE_LABELS, engine_configured, stt_chain
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +35,67 @@ DEEPGRAM_API = "https://api.deepgram.com/v1/listen"
 DEEPGRAM_WS = "wss://api.deepgram.com/v1/listen"
 VOCAB = ["Jarvis", "Salts", "Salts FSM", "Vigilon", "Gent", "Kentec", "Apollo", "Paxton", "BAFE", "NSI", "SSAIB"]
 
+# Free British English voices from the Piper project (github.com/OHF-Voice/piper1-gpl), model files hosted
+# at huggingface.co/rhasspy/piper-voices - {voice: quality tier}. All confirmed to exist at "medium" quality
+# as of writing; add more here (checking the quality folder actually exists first) rather than guessing one.
+PIPER_VOICES = {"alan": "medium", "northern_english_male": "medium", "jenny_dioco": "medium", "alba": "medium"}
+PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
+
+
+WHISPER_API = "https://api.openai.com/v1/audio/transcriptions"
+# Push-to-talk STT limits. A short clip normally comes back in 1-3 s, so 20 s is generous without leaving the
+# owner staring at "Transcribing…" for a minute; OpenAI rejects uploads over 25 MB.
+STT_TIMEOUT_S = 20.0
+# Per-attempt limit when the browser drives the fallback (POST /api/stt?engine=...): it must be shorter than the
+# browser's own ~10 s abort so the server answers with a proper error message rather than being cut off.
+STT_ATTEMPT_TIMEOUT_S = 8.0
+STT_CONNECT_TIMEOUT_S = 5.0
+STT_RETRY_DELAY_S = 0.5
+STT_MAX_BYTES = 25 * 1024 * 1024
+
 
 class VoiceError(RuntimeError):
     pass
+
+
+class STTError(VoiceError):
+    """A speech-to-text provider failure with a message that is safe and useful to show the owner (no secrets)."""
+
+    def __init__(self, message: str, provider: str = "", status: int | None = None, *, transient: bool = False):
+        super().__init__(message)
+        self.provider, self.status, self.transient = provider, status, transient
+
+
+_SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-*.]{4,}|Token\s+\S+|Bearer\s+\S+)", re.I)
+
+
+def _redact(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """Strip anything key-shaped - and any configured key value, whatever its format - from upstream text before
+    it is logged or shown."""
+    text = text or ""
+    for secret in secrets:
+        if secret and len(secret) >= 6:  # too-short values would mangle ordinary words
+            text = text.replace(secret, "[redacted]")
+    return _SECRET_RE.sub("[redacted]", text)
+
+
+def _upstream_message(r: httpx.Response, secrets: tuple[str, ...] = ()) -> str:
+    """The provider's own error text (OpenAI: error.message; Deepgram: err_msg / reason), shortened and redacted."""
+    msg: Any = ""
+    try:
+        data = r.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("code") or ""
+        elif isinstance(err, str):
+            msg = err
+        msg = msg or data.get("err_msg") or data.get("reason") or data.get("message") or ""
+    if not msg:
+        msg = r.text or ""
+    return _redact(" ".join(str(msg).split()), secrets)[:200]
 
 
 def speakable(text: str) -> str:
@@ -50,19 +114,40 @@ def speakable(text: str) -> str:
     return text.strip()
 
 
+def audio_extension(mime: str) -> str:
+    """File extension matching the recorded container - Whisper picks its decoder from the filename, so a Safari
+    audio/mp4 recording sent as 'speech.webm' is rejected."""
+    m = (mime or "").lower()
+    if "mp4" in m or "m4a" in m or "aac" in m:
+        return "mp4"
+    if "ogg" in m:
+        return "ogg"
+    if "mpeg" in m or "mp3" in m:
+        return "mp3"
+    if "wav" in m:
+        return "wav"
+    return "webm"
+
+
 class Voice:
     def __init__(self, settings: Settings, http: httpx.AsyncClient):
         self.s = settings
         self.http = http
+        self._piper_models: dict[str, Any] = {}  # model path -> loaded PiperVoice, expensive to (re)load
 
     # ------------------------------------------------------------------ status
     def client_config(self) -> dict[str, Any]:
+        voice = (self.s.elevenlabs_voice if self.s.effective_tts == "elevenlabs" else
+                self.s.piper_voice if self.s.effective_tts == "piper" else self.s.azure_tts_voice)
         return {
             "tts": self.s.effective_tts,
             "stt": self.s.effective_stt,
+            "stt_chain": stt_chain(self.s),  # fallback order the browser walks if an engine fails (stt_chain.py)
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
-            "voice": self.s.elevenlabs_voice if self.s.effective_tts == "elevenlabs" else self.s.azure_tts_voice,
+            "voice": voice,
+            "ack_fillers": bool(self.s.voice_ack_fillers),
+            "silence_ms": int(self.s.voice_silence_ms),
         }
 
     # ------------------------------------------------------------------ TTS
@@ -75,6 +160,8 @@ class Voice:
             return await self._elevenlabs(text, voice_id or self.s.elevenlabs_voice_id), "audio/mpeg"
         if provider == "azure":
             return await self._azure_tts(text), "audio/mpeg"
+        if provider == "piper":
+            return await self._piper(text, voice_id), "audio/wav"
         raise VoiceError("No server TTS configured - use the browser voice")
 
     async def _open_stream(self, request: httpx.Request) -> AsyncIterator[bytes]:
@@ -135,6 +222,48 @@ class Voice:
         )
         return await self._open_stream(req)
 
+    async def _piper(self, text: str, voice: str | None = None) -> AsyncIterator[bytes]:
+        voice = voice or self.s.piper_voice
+        quality = PIPER_VOICES.get(voice, "medium")
+        model_path = await self._ensure_piper_voice(voice, quality)
+        wav_bytes = await asyncio.to_thread(self._piper_synthesize, model_path, text)
+
+        async def gen() -> AsyncIterator[bytes]:
+            yield wav_bytes
+
+        return gen()
+
+    async def _ensure_piper_voice(self, voice: str, quality: str) -> Path:
+        """Downloads a Piper voice model the first time it's used and caches it under data_dir, which
+        survives restarts/redeploys - so this only ever costs real time once per voice, not once per reply."""
+        cache_dir = self.s.data_dir / "piper-voices"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"en_GB-{voice}-{quality}"
+        model_path, config_path = cache_dir / f"{stem}.onnx", cache_dir / f"{stem}.onnx.json"
+        if not model_path.exists() or not config_path.exists():
+            base = f"{PIPER_VOICES_BASE}/{voice}/{quality}/{stem}"
+            for suffix, path in ((".onnx", model_path), (".onnx.json", config_path)):
+                r = await self.http.get(f"{base}{suffix}", timeout=120, follow_redirects=True)
+                if r.status_code >= 400:
+                    raise VoiceError(f"Couldn't download the Piper voice '{voice}' ({r.status_code}) - "
+                                     "check it's a real voice name from huggingface.co/rhasspy/piper-voices.")
+                path.write_bytes(r.content)
+        return model_path
+
+    def _piper_synthesize(self, model_path: Path, text: str) -> bytes:
+        """Runs on a worker thread (asyncio.to_thread) - Piper's inference is synchronous CPU work and would
+        otherwise block the event loop for every other request while a reply is being spoken."""
+        from piper import PiperVoice
+
+        key = str(model_path)
+        voice = self._piper_models.get(key)
+        if voice is None:
+            voice = self._piper_models[key] = PiperVoice.load(key)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            voice.synthesize_wav(text, wav_file)
+        return buf.getvalue()
+
     async def list_voices(self) -> list[dict[str, Any]]:
         """ElevenLabs voices on the account, British accents first."""
         if not self.s.elevenlabs_api_key:
@@ -150,27 +279,113 @@ class Voice:
         return voices
 
     # ------------------------------------------------------------------ STT (push-to-talk)
-    async def transcribe(self, audio: bytes, mime: str) -> str:
-        provider = self.s.effective_stt
+    def _secrets(self) -> tuple[str, ...]:
+        return (self.s.deepgram_api_key, self.s.openai_api_key)
+
+    async def transcribe(self, audio: bytes, mime: str, provider: str | None = None, *, retry: bool = True,
+                         timeout_s: float | None = None) -> str:
+        """Push-to-talk transcription. One retry on a transient failure (timeout, network error, upstream 5xx,
+        non-quota 429); anything else - bad key, billing, bad audio - fails at once with a clear STTError.
+
+        provider: a specific engine (used by the browser-driven fallback); default is the configured one.
+        retry=False / timeout_s: a single bounded attempt - the browser does its own retry and fallback."""
+        provider = provider or self.s.effective_stt
+        log.info("STT request: provider=%s bytes=%d mime=%s", provider, len(audio), mime)
+        if provider not in ("deepgram", "whisper"):
+            raise VoiceError("No server speech-to-text configured - use the browser microphone")
+        if not engine_configured(self.s, provider):
+            key_env = "OPENAI_API_KEY" if provider == "whisper" else "DEEPGRAM_API_KEY"
+            log.warning("STT engine %s selected but no API key is configured (%s is empty)", provider, key_env)
+            raise STTError(f"{ENGINE_LABELS[provider]} has no API key - set {key_env}.", provider, None)
+        if len(audio) > STT_MAX_BYTES:
+            raise STTError(f"The recording is too large ({len(audio) // (1024 * 1024)} MB; the limit is "
+                           f"{STT_MAX_BYTES // (1024 * 1024)} MB) - record a shorter message.", provider, 413)
+        for attempt in (1, 2):
+            try:
+                return await self._transcribe_once(provider, audio, mime, timeout_s or STT_TIMEOUT_S)
+            except STTError as e:
+                if not retry or not e.transient or attempt == 2:
+                    raise
+                log.warning("STT transient failure (attempt 1 of 2), retrying: %s", e)
+                await asyncio.sleep(STT_RETRY_DELAY_S)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _transcribe_once(self, provider: str, audio: bytes, mime: str,
+                               timeout_s: float = STT_TIMEOUT_S) -> str:
+        label = ENGINE_LABELS[provider]
         if provider == "deepgram":
-            r = await self.http.post(
-                DEEPGRAM_API,
+            request = dict(
+                url=DEEPGRAM_API,
                 params={"model": self.s.deepgram_model, "language": self.s.stt_language, "smart_format": "true"},
                 headers={"Authorization": f"Token {self.s.deepgram_api_key}", "Content-Type": mime},
-                content=audio, timeout=60)
-            r.raise_for_status()
-            return r.json()["results"]["channels"][0]["alternatives"][0]["transcript"]
-        if provider == "whisper":
-            ext = "webm" if "webm" in mime else "ogg" if "ogg" in mime else "mp4" if "mp4" in mime else "wav"
-            r = await self.http.post(
-                "https://api.openai.com/v1/audio/transcriptions",
+                content=audio)
+        else:
+            ext = audio_extension(mime)
+            base_mime = mime.split(";")[0].strip() or "audio/webm"
+            request = dict(
+                url=WHISPER_API,
                 headers={"Authorization": f"Bearer {self.s.openai_api_key}"},
                 data={"model": self.s.whisper_model, "language": self.s.stt_language.split("-")[0],
                       "prompt": ", ".join(VOCAB)},
-                files={"file": (f"speech.{ext}", audio, mime)}, timeout=60)
-            r.raise_for_status()
-            return r.json().get("text", "")
-        raise VoiceError("No server speech-to-text configured - use the browser microphone")
+                files={"file": (f"speech.{ext}", audio, base_mime)})
+        t0 = time.perf_counter()
+        try:
+            r = await self.http.post(timeout=httpx.Timeout(timeout_s, connect=min(STT_CONNECT_TIMEOUT_S, timeout_s)),
+                                     **request)
+        except httpx.TimeoutException as e:
+            log.warning("STT timeout: provider=%s after %.1fs (%s)", provider, time.perf_counter() - t0,
+                        type(e).__name__)
+            raise STTError(f"{label} did not answer within {timeout_s:.0f} seconds.", provider, None,
+                           transient=True) from e
+        except httpx.HTTPError as e:
+            log.warning("STT network error: provider=%s %s: %s", provider, type(e).__name__,
+                        _redact(str(e), self._secrets()))
+            raise STTError(f"Couldn't reach {label} ({type(e).__name__}).", provider, None, transient=True) from e
+        ms = int((time.perf_counter() - t0) * 1000)
+        log.info("STT response: provider=%s status=%s in %d ms", provider, r.status_code, ms)
+        if r.status_code >= 400:
+            raise self._stt_error(provider, label, r)
+        try:
+            data = r.json()
+            if provider == "deepgram":
+                return data["results"]["channels"][0]["alternatives"][0]["transcript"]
+            return data.get("text", "")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+            log.warning("STT unexpected response shape: provider=%s body=%r", provider,
+                        _redact(r.text[:300], self._secrets()))
+            raise STTError(f"{label} returned a response Jarvis couldn't read.", provider, r.status_code) from e
+
+    def _stt_error(self, provider: str, label: str, r: httpx.Response) -> STTError:
+        """Logs the real upstream error and turns it into a message that says what to check. Never includes the
+        API key; for 401/403 the upstream text is withheld altogether because providers echo part of the key."""
+        status = r.status_code
+        upstream = _upstream_message(r, self._secrets())
+        log.warning("STT upstream error: provider=%s status=%s model=%s body=%s", provider, status,
+                    self.s.whisper_model if provider == "whisper" else self.s.deepgram_model,
+                    _redact(r.text[:500], self._secrets()).replace("\n", " "))
+        key_env = "OPENAI_API_KEY" if provider == "whisper" else "DEEPGRAM_API_KEY"
+        model_env = "WHISPER_MODEL" if provider == "whisper" else "DEEPGRAM_MODEL"
+        quota = status == 402 or (status == 429 and any(
+            w in (r.text or "").lower() for w in ("insufficient_quota", "quota", "billing")))
+        if status in (401, 403):
+            hint, upstream = f"the API key was rejected - check {key_env} (expired, revoked or wrong project).", ""
+        elif quota:
+            hint = f"quota or billing problem - check the {label} account's credit / billing limits."
+        elif status == 429:
+            hint = "rate limited - try again in a moment."
+        elif status == 404:
+            hint = f"endpoint or model not found - check {model_env}."
+        elif status == 413:
+            hint = "the recording is too large."
+        elif status in (400, 415, 422):
+            hint = "the audio was rejected (unsupported format or corrupt recording)."
+        elif status >= 500:
+            hint = "the service had a problem on its side."
+        else:
+            hint = "the request failed."
+        message = f"{label} returned {status}: {hint}" + (f" ({upstream})" if upstream else "")
+        transient = status >= 500 or (status == 429 and not quota)
+        return STTError(message, provider, status, transient=transient)
 
     # ------------------------------------------------------------------ STT (live, Deepgram)
     def deepgram_live_url(self) -> str:
@@ -230,3 +445,29 @@ class Voice:
                 for t in tasks:
                     t.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def silent_wav(seconds: float = 0.5, rate: int = 16000) -> bytes:
+    """A tiny valid mono 16-bit WAV of silence, for probing the STT provider without a real recording."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * int(rate * seconds))
+    return buf.getvalue()
+
+
+class SpeechToTextCheck:
+    """Routine-test probe ('Integration: Speech-to-text'): sends a short silent clip down the same path a
+    push-to-talk recording takes (same endpoint, key, model, retry and timeout). Any provider error - including a
+    500 - raises, which the routine tester records as a failure; an empty transcript is a pass."""
+
+    def __init__(self, voice: Voice):
+        self.voice = voice
+
+    async def check(self) -> str:
+        provider = self.voice.s.effective_stt
+        t0 = time.perf_counter()
+        await self.voice.transcribe(silent_wav(), "audio/wav")
+        return f"{provider} accepted a test clip in {int((time.perf_counter() - t0) * 1000)} ms"

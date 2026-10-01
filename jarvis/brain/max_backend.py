@@ -27,13 +27,18 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ValidationError
 
+from . import plugins
 from .prompts import build_system
+from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
 log = logging.getLogger(__name__)
 SERVER = "jarvis"
 CHAT_BUILTINS = ["WebSearch", "WebFetch", "Read"]
 BLOCKED = ["Bash", "Write", "Edit", "NotebookEdit", "KillShell", "Task"]
+# For the engineer-loop callers of run_once() (self_improve.py, fixer.py) that request Write/Edit on purpose,
+# confined to a throwaway Workspace checkout - everything BLOCKED disallows except those two.
+ENGINEER_BLOCKED = ["Bash", "NotebookEdit", "KillShell", "Task"]
 
 
 def sdk_env(settings) -> dict[str, str]:
@@ -52,11 +57,11 @@ def base_options(settings, *, model: str | None = None, **kw: Any):
                               permission_mode="dontAsk", **kw)
 
 
-def build_sdk_tools(j) -> list:
+def build_sdk_tools(j, tools: list | None = None) -> list:
     from claude_agent_sdk import tool
 
     sdk_tools = []
-    for t in TOOLS:
+    for t in (tools if tools is not None else TOOLS):
         async def handler(args: dict[str, Any], _t=t) -> dict[str, Any]:
             call_id = uuid.uuid4().hex[:8]
             j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "start"})
@@ -78,10 +83,11 @@ def build_sdk_tools(j) -> list:
     return sdk_tools
 
 
-def build_mcp_server(j):
+def build_mcp_server(j, tool_names: list[str] | None = None):
     from claude_agent_sdk import create_sdk_mcp_server
 
-    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j))
+    tools = [t for t in TOOLS if tool_names is None or t.name in tool_names] if tool_names is not None else None
+    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j, tools))
 
 
 def _tool_label(name: str) -> str:
@@ -111,8 +117,9 @@ class MaxBrain:
         self._jobs: asyncio.Queue | None = None
         self._worker: asyncio.Task | None = None
         self._client = None
-        self._client_key: tuple[str, str] | None = None  # (effort, system prompt) the client was started with
+        self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
+        self._repeats = RepeatDetector()
         self.refresh_system()
 
     def refresh_system(self) -> None:
@@ -203,7 +210,8 @@ class MaxBrain:
 
     async def _connected(self, effort: str, model: str):
         """The running Claude Code client, restarted only if effort, model, instructions or the conversation changed."""
-        key = (effort, model, self.system)
+        extra = plugins.chat_setup(self.s)  # read-only browsing, only if switched on AND every safeguard is met
+        key = (effort, model, self.system, extra.signature)
         if self._client is not None and self._client_key == key and not self._fresh_start:
             return self._client
         from claude_agent_sdk import ClaudeSDKClient
@@ -211,11 +219,13 @@ class MaxBrain:
         await self._disconnect()
         if self._fresh_start:
             self.session_id, self._fresh_start = None, False
+        more: dict[str, Any] = {"hooks": extra.hooks()} if extra.guard is not None else {}
         options = base_options(
-            self.s, model=model, system_prompt=self.system, effort=effort,
-            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server},
-            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS, disallowed_tools=BLOCKED,
-            include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads))
+            self.s, model=model, system_prompt=self.system + extra.prompt, effort=effort,
+            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server, **extra.mcp_servers},
+            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS + extra.allowed_tools,
+            disallowed_tools=BLOCKED,
+            include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads), **more)
         started = time.monotonic()
         client = ClaudeSDKClient(options=options)
         await client.connect()
@@ -239,8 +249,9 @@ class MaxBrain:
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
+        repeat = repeat_note(self._repeats.check(text))
         files = self._save_attachments(attachments)
-        note = ("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
+        note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
         db.add_transcript("user", text)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode})
@@ -252,7 +263,7 @@ class MaxBrain:
         try:
             client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
                                            self.s.model_for(mode))
-            await client.query(f"{tag}\n{text}{note}")
+            await client.query(f"{tag}\n{repeat}{text}{note}")
             async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):
                     ev = msg.event or {}
@@ -285,10 +296,15 @@ class MaxBrain:
         log.info("%s reply: first words after %s, finished after %.1fs", mode,
                  f"{first_words:.1f}s" if first_words is not None else "-", time.monotonic() - started)
         if result is not None and result.is_error:
-            limit = "limit" in str(result.result or result.errors or "").lower()
+            detail = str(result.result or result.errors or "")
+            limit = "limit" in detail.lower()
+            # The SDK's own error/result text is an internal diagnostic (SDK error codes, stop reasons) meant
+            # for logs, not something to read out to the owner - surfacing it raw once showed up as literally
+            # "Sorry, that didn't work: ['[ede_diagnostic] result_type=user ...']" on the display/voice reply.
+            log.warning("Claude Agent SDK turn returned an error result: %s", detail[:500])
             msg = ("I've hit the usage limit on your Claude plan for now - it resets shortly." if limit
-                   else f"Sorry, that didn't work: {str(result.result or result.errors)[:200]}")
-            bus.publish("error", {"message": msg, "detail": str(result.errors)[:300]})
+                   else "Sorry, that didn't work - please try again.")
+            bus.publish("error", {"message": msg, "detail": detail[:300]})
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
         db.add_transcript("assistant", reply)
@@ -301,9 +317,16 @@ class MaxBrain:
 # ---------------------------------------------------------------------------
 
 async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]], effort: str = "medium",
-                   tools: list[str] | None = None, output_schema: dict[str, Any] | None = None,
-                   max_turns: int = 10, cwd: str | None = None):
-    """Single headless Claude Code run; returns the ResultMessage."""
+                   tools: list[str] | None = None, disallowed_tools: list[str] | None = None,
+                   output_schema: dict[str, Any] | None = None,
+                   max_turns: int = 10, cwd: str | None = None,
+                   mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None):
+    """Single headless Claude Code run; returns the ResultMessage. `disallowed_tools` defaults to `BLOCKED`
+    (no shell, no file writes) - pass `ENGINEER_BLOCKED` for a caller that puts Write/Edit in `tools` on
+    purpose (an engineer loop confined to a throwaway Workspace checkout), otherwise those get silently
+    stripped anyway since disallowed_tools wins over allowed_tools. `mcp_servers` adds external MCP servers
+    (brain/plugins.py builds them pinned and read-only); only the tools named in `extra_allowed` can be called,
+    everything else they expose stays denied."""
     from claude_agent_sdk import ResultMessage, query
 
     tmp = None
@@ -327,9 +350,14 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                 path.write_bytes(base64.b64decode(block["source"]["data"]))
                 text += f"\n[Attached PDF '{block.get('title', '')}': {path} - read it with the Read tool]\n"
     kw: dict[str, Any] = {"system_prompt": system, "effort": effort, "tools": tools or [],
-                          "allowed_tools": tools or [], "disallowed_tools": BLOCKED, "max_turns": max_turns}
+                          "allowed_tools": tools or [],
+                          "disallowed_tools": BLOCKED if disallowed_tools is None else disallowed_tools,
+                          "max_turns": max_turns}
     if output_schema:
         kw["output_format"] = {"type": "json_schema", "schema": output_schema}
+    if mcp_servers and extra_allowed:  # a server with nothing allowed would only add attack surface
+        kw["mcp_servers"] = mcp_servers
+        kw["allowed_tools"] = list(kw["allowed_tools"]) + list(extra_allowed)
     if cwd:
         kw["cwd"] = cwd
     result = None
@@ -343,6 +371,28 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
     if result is None or result.is_error:
         raise RuntimeError(f"Claude run failed: {getattr(result, 'errors', None) or getattr(result, 'result', None)}")
     return result
+
+
+async def run_agent(settings, j, *, system: str, prompt: str, tool_names: list[str], effort: str = "medium",
+                    max_turns: int = 12) -> str:
+    """Headless Claude Code run against a filtered subset of Jarvis's own tools, exposed as its own in-process
+    MCP server the same way `MaxBrain` exposes the full set - used by `services/recruiter.py` for a recruited
+    sub-agent's Max-backend path. Any write one of those tools attempts still goes through `dispatch()`'s
+    approval gate exactly as it would from the main conversation."""
+    from claude_agent_sdk import ResultMessage, query
+
+    server = build_mcp_server(j, tool_names)
+    options = base_options(settings, system_prompt=system, effort=effort, tools=CHAT_BUILTINS,
+                           mcp_servers={SERVER: server},
+                           allowed_tools=[f"mcp__{SERVER}__{n}" for n in tool_names] + CHAT_BUILTINS,
+                           disallowed_tools=BLOCKED, max_turns=max_turns)
+    result = None
+    async for msg in query(prompt=prompt, options=options):
+        if isinstance(msg, ResultMessage):
+            result = msg
+    if result is None or result.is_error:
+        raise RuntimeError(f"Recruited agent failed: {getattr(result, 'errors', None) or getattr(result, 'result', None)}")
+    return (result.result or "").strip()
 
 
 def parse_structured(result, schema: type[BaseModel]) -> BaseModel:

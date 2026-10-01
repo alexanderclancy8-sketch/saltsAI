@@ -1,3 +1,15 @@
+---
+title: UK fire safety law — Fire Safety Order, Fire Safety Act, 2022 Regulations, Building Safety Act and Approved Document B
+aliases: [fire safety law, RRO 2005, Fire Safety Order, Building Safety Act]
+tags: [legislation, fire-safety-law]
+type: note
+summary: The Regulatory Reform (Fire Safety) Order 2005, Fire Safety Act 2021, Fire Safety (England) Regulations 2022, Building Safety Act 2022 and Approved Document B, in plain English.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[certification-and-competency]]", "[[fire-detection-and-alarm-bs5839]]", "[[emergency-lighting-bs5266]]", "[[fire-extinguishers-and-other]]", "[[legislation-moc]]"]
+---
+
 # UK fire safety law: Fire Safety Order, Fire Safety Act, 2022 Regulations, Building Safety Act and Approved Document B
 
 Summary: A plain-English guide to fire safety law affecting a UK fire and security contractor and its customers. Covers the Regulatory Reform (Fire Safety) Order 2005, Fire Safety Act 2021, Fire Safety (England) Regulations 2022, Building Safety Act 2022, Approved Document B, responsible person duties, fire risk assessments (PAS 79), enforcement, and the Scotland, Wales and Northern Ireland equivalents.
@@ -180,7 +192,7 @@ Status: Written September 2026 from general knowledge. This is not legal advice.
 
 ## Related files
 
-- `legislation/certification-and-competency.md`
-- `standards/fire-detection-and-alarm-bs5839.md`
-- `standards/emergency-lighting-bs5266.md`
-- `standards/fire-extinguishers-and-other.md`
+- [[certification-and-competency]]
+- [[fire-detection-and-alarm-bs5839]]
+- [[emergency-lighting-bs5266]]
+- [[fire-extinguishers-and-other]]

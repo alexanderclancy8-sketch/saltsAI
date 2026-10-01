@@ -4,13 +4,15 @@ sent to Claude and to validate what comes back) and an async handler."""
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Awaitable, Callable, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..humanize import human_datetime
+from .pr_tools import build_pr_tools
 
 MAX_RESULT_CHARS = 60_000
 
@@ -83,17 +85,76 @@ class SendIn(BaseModel):
     subject: str
     body: str = Field(description="Plain text body")
     cc: list[str] = []
+    management_only: bool = Field(False, description="Set true for finance/management content (cash, debtors, P&L, "
+                                  "VAT/tax, cashflow, business health, HR/staff performance, renewals pricing, "
+                                  "tenders, audit gaps). Such mail can only go to management (the owner/partner), never "
+                                  "a shared inbox such as info@. Internal-only emails are treated as management anyway.")
 
 
 class OwnerUpdateIn(BaseModel):
     subject: str
     message: str
     channels: list[Literal["teams", "email"]] = ["teams", "email"]
+    importance: Literal["info", "normal", "important", "urgent"] = Field(
+        "normal", description="How much it matters. The shared inbox only takes important/urgent operational items.")
 
 
 class DisplayIn(BaseModel):
     title: str
     markdown: str = Field(description="Markdown content: tables, lists, drafts, figures")
+
+
+ASK_MAX_OPTIONS = 4
+# Labels that would read as an approval decision. Approving/rejecting is only ever done with the Approve / Cancel
+# buttons (or the approvals endpoint), never through a question option - so don't let a question pose as one.
+_ASK_RESERVED_LABELS = {"other", "approve", "approved", "reject", "rejected", "deny", "denied"}
+
+
+class AskOptionIn(BaseModel):
+    label: str = Field(description="Short choice label, a few words (shown as the button text)")
+    description: str = Field("", description="Optional one-line explanation shown under the label")
+    recommended: bool = Field(False, description="Mark at most one option as your recommendation")
+
+
+class AskUserIn(BaseModel):
+    question: str = Field(description="One short question (under ~120 characters). Put any detail in your chat "
+                                      "reply, not here")
+    options: list[AskOptionIn] = Field(min_length=2, max_length=ASK_MAX_OPTIONS,
+                                       description="2-4 preselected answers. Do NOT add an 'Other' option - the "
+                                                   "display always adds one that opens a text box")
+    allow_multiple: bool = Field(False, description="True if several options may be chosen together")
+
+    @field_validator("question")
+    @classmethod
+    def _question(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("question must not be empty")
+        if len(v) > 300:
+            raise ValueError("question is too long - keep it short and put the detail in the chat reply")
+        return v
+
+    @field_validator("options")
+    @classmethod
+    def _options(cls, opts: list[AskOptionIn]) -> list[AskOptionIn]:
+        seen: set[str] = set()
+        for o in opts:
+            o.label = " ".join(o.label.split())
+            o.description = " ".join(o.description.split())
+            key = o.label.lower().rstrip(".…")
+            if not o.label:
+                raise ValueError("every option needs a label")
+            if len(o.label) > 80 or len(o.description) > 240:
+                raise ValueError("option label (max 80 chars) or description (max 240) is too long")
+            if key in _ASK_RESERVED_LABELS:
+                raise ValueError(f"option label '{o.label}' is not allowed: 'Other' is added automatically and "
+                                 "approvals are only ever done with the Approve button")
+            if key in seen:
+                raise ValueError(f"duplicate option label '{o.label}'")
+            seen.add(key)
+        if sum(1 for o in opts if o.recommended) > 1:
+            raise ValueError("mark at most one option as recommended")
+        return opts
 
 
 class JobsIn(BaseModel):
@@ -110,6 +171,15 @@ class FsmQueryIn(BaseModel):
 
 class DaysAheadIn(BaseModel):
     days_ahead: int = 30
+
+
+class PPMPlanIn(BaseModel):
+    days_ahead: int = Field(28, description="Plan service visits due (or overdue) within this many days, max 180")
+    start_date: str | None = Field(None, description="First day to plan on, YYYY-MM-DD; default the next working day")
+    early_window_days: int = Field(28, description="Most days a visit may be brought forward of its due date to "
+                                                   "bundle it with other work (also limited to 15% of the interval)")
+    cluster_radius_miles: float = Field(4.0, description="Sites within this many miles count as close together")
+    risk_margin_days: int = Field(5, description="Flag a visit as at risk if planned this close to its latest date")
 
 
 class QuotesIn(BaseModel):
@@ -216,6 +286,19 @@ class AccreditationUpdateIn(BaseModel):
     renewal_date: str | None = Field(None, description="YYYY-MM-DD")
     next_audit: str | None = Field(None, description="YYYY-MM-DD")
     audit_type: str | None = None
+
+
+class SiteAccessCodeIn(BaseModel):
+    site: str = Field(description="Site or customer name (or part of it) to find recorded engineer/access "
+                                  "codes for, e.g. 'Kestrel Industrial Estate'")
+
+
+class SiteAccessCodeUpdateIn(BaseModel):
+    site: str = Field(description="Site or customer name this code is for")
+    system: str = Field(description="Which system, e.g. 'Fire alarm panel - Kentec Syncro', 'Intruder - Texecom "
+                                    "Premier Elite', 'Access control - Paxton Net2'")
+    code: str = Field(description="The engineer/access code itself")
+    notes: str = Field("", description="Anything useful: who set it, when, where the panel is, etc.")
 
 
 class StockLevelsIn(BaseModel):
@@ -328,6 +411,48 @@ class QuestionnaireIn(BaseModel):
     buyer: str | None = None
 
 
+class RecruitmentIn(BaseModel):
+    role: str = Field(description="The role to hire, e.g. 'Fire alarm service engineer', 'Office administrator'")
+    notes: str | None = Field(None, description="Anything specific: salary range, experience needed, "
+                                                 "location, full/part time, why the role's open")
+
+
+class HRLetterIn(BaseModel):
+    kind: str = Field(description="The letter/document type, e.g. 'invite to disciplinary meeting', "
+                                  "'written warning confirmation', 'performance improvement plan', "
+                                  "'reference letter', 'probation outcome'")
+    person: str = Field(description="Who this is for")
+    details: str = Field(description="The real facts: what happened, dates, what's already been discussed, "
+                                      "what needs to be in the letter. Never invented - only what's given.")
+
+
+class BidAssessmentIn(BaseModel):
+    opportunity: str = Field(description="What's being tendered, e.g. 'Fire alarm maintenance contract, "
+                                         "3x care homes, Leeds'")
+    value: float | None = Field(None, description="Estimated annual or total contract value in GBP, if known")
+    notes: str | None = Field(None, description="Anything relevant: named competition, deadline, why this "
+                                                 "came up, client relationship")
+
+
+class BidDocumentIn(BaseModel):
+    opportunity: str = Field(description="What's being tendered")
+    client: str | None = Field(None, description="The buyer/client name, if known")
+    requirements: str = Field(description="The brief/requirements as given - copy the real tender text where "
+                                          "possible, not a summary")
+    notes: str | None = Field(None, description="Anything to emphasise, pricing constraints, deadline")
+
+
+class CreditControlDraftIn(BaseModel):
+    target: str = Field(description="An overdue invoice reference (e.g. 'INV-10388') or a customer name")
+    channel: str | None = Field(None, description="'email', 'call' (phone script) or 'letter'. Leave empty to "
+                                                  "default from the escalation stage (LBA stage -> letter)")
+
+
+class SalesFollowupIn(BaseModel):
+    quote_ref: str = Field(description="The Salts FSM quote reference, e.g. 'Q1180'")
+    channel: str | None = Field(None, description="'email' (default) or 'call' (phone script)")
+
+
 class HoursIn(BaseModel):
     hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
                                                "closed (so Monday covers the weekend)")
@@ -389,6 +514,21 @@ class ForgetIn(BaseModel):
     memory_id: int
 
 
+class RecruitAgentIn(BaseModel):
+    role: str = Field(description="A short role for the sub-agent, e.g. 'Tender response drafter', 'Competitor "
+                                  "SEO researcher', 'Contract renewal analyst'")
+    brief: str = Field(description="The specific, self-contained task - everything the sub-agent needs, since "
+                                   "it starts with no memory of this conversation. Give it what it needs to "
+                                   "know (site names, job refs, what 'done' looks like), not just a topic.")
+    tools: list[str] | None = Field(None, description="Tool names to give the sub-agent (e.g. "
+                                    "['knowledge_search', 'fsm_query', 'customer_health']). Leave blank for "
+                                    "the full read/research tool set, which is right for most tasks - narrow "
+                                    "it only when a tightly scoped agent genuinely does a better job. It can "
+                                    "never recruit further agents or start another background job, and "
+                                    "anything it proposes writing still queues for your approval same as always.")
+    max_turns: int = Field(12, ge=1, le=20, description="How many tool calls to allow before it must answer")
+
+
 class CreateAutomationIn(BaseModel):
     description: str = Field(description="Short label for what this is, e.g. 'Weekday overdue-jobs check'")
     cron: str = Field(description="Standard 5-field crontab schedule in the company's local timezone, e.g. "
@@ -427,8 +567,13 @@ async def email_draft_reply(j, a: DraftIn):
 
 
 async def email_send(j, a: SendIn):
-    await j.mail.send_mail(a.to, a.subject, _html(a.body), a.cc or None)
-    return f"Email sent to {', '.join(a.to)}."
+    # The mail layer enforces the management-only recipient rule (it may rewrite/drop shared inboxes, or refuse).
+    sent = await j.mail.send_mail(a.to, a.subject, _html(a.body), a.cc or None,
+                                  sensitivity="management" if a.management_only else None)
+    to = getattr(sent, "to", None) or a.to
+    note = f" (recipients adjusted by the management-only mail rule: {'; '.join(sent.changes)})" \
+        if getattr(sent, "changes", None) else ""
+    return f"Email sent to {', '.join(to)}.{note}"
 
 
 def _html(text: str) -> str:
@@ -438,13 +583,26 @@ def _html(text: str) -> str:
 
 
 async def send_update_to_owner(j, a: OwnerUpdateIn):
-    via = await j.notifier.send_owner_update(a.subject, a.message, channels=a.channels)
+    via = await j.notifier.send_owner_update(a.subject, a.message, channels=a.channels, importance=a.importance)
     return f"Update delivered via {via}."
 
 
 async def show_on_display(j, a: DisplayIn):
     j.bus.publish("display", {"title": a.title, "markdown": a.markdown})
     return "Shown on the display."
+
+
+async def ask_user(j, a: AskUserIn):
+    """Put a small question pop-up on the display. It does NOT wait: the owner's choice (or typed/spoken text) comes
+    back as an ordinary chat message on his next turn. It is deliberately unrelated to approvals - nothing here
+    queues, approves or performs an action, so an answer can never stand in for the Approve button."""
+    j.bus.publish("ask", {"id": uuid.uuid4().hex, "question": a.question, "allow_multiple": a.allow_multiple,
+                          "options": [{"label": o.label, "description": o.description, "recommended": o.recommended}
+                                      for o in a.options]})
+    return (f"Question shown on the display. Stop here: put any detail in your chat reply, then end your turn and "
+            f"wait - {j.settings.owner_name}'s answer will arrive as his next message. Don't call more tools or "
+            f"assume an answer. This is only a question, not an approval: anything that changes something still "
+            f"needs the normal approval.")
 
 
 async def fsm_jobs(j, a: JobsIn):
@@ -458,16 +616,20 @@ async def fsm_query(j, a: FsmQueryIn):
 
 
 async def fsm_systems_due(j, a: DaysAheadIn):
-    today = date.today()
-    out = []
-    for s in await j.fsm.systems():
-        try:
-            due = date.fromisoformat(str(s.get("next_service_due"))[:10])
-        except ValueError:
-            continue
-        if due <= today + timedelta(days=a.days_ahead):
-            out.append({**s, "days_until_due": (due - today).days})
-    return {"demo": j.fsm.demo, "systems": sorted(out, key=lambda s: s["days_until_due"])}
+    from ..services.ppm_planner import systems_due
+
+    return {"demo": j.fsm.demo, "systems": systems_due(await j.fsm.systems(), date.today(), a.days_ahead)}
+
+
+async def ppm_schedule_plan(j, a: PPMPlanIn):
+    try:
+        start = date.fromisoformat(a.start_date) if a.start_date else None
+    except ValueError:
+        return {"advisory_only": True, "error": f"start_date '{a.start_date}' isn't a YYYY-MM-DD date."}
+    return await j.ppm.plan(days_ahead=max(1, min(a.days_ahead, 180)), start_date=start,
+                            early_window_days=max(0, min(a.early_window_days, 90)),
+                            cluster_radius_miles=max(0.5, min(a.cluster_radius_miles, 30.0)),
+                            risk_margin_days=max(0, min(a.risk_margin_days, 30)))
 
 
 async def fsm_contracts_renewing(j, a: DaysAheadIn):
@@ -626,6 +788,16 @@ async def audit_evidence_pack(j, a: SchemeIn):
     return {"shown_on_display": True, "pack": text}
 
 
+async def site_access_code(j, a: SiteAccessCodeIn):
+    found = j.site_access.find(a.site)
+    return {"matches": found} if found else {"matches": [], "note": "Nothing recorded for that site - only "
+                                             "codes for systems Salts installs or maintains are kept here."}
+
+
+async def site_access_code_update(j, a: SiteAccessCodeUpdateIn):
+    return j.site_access.record(a.site, a.system, a.code, a.notes)
+
+
 async def stock_levels(j, a: StockLevelsIn):
     await j.stores.sync()
     data = j.stores.levels(a.location, a.search)
@@ -742,6 +914,16 @@ async def regulatory_watch(j, a: RegWatchIn):
     return {"shown_on_display": True, "update": text}
 
 
+async def technical_watch(j, a: RegWatchIn):
+    text = await j.regwatch.technical(a.focus)
+    return {"shown_on_display": True, "update": text}
+
+
+async def recruit_agent(j, a: RecruitAgentIn):
+    report = await j.recruiter.recruit(a.role, a.brief, tool_names=a.tools, max_turns=a.max_turns)
+    return {"role": a.role, "report": report}
+
+
 async def unbilled_jobs(j, a: OfficeIn):
     return await j.billing.unbilled_jobs(max(1, min(a.days, 120)))
 
@@ -766,6 +948,20 @@ async def suggestions_list(j, a: NoInput):
 
 async def end_of_day_wrap_up(j, a: NoInput):
     return await j.wrapup.run(deliver=False)
+
+
+async def weekly_digest_now(j, a: NoInput):
+    # Builds from the store now, shows it here and on the display, and marks those items digested. It posts
+    # nothing to Teams/email (you are already looking at it), and approves/merges/deploys nothing.
+    result = await j.weekly_digest.run("on_demand", deliver=False)
+    return result["text"]
+
+
+async def weekly_digest_latest(j, a: NoInput):
+    latest = j.weekly_digest.latest()
+    if not latest:
+        return "No weekly digest has been compiled yet."
+    return f"Digest #{latest['id']} compiled {latest['created_at']} ({latest['delivered']}):\n\n{latest['text']}"
 
 
 async def customer_health(j, a: CustomerIn):
@@ -805,6 +1001,33 @@ async def draft_rams(j, a: RamsIn):
 
 async def answer_questionnaire(j, a: QuestionnaireIn):
     return {"shown_on_display": True, "answers": await j.documents.questionnaire(a.questions, a.buyer)}
+
+
+async def draft_recruitment(j, a: RecruitmentIn):
+    return {"shown_on_display": True, "draft": await j.documents.recruitment(a.role, a.notes)}
+
+
+async def draft_hr_letter(j, a: HRLetterIn):
+    return {"shown_on_display": True, "draft": await j.documents.hr_letter(a.kind, a.person, a.details)}
+
+
+async def bid_assessment(j, a: BidAssessmentIn):
+    return {"shown_on_display": True, "assessment": await j.documents.bid_assessment(a.opportunity, a.value, a.notes)}
+
+
+async def bid_document(j, a: BidDocumentIn):
+    return {"shown_on_display": True,
+            "draft": await j.documents.bid_document(a.opportunity, a.client, a.requirements, a.notes)}
+
+
+async def draft_credit_control(j, a: CreditControlDraftIn):
+    return {"shown_on_display": True, "draft": await j.documents.credit_control_draft(a.target, a.channel),
+            "note": "Draft only - nothing has been sent."}
+
+
+async def draft_sales_followup(j, a: SalesFollowupIn):
+    return {"shown_on_display": True, "draft": await j.documents.sales_followup(a.quote_ref, a.channel),
+            "note": "Draft only - nothing has been sent."}
 
 
 async def out_of_hours_calls(j, a: HoursIn):
@@ -934,6 +1157,13 @@ TOOLS: list[Tool] = [
          "Sending you an update"),
     Tool("show_on_display", "Put detailed content (tables, figures, drafts, lists) on the owner's screen. Use for "
                             "anything too detailed to say aloud.", DisplayIn, show_on_display, "Updating the display"),
+    Tool("ask_user", "Ask the owner to choose between 2-4 options with a small pop-up (clickable, keyboard- and "
+                     "voice-selectable; an 'Other' box for a custom answer is always added). Use this whenever you "
+                     "need a decision instead of a long pop-up or an open-ended question; put the detail in your "
+                     "chat reply. Set allow_multiple for pick-several questions and recommended on at most one "
+                     "option. The answer arrives as his next message - end your turn after asking. It is NOT an "
+                     "approval: changes are still queued for the normal Approve button.",
+         AskUserIn, ask_user, "Asking you a question"),
     Tool("fsm_jobs", "Jobs from Salts FSM in a date range (default today), optionally by status or engineer.",
          JobsIn, fsm_jobs, "Checking jobs in Salts FSM"),
     Tool("fsm_query", "Read-only GET against any Salts FSM API path, for details not covered by other tools "
@@ -941,6 +1171,15 @@ TOOLS: list[Tool] = [
     Tool("fsm_systems_due", "Maintained systems (fire alarm, emergency lighting, intruder, CCTV, access control) "
                             "overdue or due a service visit within N days.", DaysAheadIn, fsm_systems_due,
          "Checking service schedules"),
+    Tool("ppm_schedule_plan", "READ-ONLY planning advice for PPM scheduling: which service visits are due/overdue, "
+                              "which systems at one site can be bundled into a single visit without breaching "
+                              "service windows (e.g. BS 5839-1 6-monthly), grouped by area, with a proposed per-day / "
+                              "per-engineer plan, load vs expected jobs per day, and flags for anything unschedulable "
+                              "or at risk. Engineer skills: Salts FSM only exposes free-text certifications, not "
+                              "competence per system type - matches are labelled as keyword matches or as role-based "
+                              "inferences, never assumed. It books nothing: to act on the plan use log_job or "
+                              "fsm_change, which are queued for approval.", PPMPlanIn, ppm_schedule_plan,
+         "Planning PPM visits"),
     Tool("fsm_contracts_renewing", "Maintenance contracts due for renewal within N days (or already past renewal).",
          DaysAheadIn, fsm_contracts_renewing, "Checking contract renewals"),
     Tool("fsm_quotes", "Quotes in Salts FSM, optionally filtered by status.", QuotesIn, fsm_quotes, "Checking quotes"),
@@ -1026,6 +1265,17 @@ TOOLS: list[Tool] = [
     Tool("audit_evidence_pack", "Write a full audit-ready evidence pack and draft questionnaire answers for BAFE, "
                                 "SSAIB, CHAS etc. Shown on the display.", SchemeIn, audit_evidence_pack,
          "Building the evidence pack"),
+    Tool("site_access_code", "Look up a recorded engineer/access code for a system Salts installs or maintains, "
+                             "by site name - a secure engineer's site-code book, not a general search. Nothing "
+                             "is returned for a site that isn't recorded. For a system Salts does NOT hold the "
+                             "maintenance relationship for, this has nothing and never will - see "
+                             "knowledge/company/system-takeover-access.md for the right process instead.",
+         SiteAccessCodeIn, site_access_code, "Looking up the access code"),
+    Tool("site_access_code_update", "Record or update an engineer/access code for a named site and system - only "
+                                    "for systems Salts installs or maintains, told to you directly by the owner "
+                                    "or a recorded takeover process. Never invent or search for a code.",
+         SiteAccessCodeUpdateIn, site_access_code_update, "Recording the access code", approval=True,
+         describe=lambda a: f"Record access code for {a.site} - {a.system}"),
     Tool("stock_levels", "Stock on hand in the stores and on each van, with value and reorder flags.",
          StockLevelsIn, stock_levels, "Checking stock"),
     Tool("stock_move", "Record a stock movement: goods received, parts used on a job, stores/van transfers, "
@@ -1068,6 +1318,12 @@ TOOLS: list[Tool] = [
                              "security regulation changes that affect the business and its directors, with dates, "
                              "impact and actions (web-researched, sourced). Shown on the display.", RegWatchIn,
          regulatory_watch, "Researching tax and law changes"),
+    Tool("technical_watch", "Deepen fire & security technical expertise: standard revisions and what they mean "
+                            "practically, FIA/BAFE/NSI/SSAIB technical guidance, manufacturer bulletins, "
+                            "installer best practice and common inspection failures (web-researched, sourced - "
+                            "never credentials). Use when asked to research a specific standard/technical topic, "
+                            "or 'what's new in fire and security'. Shown on the display.", RegWatchIn,
+         technical_watch, "Researching fire & security standards"),
     Tool("unbilled_jobs", "Completed Salts FSM jobs in the last N days that don't appear to have been invoiced in "
                           "Sage - money being left on the table.", OfficeIn, unbilled_jobs, "Looking for unbilled work"),
     Tool("raise_invoices", "Draft Sage invoices for completed-but-unbilled jobs and queue them for the owner's "
@@ -1083,6 +1339,14 @@ TOOLS: list[Tool] = [
     Tool("end_of_day_wrap_up", "The end-of-day wrap-up: what got done, what slipped, what's awaiting approval, "
                                "and tomorrow's first jobs and risks.", NoInput, end_of_day_wrap_up,
          "Preparing your wrap-up"),
+    Tool("weekly_digest_now", "Compile the weekly digest of Jarvis' own routine engineering notices (PRs opened, "
+                              "merged or awaiting review, fixes deployed, test failures and recoveries, open issues, "
+                              "anything needing the owner's decision) from the store right now instead of waiting "
+                              "for Monday. Use for 'weekly digest now'. It only reads what's stored and shows it - "
+                              "it does not send anything or approve anything.", NoInput, weekly_digest_now,
+         "Compiling the weekly digest"),
+    Tool("weekly_digest_latest", "Show the most recent stored weekly digest again.", NoInput, weekly_digest_latest,
+         "Fetching the last digest"),
     Tool("customer_health", "Customer health watch: a 0-100 score per customer from spend trend, overdue debt, "
                             "repeat call-outs, declined quotes, overdue service visits, logged problems, inactivity "
                             "and lapsed renewals - who is at risk (especially before renewal), why, and what to do. "
@@ -1109,6 +1373,36 @@ TOOLS: list[Tool] = [
                                  "company's accreditations, policies, insurance and competency evidence, with gaps "
                                  "marked. Shown on the display.", QuestionnaireIn, answer_questionnaire,
          "Answering the questionnaire"),
+    Tool("draft_recruitment", "Draft a job posting and interview questions for a role, grounded in how similar "
+                              "roles here are actually described and measured. Shown on the display - a draft "
+                              "to review, never posted anywhere directly.", RecruitmentIn, draft_recruitment,
+         "Drafting the job posting"),
+    Tool("draft_hr_letter", "Draft an HR letter/document (disciplinary invite, written warning, performance "
+                            "improvement plan, reference, probation outcome...), ACAS-compliant, from the real "
+                            "facts given - never invented. Shown on the display for the owner to review before "
+                            "it's ever sent; flags when a solicitor should look at it first.",
+         HRLetterIn, draft_hr_letter, "Drafting the HR letter"),
+    Tool("bid_assessment", "A go/no-go and pricing recommendation for a tender opportunity, grounded in real "
+                           "capacity, cash and quote win-rate data - not guesswork. Use before deciding whether "
+                           "to bid. Shown on the display.", BidAssessmentIn, bid_assessment,
+         "Assessing the opportunity"),
+    Tool("bid_document", "Draft a full tender/proposal document (cover letter, approach, case studies from "
+                         "real comparable jobs, pricing framework, compliance summary) - not just PQQ answers "
+                         "(use answer_questionnaire for that). Use once you've decided to bid. Shown on the "
+                         "display, never submitted by Jarvis.", BidDocumentIn, bid_document,
+         "Drafting the bid document"),
+    Tool("draft_credit_control", "Draft credit-control correspondence for an overdue invoice or customer - a "
+                                 "reminder email, phone-call script or formal Letter Before Action - using only the "
+                                 "real figures from finance_credit_control (tone matches the escalation stage; "
+                                 "statutory interest only where the data supplies it; gaps flagged). Shown on the "
+                                 "display; DRAFTS ONLY, never sent by this tool - to send, use email_send, which "
+                                 "goes for approval. A Letter Before Action needs solicitor/accountant review first.",
+         CreditControlDraftIn, draft_credit_control, "Drafting the credit-control letter"),
+    Tool("draft_sales_followup", "Draft a polite day 7 / 14 / 21 follow-up sequence (email or phone script, with a "
+                                 "close-out touch) for an open Salts FSM quote that hasn't been actioned, using the "
+                                 "real quote data. Shown on the display; DRAFTS ONLY, never sent by this tool - to "
+                                 "send, use email_send, which goes for approval.",
+         SalesFollowupIn, draft_sales_followup, "Drafting the quote follow-up"),
     Tool("out_of_hours_calls", "Overnight events from the out-of-hours / alarm monitoring reports emailed to info@ "
                                "(including PDF reports): calls taken and alarm faults, comms failures and "
                                "activations - site, urgency, what was done, and which still need a job in Salts FSM.", HoursIn, out_of_hours_calls, "Checking overnight calls"),
@@ -1149,6 +1443,13 @@ TOOLS: list[Tool] = [
     Tool("remember", "Save a fact or preference the owner wants you to remember long term.", RememberIn, remember,
          "Making a note"),
     Tool("forget", "Delete a remembered fact by its number.", ForgetIn, forget, "Forgetting that"),
+    Tool("recruit_agent", "Delegate one well-scoped, self-contained task to a fresh sub-agent with its own "
+                          "brief and tools, and get its report back - for a chunk of work worth doing on its "
+                          "own rather than inline (a focused piece of research, a draft, an analysis). Not for "
+                          "anything recurring (use create_automation) or for code changes to Salts FSM or "
+                          "Jarvis itself (use issue_fix/self_improve). It has the same approval rules as you "
+                          "do - anything it proposes writing queues for approval, never happens directly.",
+         RecruitAgentIn, recruit_agent, "Recruiting an agent"),
     Tool("create_automation", "Set up your own recurring check on a schedule - 'every weekday at 8am, check for "
                               "unassigned jobs and tell me', 'every 30 minutes, check for a supplier email about "
                               "the delayed order'. It runs itself from then on with the same tools and the same "
@@ -1169,6 +1470,8 @@ TOOLS: list[Tool] = [
     Tool("morning_briefing", "Generate the full morning briefing now (email, jobs, staff, money, issues).",
          NoInput, morning_briefing, "Preparing your briefing"),
 ]
+
+TOOLS.extend(build_pr_tools(Tool))  # GitHub PR tools for Jarvis's own repo - see brain/pr_tools.py
 
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 

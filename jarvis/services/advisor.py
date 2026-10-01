@@ -27,6 +27,17 @@ Write a candid advisory report from the data provided. Structure:
    matters in pounds where possible.
 6. Questions {owner} should be asking.
 
+Also work through these steps in your analysis and show them in the report:
+- Cost segmentation (diagnostic): split costs and margin into labour, hardware/materials and maintenance-contract
+  work, and say which segment is driving the problem or the opportunity. Where the data doesn't split them, say
+  so rather than inventing figures.
+- UK compliance check (its own section): note the HMRC and wider UK-compliance points that bear on the advice
+  (VAT and the construction domestic reverse charge, CIS, PAYE/NIC, corporation tax, employment law, accreditation
+  requirements). Final decisions should be checked with the qualified accountant.
+- Always finish with exactly three concrete recommendations, each framed around one of: risk mitigation, tax efficiency,
+  or business development. Label each with its frame and give the action, the expected effect in pounds where
+  possible, and the risk.
+
 If a focus area is given, run a consultant-style deep dive on it (the relevant framework, benchmarks for UK fire &
 security SMEs where you know them - label them as typical ranges - options with cost, payback and risk, then a
 recommendation) before the general sections.
@@ -90,5 +101,6 @@ class Advisor:
                                effort="high", max_tokens=16000)
         self.bus.publish("display", {"title": "Business advisory report", "markdown": text})
         if deliver:
-            await self.notifier.notify("Monthly business advisory report", text[:3000], level="info", push=True)
+            await self.notifier.notify("Monthly business advisory report", text[:3000], level="info", push=True,
+                                       importance="info", management_only=True)  # finance: Alex/Chun only
         return text

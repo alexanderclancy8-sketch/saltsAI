@@ -8,7 +8,7 @@ from datetime import date
 
 import httpx
 
-from .brain import llm
+from .brain import llm, plugins
 from .brain.agent import JarvisBrain
 from .config import Settings
 from .db import Database
@@ -22,7 +22,7 @@ from .integrations.marketing import PresenceSources
 from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
 from .integrations.teamsbot import TeamsBot
 from .integrations.ramtracking import DemoRamTracking, RamTracking
-from .integrations.voice import Voice
+from .integrations.voice import SpeechToTextCheck, Voice
 from .knowledge import KnowledgeBase
 from .services.accountant import Accountant
 from .services.accreditations import Accreditations
@@ -31,6 +31,7 @@ from .services.advisor import Advisor
 from .services.automations import AutomationService
 from .services.billing import Billing
 from .services.customers import CustomerHealth
+from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
@@ -40,15 +41,20 @@ from .services.issues import IssueService
 from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
+from .services.ppm_planner import PPMPlanner
+from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
+from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
 from .services.self_improve import SelfImprove
 from .services.self_learning import SelfLearning
+from .services.site_access import SiteAccessCodes
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
+from .services.verification import ActionVerifier
 from .services.wrapup import WrapUp
 from .services.tracking import Tracker
 
@@ -66,11 +72,12 @@ class Jarvis:
         self.kb = KnowledgeBase(settings.knowledge_dir)
 
         # integrations (demo stand-ins where not configured)
-        self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail()
+        self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail(s)
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)
-        self.ram = RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key else DemoRamTracking(self.fsm)
+        self.ram = (RamTracking(s, self.http) if s.ram_api_base_url and s.ram_api_key and s.ram_client_id
+                    else DemoRamTracking(self.fsm))
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None
         self.self_github = (GitHub(s.jarvis_github_token or s.github_token, s.jarvis_repo, self.http,
@@ -97,6 +104,7 @@ class Jarvis:
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
         self.actions.j = self
+        self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
@@ -107,6 +115,7 @@ class Jarvis:
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
+        self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
         self.renewals = Renewals(self)
@@ -119,6 +128,10 @@ class Jarvis:
         self.scheduler = None
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
+        self.weekly_digest = WeeklyDigest(self)
+        self.reply_suggestions = ReplySuggestions(self)
+        self.site_access = SiteAccessCodes(self)
+        self.recruiter = Recruiter(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
@@ -147,6 +160,8 @@ class Jarvis:
             out["GitHub (FSM source)"] = self.github
         if not self.ram.demo:
             out["RAM Tracking"] = self.ram
+        if self.settings.effective_stt in ("deepgram", "whisper"):  # browser STT has no server path to test
+            out["Speech-to-text"] = SpeechToTextCheck(self.voice)
         return out
 
     def connections(self) -> dict[str, str]:
@@ -167,14 +182,17 @@ class Jarvis:
             "Automations": (f"{len(self.automations.list_all())} you've set up"
                             if self.automations.list_all() else "none set up yet - just ask"),
             "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
+            "Weekly digest": (f"routine engineering notices sent to Teams {cron_to_english(s.weekly_digest_cron)}"
+                              if s.weekly_digest_enabled else "off - every notice is sent straight away"),
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",
             "Socials / Google": ", ".join(k for k, v in presence.items() if v) or "DEMO data - not connected",
             "Stores / stock": self.stores.source + (" (DEMO stock)" if self.stores.demo else ""),
             "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
-                                 "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY"),
+                                 "DEMO journeys - set RAM_API_BASE_URL / RAM_API_KEY / RAM_CLIENT_ID"),
             "Web search": "on" if s.web_search_enabled else "off",
+            "Plugins": plugins.status_line(s, self.verifier),
             "Claude": ("your Claude Max subscription (Agent SDK)" if s.effective_llm_backend == "max"
                        else f"Claude API ({s.jarvis_model})"),
         }
@@ -218,12 +236,13 @@ class Jarvis:
         if result.get("queued"):
             await self.notifier.notify(f"{result['queued']} completed jobs not invoiced",
                                        "Draft invoices are waiting for your approval on the display.", level="warning",
-                                       push=True, speak=True)
+                                       push=True, speak=True, importance="normal", management_only=True)  # finance
 
     async def daily_reviews(self) -> None:
         result = await self.billing.queue_review_requests()
         if result.get("queued"):
-            await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.")
+            await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.",
+                                       importance="normal")
 
     async def lone_worker_sweep(self) -> None:
         for c in await self.tracker.lone_worker_check(self.settings.lone_worker_overrun_min):
@@ -234,4 +253,5 @@ class Jarvis:
             await self.notifier.notify(
                 f"Safety check: {c['engineer']} is still on job {c['job']}",
                 f"{c['site']} - booked to finish {c['booked_end']}, now {c['overrun_minutes']} minutes over. "
-                "Might be worth a quick call to check they're OK.", level="warning", push=True, speak=True)
+                "Might be worth a quick call to check they're OK.", level="warning", push=True, speak=True,
+                importance="urgent")  # lone-worker safety: never held back

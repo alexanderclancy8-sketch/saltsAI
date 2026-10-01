@@ -1,5 +1,6 @@
 anthropic>=1.9,<2
 claude-agent-sdk>=0.2.161  # Claude Max/Pro subscription backend (bundles Claude Code)
+mcp>=1.0  # MCP client, used to call the optional ThoughtProof verifier (already a dependency of claude-agent-sdk)
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7
@@ -13,3 +14,6 @@ apscheduler>=3.10,<4
 azure-storage-blob>=12.20
 python-multipart>=0.0.9
 pyyaml>=6
+reportlab>=4.0  # PDF rendering of drafted documents - pure Python, no system libraries (Azure App Service Linux)
+python-docx>=1.1  # Word rendering of drafted documents - pure Python
+piper-tts>=1.8  # free, local neural TTS - the default voice when no paid ElevenLabs/Azure key is configured

@@ -31,6 +31,28 @@ it means for us (with rough £ impact where you can), and the action to take. Pu
 next 90 days first. Cite the source link for each item. Say plainly if something is proposed rather than law.
 {focus}"""
 
+TECHNICAL_WATCH_SYSTEM = """You are Jarvis, deepening {company}'s own technical competence in fire and security
+systems - not tracking legal/regulatory changes (that's a separate watch), but building real installer-level
+expertise: how to design, install, commission and maintain systems correctly, and where installers most often
+get it wrong.
+
+Research the web for the last {window}. Prefer primary and professional sources: BSI standard revisions and
+their practical implications, FIA (Fire Industry Association) technical bulletins and guidance notes, BAFE/
+NSI/SSAIB technical (not just scheme-administration) guidance, manufacturer technical bulletins for equipment
+Salts commonly works with (fire panels, emergency lighting, intruder, CCTV, access control), and reputable UK
+fire & security installer trade press and professional forums for real-world best practice and commonly
+reported problems - never for anyone's access codes, passwords or credentials, which is out of scope here
+under any circumstances; if a source is actually a credential/leak forum, skip it and don't cite it.
+
+Cover: BS 5839-1/-6, BS EN 54, BS 5266-1, BS EN 50131, PD 6662, BS 8243, BS EN 62676, BS 8418, BS 7273-4,
+BS 5306, and any related standard revisions or corrigenda; commissioning and handover best practice; common
+causes of failed inspections/audits and false alarms; and anything genuinely new worth an engineer knowing.
+
+Check what's already known before repeating it (below). For each finding: what it is, why it matters
+practically for installation/maintenance work, and the source. Say plainly when something is guidance/opinion
+rather than a normative requirement. If nothing genuinely new turned up, say so briefly rather than padding.
+{focus}"""
+
 
 class RegulatoryWatch:
     def __init__(self, settings, db, notifier, client, bus, mail):
@@ -59,7 +81,8 @@ class RegulatoryWatch:
         if not focus:
             self.db.set_kv("regwatch_last", text)
         if deliver:
-            await self.notifier.notify("Weekly tax & employment law watch", text[:3000], level="info", push=True)
+            await self.notifier.notify("Weekly tax & employment law watch", text[:3000], level="info", push=True,
+                                       importance="info", management_only=True)
             if self.s.partner_email and self.actions is not None:
                 self.actions.queue("email_send", f"Send this week's tax & employment law update to {self.s.partner_name or self.s.partner_email}",
                                    {"to": [self.s.partner_email], "cc": [], "subject": "[Jarvis] Tax & employment law watch",
@@ -68,3 +91,23 @@ class RegulatoryWatch:
 
     async def weekly(self) -> None:
         await self.briefing(window="week", deliver=True)
+
+    async def technical(self, focus: str | None = None, window: str = "month", deliver: bool = False) -> str:
+        previous = self.db.get_kv("technical_watch_last", "")
+        focus_line = (f"Focus especially on: {focus}." if focus else "") + (
+            f"\nAlready known from last time (don't repeat unchanged items, just say 'no change' briefly):\n"
+            f"{previous[:6000]}" if previous and not focus else "")
+        text = await llm.research(self.client, self.s,
+                                  system=TECHNICAL_WATCH_SYSTEM.format(company=self.s.company_name, window=window,
+                                                                       focus=focus_line),
+                                  prompt=f"Today is {date.today():%d %B %Y}. Prepare the technical/standards update.")
+        self.bus.publish("display", {"title": "Fire & security technical watch", "markdown": text})
+        if not focus:
+            self.db.set_kv("technical_watch_last", text)
+        if deliver:
+            await self.notifier.notify("Weekly fire & security technical watch", text[:3000], level="info", push=True,
+                                       importance="info")
+        return text
+
+    async def technical_weekly(self) -> None:
+        await self.technical(window="week", deliver=True)

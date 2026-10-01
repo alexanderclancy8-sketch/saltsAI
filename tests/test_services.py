@@ -93,6 +93,24 @@ async def test_tracking_van_day_and_nearest():
     assert near["destination"] == "Aire Valley Care Home" and near["engineers"]
 
 
+@pytest.mark.parametrize("order", [["Priya Shah", "Dan Harper"], ["Dan Harper", "Priya Shah"]])
+async def test_nearest_breaks_ties_by_name_not_feed_order(order):
+    class TiedFSM:
+        demo = True
+
+        async def sites(self):
+            return [{"name": "Aire Valley Care Home", "lat": 53.844, "lng": -1.837}]
+
+        async def locations(self):
+            return [{"engineer": n, "vehicle": "X", "lat": 53.85, "lng": -1.77, "status": "parked"} for n in order]
+
+        async def jobs(self, *a, **k):
+            return []
+
+    near = await Tracker(TiedFSM(), http=None).nearest("Aire Valley")
+    assert [e["engineer"] for e in near["engineers"]] == ["Dan Harper", "Priya Shah"]
+
+
 def test_geo_helpers():
     leeds, bradford = (53.7997, -1.5492), (53.7960, -1.7594)
     assert 13_000 < haversine_m(leeds, bradford) < 15_000
@@ -264,6 +282,46 @@ async def test_meetings_rams_and_questionnaire(tmp_path):
     assert await j.documents.rams(job["ref"]) == "Certainly, sir."
     assert "couldn't find" in await j.documents.rams("NOPE")
     assert await j.documents.questionnaire("Q1. Are you BAFE certified?", "Example Council") == "Certainly, sir."
+    assert await j.documents.recruitment("Fire alarm service engineer", "FIA card needed") == "Certainly, sir."
+    assert await j.documents.hr_letter("written warning confirmation", "Sam", "Late three times this month") \
+        == "Certainly, sir."
+    assert await j.documents.bid_assessment("Fire alarm maintenance, 3x care homes", 45000, "Deadline Friday") \
+        == "Certainly, sir."
+    assert await j.documents.bid_document("Fire alarm maintenance, 3x care homes", "Example Council",
+                                          "Must hold BAFE SP203-1") == "Certainly, sir."
+    await j.http.aclose()
+
+
+async def test_bid_tools_are_registered_and_reachable(tmp_path):
+    from jarvis.brain.tools import BidAssessmentIn, BidDocumentIn, TOOLS_BY_NAME, bid_assessment, bid_document
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    assert TOOLS_BY_NAME["bid_assessment"].approval is False  # read/research only, nothing to approve
+    assert TOOLS_BY_NAME["bid_document"].approval is False  # a draft on the display, never sent by Jarvis
+    result = await bid_assessment(j, BidAssessmentIn(opportunity="CCTV upgrade", value=12000, notes=None))
+    assert result["shown_on_display"] is True and result["assessment"] == "Certainly, sir."
+    result = await bid_document(j, BidDocumentIn(opportunity="CCTV upgrade", client="Example Ltd",
+                                                 requirements="8 cameras, ANPR", notes=None))
+    assert result["shown_on_display"] is True and result["draft"] == "Certainly, sir."
+    await j.http.aclose()
+
+
+async def test_hr_tools_are_registered_and_reachable(tmp_path):
+    from jarvis.brain.tools import HRLetterIn, RecruitmentIn, TOOLS_BY_NAME, draft_hr_letter, draft_recruitment
+    from jarvis.config import Settings
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    j = Jarvis(Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None), client=FakeClient())
+    assert TOOLS_BY_NAME["draft_recruitment"].approval is False
+    assert TOOLS_BY_NAME["draft_hr_letter"].approval is False  # a draft on the display, never sent by Jarvis
+    result = await draft_recruitment(j, RecruitmentIn(role="Office administrator", notes=None))
+    assert result["shown_on_display"] is True and result["draft"] == "Certainly, sir."
+    result = await draft_hr_letter(j, HRLetterIn(kind="reference letter", person="Alex", details="Left on good terms"))
+    assert result["shown_on_display"] is True and result["draft"] == "Certainly, sir."
     await j.http.aclose()
 
 

@@ -1,3 +1,15 @@
+---
+title: Fire extinguishers and other fire protection systems — BS 5306, BS EN 3, door hold-opens, aspirating, voice alarm, EVC and suppression interfaces
+aliases: [fire extinguishers, BS 5306, suppression interfaces]
+tags: [standards, extinguishers, fire-alarms]
+type: note
+summary: Portable extinguisher servicing and selection (BS 5306-3/-8), plus fire doors and hold-opens, aspirating detection, voice alarm, EVC/refuge systems and suppression interfaces.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[fire-detection-and-alarm-bs5839]]", "[[cctv-and-access-control]]", "[[uk-fire-safety-law]]", "[[maintenance-contracts-and-scheduling]]", "[[standards-moc]]"]
+---
+
 # Fire extinguishers and other fire protection systems: BS 5306, BS EN 3, door hold-opens, aspirating, voice alarm, EVC and suppression interfaces
 
 Summary: A UK guide to portable fire extinguisher servicing (BS 5306-3), selection and siting (BS 5306-8), BS EN 3, and short practical notes on fire doors and hold-open devices, aspirating smoke detection, voice alarm (BS 5839-8), refuge/emergency voice communication (BS 5839-9) and fire suppression interfaces.
@@ -185,7 +197,7 @@ Status: Written September 2026 from general knowledge. BS 5306-8 and BS 5839-8 h
 
 ## Related files
 
-- `standards/fire-detection-and-alarm-bs5839.md`
-- `standards/cctv-and-access-control.md` (BS 7273-4 and door locking)
-- `legislation/uk-fire-safety-law.md`
-- `operations/maintenance-contracts-and-scheduling.md`
+- [[fire-detection-and-alarm-bs5839]]
+- [[cctv-and-access-control]] (BS 7273-4 and door locking)
+- [[uk-fire-safety-law]]
+- [[maintenance-contracts-and-scheduling]]

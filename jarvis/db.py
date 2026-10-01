@@ -41,6 +41,28 @@ CREATE TABLE IF NOT EXISTS notifications (
     body TEXT DEFAULT '',
     read INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS digest_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    link TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    ref TEXT DEFAULT '',
+    level TEXT DEFAULT 'info',
+    delivery TEXT NOT NULL DEFAULT 'digest',
+    digested_at TEXT DEFAULT '',
+    digest_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    item_count INTEGER DEFAULT 0,
+    text TEXT NOT NULL,
+    delivered TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS test_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -133,6 +155,16 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_access_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    site TEXT NOT NULL,
+    system TEXT NOT NULL,
+    code_encrypted TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    UNIQUE(site, system)
+);
 CREATE TABLE IF NOT EXISTS automations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -142,6 +174,23 @@ CREATE TABLE IF NOT EXISTS automations (
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_at TEXT DEFAULT '',
     last_result TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS reply_habits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    norm TEXT NOT NULL,
+    context TEXT NOT NULL,
+    display TEXT NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 1,
+    score REAL NOT NULL DEFAULT 1,
+    last_used TEXT NOT NULL,
+    UNIQUE(norm, context)
+);
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    markdown TEXT NOT NULL
 );
 """
 
@@ -219,6 +268,42 @@ class Database:
     def recent_notifications(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,))
 
+    # -- weekly digest store ----------------------------------------------------
+    # `delivery` is how the notice itself was handled: 'digest' (held for the weekly summary) or 'immediate'
+    # (already sent straight away, kept only so the summary is complete).
+    def add_digest_item(self, kind: str, title: str, body: str = "", link: str = "", status: str = "",
+                        ref: str = "", level: str = "info", delivery: str = "digest") -> int:
+        return self.execute(
+            "INSERT INTO digest_items (created_at, kind, title, body, link, status, ref, level, delivery)"
+            " VALUES (?,?,?,?,?,?,?,?,?)", (now_iso(), kind, title, body, link, status, ref, level, delivery))
+
+    def pending_digest_items(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM digest_items WHERE digested_at = '' ORDER BY id")
+
+    def digest_items_by_kind(self, kinds: list[str] | tuple[str, ...] | set[str]) -> list[dict[str, Any]]:
+        kinds = list(kinds)
+        if not kinds:
+            return []
+        marks = ",".join("?" for _ in kinds)
+        return self.query(f"SELECT * FROM digest_items WHERE kind IN ({marks}) ORDER BY id", tuple(kinds))
+
+    def mark_digested(self, item_ids: list[int], digest_id: int) -> None:
+        if not item_ids:
+            return
+        marks = ",".join("?" for _ in item_ids)
+        self.execute(f"UPDATE digest_items SET digested_at = ?, digest_id = ? WHERE id IN ({marks})"
+                     f" AND digested_at = ''", (now_iso(), digest_id, *item_ids))
+
+    def add_digest(self, source: str, item_count: int, text: str, delivered: str = "") -> int:
+        return self.execute("INSERT INTO digests (created_at, source, item_count, text, delivered) VALUES (?,?,?,?,?)",
+                            (now_iso(), source, item_count, text, delivered))
+
+    def list_digests(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM digests ORDER BY id DESC LIMIT ?", (limit,))
+
+    def get_digest(self, digest_id: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM digests WHERE id = ?", (digest_id,))
+
     # -- routine test runs ------------------------------------------------------
     def add_test_run(self, suite: str, name: str, ok: bool, detail: str, duration_ms: int) -> None:
         self.execute("INSERT INTO test_runs (created_at, suite, name, ok, detail, duration_ms) VALUES (?,?,?,?,?,?)",
@@ -283,6 +368,15 @@ class Database:
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))
+
+    # -- drafted documents (rendered to PDF/Word on request) ---------------------------------
+    def add_document(self, doc_id: str, kind: str, title: str, markdown: str) -> str:
+        self.execute("INSERT INTO documents (id, created_at, kind, title, markdown) VALUES (?,?,?,?,?)",
+                     (doc_id, now_iso(), kind, title, markdown))
+        return doc_id
+
+    def get_document(self, doc_id: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM documents WHERE id = ?", (doc_id,))
 
     # -- key/value -------------------------------------------------------------------
     def get_kv(self, key: str, default: str | None = None) -> str | None:
@@ -353,6 +447,28 @@ class Database:
 
     def set_action_item_status(self, item_id: int, status: str) -> None:
         self.execute("UPDATE action_items SET status = ? WHERE id = ?", (status, item_id))
+
+    # -- site access codes ---------------------------------------------------------------
+    # `code_encrypted` is opaque here - encryption/decryption is the caller's job
+    # (services/site_access.py), this table just stores and returns the ciphertext.
+    def upsert_site_access_code(self, site: str, system: str, code_encrypted: str, notes: str = "") -> int:
+        ts = now_iso()
+        return self.execute(
+            "INSERT INTO site_access_codes (created_at, updated_at, site, system, code_encrypted, notes)"
+            " VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(site, system) DO UPDATE SET"
+            " updated_at = excluded.updated_at, code_encrypted = excluded.code_encrypted, notes = excluded.notes",
+            (ts, ts, site, system, code_encrypted, notes),
+        )
+
+    def list_site_access_codes(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM site_access_codes ORDER BY site, system")
+
+    def find_site_access_codes(self, site: str) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM site_access_codes WHERE site LIKE ? ORDER BY system", (f"%{site}%",))
+
+    def delete_site_access_code(self, record_id: int) -> None:
+        self.execute("DELETE FROM site_access_codes WHERE id = ?", (record_id,))
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:

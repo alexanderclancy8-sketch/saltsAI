@@ -13,12 +13,15 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/hud.css">
+  <link rel="stylesheet" href="/static/ask.css">
 </head>
 <body>
+<script>try{if(localStorage.getItem("jarvis.dashboard")==="1")document.body.classList.add("dash-open");}catch(e){}</script>
 <header class="topbar">
   <div class="brand">J.A.R.V.I.S.<small id="company">SALTS FIRE AND SECURITY</small></div>
   <div class="pills" id="pills"></div>
   <div class="spacer"></div>
+  <button class="icon-btn" id="btn-dashboard" title="Show dashboard" aria-pressed="false" aria-label="Toggle dashboard">▤ Dashboard</button>
   <button class="icon-btn" id="btn-briefing" title="Morning briefing">Briefing</button>
   <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
   <div class="clock" id="clock"></div>
@@ -58,10 +61,14 @@
   <section class="col center">
     <div class="panel">
       <div class="core-wrap">
-        <canvas id="reactor" width="340" height="340" aria-label="Jarvis status"></canvas>
+        <div class="orb-wrap">
+          <canvas id="reactor" width="340" height="340" aria-label="Jarvis status"></canvas>
+          <button type="button" class="orb-badge" id="orb-badge" hidden aria-label="Approvals and suggestions waiting - tap to view"></button>
+        </div>
         <div>
           <div class="state" id="state">Online</div>
           <div class="caption" id="caption">Good to see you. Ask me anything, or tap the microphone.</div>
+          <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
           <div class="toolline" id="toolline"></div>
           <div class="quick" id="quick">
             <button class="chip-btn" data-q="Give me my briefing">Briefing</button>
@@ -78,9 +85,16 @@
       </div>
     </div>
     <div class="panel convo-panel">
-      <h2>CONVERSATION <button class="count linkish" id="btn-new-convo">new conversation</button></h2>
-      <div class="conversation" id="conversation"></div>
+      <div class="transcript-wrap" id="transcript-wrap">
+        <h2>CONVERSATION <button class="count linkish" id="btn-new-convo">new conversation</button></h2>
+        <div class="conversation" id="conversation"></div>
+      </div>
       <div class="attachments" id="attachments"></div>
+      <div class="reply-hint" id="reply-hint" hidden>
+        <span class="rh-text" id="reply-hint-text"></span>
+        <kbd title="Press the right arrow key (caret at the end) to put this in the box - Enter still sends, Esc dismisses">→</kbd>
+        <button type="button" id="reply-hint-forget" title="Forget this learned reply" aria-label="Forget this learned reply">✕</button>
+      </div>
       <form class="composer" id="composer">
         <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach">📎</button>
         <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
@@ -123,7 +137,12 @@
 </main>
 
 <div class="display" id="display" role="dialog" aria-modal="true" aria-labelledby="display-title">
-  <header><h3 id="display-title"></h3><button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
+  <header><h3 id="display-title"></h3>
+    <span class="display-downloads" id="display-downloads" hidden>
+      <a class="icon-btn" id="display-pdf" download>Download PDF</a>
+      <a class="icon-btn" id="display-docx" download>Download Word</a>
+    </span>
+    <button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
   <div class="body md" id="display-body"></div>
 </div>
 
@@ -148,6 +167,11 @@
         <option value="voice">When I talk to Jarvis</option>
         <option value="always">Always</option>
         <option value="off">Never</option>
+      </select>
+      <label for="set-bargein" style="margin-top:14px">Talk over Jarvis (always-listening mode)</label>
+      <select id="set-bargein">
+        <option value="1">On - say "Jarvis…" to interrupt him</option>
+        <option value="0">Off - only "Jarvis, stop" interrupts (use this if he cuts himself off on speakers)</option>
       </select>
       <label for="set-voice" style="margin-top:14px">Voice</label>
       <select id="set-voice"><option value="">Default (British)</option></select>
@@ -174,6 +198,7 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/ask.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

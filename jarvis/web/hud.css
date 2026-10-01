@@ -34,6 +34,12 @@ body {
   font-size: 15px;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  transition: background .3s ease;
+}
+/* Calm ambient backdrop for the minimal orb-first view - a very faint glow behind where the orb sits,
+   nothing distracting. The full dashboard drops back to a flat background since it's a working view. */
+body:not(.dash-open) {
+  background: radial-gradient(ellipse 900px 620px at 50% 42%, rgba(76,141,255,0.075), transparent 70%), var(--bg);
 }
 a { color: var(--accent-text); }
 button { font-family: var(--ui); }
@@ -59,13 +65,24 @@ button { font-family: var(--ui); }
 .icon-btn { background: transparent; border: 1px solid transparent; color: var(--muted); border-radius: var(--radius-sm);
   padding: 7px 11px; cursor: pointer; font-size: 13.5px; font-weight: 500; transition: border-color .15s, color .15s; }
 .icon-btn:hover { border-color: var(--line); color: var(--text); }
+.icon-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-text); }
 
-/* ---------- layout ---------- */
+/* ---------- layout ----------
+   Default (no .dash-open on <body>) is the minimal, orb-first "ambient" view: just the centre column,
+   full width, dashboard columns and the conversation transcript hidden. Adding .dash-open (toggled by
+   #btn-dashboard, persisted to localStorage as jarvis.dashboard, applied inline in <head> to avoid a
+   flash) restores the full three-column operations HUD. */
 .hud { position: relative; z-index: 1; display: grid; gap: 28px; padding: 22px;
-  grid-template-columns: minmax(260px, 1fr) minmax(420px, 1.6fr) minmax(260px, 1fr);
+  grid-template-columns: 1fr;
   height: calc(100vh - 62px); }
+.dash-open .hud { grid-template-columns: minmax(260px, 1fr) minmax(420px, 1.6fr) minmax(260px, 1fr); }
 .col { display: flex; flex-direction: column; gap: 26px; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
-.center { overflow: hidden; }
+.col.left, .col.right { display: none; }
+.dash-open .col.left, .dash-open .col.right { display: flex; }
+.center { overflow: hidden; justify-content: center; }
+.dash-open .center { justify-content: flex-start; }
+.center .panel { max-width: 720px; margin: 0 auto; width: 100%; }
+.dash-open .center .panel { max-width: none; margin: 0; }
 
 .panel { background: none; border: none; border-radius: 0; padding: 0; }
 .panel h2 { margin: 0 0 10px; font-family: var(--ui); font-size: 11px; letter-spacing: 0.05em; color: var(--muted-dim);
@@ -81,19 +98,16 @@ button { font-family: var(--ui); }
 .kpi.bad .v { color: var(--crit); } .kpi.warn .v { color: var(--warn); } .kpi.good .v { color: var(--ok); }
 
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.list li { border-left: none; border-bottom: 1px solid var(--line); padding: 8px 0; font-size: 13.5px; line-height: 1.4; border-radius: 0; }
+/* Status is a left accent bar, not full-line colour - keeps every panel's text one calm colour
+   instead of each row shouting in red/amber/green, which is what made the dashboard feel noisy. */
+.list li { border-left: 2px solid transparent; border-bottom: 1px solid var(--line); padding: 8px 0 8px 10px;
+  font-size: 13.5px; line-height: 1.4; border-radius: 0; color: var(--text); }
 .list li:last-child { border-bottom: none; }
 .list li .sub { display: block; color: var(--muted-dim); font-size: 12px; margin-top: 1px; }
-.list li.hot { color: var(--fire); }
-.list li.bad { color: var(--crit); }
-.list li.ok { color: var(--ok); }
-.list li.warn { color: var(--warn); }
-.list li.hot .sub, .list li.bad .sub, .list li.ok .sub, .list li.warn .sub { color: inherit; opacity: 0.7; }
-
-.dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 7px; background: var(--muted-dim); }
-.dot.ok { background: var(--ok); }
-.dot.bad { background: var(--crit); }
-.dot.warn { background: var(--warn); }
+.list li.hot { border-left-color: var(--fire); }
+.list li.bad { border-left-color: var(--crit); }
+.list li.ok { border-left-color: var(--ok); }
+.list li.warn { border-left-color: var(--warn); }
 
 .approval { border: none; border-left: 2px solid var(--warn); border-radius: 0; padding: 4px 0 4px 12px; margin-bottom: 12px;
   background: none; font-size: 13.5px; }
@@ -113,11 +127,24 @@ details.diff summary { cursor: pointer; color: var(--muted-dim); font-size: 12px
 details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; background: var(--bg2); padding: 8px; border-radius: 6px; }
 
 /* ---------- reactor / status core ---------- */
-.core-wrap { display: grid; grid-template-columns: auto 1fr; gap: 22px; align-items: center; }
-#reactor { width: 140px; height: 140px; }
+.core-wrap { display: grid; grid-template-columns: 1fr; justify-items: center; text-align: center; gap: 20px; align-items: center; padding: 40px 0; }
+.dash-open .core-wrap { grid-template-columns: auto 1fr; justify-items: stretch; text-align: left; padding: 0; }
+.orb-wrap { position: relative; display: inline-flex; }
+#reactor { width: 220px; height: 220px; transition: width .2s ease, height .2s ease; }
+.dash-open #reactor { width: 140px; height: 140px; }
+.orb-badge { position: absolute; top: -4px; right: -4px; min-width: 24px; height: 24px; padding: 0 7px;
+  border-radius: 999px; background: var(--crit); color: #1a0507; font-family: var(--mono); font-size: 12.5px;
+  font-weight: 700; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg);
+  cursor: pointer; animation: orb-badge-pulse 2.2s ease-in-out infinite; }
+.orb-badge:hover { filter: brightness(1.12); }
+@keyframes orb-badge-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(240,89,107,0.45); } 50% { box-shadow: 0 0 0 7px rgba(240,89,107,0); } }
 .state { font-family: var(--ui); letter-spacing: 0.03em; font-size: 11.5px; color: var(--muted-dim); text-transform: uppercase; font-weight: 600; }
-.caption { min-height: 44px; font-size: 17px; line-height: 1.45; color: var(--text); margin-top: 7px; font-weight: 400; }
+.caption { min-height: 44px; font-size: 19px; line-height: 1.45; color: var(--text); margin-top: 7px; font-weight: 400; }
+.dash-open .caption { font-size: 17px; }
 .caption .interim { color: var(--muted); }
+.caption.error { color: var(--crit); font-size: 15px; }
+.stt-engine { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.stt-engine.warn { color: var(--crit); }
 .toolline { font-family: var(--mono); font-size: 12px; color: var(--muted-dim); min-height: 16px; margin-top: 7px; }
 
 /* ---------- conversation ---------- */
@@ -152,15 +179,27 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 /* Dormant wake-word listening: the free browser listener is on, but nothing's being streamed anywhere. */
 .mic.sentry { border-color: var(--accent); animation: sentry-pulse 2.4s ease-in-out infinite; }
 @keyframes sentry-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+/* Learned reply suggestion: greyed hint above the box; Right Arrow accepts it (prefill only, never sends). */
+.reply-hint { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted-dim); min-width: 0; }
+.reply-hint[hidden] { display: none; }
+.reply-hint .rh-text { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-hint kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
+.reply-hint button { background: none; border: none; color: var(--muted-dim); cursor: pointer; font-size: 12px; }
+.reply-hint button:hover { color: var(--accent-text); }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .chip { font-size: 12px; border: 1px solid var(--line); border-radius: 99px; padding: 2px 8px; color: var(--muted-dim); }
 .chip button { background: none; border: none; color: var(--muted-dim); cursor: pointer; }
 
 /* ---------- display overlay (show_on_display) ---------- */
 .display { position: fixed; z-index: 20; inset: 6vh 8vw; background: var(--bg2); border: 1px solid var(--line-strong);
-  border-radius: 12px; box-shadow: var(--shadow); display: none; flex-direction: column; }
-.display.open { display: flex; }
+  border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column;
+  opacity: 0; transform: translateY(10px) scale(0.985); pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease; }
+.display.open { opacity: 1; transform: none; pointer-events: auto; }
 .display header { display: flex; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.display-downloads { display: inline-flex; gap: 6px; margin-right: 8px; }
+.display-downloads[hidden] { display: none; }
+.display-downloads .icon-btn { text-decoration: none; border-color: var(--line); color: var(--accent-text); }
 .display header h3 { margin: 0; font-family: var(--ui); font-size: 15px; color: var(--text); font-weight: 600; flex: 1; }
 .display .body { padding: 18px 22px; overflow-y: auto; font-size: 15px; }
 
@@ -189,7 +228,7 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
 .drawer label { display: block; font-size: 12.5px; color: var(--muted-dim); margin: 0 0 5px; font-weight: 500; }
 .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email],
 .drawer input[type=url], .drawer input[type=number], .drawer input[type=time], .drawer textarea {
-  width: 100%; background: none; color: var(--text); border: 1px solid var(--line);
+  width: 100%; background: none; color: var(--text); border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm); padding: 9px 10px; font-family: var(--ui); font-size: 14.5px; outline: none;
   transition: border-color .15s; }
 .drawer select:focus, .drawer input:focus, .drawer textarea:focus { border-color: var(--accent); }
@@ -266,20 +305,28 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11px; backgroun
   .hud { padding: 16px 18px; gap: 22px; }
   .topbar { padding: 12px 16px; gap: 8px; flex-wrap: wrap; }
   .brand { font-size: 15px; }
-  #reactor { width: 96px; height: 96px; }
+  #reactor, .dash-open #reactor { width: 140px; height: 140px; }
   .caption { font-size: 15.5px; }
   .display { inset: 2vh 3vw; }
   .kpis { grid-template-columns: 1fr 1fr; }
   .pills { display: none; }
   .drawer { width: 100vw; }
+  #btn-dashboard { padding: 7px 9px; }
+  .quick { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* ---------- additions ---------- */
 .center .panel:first-child { flex: 0 0 auto; }
-.convo-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.quick { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.chip-btn { border: 1px solid var(--line); background: none; color: var(--muted); border-radius: 99px;
-  padding: 5px 12px; font-size: 12.5px; cursor: pointer; font-family: var(--ui); font-weight: 500; transition: border-color .15s, color .15s; }
+.convo-panel { display: flex; flex-direction: column; min-height: 0; }
+.dash-open .convo-panel { flex: 1; }
+#transcript-wrap { display: none; }
+.dash-open #transcript-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* Grid, not flex-wrap: a fixed column count keeps every row's buttons the same width and the last
+   row flush left instead of the ragged, oddly-centred wrap flex gave 9 variable-length labels. */
+.quick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.chip-btn { border: 1px solid var(--line); background: none; color: var(--muted); border-radius: var(--radius-sm);
+  padding: 7px 10px; font-size: 12.5px; cursor: pointer; font-family: var(--ui); font-weight: 500;
+  transition: border-color .15s, color .15s; text-align: center; }
 .chip-btn:hover { border-color: var(--accent); color: var(--accent-text); }
 .linkish { background: none; border: none; cursor: pointer; font-family: var(--ui); text-decoration: none; color: var(--muted-dim); font-size: 12.5px; font-weight: 500; }
 .linkish:hover { color: var(--accent-text); }

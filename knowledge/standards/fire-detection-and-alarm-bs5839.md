@@ -1,3 +1,15 @@
+---
+title: Fire detection and fire alarm systems — BS 5839-1:2025, BS 5839-6 and BS EN 54
+aliases: [BS 5839, fire alarm standard, fire detection reference]
+tags: [standards, fire-alarms]
+type: note
+summary: Fire alarm categories, design basics, servicing intervals, certificates, false alarm management and fault-finding triage for BS 5839-1 and BS 5839-6.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[emergency-lighting-bs5266]]", "[[fire-extinguishers-and-other]]", "[[uk-fire-safety-law]]", "[[maintenance-contracts-and-scheduling]]", "[[standards-moc]]"]
+---
+
 # Fire detection and fire alarm systems: BS 5839-1:2025, BS 5839-6 and BS EN 54
 
 Summary: A practical UK guide to fire alarm system categories, design basics, servicing intervals, certificates, false alarm management and fault-finding, covering BS 5839-1 (non-domestic), BS 5839-6 (domestic) and the BS EN 54 product standards.
@@ -318,7 +330,7 @@ Always use the manufacturer's manual, configuration software and training. Engin
 
 ## Related files
 
-- `standards/emergency-lighting-bs5266.md`
-- `standards/fire-extinguishers-and-other.md` (voice alarm, EVC, aspirating, door holders, suppression interfaces)
-- `legislation/uk-fire-safety-law.md`
-- `operations/maintenance-contracts-and-scheduling.md`
+- [[emergency-lighting-bs5266]]
+- [[fire-extinguishers-and-other]] (voice alarm, EVC, aspirating, door holders, suppression interfaces)
+- [[uk-fire-safety-law]]
+- [[maintenance-contracts-and-scheduling]]

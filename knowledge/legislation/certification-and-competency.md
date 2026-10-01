@@ -1,3 +1,15 @@
+---
+title: Certification, accreditation and competency — BAFE, NSI, SSAIB, FIA, cards, BS 7671 and site safety
+aliases: [certification and competency, BAFE NSI SSAIB, accreditations reference]
+tags: [legislation, certification]
+type: note
+summary: Third-party certification schemes (BAFE, NSI, SSAIB), training, site cards, BS 7671, working at height, asbestos, and what auditors look for and how long to keep records.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[uk-fire-safety-law]]", "[[fire-detection-and-alarm-bs5839]]", "[[intruder-alarms-and-security]]", "[[maintenance-contracts-and-scheduling]]", "[[legislation-moc]]"]
+---
+
 # Certification, accreditation and competency: BAFE, NSI, SSAIB, FIA, cards, BS 7671 and site safety
 
 Summary: A guide to the third-party certification schemes, training, site cards and safety competencies a UK fire and security company needs. Covers BAFE, NSI, SSAIB, FIA, ECS/CSCS, BS 7671, working at height and asbestos, plus what auditors look for and how long to keep records.
@@ -227,7 +239,7 @@ Status: Written September 2026 from general knowledge. Scheme rules, code number
 
 ## Related files
 
-- `legislation/uk-fire-safety-law.md`
-- `standards/fire-detection-and-alarm-bs5839.md`
-- `standards/intruder-alarms-and-security.md`
-- `operations/maintenance-contracts-and-scheduling.md`
+- [[uk-fire-safety-law]]
+- [[fire-detection-and-alarm-bs5839]]
+- [[intruder-alarms-and-security]]
+- [[maintenance-contracts-and-scheduling]]

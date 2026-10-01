@@ -1,3 +1,15 @@
+---
+title: Emergency lighting — BS 5266-1, BS EN 1838 and BS EN 50172
+aliases: [BS 5266, emergency lighting standard]
+tags: [standards, emergency-lighting]
+type: note
+summary: Emergency escape lighting design basics, monthly flick test and annual full-duration test, duration classes, maintained/non-maintained luminaires and self-test systems.
+created: 2026-09-28
+updated: 2026-09-29
+status: growing
+related: ["[[fire-detection-and-alarm-bs5839]]", "[[uk-fire-safety-law]]", "[[maintenance-contracts-and-scheduling]]", "[[standards-moc]]"]
+---
+
 # Emergency lighting: BS 5266-1, BS EN 1838 and BS EN 50172
 
 Summary: A UK guide to emergency escape lighting design basics, routine testing (monthly flick test, annual full-duration test), 3 h vs 1 h duration, maintained and non-maintained luminaires, self-test systems, certificates and the logbook.
@@ -164,6 +176,6 @@ Luminaires should be placed so the following are illuminated:
 
 ## Related files
 
-- `standards/fire-detection-and-alarm-bs5839.md`
-- `legislation/uk-fire-safety-law.md`
-- `operations/maintenance-contracts-and-scheduling.md`
+- [[fire-detection-and-alarm-bs5839]]
+- [[uk-fire-safety-law]]
+- [[maintenance-contracts-and-scheduling]]

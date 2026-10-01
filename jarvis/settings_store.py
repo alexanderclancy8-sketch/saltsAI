@@ -7,7 +7,6 @@ Secrets are never sent back to the browser - only whether they are set and their
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
@@ -20,6 +19,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from .config import Settings
+from .crypto import fernet
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,10 @@ class Field:
     placeholder: str = ""
     options: tuple[tuple[str, str], ...] = ()
     advanced: bool = False
+    # (other_field_key, value) - only shown once that field's current value equals this. Lets a section with
+    # several providers (Voice: ElevenLabs/Azure/Piper) show only the one actually selected, not all of them
+    # stacked up at once - see hud.js's Settings.renderField().
+    depends_on: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("partner_email", "Business partner's email", "email",
                   "Gets the weekly tax and employment-law watch too."),
             Field("company_name", "Company name"),
+            Field("reply_suggestions_enabled", "Suggest my usual replies in the chat box", "bool",
+                  "Jarvis learns the short replies you type often and shows the likeliest as grey text; press the "
+                  "right arrow to accept it, Enter to send. Learned on this server only. Off stops learning and suggesting."),
             Field("jarvis_notes", "Things Jarvis should know", "notes",
                   "One fact per line, e.g. \"First County Monitoring handle our out-of-hours.\" Added to its memory."),
         ),
@@ -95,6 +102,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("ms_client_id", "Application (client) ID", placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"),
             Field("ms_client_secret", "Client secret", "secret"),
             Field("ms_mailbox", "Your mailbox", "email", "The mailbox Jarvis reads and sends from."),
+            Field("owner_mail_folder", "Folder for Jarvis's emails to you",
+                  help="Outlook folder name (in your mailbox) Jarvis's own emails to you are filed into instead "
+                       "of the Inbox. Blank = keep them in the Inbox. Falls back to the Inbox if not found."),
             Field("ooh_mailbox", "Out-of-hours reports mailbox", "email",
                   "Where the answering service's reports arrive, e.g. info@. Blank = your mailbox."),
             Field("ooh_email_from", "Out-of-hours reports come from",
@@ -115,8 +125,39 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "sharedinbox", "Shared inbox (info@)", "Keeps the shared inbox for important operational items only. "
+        "Everything else goes to Teams and the display.",
+        (
+            Field("shared_inbox", "Shared inbox address", "email",
+                  "Automated emails to this address are filtered by importance. Finance and management items "
+                  "never go here."),
+            Field("shared_inbox_min_importance", "Lowest importance emailed to it", "select",
+                  "Anything below this goes to Teams and the display instead. Urgent (life-safety) alerts are "
+                  "never rate-limited.",
+                  options=(("info", "Info (everything)"), ("normal", "Normal"),
+                           ("important", "Important (recommended)"), ("urgent", "Urgent only"))),
+            Field("shared_inbox_dedupe_minutes", "Don't repeat the same alert within (minutes)", "number",
+                  advanced=True),
+            Field("shared_inbox_max_per_hour", "Most emails to it per hour", "number", advanced=True),
+        ),
+    ),
+    Section(
         "teams", "Teams updates", "Jarvis posts your updates and alerts to a Teams channel.",
-        (Field("teams_webhook_url", "Channel webhook URL", "secret"),),
+        (
+            Field("teams_webhook_url", "Channel webhook URL", "secret"),
+            Field("engineering_notify_channels", "Fix and pull request notifications", "select",
+                  "Where fix-ready, pull request, deploy, triage and security-review updates go.",
+                  options=(("teams", "Teams only"), ("teams,email", "Teams and email")), advanced=True),
+            Field("engineering_email_fallback", "Email those if Teams fails", "bool",
+                  "Off: a failed Teams post is shown on the display, not emailed.", advanced=True),
+            Field("fix_notify_channels", "Fix and pull request alerts", "select",
+                  "Fixes, pull requests and security findings always show on the display and issues list. "
+                  "This picks what else gets told.",
+                  options=(("teams", "Teams only"), ("teams,email", "Teams and email"),
+                            ("none", "Display only"))),
+            Field("fix_notify_email", "Email for fix alerts", "email",
+                  "Only used if email is switched on above. Blank = your email.", advanced=True),
+        ),
         required=("teams_webhook_url",),
         test=True,
         guide=(
@@ -178,37 +219,68 @@ SECTIONS: tuple[Section, ...] = (
         (
             Field("ram_api_base_url", "API address", "url", "From RAM's External API documentation."),
             Field("ram_api_key", "API key", "secret"),
+            Field("ram_client_id", "Client ID", "secret"),
             Field("ram_api_key_header", "API key header", advanced=True),
+            Field("ram_client_id_header", "Client ID header", advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
         ),
-        required=("ram_api_base_url", "ram_api_key"),
+        required=("ram_api_base_url", "ram_api_key", "ram_client_id"),
         test=True,
-        guide=("Ask RAM Tracking support for External API access. They'll give you an API address and key.",),
+        guide=("In the RAM Tracking portal: profile - integrations - the API key and client ID are both there.",),
     ),
     Section(
         "voice", "Voice", "How Jarvis sounds, and how it hears you.",
         (
             Field("tts_provider", "Voice", "select", options=(
-                ("auto", "Best available"), ("elevenlabs", "ElevenLabs"), ("azure", "Azure"), ("browser", "Browser"))),
+                ("auto", "Best available"), ("elevenlabs", "ElevenLabs"), ("azure", "Azure"),
+                ("piper", "Piper (free, local)"), ("browser", "Browser"))),
             Field("elevenlabs_api_key", "ElevenLabs API key", "secret",
-                  "The most natural voice. elevenlabs.io > profile > API Keys."),
+                  "The most natural voice. elevenlabs.io > profile > API Keys.",
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("elevenlabs_voice", "ElevenLabs voice", "select", options=(
                 ("daniel", "Daniel - deep British male"), ("george", "George - warm British male"),
-                ("alice", "Alice - British female"), ("lily", "Lily - British female"))),
+                ("alice", "Alice - British female"), ("lily", "Lily - British female")),
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("elevenlabs_model", "ElevenLabs model", "select", options=(
-                ("eleven_multilingual_v2", "Most natural"), ("eleven_flash_v2_5", "Fastest")), advanced=True),
+                ("eleven_multilingual_v2", "Most natural"), ("eleven_flash_v2_5", "Fastest")), advanced=True,
+                  depends_on=("tts_provider", "elevenlabs")),
+            Field("elevenlabs_stability", "Voice stability (0-1)", "number",
+                  "Lower sounds more natural and varied; higher sounds flatter and more consistent. "
+                  "0.3-0.4 usually sounds least robotic.", advanced=True, depends_on=("tts_provider", "elevenlabs")),
+            Field("elevenlabs_style", "Voice style exaggeration (0-1)", "number",
+                  "Higher leans into the voice's character more, but can introduce odd artifacts if pushed "
+                  "too far. Keep this low.", advanced=True, depends_on=("tts_provider", "elevenlabs")),
+            Field("elevenlabs_speed", "Voice speed", "number", "1.0 is normal pace.", advanced=True,
+                  depends_on=("tts_provider", "elevenlabs")),
             Field("azure_speech_key", "Azure Speech key", "secret",
-                  "Free and very good. Cloud Shell: bash infra/deploy.sh voice sets this up."),
-            Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True),
-            Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES),
+                  "Free and very good. Cloud Shell: bash infra/deploy.sh voice sets this up.",
+                  depends_on=("tts_provider", "azure")),
+            Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True,
+                  depends_on=("tts_provider", "azure")),
+            Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES,
+                  depends_on=("tts_provider", "azure")),
             Field("azure_tts_style", "Azure speaking style", "select",
-                  options=(("chat", "Conversational"), ("", "Standard")), advanced=True),
+                  options=(("chat", "Conversational"), ("", "Standard")), advanced=True,
+                  depends_on=("tts_provider", "azure")),
+            Field("piper_voice", "Piper voice (free)", "select", options=(
+                ("alan", "Alan - British male (RP)"), ("northern_english_male", "Northern English male"),
+                ("jenny_dioco", "Jenny - British female"), ("alba", "Alba - British female")),
+                  help="No API key needed - downloaded once and run locally. This is the voice used whenever "
+                       "no ElevenLabs or Azure key is set.", depends_on=("tts_provider", "piper")),
             Field("stt_provider", "Listening", "select", options=(
                 ("auto", "Best available"), ("deepgram", "Deepgram"), ("whisper", "OpenAI Whisper"),
                 ("browser", "Browser"))),
-            Field("deepgram_api_key", "Deepgram API key", "secret", "For always-listening mode. deepgram.com"),
-            Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True),
+            Field("deepgram_api_key", "Deepgram API key", "secret", "For always-listening mode. deepgram.com",
+                  depends_on=("stt_provider", "deepgram")),
+            Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True,
+                  depends_on=("stt_provider", "whisper")),
             Field("wake_word", "Wake word", placeholder="jarvis"),
+            Field("voice_ack_fillers", "Say a short acknowledgment while thinking", "bool",
+                  "When you ask something out loud and the answer takes a couple of seconds, Jarvis says one "
+                  "short line like \"Let me check the accounts.\" Never for typed questions.", advanced=True),
+            Field("voice_silence_ms", "Pause before Jarvis takes your turn as finished (ms)", "number",
+                  "How long a silence counts as the end of what you're saying when using push-to-talk. 1200 is "
+                  "normal; Jarvis waits a little longer if you trail off on \"and\", \"so\" or \"um\".", advanced=True),
         ),
         test=True,
     ),
@@ -265,6 +337,29 @@ SECTIONS: tuple[Section, ...] = (
         test=True,
     ),
     Section(
+        "plugins", "Plugins and MCP tools", "Optional extras, each with its own switch. None of them can approve "
+                                            "or send anything - approvals still need your click on the display.",
+        (
+            Field("plugin_context7_enabled", "Context7 (library docs for the engineering agent)", "bool",
+                  "Read-only. Lets the agent that writes Jarvis's and Salts FSM's code look up current, "
+                  "version-specific library documentation. Sends library names and questions to Context7's "
+                  "service. Does nothing until a pinned version is set in mcp_plugins.yaml."),
+            Field("plugin_superpowers_enabled", "Superpowers method (engineering agent)", "bool",
+                  "Makes the engineering agent plan first, write the test first and review its own change "
+                  "before opening a pull request. Adds written instructions only - no software is installed."),
+            Field("plugin_browser_use_enabled", "Browser Use (read-only browsing)", "bool",
+                  "Off by default. Jarvis may read pages on the domains below; it can never click, log in, "
+                  "submit or buy. Needs a reviewed, pinned install in mcp_plugins.yaml before it does anything."),
+            Field("plugin_browser_allowed_domains", "Browser Use allowed domains", "textarea",
+                  "Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Finance, Sage and bank "
+                  "sites are always refused, even if listed.", advanced=True),
+            Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
+                  "Off by default. When on, every action you approve is first checked against the rules in "
+                  "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
+                  "cancelled, never run unchecked. It adds to your approval click, never replaces it."),
+        ),
+    ),
+    Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
         (
             Field("azure_storage_connection_string", "Storage connection string", "secret"),
@@ -307,6 +402,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("staff_review_cron", "Weekly team review", "cron"),
             Field("business_review_cron", "Monthly business review", "cron"),
             Field("regulatory_watch_cron", "Tax and employment-law watch", "cron"),
+            Field("technical_watch_cron", "Fire & security technical/standards watch", "cron"),
             Field("security_watch_cron", "Security review of Salts FSM's code", "cron"),
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
             Field("self_learning_cron", "Self-reflection (what to remember)", "cron", advanced=True),
@@ -333,13 +429,6 @@ SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _fernet(secret_key: str):
-    from cryptography.fernet import Fernet
-
-    digest = hashlib.sha256(b"jarvis-settings:" + secret_key.encode()).digest()
-    return Fernet(base64.urlsafe_b64encode(digest))
-
-
 def _hint(value: str) -> str:
     return "•••• " + value[-4:] if len(value) >= 12 else "••••"
 
@@ -362,7 +451,7 @@ class SettingsStore:
         from cryptography.fernet import InvalidToken
 
         try:
-            data = json.loads(_fernet(self.s.jarvis_secret_key).decrypt(self.path.read_bytes()))
+            data = json.loads(fernet(self.s.jarvis_secret_key, "jarvis-settings").decrypt(self.path.read_bytes()))
         except (InvalidToken, ValueError) as e:
             log.warning("Saved settings couldn't be read (%s); keeping a copy and starting afresh.", type(e).__name__)
             self.path.replace(self.path.with_suffix(".unreadable"))
@@ -372,7 +461,7 @@ class SettingsStore:
         return {k: v for k, v in data.items() if k in FIELDS}
 
     def _save(self) -> None:
-        token = _fernet(self.s.jarvis_secret_key).encrypt(json.dumps(self.overrides).encode())
+        token = fernet(self.s.jarvis_secret_key, "jarvis-settings").encrypt(json.dumps(self.overrides).encode())
         tmp = self.path.with_suffix(".tmp")
         tmp.write_bytes(token)
         os.chmod(tmp, 0o600)
@@ -415,10 +504,10 @@ class SettingsStore:
         if f.kind == "select" and value not in {v for v, _ in f.options}:
             return None, "Pick one of the options."
         if f.kind == "cron" and value:
-            from apscheduler.triggers.cron import CronTrigger
+            from .cron import cron_trigger
 
             try:
-                CronTrigger.from_crontab(value)
+                cron_trigger(value)
             except ValueError:
                 return None, "Use cron format, e.g. 45 7 * * 1-5"
         if key == "jarvis_owner_password" and len(value) < 8:
@@ -492,7 +581,8 @@ class SettingsStore:
             for f in sec.fields:
                 value = getattr(self.s, f.key)
                 item = {"key": f.key, "label": f.label, "kind": f.kind, "help": f.help, "placeholder": f.placeholder,
-                        "options": [list(o) for o in f.options], "advanced": f.advanced, "source": self._source(f.key)}
+                        "options": [list(o) for o in f.options], "advanced": f.advanced, "source": self._source(f.key),
+                        "depends_on": list(f.depends_on) if f.depends_on else None}
                 if f.kind == "secret":
                     item.update(is_set=bool(value), hint=_hint(str(value)) if value else "")
                 else:

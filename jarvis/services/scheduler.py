@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+
+from ..cron import cron_trigger
 
 log = logging.getLogger(__name__)
 
@@ -25,46 +26,52 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("system tests", lambda: j.tester.run("system")), "interval",
                   minutes=s.routine_test_interval_min, id="system_tests", max_instances=1, coalesce=True)
     sched.add_job(_guard("compliance", lambda: j.tester.run("compliance")),
-                  CronTrigger.from_crontab(s.compliance_check_cron, timezone=s.timezone), id="compliance",
+                  cron_trigger(s.compliance_check_cron, timezone=s.timezone), id="compliance",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("morning briefing", j.briefings.morning_briefing),
-                  CronTrigger.from_crontab(s.briefing_cron, timezone=s.timezone), id="briefing",
+                  cron_trigger(s.briefing_cron, timezone=s.timezone), id="briefing",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("staff review", j.reviewer.weekly_review),
-                  CronTrigger.from_crontab(s.staff_review_cron, timezone=s.timezone), id="staff_review",
+                  cron_trigger(s.staff_review_cron, timezone=s.timezone), id="staff_review",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("business review", j.business_review),
-                  CronTrigger.from_crontab(s.business_review_cron, timezone=s.timezone), id="business_review",
+                  cron_trigger(s.business_review_cron, timezone=s.timezone), id="business_review",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("social snapshot", j.marketing.snapshot),
-                  CronTrigger.from_crontab(s.social_snapshot_cron, timezone=s.timezone), id="social_snapshot",
+                  cron_trigger(s.social_snapshot_cron, timezone=s.timezone), id="social_snapshot",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("marketing report", j.marketing.weekly_report),
-                  CronTrigger.from_crontab(s.marketing_report_cron, timezone=s.timezone), id="marketing_report",
+                  cron_trigger(s.marketing_report_cron, timezone=s.timezone), id="marketing_report",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("accreditation reminders", j.accreditations.daily_reminders),
-                  CronTrigger.from_crontab("5 8 * * *", timezone=s.timezone), id="accreditations",
+                  cron_trigger("5 8 * * *", timezone=s.timezone), id="accreditations",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("regulatory watch", j.regwatch.weekly),
-                  CronTrigger.from_crontab(s.regulatory_watch_cron, timezone=s.timezone), id="regwatch",
+                  cron_trigger(s.regulatory_watch_cron, timezone=s.timezone), id="regwatch",
+                  max_instances=1, coalesce=True)
+    sched.add_job(_guard("technical watch", j.regwatch.technical_weekly),
+                  cron_trigger(s.technical_watch_cron, timezone=s.timezone), id="technical_watch",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("security watch", j.security_watch.run),
-                  CronTrigger.from_crontab(s.security_watch_cron, timezone=s.timezone), id="security_watch",
+                  cron_trigger(s.security_watch_cron, timezone=s.timezone), id="security_watch",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("billing check", j.daily_billing),
-                  CronTrigger.from_crontab(s.billing_check_cron, timezone=s.timezone), id="billing",
+                  cron_trigger(s.billing_check_cron, timezone=s.timezone), id="billing",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("review requests", j.daily_reviews),
-                  CronTrigger.from_crontab(s.review_requests_cron, timezone=s.timezone), id="reviews",
+                  cron_trigger(s.review_requests_cron, timezone=s.timezone), id="reviews",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("suggestions", j.suggestions.sweep),
-                  CronTrigger.from_crontab(s.suggestions_cron, timezone=s.timezone), id="suggestions",
+                  cron_trigger(s.suggestions_cron, timezone=s.timezone), id="suggestions",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("end-of-day wrap-up", j.wrapup.run),
-                  CronTrigger.from_crontab(s.wrapup_cron, timezone=s.timezone), id="wrapup",
+                  cron_trigger(s.wrapup_cron, timezone=s.timezone), id="wrapup",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("self-learning reflection", j.self_learning.reflect),
-                  CronTrigger.from_crontab(s.self_learning_cron, timezone=s.timezone), id="self_learning",
+                  cron_trigger(s.self_learning_cron, timezone=s.timezone), id="self_learning",
+                  max_instances=1, coalesce=True)
+    sched.add_job(_guard("weekly digest", j.weekly_digest.scheduled),
+                  cron_trigger(s.weekly_digest_cron, timezone=s.timezone), id="weekly_digest",
                   max_instances=1, coalesce=True)
     sched.add_job(_guard("lone-worker check", j.lone_worker_sweep), "interval",
                   minutes=s.lone_worker_check_min, id="lone_worker", max_instances=1, coalesce=True)

@@ -7,7 +7,7 @@ brain is Claude, so it is also a fully capable general AI you can ask anything.
 
 ```
          ┌──────────────── HUD (browser / wall screen / phone) ────────────────┐
-voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · live panels · map │
+voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · live panels · map │
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
@@ -24,6 +24,7 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
 |---|---|
 | **Conversation** | Talk ("Jarvis, …") or type. Full Claude-quality answers to anything, with web search, photo/PDF attachments and a memory of what you tell it. Short, natural spoken replies; detail goes up on the display. |
 | **Your own automations** | Set up recurring checks yourself, in plain English - "every weekday at 8am, check for jobs with no engineer assigned and tell me", "every 30 minutes, check for a supplier email about the delayed order". It runs itself from then on with the same tools and the same approval rules as talking to it live - looking things up is automatic, but anything it wants to change still needs your approval. Ask it to list or remove what you've set up any time. |
+| **Recruiting agents** | For a one-off chunk of work worth doing on its own - a focused piece of research, a draft, an analysis - Jarvis can recruit a fresh sub-agent with its own narrow brief and tools, and report back with what it found. Same rules apply to it as to Jarvis: anything it proposes writing queues for your approval, never happens on its own, and it can never recruit further agents or start another background job itself. |
 | **Out-of-hours calls** | Reads your answering service's / monitoring centre's emailed reports (including PDF attachments) - calls taken plus alarm faults, comms failures and activations - tells you in the morning briefing what came in overnight and what was done, and suggests booking a call-out for anything that still needs a visit but has no job in Salts FSM. |
 | **Email & updates** | Reads, searches and summarises Outlook. Drafts replies. Sends you updates on Teams or email when you ask, a spoken morning briefing, and an end-of-day wrap-up at 5pm (what got done, what slipped, what's waiting on you, tomorrow's first jobs). |
 | **Salts FSM** | Knows the app (knowledge base + live API + source code on GitHub): jobs, engineers, sites, systems, contracts, quotes, service schedules, renewals. Watches the remedial quotes the FSM raises from service visits and chases any that stall. Log a job in plain English ("log an intruder alarm fault for Beckfoot Upper Heaton") - or assign it to a named engineer for a date - and it's queued in Salts FSM's own booking form, ready for your approval. Ask about one specific job ("what happened on J24100?") for the full picture - materials used, notes, status history, linked quote/invoice - not just the summary fields the job list has. Won a quote? "Accept Q1180" marks it accepted and books the resulting job together, ready for your approval - then order the materials it needs with the usual purchase order tools, referencing the new job. |
@@ -35,6 +36,8 @@ voice ⇄  │ ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · l
 | **Accountant** | Cash, aged debtors and creditors, credit control with statutory late-payment interest, VAT return estimate, corporation tax, a 13-week cash flow and deadlines. Finds completed-but-unbilled jobs and drafts the Sage invoices for your approval. |
 | **Business consultant** | Business health check against targets, monthly board-style advisory report, and deep dives (pricing, growth, SWOT, hiring, acquisitions) with a 90-day plan. |
 | **Law & tax watch** | A weekly web-researched update for you and your business partner on UK tax, employment law, company law and fire & security regulation changes, with sources. |
+| **Fire & security technical watch** | A separate weekly web-researched digest deepening Jarvis's own technical expertise - not legal changes, but standard revisions and what they mean practically, FIA/BAFE/NSI/SSAIB technical guidance, manufacturer bulletins and installer best practice, always sourced. Ask for it any time on a specific standard or topic too. |
+| **Engineer/access codes** | A secure, encrypted replacement for the paper site-code book - engineer/access codes for systems Salts itself installs or maintains, recorded (queued for approval, like anything else) and looked up by site. Never a lookup or search for a system Salts doesn't hold the maintenance relationship for - see "Safety, privacy and trust" below for the takeover-access process instead. |
 | **Accreditations** | BAFE, SSAIB, CHAS (and NSI etc.) renewal and audit reminders, and audit-ready evidence packs with draft questionnaire answers. |
 | **Customer health watch** | A 0-100 score for every customer from spend trend, payment behaviour, repeat faults, declined quotes, service visits we're behind on, logged problems, inactivity and lapsed renewals. At-risk customers (especially within 90 days of renewal) are flagged with the reasons and a plan to keep them, and it warns if one customer is too big a share of revenue. |
 | **Renewals & fleet safety** | Renewal letters with the standard uplift prepared 60 days ahead for approval (at-risk customers get "call first" instead). Van MOT, service, insurance and tax, ladder, harness and PAT inspection reminders. Lone-worker checks when an engineer is still on a job long after it should have finished. |
@@ -111,9 +114,9 @@ Do these in any order; each one replaces demo data as soon as it's set.
      and reconnect.
    - *Sage 50 (desktop):* export sales and purchase invoices (and bank balances) to CSV into `finance_data/`, as
      `sales_invoices.csv`, `purchase_invoices.csv` and `bank.csv`. Sage's usual column names are recognised.
-4. **RAM Tracking.** Ask RAM for External API access, put the address and key on the Settings page, and match
-   `ram_endpoints.yaml` to the paths in RAM's Swagger docs. Put each engineer's van registration in the staff
-   register.
+4. **RAM Tracking.** Ask RAM for External API access, put the address, API key and client ID on the Settings page
+   (in the RAM Tracking portal: profile > integrations), and match `ram_endpoints.yaml` to the paths in RAM's
+   Swagger docs. Put each engineer's van registration in the staff register.
 5. **Staff register.** Copy `staff_roles.example.yaml` to `data/staff_roles.yaml` and describe everyone's role,
    duties and targets, or just tell Jarvis ("Jarvis, Josh should be sending 14 quotes a week").
 6. **Accreditations.** Copy `accreditations.example.yaml` to `data/accreditations.yaml` and add your real
@@ -134,8 +137,11 @@ Do these in any order; each one replaces demo data as soon as it's set.
    PR. This is deliberately narrower than the FSM auto-fix: there's no merge step and no deploy step at all: the
    PR just sits there for you to review and merge yourself, whenever you're ready, through your own tooling.
    Jarvis never merges or redeploys itself, under any circumstances.
-9. **Voice.** On the Settings page's Voice card: an ElevenLabs key for the most natural voice (or run
-   `bash infra/deploy.sh voice` for a free Azure one), and a Deepgram key for always-listening speech-to-text
+9. **Voice.** Jarvis speaks with [Piper](https://github.com/OHF-Voice/piper1-gpl) by default - a free, local
+   neural voice with no API key and no cost, downloaded once and run on the server itself - so it never falls
+   back to the browser's robotic voice even with nothing configured. On the Settings page's Voice card: pick
+   from a few free Piper voices, or add an ElevenLabs key for the most natural voice (or run
+   `bash infra/deploy.sh voice` for a free Azure one) if you'd rather pay for something better, and a Deepgram key for always-listening speech-to-text
    (OpenAI/Whisper also works for push-to-talk). "Always listening" doesn't mean always streaming to Deepgram/
    Whisper: Jarvis only wakes the paid microphone once it hears "Jarvis" (using the browser's own free wake-word
    spotting the rest of the time), and puts it back to sleep after a few seconds of silence. Wispr Flow and other dictation apps work straight into the chat
@@ -187,6 +193,13 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   "approve". There is no auto-deploy. The AI itself cannot approve anything, and nor can anything in an email,
   document or web page. The only things it does without asking are sending *you* the updates and reports you
   asked for, saving email *drafts* for you to review, and keeping its own notes.
+- **Learned reply suggestions (typed chat only).** Jarvis counts the short replies you type in the chat box
+  ("yes", "yes do that") against the kind of thing it had just said (an offer, a question, something awaiting
+  approval...). Once a reply has been used 3 times it is shown as a grey hint; Right Arrow at the end of the box
+  copies it in, Enter sends as normal, Esc dismisses, ✕ forgets it. It only ever fills the box - it never sends
+  anything or approves anything. Spoken messages and anything that looks sensitive (codes, numbers, emails, links,
+  passwords) are never stored; it stays in Jarvis's own database. Turn it off on Settings → You and the business,
+  or forget everything with `DELETE /api/reply-suggestions`. See `jarvis/services/reply_suggestions.py`.
 - The auto-fix engineer can only read and edit a copy of the code, with no shell and no secrets, and every
   change goes through a pull request and CI.
 - **Self-improvement is PR-only, always.** Jarvis can write changes to its own source and open a pull request,
