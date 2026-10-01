@@ -184,6 +184,12 @@ class Settings(BaseSettings):
     monthly_overheads_estimate: float = 0.0
     renewal_uplift_pct: float = 5.0  # default price rise on contract renewals
     renewal_notice_days: int = 60  # prepare renewal letters this far ahead
+    # Customer lifecycle emails (booked, on the way, complete, certificate, service due, quote follow-up). Drafts are
+    # always queued for the owner's approval - never sent automatically. The scheduled sweep is off until enabled.
+    customer_comms_enabled: bool = False
+    customer_comms_cron: str = "*/30 7-18 * * 1-5"
+    customer_comms_service_notice_days: int = 30  # draft a "service due" email this far ahead
+    customer_comms_quote_followup_days: int = 5  # follow up a sent quote after this many days
     lone_worker_overrun_min: int = 90  # safety check when a job runs this long past its booked end
     boe_base_rate: float = 4.0  # Bank of England base rate % - keep current for late-payment interest
     # Targets for the business health check (tune to your own plan)
