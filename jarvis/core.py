@@ -33,6 +33,7 @@ from .services.billing import Billing
 from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
+from .services.false_alarms import FalseAlarmLog
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
 from .services.briefing import Briefings
@@ -133,6 +134,7 @@ class Jarvis:
         self.weekly_digest = WeeklyDigest(self)
         self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
+        self.false_alarms = FalseAlarmLog(self)  # BS 5839-1 false alarm log; writes to FSM never happen from here
         self.recruiter = Recruiter(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
