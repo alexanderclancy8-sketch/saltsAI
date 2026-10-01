@@ -344,7 +344,26 @@ class Database:
                               (suite, name))
 
     # -- memory -------------------------------------------------------------------
+    @staticmethod
+    def _memory_key(fact: str) -> str:
+        """Comparison form for spotting a fact that is already remembered: case, spacing and a trailing full stop
+        don't make it a different fact."""
+        return " ".join(fact.split()).lower().rstrip(".").strip()
+
+    def find_memory(self, fact: str) -> int | None:
+        """Id of an already-remembered fact that says the same thing as `fact`, if any."""
+        key = self._memory_key(fact)
+        for m in self.memories():
+            if self._memory_key(m["fact"]) == key:
+                return m["id"]
+        return None
+
     def remember(self, fact: str) -> int:
+        """Stores a fact and returns its id - or, if the same fact is already remembered, returns the existing id
+        without adding a duplicate (the scheduled self-reflection can easily re-learn something it already knows)."""
+        existing = self.find_memory(fact)
+        if existing is not None:
+            return existing
         return self.execute("INSERT INTO memory (created_at, fact) VALUES (?,?)", (now_iso(), fact))
 
     def forget(self, memory_id: int) -> None:
