@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 
-from jarvis.brain.tools import (AcceptQuoteIn, JobRefIn, LogJobIn, LogPurchaseOrderIn, PurchaseOrderLineIn,
-                                accept_quote, job_detail, log_job, log_purchase_order)
+from jarvis.brain.tools import (TOOLS_BY_NAME, AcceptQuoteIn, CreateCustomerIn, CreateSiteIn, JobRefIn, LogJobIn,
+                                LogPurchaseOrderIn, PurchaseOrderLineIn, accept_quote, create_customer, create_site,
+                                dispatch, job_detail, log_job, log_purchase_order)
 from jarvis.core import Jarvis
+from jarvis.integrations.fsm import DemoFSM, FSMClient
 from tests.fakes import FakeClient
 
 
@@ -284,3 +287,357 @@ async def test_approving_accept_quote_writes_both_the_status_and_the_job(setting
     assert calls[1][0] == "POST" and calls[1][1] == "/jobs" and calls[1][2]["site"] == "Ilkley Grammar Annexe"
     assert j.db.get_action(result["queued_action"])["status"] == "done"
     await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- create_customer / create_site
+# Same rules as log_job: the tools check and prepare, and ONLY queue an `fsm_write` - nothing is created in Salts FSM
+# until the owner approves it. The demo FSM stands in for Salts FSM (Aire Valley Care Ltd is one of its customers).
+def _spy_write(j):
+    calls = []
+    real = j.fsm.write
+
+    async def spy(method, path, body=None):
+        calls.append((method, path, body))
+        return await real(method, path, body)
+
+    j.fsm.write = spy
+    return calls
+
+
+async def test_create_customer_queues_an_fsm_write_and_does_not_create_anything(settings):
+    j = make(settings)
+    calls = _spy_write(j)
+    result = await create_customer(j, CreateCustomerIn(
+        name="  Brightwell Dental Ltd ", contact="Dr Amy Brightwell", phone="0113 555 0100",
+        email="reception@brightwell.example.co.uk", billing_address="1 High Street\nLeeds\nLS1 2AB"))
+    pending = j.db.pending_actions()
+    assert len(pending) == 1 and result["queued_action"] == pending[0]["id"]
+    action = pending[0]
+    assert action["kind"] == "fsm_write"
+    assert action["payload"]["method"] == "POST" and action["payload"]["path"] == "/customers"
+    assert action["payload"]["body"] == {
+        "name": "Brightwell Dental Ltd", "created_by": "Jarvis", "contact": "Dr Amy Brightwell",
+        "phone": "0113 555 0100", "email": "reception@brightwell.example.co.uk",
+        "billingAddress": "1 High Street\nLeeds\nLS1 2AB"}
+    assert action["summary"].startswith("Create customer Brightwell Dental Ltd")
+    assert "Dr Amy Brightwell" in action["summary"]
+    assert result["note"] == "Queued for approval on the display."
+    assert calls == []  # nothing written - approval hasn't happened yet
+    assert not any(c["name"] == "Brightwell Dental Ltd" for c in await j.fsm.customers())
+    await j.http.aclose()
+
+
+async def test_create_customer_omits_blank_fields(settings):
+    j = make(settings)
+    await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd"))
+    assert j.db.pending_actions()[0]["payload"]["body"] == {"name": "Brightwell Dental Ltd", "created_by": "Jarvis"}
+    await j.http.aclose()
+
+
+@pytest.mark.parametrize("name", ["", "   ", "n/a", "TBC", "Unknown", "new customer", "-"])
+async def test_create_customer_refuses_an_empty_or_placeholder_name(settings, name):
+    j = make(settings)
+    result = await create_customer(j, CreateCustomerIn(name=name))
+    assert "error" in result and j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_create_customer_refuses_a_bad_email_before_queueing(settings):
+    j = make(settings)
+    result = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd", email="not-an-email"))
+    assert "error" in result and "email" in result["error"] and j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+@pytest.mark.parametrize("typed", ["Aire Valley Care Ltd", "aire valley care ltd ", "Aire Valley Care Limited",
+                                   "Aire Valley Care", "The Aire Valley Care Ltd.", "Aire Vally Care Ltd"])
+async def test_create_customer_reports_an_existing_match_instead_of_queueing_a_duplicate(settings, typed):
+    j = make(settings)
+    result = await create_customer(j, CreateCustomerIn(name=typed))
+    assert result["queued"] is False and j.db.pending_actions() == []
+    assert [c["name"] for c in result["likely_existing_customers"]] == ["Aire Valley Care Ltd"]
+    assert result["likely_existing_customers"][0]["id"]
+    assert "confirm_not_duplicate" in result["note"]
+    await j.http.aclose()
+
+
+async def test_a_clearly_different_customer_is_not_mistaken_for_a_duplicate(settings):
+    j = make(settings)
+    result = await create_customer(j, CreateCustomerIn(name="Airedale Plumbing Supplies"))
+    assert "queued_action" in result
+    await j.http.aclose()
+
+
+async def test_confirmed_namesake_is_flagged_for_the_fsm_and_loud_in_the_summary(settings):
+    j = make(settings)
+    result = await create_customer(j, CreateCustomerIn(name="aire valley care ltd", confirm_not_duplicate=True))
+    action = j.db.pending_actions()[0]
+    assert result["queued_action"] == action["id"]
+    # Salts FSM refuses an exact-name second customer unless it is told it's deliberate
+    assert action["payload"]["body"]["confirmSharedName"] is True
+    assert "already exists" in action["summary"] and "second" in action["summary"]
+    await j.http.aclose()
+
+
+async def test_confirmed_near_match_does_not_claim_a_shared_name(settings):
+    j = make(settings)
+    await create_customer(j, CreateCustomerIn(name="Aire Valley Care Limited", confirm_not_duplicate=True))
+    assert "confirmSharedName" not in j.db.pending_actions()[0]["payload"]["body"]
+    await j.http.aclose()
+
+
+async def test_create_customer_does_not_queue_the_same_customer_twice(settings):
+    j = make(settings)
+    first = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd"))
+    second = await create_customer(j, CreateCustomerIn(name="brightwell dental limited"))
+    assert second["already_pending_action"] == first["queued_action"]
+    assert len(j.db.pending_actions()) == 1
+    await j.http.aclose()
+
+
+async def test_create_customer_will_not_queue_blind_when_the_fsm_cannot_be_checked(settings):
+    j = make(settings)
+
+    async def boom():
+        raise RuntimeError("connection refused")
+
+    j.fsm.customers = boom
+    result = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd"))
+    assert "error" in result and "connection refused" in result["error"] and j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_approving_create_customer_posts_the_right_body_to_the_fsm(settings):
+    j = make(settings)
+    calls = _spy_write(j)
+    result = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd", phone="0113 555 0100"))
+    await j.actions.approve(result["queued_action"])
+    await asyncio.sleep(0.05)  # the approval runs the write in a spawned task
+    assert calls == [("POST", "/customers", {"name": "Brightwell Dental Ltd", "created_by": "Jarvis",
+                                             "phone": "0113 555 0100"})]
+    assert j.db.get_action(result["queued_action"])["status"] == "done"
+    # the (demo) FSM now has it, so asking again is reported as a duplicate rather than queued
+    again = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd"))
+    assert again["queued"] is False and again["likely_existing_customers"][0]["name"] == "Brightwell Dental Ltd"
+    await j.http.aclose()
+
+
+async def test_create_site_queues_an_fsm_write_for_an_existing_customer_by_id(settings):
+    j = make(settings)
+    calls = _spy_write(j)
+    customer = next(c for c in await j.fsm.customers() if c["name"] == "Aire Valley Care Ltd")
+    result = await create_site(j, CreateSiteIn(name="Aire Valley Care - Annexe", customer="aire valley care ltd",
+                                               address="2 Mill Lane, Bingley", postcode=" bd16 1ab "))
+    action = j.db.pending_actions()[0]
+    assert result["queued_action"] == action["id"]
+    assert action["kind"] == "fsm_write"
+    assert action["payload"]["method"] == "POST" and action["payload"]["path"] == "/sites"
+    assert action["payload"]["body"] == {"name": "Aire Valley Care - Annexe", "created_by": "Jarvis",
+                                         "customer": customer["id"],  # the id, not the (shareable) name
+                                         "address": "2 Mill Lane, Bingley", "postcode": "BD16 1AB"}
+    assert "for Aire Valley Care Ltd" in action["summary"] and "BD16 1AB" in action["summary"]
+    assert calls == []
+    await j.http.aclose()
+
+
+async def test_create_site_with_no_customer_warns_that_no_job_can_be_booked(settings):
+    j = make(settings)
+    result = await create_site(j, CreateSiteIn(name="Lone Warehouse Unit 4"))
+    assert "queued_action" in result and "customer" not in j.db.pending_actions()[0]["payload"]["body"]
+    assert "no customer" in j.db.pending_actions()[0]["summary"].lower() and "warning" in result
+    await j.http.aclose()
+
+
+@pytest.mark.parametrize("name", ["", "  ", "tbc", "New site"])
+async def test_create_site_refuses_an_empty_or_placeholder_name(settings, name):
+    j = make(settings)
+    result = await create_site(j, CreateSiteIn(name=name, customer="Aire Valley Care Ltd"))
+    assert "error" in result and j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_create_site_for_an_unknown_customer_says_to_create_the_customer_first(settings):
+    j = make(settings)
+    result = await create_site(j, CreateSiteIn(name="Brightwell Dental - Roundhay", customer="Brightwell Dental Ltd"))
+    assert result["queued"] is False and "create_customer" in result["error"]
+    assert j.db.pending_actions() == []
+    # a typo of a real customer is offered back as a close match
+    result = await create_site(j, CreateSiteIn(name="Annexe", customer="Aire Valey Care Ltd"))
+    assert [c["name"] for c in result["close_matches"]] == ["Aire Valley Care Ltd"]
+    await j.http.aclose()
+
+
+async def test_create_site_waits_for_a_customer_that_is_still_pending_approval(settings):
+    j = make(settings)
+    queued = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd"))
+    result = await create_site(j, CreateSiteIn(name="Brightwell Dental - Roundhay", customer="Brightwell Dental Ltd"))
+    assert result["queued"] is False and result["customer_pending_action"] == queued["queued_action"]
+    assert len(j.db.pending_actions()) == 1  # only the customer - the site was NOT queued against a customer that
+    await j.http.aclose()                    # doesn't exist yet
+
+
+async def test_create_site_asks_which_customer_when_a_name_is_shared(settings):
+    j = make(settings)
+    await j.fsm.write("POST", "/customers", {"name": "Aire Valley Care Ltd", "confirmSharedName": True})
+    result = await create_site(j, CreateSiteIn(name="New Wing", customer="Aire Valley Care Ltd"))
+    assert result["queued"] is False and len(result["ambiguous_customer"]) == 2
+    assert j.db.pending_actions() == []
+    # ...and the id is accepted
+    chosen = result["ambiguous_customer"][1]["id"]
+    ok = await create_site(j, CreateSiteIn(name="New Wing", customer=chosen))
+    assert "queued_action" in ok and j.db.pending_actions()[0]["payload"]["body"]["customer"] == chosen
+    await j.http.aclose()
+
+
+async def test_create_site_reports_an_existing_site_instead_of_queueing_a_duplicate(settings):
+    j = make(settings)
+    for typed in ("Aire Valley Care Home", "aire valley care home", "Aire Valley Care Homes"):
+        result = await create_site(j, CreateSiteIn(name=typed, customer="Aire Valley Care Ltd"))
+        assert result["queued"] is False
+        assert [s["name"] for s in result["likely_existing_sites"]] == ["Aire Valley Care Home"]
+    assert j.db.pending_actions() == []
+    await j.http.aclose()
+
+
+async def test_confirmed_twin_site_is_flagged_for_the_fsm(settings):
+    j = make(settings)
+    await create_site(j, CreateSiteIn(name="Aire Valley Care Home", customer="Aire Valley Care Ltd",
+                                      confirm_not_duplicate=True))
+    action = j.db.pending_actions()[0]
+    assert action["payload"]["body"]["confirmSharedName"] is True and "second" in action["summary"]
+    await j.http.aclose()
+
+
+async def test_the_same_postcode_with_a_similar_name_is_flagged(settings):
+    j = make(settings)
+    await j.fsm.write("POST", "/sites", {"name": "Moorside Depot", "postcode": "BD1 1AA"})
+    result = await create_site(j, CreateSiteIn(name="Moorside Depot Ltd Yard", postcode="bd1 1aa"))
+    assert result["queued"] is False and result["likely_existing_sites"][0]["name"] == "Moorside Depot"
+    await j.http.aclose()
+
+
+async def test_create_site_does_not_queue_the_same_site_twice(settings):
+    j = make(settings)
+    first = await create_site(j, CreateSiteIn(name="Brightwell Dental - Roundhay", customer="Aire Valley Care Ltd"))
+    second = await create_site(j, CreateSiteIn(name="brightwell dental - roundhay", customer="Aire Valley Care Ltd"))
+    assert second["already_pending_action"] == first["queued_action"] and len(j.db.pending_actions()) == 1
+    await j.http.aclose()
+
+
+async def test_approving_create_site_posts_the_right_body_and_the_new_site_is_then_found(settings):
+    j = make(settings)
+    calls = _spy_write(j)
+    result = await create_site(j, CreateSiteIn(name="Aire Valley Care - Annexe", customer="Aire Valley Care Ltd",
+                                               postcode="BD16 1AB"))
+    await j.actions.approve(result["queued_action"])
+    await asyncio.sleep(0.05)
+    assert len(calls) == 1 and calls[0][0] == "POST" and calls[0][1] == "/sites"
+    assert calls[0][2]["name"] == "Aire Valley Care - Annexe" and calls[0][2]["postcode"] == "BD16 1AB"
+    assert j.db.get_action(result["queued_action"])["status"] == "done"
+    created = next(s for s in await j.fsm.sites() if s["name"] == "Aire Valley Care - Annexe")
+    assert created["customer"] == "Aire Valley Care Ltd" and created["customer_id"]
+    await j.http.aclose()
+
+
+async def test_new_customer_then_its_site_end_to_end(settings):
+    j = make(settings)
+    c = await create_customer(j, CreateCustomerIn(name="Brightwell Dental Ltd"))
+    assert "customer_pending_action" in await create_site(j, CreateSiteIn(name="Roundhay", customer="Brightwell Dental Ltd"))
+    await j.actions.approve(c["queued_action"])
+    await asyncio.sleep(0.05)
+    s = await create_site(j, CreateSiteIn(name="Brightwell Dental - Roundhay", customer="Brightwell Dental Ltd"))
+    assert "queued_action" in s
+    await j.actions.approve(s["queued_action"])
+    await asyncio.sleep(0.05)
+    site = next(x for x in await j.fsm.sites() if x["name"] == "Brightwell Dental - Roundhay")
+    assert site["customer"] == "Brightwell Dental Ltd"
+    await j.http.aclose()
+
+
+def test_the_new_tools_are_registered_and_say_they_need_approval():
+    for name in ("create_customer", "create_site"):
+        tool = TOOLS_BY_NAME[name]
+        assert "approval" in tool.description.lower()
+        assert tool.approval is False  # like log_job: the handler queues the write itself, after its checks
+
+
+async def test_through_dispatch_a_customer_is_only_queued(settings):
+    j = make(settings)
+    calls = _spy_write(j)
+    tool = TOOLS_BY_NAME["create_customer"]
+    result = await dispatch(j, tool, tool.model.model_validate({"name": "Brightwell Dental Ltd"}))
+    assert result["queued_action"] and calls == []
+    assert [a["kind"] for a in j.db.pending_actions()] == ["fsm_write"]
+    await j.http.aclose()
+
+
+# ---- the demo FSM behaves like the real one for these two routes
+async def test_demo_fsm_refuses_a_namesake_customer_unless_confirmed():
+    fsm = DemoFSM()
+    with pytest.raises(ValueError, match="CUSTOMER_NAME_SHARED"):
+        await fsm.write("POST", "/customers", {"name": "aire valley care ltd"})
+    made = await fsm.write("POST", "/customers", {"name": "aire valley care ltd", "confirmSharedName": True})
+    assert made["ok"] is True and made["id"]
+    assert len([c for c in await fsm.customers() if c["name"].lower() == "aire valley care ltd"]) == 2
+    with pytest.raises(ValueError, match="required"):
+        await fsm.write("POST", "/customers", {"name": " "})
+
+
+async def test_demo_fsm_site_needs_a_real_unambiguous_customer():
+    fsm = DemoFSM()
+    with pytest.raises(ValueError, match="404"):
+        await fsm.write("POST", "/sites", {"name": "X", "customer": "Nobody Ltd"})
+    made = await fsm.write("POST", "/sites", {"name": "New Wing", "customer": "Aire Valley Care Ltd", "postcode": "bd1 1aa"})
+    assert made["ok"] and made["customer"] == "Aire Valley Care Ltd"
+    site = next(s for s in await fsm.sites() if s["name"] == "New Wing")
+    assert site["postcode"] == "BD1 1AA" and site["lat"] and site["customer_id"] == made["customerId"]
+    with pytest.raises(ValueError, match="SITE_NAME_SHARED"):
+        await fsm.write("POST", "/sites", {"name": "new wing", "customer": "Aire Valley Care Ltd"})
+
+
+async def test_demo_fsm_still_ignores_other_writes():
+    result = await DemoFSM().write("PATCH", "/jobs/J1", {"status": "done"})
+    assert result["demo"] is True and "not applied" in result["status"]
+
+
+# ---- the real client: field mapping and error detail
+def _client(settings, handler):
+    settings.fsm_base_url = "https://fsm.example.test"
+    settings.fsm_api_prefix = "/api/jarvis"
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return FSMClient(settings, http), http
+
+
+async def test_fsm_client_reads_customers_and_site_customer_ids(settings):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path.endswith("/customers"):
+            return httpx.Response(200, json={"items": [{"id": "cust-1", "name": "Priory Care Homes Ltd",
+                                                         "accountRef": "AC001", "billingAddress": "1 High St",
+                                                         "phone": "0113", "email": "a@b.co", "status": "Live",
+                                                         "onHold": False, "notes": None}]})
+        return httpx.Response(200, json={"items": [{"id": "site-1", "name": "Oakfield", "customerId": "cust-1",
+                                                     "customer": "Priory Care Homes Ltd", "postcode": "LS1 1AA"}]})
+
+    fsm, http = _client(settings, handler)
+    customers, sites = await fsm.customers(), await fsm.sites()
+    assert seen == ["/api/jarvis/customers", "/api/jarvis/sites"]
+    assert customers[0]["id"] == "cust-1" and customers[0]["account_ref"] == "AC001"
+    assert customers[0]["billing_address"] == "1 High St" and customers[0]["on_hold"] is False
+    assert sites[0]["customer_id"] == "cust-1" and sites[0]["customer"] == "Priory Care Homes Ltd"
+    await http.aclose()
+
+
+async def test_fsm_client_write_says_why_the_fsm_refused(settings):
+    def handler(request):
+        assert request.method == "POST" and request.url.path == "/api/jarvis/customers"
+        return httpx.Response(409, json={"detail": '{"code": "CUSTOMER_NAME_SHARED", "error": "A customer called '
+                                                   'X already exists."}'})
+
+    fsm, http = _client(settings, handler)
+    with pytest.raises(httpx.HTTPStatusError) as err:
+        await fsm.write("POST", "/customers", {"name": "X"})
+    assert "409" in str(err.value) and "CUSTOMER_NAME_SHARED" in str(err.value)
+    await http.aclose()
