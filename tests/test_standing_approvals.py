@@ -1160,6 +1160,151 @@ async def test_a_confirmed_namesake_site_waits_for_a_human_even_with_record_keep
     await j.http.aclose()
 
 
+async def test_a_lookalike_customer_confirmed_by_the_model_never_auto_runs(tmp_path):
+    """S1: confirm_not_duplicate is a flag the MODEL sets. A lookalike (not an exact namesake) used to produce a payload
+    the allowlist accepted; now any lookalike marks it for a human."""
+    from jarvis.brain.tools import CreateCustomerIn, create_customer
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    result = await create_customer(j, CreateCustomerIn(
+        name="Aire Valley Care Limited", email="attacker@evil.example.com", confirm_not_duplicate=True))
+    await drain(j.actions)
+    row = j.db.get_action(result["queued_action"])
+    assert row["status"] == "pending" and row["approved_by"] == "" and calls == []
+    assert "confirmSharedName" not in row["payload"]["body"]  # not an exact namesake...
+    assert row["payload"]["needs_human_review"]["similar_existing"] == ["Aire Valley Care Ltd"]  # ...but flagged
+    assert "similar to existing customer 'Aire Valley Care Ltd'" in row["summary"]
+    assert result["note"] == "Queued for approval on the display."
+    # and the card a phone approver sees leads with the review marker and the lookalike
+    from jarvis.services.teams_approvals import approval_card
+
+    details = approval_card(row)["body"][2]["text"]
+    assert "REVIEW" in details and "Aire Valley Care Ltd" in details
+    await j.http.aclose()
+
+
+async def test_a_genuinely_new_customer_still_auto_runs_even_if_the_model_passes_the_flag(tmp_path):
+    from jarvis.brain.tools import CreateCustomerIn, create_customer
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    result = await create_customer(j, CreateCustomerIn(name="Zephyr Quantum Bakeries", confirm_not_duplicate=True))
+    await drain(j.actions)
+    row = j.db.get_action(result["queued_action"])
+    assert row["approved_by"] == PREFIX + "record keeping" and "needs_human_review" not in row["payload"]
+    assert [c[:2] for c in calls] == [("POST", "/customers")]
+    await j.http.aclose()
+
+
+async def test_if_the_fsm_cannot_be_read_nothing_is_created_or_auto_run(tmp_path):
+    from jarvis.brain.tools import CreateCustomerIn, CreateSiteIn, create_customer, create_site
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+
+    async def broken(*a, **k):
+        raise RuntimeError("FSM unreachable")
+
+    j.fsm.customers = broken
+    j.fsm.sites = broken
+    for result in (await create_customer(j, CreateCustomerIn(name="Zephyr Quantum Bakeries",
+                                                             confirm_not_duplicate=True)),
+                   await create_site(j, CreateSiteIn(name="Zephyr Works", customer="x", confirm_not_duplicate=True))):
+        assert "error" in result and "queued_action" not in result
+    await drain(j.actions)
+    assert j.db.pending_actions() == [] and calls == []
+    await j.http.aclose()
+
+
+async def test_a_lookalike_site_confirmed_by_the_model_never_auto_runs(tmp_path):
+    from jarvis.brain.tools import CreateSiteIn, create_site
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    customer = (await j.fsm.customers())[0]
+    site = (await j.fsm.sites())[0]
+    result = await create_site(j, CreateSiteIn(name=f"{site['name']} Extension", customer=customer["name"],
+                                               confirm_not_duplicate=True))
+    await drain(j.actions)
+    row = j.db.get_action(result["queued_action"])
+    assert row["status"] == "pending" and calls == []
+    assert row["payload"]["needs_human_review"]["similar_existing"]
+    await j.http.aclose()
+
+
+async def test_a_genuinely_new_site_still_auto_runs(tmp_path):
+    from jarvis.brain.tools import CreateSiteIn, create_site
+
+    j, calls = await _jarvis_with_spy(tmp_path, record=True)
+    customer = (await j.fsm.customers())[0]
+    result = await create_site(j, CreateSiteIn(name="Zephyr Quantum Bakery Unit 9", customer=customer["name"],
+                                               postcode="ZZ9 9ZZ"))
+    await drain(j.actions)
+    assert j.db.get_action(result["queued_action"])["approved_by"] == PREFIX + "record keeping"
+    assert [c[:2] for c in calls] == [("POST", "/sites")]
+    await j.http.aclose()
+
+
+@pytest.mark.parametrize("path,body", [("/customers", {"name": "x", "created_by": "Jarvis"}),
+                                       ("/sites", {"name": "x", "created_by": "Jarvis"})])
+def test_any_extra_top_level_key_such_as_the_review_marker_blocks_auto_run(path, body):
+    db = Database(":memory:")
+    assert sa.classify("fsm_write", post(path, body), db) == sa.RECORD_KEEPING
+    for extra in ({"needs_human_review": {"similar_existing": ["Acme"]}}, {"needs_human_review": True},
+                  {"confirmed": True}):
+        assert sa.classify("fsm_write", {**post(path, body), **extra}, db) is None
+
+
+# --------------------------------------------------------------------------- trusted owner survives create_app twice
+def test_create_app_twice_on_the_same_settings_does_not_make_a_saved_override_the_trusted_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    s, j = settings_app(tmp_path, owner_email=OWNER, manager_emails=f"{OWNER},{MANAGER}")
+    create_app(s, j)
+    # a saved override (e.g. from an old connections.enc, written by a manager before the fix)
+    SettingsStore(s).update({"owner_email": MANAGER}, [])
+    assert s.owner_email == MANAGER
+    app2 = create_app(s, j)  # second call on the same, now overlaid, Settings object
+    with TestClient(app2) as c:
+        r = c.post("/api/settings", json={"values": {"standing_record_keeping": True}}, headers=_sso(MANAGER))
+        assert r.status_code == 403 and s.standing_record_keeping is False
+        r = c.post("/api/settings", json={"values": {"standing_record_keeping": True}}, headers=_sso(OWNER))
+        assert r.status_code == 200
+
+
+def test_startup_warns_when_a_saved_identity_setting_differs_from_the_environment(tmp_path, caplog):
+    import logging
+
+    s, j = settings_app(tmp_path, owner_email=OWNER, partner_email="partner@salts.example.com")
+    create_app(s, j)
+    SettingsStore(s).update({"owner_email": MANAGER, "partner_email": "partner@salts.example.com"}, [])
+    with caplog.at_level(logging.WARNING, logger="jarvis"):
+        create_app(s, j)
+    warnings = [r.getMessage() for r in caplog.records if "differs from the app setting" in r.getMessage()]
+    assert len(warnings) == 1 and "owner_email" in warnings[0]  # partner_email matches: no warning
+    assert MANAGER not in " ".join(r.getMessage() for r in caplog.records)  # no values in the log
+
+
+def test_no_startup_warning_when_nothing_differs(tmp_path, caplog):
+    import logging
+
+    s, j = settings_app(tmp_path, owner_email=OWNER)
+    with caplog.at_level(logging.WARNING, logger="jarvis"):
+        create_app(s, j)
+    assert not [r for r in caplog.records if "differs from the app setting" in r.getMessage()]
+
+
+# --------------------------------------------------------------------------- card details: key fields first, marked when cut
+def test_card_details_put_the_deciding_fields_first_and_say_when_they_were_cut():
+    from jarvis.services.teams_approvals import approval_card
+
+    payload = {"tool": "x", "args": {"filler_a": "a" * 300, "filler_b": "b" * 300, "notes": "n" * 300,
+                                     "total": 12999.5, "supplier": "Evil Parts Ltd", "to": ["attacker@evil.example.com"]}}
+    card = approval_card({"id": 3, "kind": "tool:x", "summary": "s", "payload": payload})
+    details = card["body"][2]["text"]
+    assert len(details) <= 420 and details.endswith("(truncated)")
+    assert details.index("attacker@evil.example.com") < details.index("filler_a")
+    assert "Evil Parts Ltd" in details and "12999.5" in details  # decision-relevant fields survived the cut
+    short = approval_card({"id": 4, "kind": "tool:x", "summary": "s", "payload": {"tool": "x", "args": {"n": 1}}})
+    assert "(truncated)" not in short["body"][2]["text"]
+
+
 def test_there_is_exactly_one_tool_per_job_customers_and_sites_are_not_in_fsm_create_record():
     from jarvis.brain.tools import FsmRecordIn, TOOLS_BY_NAME
 

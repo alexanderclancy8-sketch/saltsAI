@@ -968,7 +968,16 @@ async def create_customer(j, a: CreateCustomerIn):
         summary += " (" + ", ".join(details) + ")"
     if namesake:
         summary += " - NOTE: a customer with this exact name already exists; this makes a second, separate one"
-    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/customers", "body": body})
+    payload: dict[str, Any] = {"method": "POST", "path": "/customers", "body": body}
+    if likely:
+        # Only reachable because confirm_not_duplicate=True - a flag the MODEL sets. So whenever the duplicate check
+        # found ANY lookalike, the payload carries this extra top-level key: the standing-approval allowlist accepts no
+        # extra keys, so it can never auto-run, and a person approves it with the lookalike on the card.
+        payload["needs_human_review"] = {"similar_existing": [str(c.get("name") or "")[:80] for c in likely[:5]]}
+        if not namesake:
+            summary += " - NOTE: similar to existing customer " + ", ".join(
+                f"'{str(c.get('name') or '')[:60]}'" for c in likely[:3]) + "; confirmed as a separate one"
+    action_id = j.actions.queue("fsm_write", summary, payload)
     return {"queued_action": action_id, "customer": body, "note": _queued_note(j, action_id)}
 
 
@@ -1053,7 +1062,15 @@ async def create_site(j, a: CreateSiteIn):
         summary += f" ({postcode})"
     if twins:
         summary += " - NOTE: a site with this exact name already exists for this customer; this makes a second one"
-    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/sites", "body": body})
+    payload = {"method": "POST", "path": "/sites", "body": body}
+    if likely:
+        # As for customers: a lookalike was found and the model's confirm_not_duplicate overrode it, so this must
+        # never auto-run - a person approves it with the lookalike shown.
+        payload["needs_human_review"] = {"similar_existing": [str(s.get("name") or "")[:80] for s in likely[:5]]}
+        if not twins:
+            summary += " - NOTE: similar to existing site " + ", ".join(
+                f"'{str(s.get('name') or '')[:60]}'" for s in likely[:3]) + "; confirmed as a separate one"
+    action_id = j.actions.queue("fsm_write", summary, payload)
     result: dict[str, Any] = {"queued_action": action_id, "site": body, "note": _queued_note(j, action_id)}
     if not customer_ref:
         result["warning"] = "No customer given - a job can't be booked against this site until it has one."

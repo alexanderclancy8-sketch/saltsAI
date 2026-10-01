@@ -475,6 +475,7 @@ FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
 # these unless the request comes from the owner themselves (see main.save_settings / auth.is_principal_owner), not
 # any signed-in manager. manager_emails / management_emails are env-only today (not on the page) but are listed so
 # they stay protected if they are ever added.
+OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
 OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
     "staff_report_key"})
@@ -486,14 +487,24 @@ def _hint(value: str) -> str:
     return "•••• " + value[-4:] if len(value) >= 12 else "••••"
 
 
+_PRISTINE_ATTR = "_jarvis_env_base"
+
+
 class SettingsStore:
     FILE = "connections.enc"
 
     def __init__(self, settings: Settings):
         self.s = settings
         self.path = settings.data_dir / self.FILE
-        # What App Service / .env / the code defaults say, before anything saved here is applied.
-        self.base = {k: getattr(settings, k) for k in FIELDS}
+        # What App Service / .env / the code defaults say, before anything saved here is applied. Snapshotted once per
+        # Settings object: building a second store on the same object (create_app called twice) must not read values
+        # that an earlier store already overlaid with saved overrides, or "the configured owner" would drift to
+        # whatever was saved on the Settings page.
+        pristine = settings.__dict__.get(_PRISTINE_ATTR)
+        if pristine is None:
+            pristine = {k: getattr(settings, k) for k in FIELDS}
+            object.__setattr__(settings, _PRISTINE_ATTR, pristine)
+        self.base = dict(pristine)
         self.problem = ""
         self.overrides: dict[str, Any] = self._load()
 

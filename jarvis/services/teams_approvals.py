@@ -84,11 +84,27 @@ def invoke_value(activity: dict[str, Any]) -> Any:
     return action.get("data") if isinstance(action, dict) else None
 
 
-def _tidy(text: Any, limit: int) -> str:
+def _tidy(text: Any, limit: int, marker: str = "…") -> str:
     """Single-line, credential-redacted, control-character-free and truncated - safe to put in a card."""
     out = _CONTROL.sub("", redact(str(text or "")))
     out = re.sub(r"\s+", " ", out).strip()
-    return out if len(out) <= limit else out[: limit - 1].rstrip() + "…"
+    return out if len(out) <= limit else out[: limit - len(marker)].rstrip() + marker
+
+
+TRUNCATED = " (truncated)"
+# Fields an approver most needs (who / what / how much / which), shown first so a cut never drops them.
+_FIRST = ("needs_human_review", "to", "recipient", "recipients", "supplier", "customer", "name", "email", "amount",
+          "total", "total_ex_vat", "value", "price", "quote_id", "job_id", "site", "method", "path", "subject")
+
+
+def _front(value: Any, depth: int = 0) -> Any:
+    """The same data with the decision-relevant keys first (dicts only, a few levels deep)."""
+    if isinstance(value, dict) and depth < 4:
+        keys = sorted(value, key=lambda k: (_FIRST.index(k) if k in _FIRST else len(_FIRST)))  # stable
+        return {k: _front(value[k], depth + 1) for k in keys}
+    if isinstance(value, list) and depth < 4:
+        return [_front(v, depth + 1) for v in value[:20]]
+    return value
 
 
 def _details(action: dict[str, Any]) -> str:
@@ -99,18 +115,20 @@ def _details(action: dict[str, Any]) -> str:
     try:
         if kind == "email_send":
             return _tidy(f"To {', '.join(map(str, p.get('to', [])))} - subject: {p.get('subject', '')} - "
-                         f"{p.get('body', '')}", 420)
+                         f"{p.get('body', '')}", 420, TRUNCATED)
         if kind == "fsm_write":
-            return _tidy(f"{p.get('method', '')} {p.get('path', '')} {_dump(p.get('body'))}", 420)
+            review = f"REVIEW {_dump(p['needs_human_review'])} " if p.get("needs_human_review") else ""
+            return _tidy(f"{p.get('method', '')} {p.get('path', '')} {review}{_dump(p.get('body'))}", 420, TRUNCATED)
         if kind.startswith("tool:"):
-            return _tidy(f"Tool {p.get('tool', '')} with {_dump(p.get('args'))}", 420)
-        return _tidy(f"{kind}: {_dump(p)}", 420)  # accept_quote, sage_invoices, deploy_fix, po_acknowledgement...
+            return _tidy(f"Tool {p.get('tool', '')} with {_dump(p.get('args'))}", 420, TRUNCATED)
+        # accept_quote, sage_invoices, deploy_fix, po_acknowledgement...
+        return _tidy(f"{kind}: {_dump(p)}", 420, TRUNCATED)
     except Exception:  # noqa: BLE001 - details are decoration; never fail a card over them
         return _tidy(kind, 80)
 
 
 def _dump(value: Any) -> str:
-    return json.dumps(value, default=str, ensure_ascii=False)
+    return json.dumps(_front(value), default=str, ensure_ascii=False)
 
 
 def approval_card(action: dict[str, Any]) -> dict[str, Any]:

@@ -28,7 +28,7 @@ from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_serv
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .services import connection_tests, documents
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
-from .settings_store import OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
+from .settings_store import OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines print every request URL (Teams conversation ids, Graph ids)
@@ -72,6 +72,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # override is applied. A Microsoft-signed-in manager counts as "the owner" for the owner-only settings only if
     # they match this - never the live settings.owner_email, which a manager could otherwise edit to their own.
     trusted_owner_email = str(store.base.get("owner_email") or "").strip().lower()
+    for key in sorted(OWNER_IDENTITY_KEYS):
+        saved = store.overrides.get(key)
+        if saved is not None and str(saved).strip().lower() != str(store.base.get(key) or "").strip().lower():
+            # A connections.enc from before these became owner-only could hold a value a manager saved. Teams
+            # approvers are built from the live value, so the owner should look. (Values are never logged.)
+            log.warning("The Settings page holds a saved %s that differs from the app setting / .env value. "
+                        "Check it on Settings -> You and the business: Teams approvals use the saved one.", key)
     store.apply()
     reload_lock = asyncio.Lock()
 
