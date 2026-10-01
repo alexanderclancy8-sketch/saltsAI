@@ -10,7 +10,7 @@ import httpx
 
 from .brain import llm, plugins
 from .brain.agent import JarvisBrain
-from .config import Settings
+from .config import Settings, apply_timezone
 from .db import Database
 from .events import EventBus
 from .humanize import cron_to_english
@@ -69,6 +69,7 @@ class Jarvis:
     def __init__(self, settings: Settings, db: Database | None = None, http: httpx.AsyncClient | None = None,
                  client=None):
         s = self.settings = settings
+        apply_timezone(s.timezone)
         self.db = db or Database(settings.db_path)
         self.db.maintain_transcript()  # 2-year retention; older rows are redacted once
         self.bus = EventBus()

@@ -6,7 +6,9 @@ Every integration is optional. Anything left unset falls back to demo data
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +16,24 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
+def apply_timezone(name: str) -> None:
+    """Make the process's own local time the business's.
+
+    Azure App Service runs in UTC, and a lot of the code asks for "today" or "now" with a plain `date.today()` /
+    `datetime.now()` (working hours, briefings, "overdue", "due this week"...). Without this they are an hour behind
+    London all summer, and "today" flips an hour late. Platforms without `tzset` (Windows dev machines) already run
+    on the user's own clock, so there is nothing to do there.
+    """
+    if not name or not hasattr(time, "tzset"):
+        return
+    if not Path("/usr/share/zoneinfo", name).exists():
+        logging.getLogger(__name__).warning("Timezone %r isn't installed on this machine - times will follow the "
+                                            "server clock (UTC). Install tzdata.", name)
+        return
+    os.environ["TZ"] = name
+    time.tzset()
 
 # ElevenLabs premade voices with a British accent. "daniel" is the default
 # Jarvis voice: a deep, authoritative British male.
