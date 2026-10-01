@@ -78,4 +78,6 @@ def build_scheduler(j) -> AsyncIOScheduler:
     if not getattr(j.mail, "demo", True):
         sched.add_job(_guard("inbox scan", j.issues.scan_inbox), "interval", minutes=s.inbox_check_interval_min,
                       id="inbox_scan", max_instances=1, coalesce=True)
+        sched.add_job(_guard("PO intake scan", j.po_intake.scan_inbox), "interval",
+                      minutes=s.inbox_check_interval_min, id="po_intake_scan", max_instances=1, coalesce=True)
     return sched
