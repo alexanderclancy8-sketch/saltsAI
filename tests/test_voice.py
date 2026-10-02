@@ -448,3 +448,63 @@ def test_hud_has_timeout_fallback_remembered_engine_and_indicator():
 def test_piper_voices_registry_only_lists_voices_with_a_confirmed_quality_tier():
     assert PIPER_VOICES  # not empty
     assert all(isinstance(q, str) and q for q in PIPER_VOICES.values())
+
+
+# ---------------------------------------------------------------- TTS retry
+async def _drain(stream) -> bytes:
+    return b"".join([chunk async for chunk in stream])
+
+
+def _eleven_voice(settings, handler):
+    settings.elevenlabs_api_key = "eleven-test-key"
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return Voice(settings, http), http
+
+
+async def test_tts_retries_once_on_a_transient_upstream_error(settings, monkeypatch):
+    monkeypatch.setattr("jarvis.integrations.voice.TTS_RETRY_DELAY_S", 0)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503, content=b"busy")
+        return httpx.Response(200, content=b"mp3-bytes")
+
+    voice, http = _eleven_voice(settings, handler)
+    stream, mime = await voice.tts_stream("Good morning, sir.")
+    assert mime == "audio/mpeg" and await _drain(stream) == b"mp3-bytes"
+    assert len(calls) == 2
+    await http.aclose()
+
+
+async def test_tts_retries_a_network_timeout_once_then_gives_up(settings, monkeypatch):
+    monkeypatch.setattr("jarvis.integrations.voice.TTS_RETRY_DELAY_S", 0)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("too slow", request=request)
+
+    voice, http = _eleven_voice(settings, handler)
+    with pytest.raises(httpx.ReadTimeout):
+        await voice.tts_stream("Good morning, sir.")
+    assert len(calls) == 2  # original + exactly one retry
+    await http.aclose()
+
+
+async def test_tts_does_not_retry_a_permanent_error(settings, monkeypatch):
+    from jarvis.integrations.voice import VoiceError
+
+    monkeypatch.setattr("jarvis.integrations.voice.TTS_RETRY_DELAY_S", 0)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(401, content=b"bad key")
+
+    voice, http = _eleven_voice(settings, handler)
+    with pytest.raises(VoiceError, match="401"):
+        await voice.tts_stream("Good morning, sir.")
+    assert len(calls) == 1  # a rejected key will not fix itself - straight to the browser-voice fallback
+    await http.aclose()

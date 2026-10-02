@@ -25,9 +25,10 @@ voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mi
 | **Conversation** | Talk ("Jarvis, …") or type. Full Claude-quality answers to anything, with web search, photo/PDF attachments and a memory of what you tell it. Short, natural spoken replies; detail goes up on the display. |
 | **Your own automations** | Set up recurring checks yourself, in plain English - "every weekday at 8am, check for jobs with no engineer assigned and tell me", "every 30 minutes, check for a supplier email about the delayed order". It runs itself from then on with the same tools and the same approval rules as talking to it live - looking things up is automatic, but anything it wants to change still needs your approval. Ask it to list or remove what you've set up any time. |
 | **Recruiting agents** | For a one-off chunk of work worth doing on its own - a focused piece of research, a draft, an analysis - Jarvis can recruit a fresh sub-agent with its own narrow brief and tools, and report back with what it found. Same rules apply to it as to Jarvis: anything it proposes writing queues for your approval, never happens on its own, and it can never recruit further agents or start another background job itself. |
+| **Word & Excel** | Reads `.docx` / `.xlsx` attachments on emails, builds Word and Excel deliverables (reports, schedules, tender documents, stock and finance exports) and edits an attachment or earlier draft into a new copy. Everything is saved as a draft on the display with a download link (PDF / Word / Excel) for you to review - nothing is ever emailed without your approval, and the original file is never changed. Edited copies are rebuilt from text and tables, so formulas, images and styling aren't carried over. |
 | **Out-of-hours calls** | Reads your answering service's / monitoring centre's emailed reports (including PDF attachments) - calls taken plus alarm faults, comms failures and activations - tells you in the morning briefing what came in overnight and what was done, and suggests booking a call-out for anything that still needs a visit but has no job in Salts FSM. |
 | **Email & updates** | Reads, searches and summarises Outlook. Drafts replies. Sends you updates on Teams or email when you ask, a spoken morning briefing, and an end-of-day wrap-up at 5pm (what got done, what slipped, what's waiting on you, tomorrow's first jobs). |
-| **Salts FSM** | Knows the app (knowledge base + live API + source code on GitHub): jobs, engineers, sites, systems, contracts, quotes, service schedules, renewals. Watches the remedial quotes the FSM raises from service visits and chases any that stall. Log a job in plain English ("log an intruder alarm fault for Beckfoot Upper Heaton") - or assign it to a named engineer for a date - and it's queued in Salts FSM's own booking form, ready for your approval. Ask about one specific job ("what happened on J24100?") for the full picture - materials used, notes, status history, linked quote/invoice - not just the summary fields the job list has. Won a quote? "Accept Q1180" marks it accepted and books the resulting job together, ready for your approval - then order the materials it needs with the usual purchase order tools, referencing the new job. Jarvis also watches the inbox for the customer's own purchase order confirming a quote: it matches the PO to the quote, and queues the same accept-and-book action with the PO number recorded on the job - approve it and the customer gets an acknowledgement email automatically. |
+| **Salts FSM** | Knows the app (knowledge base + live API + source code on GitHub): jobs, engineers, sites, systems, contracts, quotes, service schedules, renewals. Watches the remedial quotes the FSM raises from service visits and chases any that stall. Set up a new customer or site in plain English ("create a customer Brightwell Dental, then a site for their Roundhay surgery") - it checks for an existing or similar record first and tells you instead of making a duplicate, and nothing is created until you approve it. Log a job in plain English ("log an intruder alarm fault for Beckfoot Upper Heaton") - or assign it to a named engineer for a date - and it's queued in Salts FSM's own booking form, ready for your approval. Ask about one specific job ("what happened on J24100?") for the full picture - materials used, notes, status history, linked quote/invoice - not just the summary fields the job list has. Won a quote? "Accept Q1180" marks it accepted and books the resulting job together, ready for your approval - then order the materials it needs with the usual purchase order tools, referencing the new job. Jarvis also watches the inbox for the customer's own purchase order confirming a quote: it matches the PO to the quote, and queues the same accept-and-book action with the PO number recorded on the job - approve it and the customer gets an acknowledgement email automatically. |
 | **Issues → fixes → Azure** | Staff report problems at `/report` or by email with `[ISSUE]` in the subject. Jarvis tells you at once and triages the report. For Salts FSM bugs, its engineering agent writes the fix as a pull request and CI tests it. **You approve** it, then Jarvis merges it, deploys it to Azure, re-runs the smoke tests and tells the reporter it's fixed. A weekly **security watch** reviews the whole codebase itself for real vulnerabilities the same way. |
 | **Routine tests** | Every 15 minutes: Salts FSM uptime, key pages, TLS certificate and every integration. Every morning: fire & security compliance (overdue service visits, lapsed or renewing contracts, overdue call-outs, expiring qualifications). |
 | **Staff** | A register of every person's role, duties and expected targets. Measures engineers (jobs per day, utilisation, on-time starts, repeat call-outs, revenue per hour) and office staff (quotes, win rate, bookings, email and Teams activity). A weekly review flags anyone falling short, with the evidence. |
@@ -103,6 +104,15 @@ Do these in any order; each one replaces demo data as soon as it's set.
      (`jarvis-teams-app.zip`) to sideload: Teams > Apps > Manage your apps > Upload a custom app. Only the
      owner's and business partner's email addresses (set under "You and the business") get a reply - anyone
      else who messages the bot is ignored.
+   - **Approving from Teams.** Once the bot is set up (the `teamsbot` command saves the three Teams values
+     itself; if you ever need to, paste *Bot app ID*, *Bot app secret* and *Directory (tenant) ID* on Settings →
+     Teams chat), the owner, partner and managers each open the Jarvis chat in Teams and **say hello once** -
+     that's how Jarvis learns where to reach them. From then on, whenever it queues something for approval it
+     sends each of them an Adaptive Card (the summary, the action number, **Approve** and **Deny** buttons), and
+     they can also reply `approve 12` / `deny 12`. The card is updated to "Approved by Alex at 14:02" whoever
+     decides (Teams or the display); if it was already decided you're told so. Until someone has said hello they
+     just don't get cards; if Teams is down or not set up, approvals work exactly as before on the display.
+     Only one-to-one chats are used - never a group chat or channel.
 2. **Salts FSM.** Fill in the web address and API key on the Settings page, and edit `fsm_endpoints.yaml` to
    match the FSM's API routes: jobs, engineers, systems, contracts, quotes, sites, timesheets, stock, tracking.
    Field names are matched flexibly. If the FSM has no API yet, add read-only JSON endpoints for these and
@@ -192,7 +202,31 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   Salts FSM changes, Azure uploads, starting a code fix, and deployments. It only happens when you tap Approve or say
   "approve". There is no auto-deploy. The AI itself cannot approve anything, and nor can anything in an email,
   document or web page. The only things it does without asking are sending *you* the updates and reports you
-  asked for, saving email *drafts* for you to review, and keeping its own notes.
+  asked for, saving email *drafts* for you to review, and keeping its own notes - plus whatever *you* have
+  switched on under standing approvals (next point).
+- **Standing approvals (off by default, owner-only).** Settings → Standing approvals has two switches, which are
+  your own approval given in advance for two narrow things, and nothing else:
+  - *Record keeping*: creating a **new** customer, site or contact in Salts FSM, and adding a note, task or
+    reminder (the `create_customer` / `create_site` tools, and `fsm_create_record` for contacts, notes, tasks and
+    reminders). Never an edit, a delete, or anything touching jobs, quotes, invoices, prices or stock. A customer
+    or site that deliberately shares an existing name (`confirmSharedName`) always waits for you.
+  - *Routine acknowledgements*: when Jarvis has matched a customer's PO email to a quote you sent, it
+    immediately emails that customer a fixed, receipt-only "we've received your purchase order" reply. It does not
+    say a job is booked: accepting the quote and booking the job still wait for your approval, and that approval
+    then sends a second "your job is booked" email. With this switch off, nothing is sent until you approve, as before.
+
+  Everything else - money, deletions, job booking or scheduling, supplier orders, stock, other emails, code
+  changes and deploys, accreditation, staff and settings edits - still queues for you. An automatic action goes
+  through exactly the same path as an approved one (including the optional ThoughtProof check), is recorded as
+  approved by "standing approval: record keeping" (or "...routine acknowledgements"), and is announced on the display
+  and to your Teams approvers as "Done automatically (standing approval - ...)", with how to undo it. At most 20
+  run automatically per rolling hour (adjustable, 0 turns them off); beyond that they wait for you and you get a
+  warning. Text containing a link, angle brackets or control characters is never run automatically, and every
+  automatically-written note, task or reminder starts "[Added automatically by Jarvis]" so staff can tell it
+  wasn't typed by a person. Only the owner (display password, or a Microsoft sign-in matching the `OWNER_EMAIL`
+  app setting) can change these switches - and the owner/partner email, display password and staff key, which
+  decide who counts as the owner. Another signed-in manager can't, and Jarvis, a queued action or a Teams message
+  never can. See `jarvis/services/standing_approvals.py`.
 - **Learned reply suggestions (typed chat only).** Jarvis counts the short replies you type in the chat box
   ("yes", "yes do that") against the kind of thing it had just said (an offer, a question, something awaiting
   approval...). Once a reply has been used 3 times it is shown as a grey hint; Right Arrow at the end of the box

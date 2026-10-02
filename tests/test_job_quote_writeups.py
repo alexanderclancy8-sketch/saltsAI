@@ -12,11 +12,17 @@ JOB = {
     "checkin_lat": 53.1, "checkin_lng": -1.7,
     "extra": {
         "notes": [{"at": "2026-09-29T10:50:00", "by": "Dan Harper", "text": "Replaced 2 failed smoke detectors."}],
-        "materials_used": [{"sku": "DET-1", "qty": 2}],
+        "materials_used": [{"sku": "DET-1", "qty": 2, "unit_cost": 11.5}],
         "status_history": [{"status": "scheduled", "at": "2026-09-29T08:00:00"},
                            {"status": "completed", "at": "2026-09-29T11:00:00"}],
+        # None of these may ever reach the model:
+        "internal_comments": "Customer is a nightmare, never discount",
+        "access_code": "4821",
+        "labour_cost": 120,
+        "margin_pct": 31,
     },
 }
+PRIVATE_EXTRA_KEYS = ("internal_comments", "access_code", "labour_cost", "margin_pct")
 
 
 # ------------------------------------------------------------------------------------------ job context
@@ -27,8 +33,31 @@ def test_job_context_keeps_only_customer_safe_fields_and_the_evidence():
     for private in ("value", "created_by", "invoice_ref", "checkin_lat", "checkin_lng"):
         assert private not in ctx["job"], private
     assert ctx["details"]["notes"][0]["text"] == "Replaced 2 failed smoke detectors."
-    assert ctx["details"]["materials_used"] == [{"sku": "DET-1", "qty": 2}]
+    assert ctx["details"]["materials_used"] == [{"sku": "DET-1", "qty": 2}]  # nested unit_cost scrubbed too
     assert ctx["missing"] == []
+
+
+def test_job_context_only_passes_allowlisted_extra_keys():
+    ctx, err = build_job_summary_context(JOB, "J1")
+    assert err is None
+    assert set(ctx["details"]) == {"notes", "materials_used", "status_history"}
+    blob = json.dumps(ctx)
+    for private in (*PRIVATE_EXTRA_KEYS, "4821", "nightmare", "unit_cost"):
+        assert private not in blob, private
+
+
+def test_job_context_ignores_private_keys_when_deciding_there_is_enough_to_summarise():
+    only_private = JOB | {"extra": {"internal_notes": "do not tell the customer", "access_code": "4821",
+                                    "status_history": [{"status": "completed"}]}}
+    ctx, err = build_job_summary_context(only_private, "J1")  # "internal_notes" is not an allowlisted key
+    assert ctx is None and "nothing to base a summary on" in err
+
+
+def test_allowlist_matches_keys_case_and_underscore_insensitively_but_exactly():
+    camel = JOB | {"extra": {"materialsUsed": [{"sku": "X", "qty": 1}], "Notes": [{"text": "ok"}],
+                             "staffNotes": "gossip", "notes_internal": "secret plan"}}
+    ctx, err = build_job_summary_context(camel, "J1")
+    assert err is None and set(ctx["details"]) == {"materialsUsed", "Notes"}
 
 
 def test_job_context_refuses_jobs_that_are_not_complete():
@@ -64,7 +93,8 @@ QUOTES = [
      "value": 1500, "status": "sent", "type": "remedial", "source_job": "J1", "created_by": "Josh"},
     {"id": "Q2", "title": "", "customer": "Beta Ltd", "site": None, "value": 10, "status": "sent"},
     {"id": "Q3", "title": "CCTV extension", "customer": "Gamma", "site": "Yard", "value": 6420,
-     "extra": {"line_items": [{"item": "Camera", "qty": 4}]}},
+     "extra": {"line_items": [{"item": "Camera", "qty": 4, "unit_price": 99, "supplier_cost": 60}],
+               "staff_comments": "Josh says they will pay anything", "alarm_code": "1234", "margin": 0.4}},
 ]
 
 
@@ -75,6 +105,9 @@ def test_quote_scope_context_excludes_price_and_uses_source_job_notes():
     assert "value" not in ctx["quote"] and "created_by" not in ctx["quote"]
     assert ctx["source_job_notes"]["notes"][0]["text"].startswith("Replaced 2")
     assert not any("source job" in m for m in ctx["missing"])
+    blob = json.dumps(ctx)
+    for private in (*PRIVATE_EXTRA_KEYS, "4821", "nightmare"):  # the source job's private extras are filtered too
+        assert private not in blob, private
 
 
 def test_quote_scope_context_flags_gaps():
@@ -85,6 +118,10 @@ def test_quote_scope_context_flags_gaps():
     ctx, err = build_quote_scope_context(QUOTES, "Q3", None)
     assert err is None and ctx["details"]["line_items"][0]["qty"] == 4
     assert not any("line items" in m for m in ctx["missing"])
+    assert ctx["details"] == {"line_items": [{"item": "Camera", "qty": 4}]}  # allowlisted key, private nested dropped
+    blob = json.dumps(ctx)
+    for private in ("staff_comments", "pay anything", "alarm_code", "1234", "margin", "unit_price", "supplier_cost"):
+        assert private not in blob, private
 
 
 def test_quote_scope_context_unknown_quote_or_nothing_to_go_on():
@@ -139,6 +176,7 @@ async def test_job_summary_end_to_end_is_display_only(tmp_path, monkeypatch):
     assert "DRAFT ONLY" in system and "access, alarm, door or key codes" in system
     assert data["job"]["ref"] == "J1" and "value" not in data["job"]
     assert data["details"]["materials_used"][0]["sku"] == "DET-1"
+    assert "4821" not in json.dumps(data) and "nightmare" not in json.dumps(data)  # private extras never sent
     shown = events.get_nowait()
     assert shown["type"] == "display" and "J1" in shown["data"]["title"] and shown["data"]["markdown"] == "Certainly, sir."
     assert writes == [] and j.db.pending_actions() == []  # nothing written to FSM, nothing queued either
