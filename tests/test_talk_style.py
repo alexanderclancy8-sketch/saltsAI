@@ -79,7 +79,8 @@ async def test_natural_prompt_addresses_the_owner_by_first_name_never_sir(tmp_pa
     assert 'address {owner} as "Alex"'.format(owner="Alex") in text.replace("\n  ", " ")
     assert "(their setting: Natural)" in text and "Formal)" not in text
     assert "boss" not in text  # the formal value is not used at all
-    assert not re.search(r'sir', text.split("# How you talk to")[0], re.I)  # nothing in the persona calls them sir
+    # "sir" appears once in the persona, only in the rule that forbids it unless they asked to be called that.
+    assert len(re.findall(r'\bsir\b', text, re.I)) == 2  # that rule, and the Natural block's "Never call them sir"
     assert 'Never call them "sir" or "madam"' in text
     await j.http.aclose()
 
