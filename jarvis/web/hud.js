@@ -20,6 +20,9 @@
     // place; the owner can switch it off in Settings if it misfires on speakers. See bargeInAllowed().
     bargeIn: store.get("bargein", "1") !== "0", captureUntil: 0,
     dashOpen: store.get("dashboard", "0") === "1",
+    // Per-session mute for Jarvis-initiated messages (sessionStorage, so another tab or a fresh visit starts unmuted).
+    // The server is told too (sendProactiveMute), so a muted session isn't sent them at all.
+    proactiveMuted: (() => { try { return sessionStorage.getItem("jarvis.pmute") === "1"; } catch { return false; } })(),
   };
 
   // ------------------------------------------------------------------ helpers
@@ -149,12 +152,28 @@
     S.dashOpen = open;
     store.set("dashboard", open ? "1" : "0");
     document.body.classList.toggle("dash-open", open);
+    fitMapSoon(); // the map is laid out at 0x0 while its column is hidden; re-measure once it can be seen
     const btn = $("#btn-dashboard");
     btn.setAttribute("aria-pressed", String(open));
     btn.title = open ? "Hide dashboard" : "Show dashboard";
   }
   $("#btn-dashboard").addEventListener("click", () => setDashOpen(!S.dashOpen));
   setDashOpen(S.dashOpen); // sync the button label/state with whatever <head> already applied to <body>
+
+  // Below 1150px the open dashboard shows one section at a time (tab bar, see hud.css). "chat" is the phone's main
+  // screen; from 768px up the chat column is always visible beside the tabs, so there "chat" just means "comms".
+  // Not persisted: reopening always lands on the conversation.
+  const wideMQ = window.matchMedia("(min-width: 768px)");
+  function setDashTab(tab) {
+    if (tab === "chat" && wideMQ.matches) tab = "comms";
+    document.body.dataset.dashTab = tab;
+    $$("#dtabs .dtab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.dtab === tab)));
+    document.querySelectorAll(".col.left, .col.right").forEach((c) => { c.scrollTop = 0; });
+    if (tab === "fleet") fitMapSoon();
+  }
+  $("#dtabs").addEventListener("click", (e) => { const b = e.target.closest(".dtab"); if (b) setDashTab(b.dataset.dtab); });
+  wideMQ.addEventListener?.("change", () => setDashTab(document.body.dataset.dashTab || "chat"));
+  setDashTab("chat");
 
   // Approvals/suggestions must never go silently unnoticed just because the dashboard is tucked away -
   // a small pulsing badge on the orb itself covers that, and opens the real panels (with their working
@@ -164,15 +183,20 @@
     const badge = $("#orb-badge");
     badge.hidden = n === 0;
     if (n) badge.textContent = String(n);
+    const tb = $("#dtab-comms-badge"); // same count on the Comms tab, where approvals and suggestions live
+    tb.hidden = n === 0; tb.textContent = String(n);
+    tb.setAttribute("aria-label", `${n} waiting`);
   }
   $("#orb-badge").addEventListener("click", () => {
     setDashOpen(true);
+    setDashTab("comms");
     requestAnimationFrame(() => {
       const target = (S.approvals?.length ? $("#approvals-panel") : $("#suggestions-panel"));
       target?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
 
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)"); // stop the tick ring turning
   const canvas = $("#reactor");
   const ctx = canvas.getContext("2d");
   function drawReactor(t) {
@@ -182,7 +206,7 @@
     const colour = { idle: "76,141,255", listening: "52,211,153", thinking: "245,185,66", speaking: "76,141,255", awaiting: "52,211,153" }[S.hudState] || "76,141,255";
     const lvl = S.level;
     ctx.clearRect(0, 0, w, h);
-    const speed = S.hudState === "thinking" ? 1.4 : 1;
+    const speed = reduceMotion.matches ? 0 : S.hudState === "thinking" ? 1.4 : 1;
     // A calm progress ring plus one slow-rotating tick ring - a status indicator, not a light show.
     ctx.save(); ctx.translate(cx, cy);
     ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,0.06)";
@@ -503,7 +527,7 @@
   // First matching pattern wins; matched against the tool name carried on the "tool" start event.
   const FILLER_TOOL_PHRASES = [
     [/^(finance_|unbilled_jobs$|raise_invoices$|draft_credit_control$|business_health$)/, ["Let me check the accounts.", "Checking the accounts."]],
-    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
+    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|create_(customer|site)$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
     [/^email_/, ["Checking your email.", "Let me check your email."]],
     [/^stock_/, ["Let me check the stock.", "Checking the stock."]],
     [/^(web_search|web_fetch|search_rankings$|seo_audit$|competitor_audit$)/, ["Let me look that up.", "Looking that up."]],
@@ -572,6 +596,7 @@
     el.querySelector(".md").innerHTML = role === "assistant" ? md(text) : esc(text).replace(/\n/g, "<br>");
     $("#conversation").appendChild(el);
     $("#conversation").scrollTop = 1e9;
+    document.body.classList.add("has-chat"); // phones: switch from the orb-first welcome to the chat-first layout
     return el;
   }
 
@@ -642,6 +667,20 @@ function send(text, mode = "typed", opts = {}) {
   });
   const autosize = () => { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; };
   $("#input").addEventListener("input", () => { autosize(); rsSoon(); });
+  // Phones: the welcome block (orb + quick buttons) gives way while the keyboard is up.
+  $("#input").addEventListener("focus", () => document.body.classList.add("composing"));
+  $("#input").addEventListener("blur", () => document.body.classList.remove("composing"));
+  // iOS Safari doesn't shrink the layout viewport for the on-screen keyboard (dvh stays full height), which hid the
+  // composer behind it. Track the visual viewport instead and size the app shell to what's actually visible.
+  if (window.visualViewport) {
+    const fitShell = () => {
+      document.documentElement.style.setProperty("--app-h", window.visualViewport.height + "px");
+      if (window.visualViewport.offsetTop) window.scrollTo(0, 0); // iOS pans the page up to reveal a focused field; the shell is already sized to fit
+    };
+    window.visualViewport.addEventListener("resize", fitShell);
+    window.visualViewport.addEventListener("scroll", fitShell);
+    fitShell();
+  }
   $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
 
   // ------------------------------------------------------------------ learned reply suggestion
@@ -723,9 +762,44 @@ function send(text, mode = "typed", opts = {}) {
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     S.ws = ws;
+    ws.onopen = () => sendProactiveMute();
     ws.onmessage = (e) => handle(JSON.parse(e.data));
     ws.onclose = (e) => { if (e.code === 4401) { location.href = "/login"; return; } setTimeout(connect, 2500); };
     setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" })); }, 25000);
+  }
+
+  // ------------------------------------------------------------------ Jarvis speaking up on his own
+  function sendProactiveMute() {
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "proactive_mute", muted: S.proactiveMuted }));
+  }
+  function renderProactiveMute() {
+    const b = $("#btn-proactive-mute");
+    if (!b) return;
+    b.setAttribute("aria-pressed", S.proactiveMuted ? "true" : "false");
+    // Icon plus a .btn-label span, so the text can be hidden on narrow phones (see hud.css) without losing the button.
+    const label = document.createElement("span");
+    label.className = "btn-label";
+    label.textContent = S.proactiveMuted ? " Muted" : " Speaks up";
+    b.replaceChildren(S.proactiveMuted ? "🔕" : "🔔", label);
+    b.title = S.proactiveMuted ? "Jarvis won't post into this session by himself - click to allow it again"
+                                : "Mute Jarvis posting into this session by himself";
+    b.setAttribute("aria-label", b.title);
+  }
+  $("#btn-proactive-mute")?.addEventListener("click", () => {
+    S.proactiveMuted = !S.proactiveMuted;
+    try { sessionStorage.setItem("jarvis.pmute", S.proactiveMuted ? "1" : "0"); } catch { /* private mode */ }
+    renderProactiveMute(); sendProactiveMute();
+  });
+  renderProactiveMute();
+  // Read aloud only in a voice session, only when nothing else is happening, and never while the owner is typing.
+  // A message that can't be spoken right now is shown, not queued - Jarvis never talks over anyone.
+  const proactiveMaySpeak = () => S.lastMode === "voice" && shouldSpeak("voice") && S.hudState === "idle" && !speaker.active
+    && !S.voiceTurn && !$("#input").value.trim() && !filler.inFlight();
+  function proactive(d) {
+    if (S.proactiveMuted) return; // the server doesn't send these to a muted session; this is only a safety net
+    addMessage("assistant", d.text, "on my own").classList.add("proactive");
+    caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
+    if (d.speak && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280));
   }
 
   let toolsSeen = [];
@@ -792,6 +866,7 @@ function send(text, mode = "typed", opts = {}) {
         toast(d.title, d.body, d.level);
         refreshSoon();
         break;
+      case "proactive": proactive(d); break; // Jarvis-initiated message: appears in the chat, may be read aloud
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
@@ -802,7 +877,7 @@ function send(text, mode = "typed", opts = {}) {
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
-      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
+      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; document.body.classList.remove("has-chat"); caption("Fresh start. What can I do for you?"); break;
       case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
@@ -821,12 +896,14 @@ function send(text, mode = "typed", opts = {}) {
     if (docId && /^[0-9a-f]{32}$/.test(docId)) {
       $("#display-pdf").href = `/api/documents/${docId}/pdf`;
       $("#display-docx").href = `/api/documents/${docId}/docx`;
+      $("#display-xlsx").href = `/api/documents/${docId}/xlsx`;
       dl.hidden = false;
     } else {
       dl.hidden = true;
     }
     $("#display-body").innerHTML = md(markdown);
     $("#display").classList.add("open");
+    $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
   }
   $("#display-close").addEventListener("click", () => $("#display").classList.remove("open"));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#display").classList.remove("open"); $("#drawer").classList.remove("open"); } });
@@ -996,6 +1073,9 @@ function send(text, mode = "typed", opts = {}) {
     });
     if (pts.length) map.fitBounds(pts, { padding: [20, 20], maxZoom: 12 });
   }
+  // Leaflet measures its box once; call this whenever the map's container may have changed size or been revealed.
+  function fitMapSoon() { requestAnimationFrame(() => { if (map) { map.invalidateSize(); refreshMap(); } }); }
+  window.addEventListener("resize", fitMapSoon);
   async function refreshMap() { try { renderMap(await (await api("/api/tracking")).json()); } catch { /* ignore */ } }
 
   // ------------------------------------------------------------------ speech input
@@ -1058,6 +1138,17 @@ function send(text, mode = "typed", opts = {}) {
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
     // the mic stream is NOT echo-cancelled, which switches barge-in off (see bargeInAllowed()).
     echoCancelled: null,
+    // Some recognisers (e.g. Chrome on Android) send each "final" as the whole utterance so far ("ladder",
+    // "ladder inspection", "ladder inspection jobs"). When a final just extends the previous one, replace it
+    // instead of stacking them, so only the final version of the utterance is submitted and stored.
+    lastFinal: "",
+    addFinal(text) {
+      const words = (s) => s.toLowerCase().replace(/[^a-z0-9'\s]/g, "").split(/\s+/).filter(Boolean);
+      const prev = words(this.lastFinal), next = words(text), tail = this.lastFinal + " ";
+      if (prev.length && next.length >= prev.length && prev.every((w, i) => w === next[i]) && this.finals.endsWith(tail))
+        this.finals = this.finals.slice(0, this.finals.length - tail.length);
+      this.finals += text + " "; this.lastFinal = text;
+    },
     // Hands whatever final text has built up to utterance(). In wake mode the mic stays open for the next
     // wake phrase; in every other mode this is the end of the turn, so the mic closes rather than sitting on
     // "Listening…" with nothing ever submitted.
@@ -1134,7 +1225,7 @@ function send(text, mode = "typed", opts = {}) {
           if (e.results[i].isFinal) {
             if (looksLikeSelfEcho(heard)) continue; // our own voice coming back in - never a command
             filler.userSpeech();
-            this.finals += heard + " "; this.finalHeard();
+            this.addFinal(heard); this.finalHeard();
           } else if (!echoWindowOpen()) { interim += heard; filler.userSpeech(); }
         }
         caption(this.finals, interim);
@@ -1147,7 +1238,7 @@ function send(text, mode = "typed", opts = {}) {
         if (m.text) sttEngine.markGood("deepgram");
         // Any transcript that isn't our own voice coming back means the owner is talking: no filler this turn.
         if (m.text && !echoWindowOpen() && !looksLikeSelfEcho(m.text)) filler.userSpeech();
-        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.finals += m.text + " "; if (S.listenMode !== "wake") this.finalHeard(); }
+        if (m.is_final && m.text && !looksLikeSelfEcho(m.text)) { this.addFinal(m.text); if (S.listenMode !== "wake") this.finalHeard(); }
         caption(this.finals, m.is_final || echoWindowOpen() ? "" : m.text);
         if (m.speech_final && this.finals.trim()) this.commit();
       } else if (m.type === "utterance_end" && this.finals.trim()) this.commit();
@@ -1510,6 +1601,7 @@ function send(text, mode = "typed", opts = {}) {
   // ------------------------------------------------------------------ settings drawer: voice/display tab
   function openDrawer() {
     $("#drawer").classList.add("open");
+    $("#drawer-close").focus({ preventScroll: true });
     if (!Settings.loaded) Settings.load();
   }
   $("#btn-settings").addEventListener("click", openDrawer);

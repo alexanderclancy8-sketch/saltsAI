@@ -8,7 +8,9 @@ PO, and suppliers it has never dealt with, and returns a *proposed* bill.
 It never posts anything to Sage (the finance integration has no purchase-bill write path, and this module does not
 add one) and never queues an action: the output is for the owner to review. Everything in the email and the PDF is
 untrusted data from outside the company - it goes to the model strictly as material to extract fields from, the
-extraction call has no tools, and every extracted string is cleaned and length-capped before it is shown.
+extraction call is given no tools (on the Max backend, run_once adds the read-only Read tool when PDF blocks are
+attached so the model can open the PDF, and no other tool), and every extracted
+string is cleaned and length-capped before it is shown.
 """
 
 from __future__ import annotations

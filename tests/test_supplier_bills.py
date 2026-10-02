@@ -320,7 +320,7 @@ async def test_something_that_is_not_an_invoice_gives_no_proposal(settings):
     await setup_invoice_email(j)
     j.client.beta.messages.parse_result = {"is_supplier_invoice": False}
     result = await capture_supplier_bill(j, SupplierBillIn(message_id="inv-1"))
-    assert result["proposed_bill"] is None and "not a supplier invoice" in result["note"].lower()
+    assert result["proposed_bill"] is None and "isn't a supplier invoice" in result["note"].lower()
     await j.http.aclose()
 
 

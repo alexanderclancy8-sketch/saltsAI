@@ -6,7 +6,9 @@ Every integration is optional. Anything left unset falls back to demo data
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +16,24 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
+def apply_timezone(name: str) -> None:
+    """Make the process's own local time the business's.
+
+    Azure App Service runs in UTC, and a lot of the code asks for "today" or "now" with a plain `date.today()` /
+    `datetime.now()` (working hours, briefings, "overdue", "due this week"...). Without this they are an hour behind
+    London all summer, and "today" flips an hour late. Platforms without `tzset` (Windows dev machines) already run
+    on the user's own clock, so there is nothing to do there.
+    """
+    if not name or not hasattr(time, "tzset"):
+        return
+    if not Path("/usr/share/zoneinfo", name).exists():
+        logging.getLogger(__name__).warning("Timezone %r isn't installed on this machine - times will follow the "
+                                            "server clock (UTC). Install tzdata.", name)
+        return
+    os.environ["TZ"] = name
+    time.tzset()
 
 # ElevenLabs premade voices with a British accent. "daniel" is the default
 # Jarvis voice: a deep, authoritative British male.
@@ -107,6 +127,13 @@ class Settings(BaseSettings):
     teams_bot_app_id: str = ""
     teams_bot_app_password: str = ""
     teams_bot_tenant_id: str = ""
+    # Standing approvals: the OWNER's advance approval for two narrow classes of action (see
+    # services/standing_approvals.py). Both default OFF. Changeable only from the owner-authenticated Settings
+    # page (settings_store.OWNER_ONLY_KEYS) - never by the AI, a pending action or a Teams message.
+    standing_record_keeping: bool = False
+    standing_acknowledgements: bool = False
+    standing_max_per_hour: int = 20  # most automatic runs per rolling hour, across both categories
+    teams_cards_per_hour: int = 30  # most approval cards sent to one approver per rolling hour (then one summary)
     # Where engineering-agent notifications go (pull request ready, fix ready, deploy/merge results, issue triage,
     # security review): comma-separated "teams" and/or "email". Default is Teams only - no email at all.
     engineering_notify_channels: str = "teams"
@@ -184,6 +211,12 @@ class Settings(BaseSettings):
     monthly_overheads_estimate: float = 0.0
     renewal_uplift_pct: float = 5.0  # default price rise on contract renewals
     renewal_notice_days: int = 60  # prepare renewal letters this far ahead
+    # Customer lifecycle emails (booked, on the way, complete, certificate, service due, quote follow-up). Drafts are
+    # always queued for the owner's approval - never sent automatically. The scheduled sweep is off until enabled.
+    customer_comms_enabled: bool = False
+    customer_comms_cron: str = "*/30 7-18 * * 1-5"
+    customer_comms_service_notice_days: int = 30  # draft a "service due" email this far ahead
+    customer_comms_quote_followup_days: int = 5  # follow up a sent quote after this many days
     lone_worker_overrun_min: int = 90  # safety check when a job runs this long past its booked end
     boe_base_rate: float = 4.0  # Bank of England base rate % - keep current for late-payment interest
     # Targets for the business health check (tune to your own plan)
@@ -287,6 +320,15 @@ class Settings(BaseSettings):
     weekly_digest_all_clear: bool = False  # True = send a one-line "all clear" when there is nothing to report
     notification_routes: str = ""
     scheduler_enabled: bool = True
+
+    # --- Proactive chat (services/proactive.py) -----------------------------
+    # Jarvis posting into the open chat on its own (background-task follow-ups, automations, the pull request
+    # watch). Off until the owner switches it on. Quiet hours are HH:MM in TIMEZONE and may run past midnight.
+    proactive_chat_enabled: bool = False
+    proactive_quiet_start: str = "21:00"
+    proactive_quiet_end: str = "07:30"
+    proactive_max_per_hour: int = 6  # at most this many proactive messages an hour; 0 = no limit
+    proactive_pr_watch_min: int = 15  # how often the pull request watch looks, in minutes
 
     # --- Derived ------------------------------------------------------------
     @property

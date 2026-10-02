@@ -113,10 +113,23 @@ ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "speed_mph": ("speed_mph", "speed", "speedMph"),
         "status": ("status", "state", "ignition"),
     },
+    "customer": {
+        "id": ("id", "customerId", "customer_id"),
+        "name": ("name", "customerName", "customer_name", "company"),
+        "account_ref": ("account_ref", "accountRef", "accountNumber", "account_number"),
+        "contact": ("contact", "contactName", "contact_name"),
+        "phone": ("phone", "telephone", "tel"),
+        "email": ("email", "emailAddress"),
+        "billing_address": ("billing_address", "billingAddress", "address"),
+        "status": ("status", "state"),
+        "on_hold": ("on_hold", "onHold"),
+        "notes": ("notes", "note"),
+    },
     "site": {
         "id": ("id", "siteId", "site_id"),
         "name": ("name", "siteName", "site_name", "title"),
         "customer": ("customer", "customerName"),
+        "customer_id": ("customer_id", "customerId"),
         "address": ("address", "fullAddress", "address1"),
         "postcode": ("postcode", "postCode", "zip"),
         "lat": ("lat", "latitude"),
@@ -240,7 +253,11 @@ class FSMClient:
         if method.upper() not in ("POST", "PUT", "PATCH") or ".." in path or "://" in path:
             raise ValueError("Only POST/PUT/PATCH to a relative API path is allowed")
         r = await self.http.request(method.upper(), self._url(path), json=body, headers=self._headers(), timeout=30)
-        r.raise_for_status()
+        if r.is_error:
+            # Say WHY the FSM refused (e.g. 'A customer called X already exists'), not just the status code -
+            # this text is what the owner sees on the HUD when an approved change fails.
+            raise httpx.HTTPStatusError(f"Salts FSM refused the change ({r.status_code}): {r.text[:400]}",
+                                        request=r.request, response=r)
         return r.json() if r.content else {"status": r.status_code}
 
     async def _list(self, kind_key: str, kind: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -282,6 +299,9 @@ class FSMClient:
 
     async def sites(self) -> list[dict[str, Any]]:
         return await self._list("sites", "site")
+
+    async def customers(self) -> list[dict[str, Any]]:
+        return await self._list("customers", "customer")
 
     async def locations(self, engineer: str | None = None, since: datetime | None = None) -> list[dict[str, Any]]:
         params = {k: v for k, v in {"engineer": engineer, "since": since.isoformat() if since else None}.items() if v}
@@ -346,6 +366,8 @@ class DemoFSM:
 
     def __init__(self, today: date | None = None):
         self.today = today or date.today()
+        self._new_customers: list[dict[str, Any]] = []  # created through write(), so a demo session can dedupe them
+        self._new_sites: list[dict[str, Any]] = []
         rng = random.Random(self.today.toordinal())
         self._staff = []
         for i, (eid, name, role) in enumerate(_ENGINEERS):
@@ -511,9 +533,22 @@ class DemoFSM:
             raise ValueError(f"Demo FSM has no endpoint '{path}'. Available: {', '.join(mapping)}")
         return mapping[key]
 
+    def _customer_rows(self) -> list[dict[str, Any]]:
+        seen: dict[str, dict[str, Any]] = {}
+        for _, cust in _SITES:
+            seen.setdefault(cust, {"id": f"CUST{len(seen) + 1}", "name": cust, "account_ref": None, "contact": None,
+                                   "phone": None, "email": None, "billing_address": None, "status": "Live",
+                                   "on_hold": False, "notes": None})
+        return list(seen.values()) + [dict(c) for c in self._new_customers]
+
+    async def customers(self) -> list[dict[str, Any]]:
+        return self._customer_rows()
+
     async def sites(self) -> list[dict[str, Any]]:
-        return [{"id": f"SITE{n}", "name": name, "customer": cust, "lat": _SITE_COORDS[name][0],
-                 "lng": _SITE_COORDS[name][1]} for n, (name, cust) in enumerate(_SITES)]
+        by_name = {c["name"]: c["id"] for c in self._customer_rows()}
+        base = [{"id": f"SITE{n}", "name": name, "customer": cust, "customer_id": by_name.get(cust),
+                 "lat": _SITE_COORDS[name][0], "lng": _SITE_COORDS[name][1]} for n, (name, cust) in enumerate(_SITES)]
+        return base + [dict(x) for x in self._new_sites]
 
     async def locations(self, engineer: str | None = None, since: datetime | None = None) -> list[dict[str, Any]]:
         rng = random.Random(int(datetime.now().timestamp() // 300))  # positions drift every 5 minutes
@@ -532,7 +567,67 @@ class DemoFSM:
 
     async def write(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         log.info("[DEMO] FSM %s %s %s", method, path, body)
+        route = (method.upper(), path.strip("/"))
+        if route == ("POST", "customers"):
+            return self._create_customer(body or {})
+        if route == ("POST", "sites"):
+            return self._create_site(body or {})
         return {"demo": True, "status": "not applied - demo FSM"}
+
+    # The demo mirrors the real FSM's rules for the two record-creation routes (a namesake is refused unless
+    # confirmSharedName is true; a site's customer must exist and be unambiguous) so a demo session behaves like
+    # the real thing - including failing the same way - without ever touching a real system.
+    def _create_customer(self, body: dict[str, Any]) -> dict[str, Any]:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise ValueError("Salts FSM refused the change (400): Customer name is required")
+        same = [c for c in self._customer_rows() if c["name"].strip().lower() == name.lower()]
+        if same and body.get("confirmSharedName") is not True:
+            raise ValueError(f"Salts FSM refused the change (409): CUSTOMER_NAME_SHARED - a customer called "
+                             f"{same[0]['name']} already exists.")
+        row = {"id": f"CUST-NEW{len(self._new_customers) + 1}", "name": name, "account_ref": None,
+               "contact": body.get("contact") or None, "phone": body.get("phone") or None,
+               "email": body.get("email") or None, "billing_address": body.get("billingAddress") or None,
+               "status": "Live", "on_hold": False, "notes": body.get("notes") or None}
+        self._new_customers.append(row)
+        return {"ok": True, "id": row["id"], "name": name, "demo": True}
+
+    def _create_site(self, body: dict[str, Any]) -> dict[str, Any]:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise ValueError("Salts FSM refused the change (400): Site name is required")
+        ref = str(body.get("customer") or "").strip()
+        customer = None
+        if ref:
+            customers = self._customer_rows()
+            customer = next((c for c in customers if c["id"] == ref), None)
+            if not customer:
+                named = [c for c in customers if c["name"].strip().lower() == ref.lower()]
+                if len(named) > 1:
+                    raise ValueError("Salts FSM refused the change (409): CUSTOMER_AMBIGUOUS - more than one "
+                                     f"customer is called {named[0]['name']}.")
+                customer = named[0] if named else None
+            if not customer:
+                raise ValueError(f"Salts FSM refused the change (404): No customer matches '{ref}'.")
+        cid = customer["id"] if customer else None
+        twins = [s for s in self._all_site_rows()
+                 if s["name"].strip().lower() == name.lower() and s.get("customer_id") == cid]
+        if twins and body.get("confirmSharedName") is not True:
+            raise ValueError(f"Salts FSM refused the change (409): SITE_NAME_SHARED - a site called "
+                             f"{twins[0]['name']} already exists.")
+        lat, lng = demo_coords(name)
+        row = {"id": f"SITE-NEW{len(self._new_sites) + 1}", "name": name,
+               "customer": customer["name"] if customer else None, "customer_id": cid,
+               "address": body.get("address") or None,
+               "postcode": (str(body.get("postcode") or "").strip().upper() or None), "lat": lat, "lng": lng}
+        self._new_sites.append(row)
+        return {"ok": True, "id": row["id"], "name": name, "customerId": cid,
+                "customer": row["customer"], "demo": True}
+
+    def _all_site_rows(self) -> list[dict[str, Any]]:
+        by_name = {c["name"]: c["id"] for c in self._customer_rows()}
+        return ([{"name": n, "customer_id": by_name.get(c)} for n, c in _SITES]
+                + [dict(x) for x in self._new_sites])
 
     async def jobs(self, date_from: date | None = None, date_to: date | None = None,
                    status: str | None = None, engineer: str | None = None) -> list[dict[str, Any]]:

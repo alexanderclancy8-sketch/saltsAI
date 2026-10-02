@@ -180,7 +180,12 @@ SECTIONS: tuple[Section, ...] = (
             "Quickest: in Azure Cloud Shell run  APP_NAME={app_name} bash infra/deploy.sh teamsbot  - it "
             "registers Jarvis as a Bot Framework bot, turns on the Teams channel, fills these boxes in, and "
             "builds an app package for you to add to Teams.",
-            "Only you and the business partner can use it - anyone else who messages the bot is ignored.",
+            "Add the app in Teams (Apps > Manage your apps > Upload a custom app, then open the Jarvis chat) and "
+            "say hello once. That's how Jarvis learns where to send you approvals: when it queues something it "
+            "messages you an Approve / Deny card, so you can decide from your phone. You can also reply "
+            "\"approve 12\" or \"deny 12\".",
+            "Only you, the business partner and your managers can use it or approve - anyone else who messages "
+            "the bot is ignored.",
         ),
     ),
     Section(
@@ -364,6 +369,21 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "proactive", "Jarvis speaking up", "Lets Jarvis post into the open chat (and read it aloud in voice mode) when "
+                                          "a background job finishes or something he's watching changes. It can "
+                                          "only tell you things - approvals and changes still need your click.",
+        (
+            Field("proactive_chat_enabled", "Let Jarvis post into the chat by himself", "bool",
+                  "Off by default. There is also a mute button on the chat for the session you have open."),
+            Field("proactive_quiet_start", "Quiet from (HH:MM)", placeholder="21:00",
+                  help="Nothing is posted into the chat or sent to Teams between these times. UK time."),
+            Field("proactive_quiet_end", "Quiet until (HH:MM)", placeholder="07:30"),
+            Field("proactive_max_per_hour", "Most messages an hour", "number",
+                  "Anything over this waits for the next check. 0 means no limit.", advanced=True),
+            Field("proactive_pr_watch_min", "Check pull requests every (minutes)", "number", advanced=True),
+        ),
+    ),
+    Section(
         "storage", "Report archive", "Keeps a copy of reports and documents in Azure Storage.",
         (
             Field("azure_storage_connection_string", "Storage connection string", "secret"),
@@ -418,6 +438,27 @@ SECTIONS: tuple[Section, ...] = (
                "\"0 17 * * 1-5\" means 5pm on weekdays.",),
     ),
     Section(
+        "standing", "Standing approvals", "Things you let Jarvis do without asking each time. Both are OFF. Only "
+        "you can change these, here - Jarvis, a pending action or a Teams message never can. Everything else "
+        "(money, deletions, job booking or scheduling, supplier orders, stock, other emails, code changes and "
+        "deploys, accreditations, staff and settings) still waits for your approval.",
+        (
+            Field("standing_record_keeping", "Record keeping", "bool",
+                  "ON lets Jarvis go ahead by itself, without waiting for approval, with ONLY these: creating a "
+                  "new customer, site or contact in Salts FSM, and adding a note, task or reminder. It never edits "
+                  "or deletes anything, and never touches jobs, quotes, invoices, prices or stock. Each one shows "
+                  "as \"Done automatically\" on the display and in Teams."),
+            Field("standing_acknowledgements", "Routine acknowledgements", "bool",
+                  "ON lets Jarvis immediately email a customer a receipt-only \"we've received your purchase "
+                  "order\" reply when it has matched their PO email to a quote you sent. It doesn't say a job is "
+                  "booked: the quote is still only accepted and the job still only booked when you approve. "
+                  "That booking approval then sends a second, separate \"your job is booked\" email."),
+            Field("standing_max_per_hour", "Most automatic actions per hour", "number",
+                  "Safety limit across both switches. Past it, actions wait for your approval as normal and you "
+                  "get a warning.", advanced=True),
+        ),
+    ),
+    Section(
         "security", "Security and staff", "Your display password and the staff issue-report link.",
         (
             Field("jarvis_owner_password", "Display password", "secret",
@@ -429,6 +470,15 @@ SECTIONS: tuple[Section, ...] = (
 )
 
 FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
+# Settings that widen what Jarvis may do without asking, plus the ones that decide who counts as the owner (so a
+# manager can't make themselves the owner and then flip the first group). The Settings API refuses to change any of
+# these unless the request comes from the owner themselves (see main.save_settings / auth.is_principal_owner), not
+# any signed-in manager. manager_emails / management_emails are env-only today (not on the page) but are listed so
+# they stay protected if they are ever added.
+OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
+OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
+    "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
+    "staff_report_key"})
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -437,14 +487,24 @@ def _hint(value: str) -> str:
     return "•••• " + value[-4:] if len(value) >= 12 else "••••"
 
 
+_PRISTINE_ATTR = "_jarvis_env_base"
+
+
 class SettingsStore:
     FILE = "connections.enc"
 
     def __init__(self, settings: Settings):
         self.s = settings
         self.path = settings.data_dir / self.FILE
-        # What App Service / .env / the code defaults say, before anything saved here is applied.
-        self.base = {k: getattr(settings, k) for k in FIELDS}
+        # What App Service / .env / the code defaults say, before anything saved here is applied. Snapshotted once per
+        # Settings object: building a second store on the same object (create_app called twice) must not read values
+        # that an earlier store already overlaid with saved overrides, or "the configured owner" would drift to
+        # whatever was saved on the Settings page.
+        pristine = settings.__dict__.get(_PRISTINE_ATTR)
+        if pristine is None:
+            pristine = {k: getattr(settings, k) for k in FIELDS}
+            object.__setattr__(settings, _PRISTINE_ATTR, pristine)
+        self.base = dict(pristine)
         self.problem = ""
         self.overrides: dict[str, Any] = self._load()
 
@@ -514,6 +574,15 @@ class SettingsStore:
                 cron_trigger(value)
             except ValueError:
                 return None, "Use cron format, e.g. 45 7 * * 1-5"
+        if key in ("proactive_quiet_start", "proactive_quiet_end") and not re.fullmatch(
+                r"([01]?\d|2[0-3]):[0-5]\d", str(value)):
+            return None, "Use a time like 21:00"
+        if key in ("proactive_max_per_hour", "proactive_pr_watch_min"):
+            try:
+                if int(value) < 0 or (key == "proactive_pr_watch_min" and int(value) < 1):
+                    return None, "Enter a whole number, not less than " + ("1" if key == "proactive_pr_watch_min" else "0")
+            except (TypeError, ValueError):
+                return None, "Enter a number."
         if key == "jarvis_owner_password" and len(value) < 8:
             return None, "Use at least 8 characters."
         if key == "claude_code_oauth_token" and value and not value.startswith("sk-ant-oat"):

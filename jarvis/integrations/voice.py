@@ -52,6 +52,7 @@ STT_ATTEMPT_TIMEOUT_S = 8.0
 STT_CONNECT_TIMEOUT_S = 5.0
 STT_RETRY_DELAY_S = 0.5
 STT_MAX_BYTES = 25 * 1024 * 1024
+TTS_RETRY_DELAY_S = 0.5
 
 
 class VoiceError(RuntimeError):
@@ -165,10 +166,26 @@ class Voice:
         raise VoiceError("No server TTS configured - use the browser voice")
 
     async def _open_stream(self, request: httpx.Request) -> AsyncIterator[bytes]:
-        resp = await self.http.send(request, stream=True)
-        if resp.status_code >= 400:
+        """Opens the provider's audio stream. One retry on a transient failure (timeout, network error, upstream
+        5xx, 429) before the caller falls back to the browser voice; anything else (bad key, bad request) fails
+        at once. The request body is in memory, so the same request can safely be sent twice."""
+        for attempt in (1, 2):
+            try:
+                resp = await self.http.send(request, stream=True)
+            except httpx.TransportError as e:  # timeouts and connection failures
+                if attempt == 2:
+                    raise
+                log.warning("TTS network error (attempt 1 of 2), retrying: %s", type(e).__name__)
+                await asyncio.sleep(TTS_RETRY_DELAY_S)
+                continue
+            if resp.status_code < 400:
+                break
             body = (await resp.aread())[:300]
             await resp.aclose()
+            if attempt == 1 and (resp.status_code >= 500 or resp.status_code == 429):
+                log.warning("TTS provider returned %s (attempt 1 of 2), retrying", resp.status_code)
+                await asyncio.sleep(TTS_RETRY_DELAY_S)
+                continue
             raise VoiceError(f"TTS provider returned {resp.status_code}: {body!r}")
 
         async def gen() -> AsyncIterator[bytes]:

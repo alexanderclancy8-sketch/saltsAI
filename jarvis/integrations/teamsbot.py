@@ -10,7 +10,11 @@ Security: every incoming request is a JWT signed by Microsoft, verified here aga
 keys before anything in the message is trusted (issuer, audience = our own app id, expiry, signature) - the
 usual protection against someone simply POSTing a fake activity at the webhook. On top of that, only messages
 from someone whose Teams account resolves (via the conversation's own member list) to the owner's or business
-partner's email are answered; everyone else is silently ignored.
+partner's email (or a manager's) are answered; everyone else is silently ignored.
+
+The same connection is used proactively for approvals (services/teams_approvals.py): once an approver has messaged
+the bot, Jarvis can post them an Adaptive Card with Approve / Deny buttons. `send_activity` / `update_activity` /
+`reply` refuse any serviceUrl that isn't a Bot Framework / Teams host before the bearer token is ever sent.
 """
 
 from __future__ import annotations
@@ -31,7 +35,13 @@ OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfigurati
 CONNECTOR_SCOPE = "https://api.botframework.com/.default"
 # Bot Framework only ever calls back from these domains; anything else claiming to be Teams is rejected
 # before we trust its serviceUrl enough to POST a reply (and the caller's real conversation history) to it.
-TRUSTED_SERVICE_URL_SUFFIXES = (".botframework.com", ".trafficmanager.net", ".teams.microsoft.com")
+#
+# Microsoft's Teams service URLs are https://smba.trafficmanager.net/<region>/ (public cloud), and
+# https://smba.infra.gcc.teams.microsoft.com/... / https://smba.infra.gov.teams.microsoft.us/... (US government
+# clouds); other Bot Framework channels use *.botframework.com. The old open `*.trafficmanager.net` wildcard is gone:
+# anyone can register a trafficmanager.net name, so only the exact Microsoft host is trusted.
+TRUSTED_SERVICE_HOSTS = ("smba.trafficmanager.net",)
+TRUSTED_SERVICE_URL_SUFFIXES = (".botframework.com", ".teams.microsoft.com", ".teams.microsoft.us")
 
 
 class TeamsBotError(RuntimeError):
@@ -52,8 +62,9 @@ async def _openid_metadata(http: httpx.AsyncClient) -> dict[str, Any]:
     return _openid_cache[1]
 
 
-async def verify_activity(auth_header: str | None, app_id: str, http: httpx.AsyncClient) -> None:
-    """Raises TeamsBotError unless `auth_header` is a currently-valid Bot Framework token issued to us."""
+async def verify_activity(auth_header: str | None, app_id: str, http: httpx.AsyncClient) -> dict[str, Any]:
+    """Raises TeamsBotError unless `auth_header` is a currently-valid Bot Framework token issued to us.
+    Returns the token's claims (so the caller can check its `serviceurl` claim against the activity)."""
     global _jwks_client
     if not auth_header or not auth_header.lower().startswith("bearer "):
         raise TeamsBotError("no bearer token")
@@ -63,8 +74,9 @@ async def verify_activity(auth_header: str | None, app_id: str, http: httpx.Asyn
         if _jwks_client is None or _jwks_client.uri != metadata["jwks_uri"]:
             _jwks_client = PyJWKClient(metadata["jwks_uri"])
         signing_key = _jwks_client.get_signing_key_from_jwt(token)
-        jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=app_id,
-                  issuer=metadata.get("issuer", "https://api.botframework.com"))
+        claims = jwt.decode(token, signing_key.key, algorithms=["RS256"], audience=app_id,
+                            issuer=metadata.get("issuer", "https://api.botframework.com"))
+        return claims
     except jwt.PyJWTError as e:
         raise TeamsBotError(f"invalid token: {e}") from None
     except httpx.HTTPError as e:
@@ -72,11 +84,21 @@ async def verify_activity(auth_header: str | None, app_id: str, http: httpx.Asyn
 
 
 def trusted_service_url(url: str) -> bool:
+    """https only, no credentials or odd port in the URL, and an exact Microsoft / Bot Framework host."""
     try:
-        host = httpx.URL(url).host or ""
+        parsed = httpx.URL(url)
     except Exception:  # noqa: BLE001
         return False
-    return host == "botframework.com" or any(host.endswith(suf) for suf in TRUSTED_SERVICE_URL_SUFFIXES)
+    host = (parsed.host or "").lower()
+    if parsed.scheme != "https" or parsed.userinfo or parsed.port not in (None, 443) or not host:
+        return False
+    return (host in TRUSTED_SERVICE_HOSTS or host == "botframework.com"
+            or any(host.endswith(suf) for suf in TRUSTED_SERVICE_URL_SUFFIXES))
+
+
+def same_service_url(a: str, b: str) -> bool:
+    """Whether two serviceUrls are the same (case and a trailing slash don't matter)."""
+    return str(a or "").strip().rstrip("/").lower() == str(b or "").strip().rstrip("/").lower()
 
 
 class TeamsBot:
@@ -121,9 +143,41 @@ class TeamsBot:
         return None
 
     async def reply(self, service_url: str, conversation_id: str, text: str) -> None:
+        base = self._checked(service_url)
         token = await self._access_token()
         r = await self.http.post(
-            f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities",
+            f"{base}/v3/conversations/{conversation_id}/activities",
             headers={"Authorization": f"Bearer {token}"},
             json={"type": "message", "text": text}, timeout=30)
+        r.raise_for_status()
+
+    # -- proactive messages (approvals) ---------------------------------------------------------------------
+    @staticmethod
+    def _checked(service_url: str) -> str:
+        """The serviceUrl we are about to POST a bearer token to - only ever a Bot Framework / Teams host."""
+        if not trusted_service_url(service_url):
+            raise TeamsBotError("untrusted service url")
+        return service_url.rstrip("/")
+
+    async def send_activity(self, service_url: str, conversation_id: str, activity: dict[str, Any]) -> str:
+        """Post a message activity (text and/or an Adaptive Card attachment) into a conversation we already know.
+        Returns the new activity's id ("" if Teams didn't give one)."""
+        base = self._checked(service_url)
+        token = await self._access_token()
+        r = await self.http.post(f"{base}/v3/conversations/{conversation_id}/activities",
+                                 headers={"Authorization": f"Bearer {token}"}, json=activity, timeout=30)
+        r.raise_for_status()
+        try:
+            return str((r.json() or {}).get("id") or "")
+        except ValueError:
+            return ""
+
+    async def update_activity(self, service_url: str, conversation_id: str, activity_id: str,
+                              activity: dict[str, Any]) -> None:
+        """Replace an earlier message of ours (used to turn an approval card into "Approved by ...")."""
+        base = self._checked(service_url)
+        token = await self._access_token()
+        r = await self.http.put(f"{base}/v3/conversations/{conversation_id}/activities/{activity_id}",
+                                headers={"Authorization": f"Bearer {token}"},
+                                json={**activity, "id": activity_id}, timeout=30)
         r.raise_for_status()
