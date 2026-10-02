@@ -380,6 +380,49 @@ class AccreditationUpdateIn(BaseModel):
     audit_type: str | None = None
 
 
+def _register_date(v: str | None) -> str | None:
+    """Normalise a van/equipment date to YYYY-MM-DD at the door, so a bad one is rejected before anything is queued
+    for approval (and the approval card shows the exact date that will be written)."""
+    from ..services.accreditations import parse_date
+    return parse_date(v).isoformat() if v and v.strip() else None
+
+
+class VehicleUpdateIn(BaseModel):
+    registration: str = Field(description="The van's registration, e.g. 'YD71 SFS' (case and spacing don't matter)")
+    driver: str | None = Field(None, description="Who normally drives it")
+    mot_due: str | None = Field(None, description="MOT due date, YYYY-MM-DD")
+    service_due: str | None = Field(None, description="Next service due date, YYYY-MM-DD")
+    insurance_due: str | None = Field(None, description="Insurance renewal date, YYYY-MM-DD")
+    tax_due: str | None = Field(None, description="Road tax due date, YYYY-MM-DD")
+
+    @field_validator("mot_due", "service_due", "insurance_due", "tax_due")
+    @classmethod
+    def _check_date(cls, v: str | None) -> str | None:
+        return _register_date(v)
+
+
+class VehicleRemoveIn(BaseModel):
+    registration: str = Field(description="Registration of the van that was sold or scrapped, e.g. 'YD71 SFS'")
+
+
+class EquipmentUpdateIn(BaseModel):
+    item: str = Field(description="The equipment, e.g. 'Ladders and steps (all vans)', 'Harnesses / fall arrest', "
+                                  "'Portable appliances (office + vans)'. Use the name already in the register "
+                                  "(see accreditations_status) so it updates rather than adds another")
+    check: str | None = Field(None, description="What is due, e.g. 'inspection due', 'PAT test due', "
+                                                "'6-monthly inspection due'")
+    next_due: str | None = Field(None, description="When the next check is due, YYYY-MM-DD")
+
+    @field_validator("next_due")
+    @classmethod
+    def _check_date(cls, v: str | None) -> str | None:
+        return _register_date(v)
+
+
+class EquipmentRemoveIn(BaseModel):
+    item: str = Field(description="Exact name (as in the register) of the equipment that was sold or retired")
+
+
 class SiteAccessCodeIn(BaseModel):
     site: str = Field(description="Site or customer name (or part of it) to find recorded engineer/access "
                                   "codes for, e.g. 'Kestrel Industrial Estate'")
@@ -1233,6 +1276,22 @@ async def accreditation_update(j, a: AccreditationUpdateIn):
     return j.accreditations.update(a.scheme, a.model_dump(exclude={"scheme"}))
 
 
+async def vehicle_update(j, a: VehicleUpdateIn):
+    return j.accreditations.update_vehicle(a.registration, a.model_dump(exclude={"registration"}))
+
+
+async def vehicle_remove(j, a: VehicleRemoveIn):
+    return j.accreditations.remove_vehicle(a.registration)
+
+
+async def equipment_update(j, a: EquipmentUpdateIn):
+    return j.accreditations.update_equipment(a.item, a.model_dump(exclude={"item"}))
+
+
+async def equipment_remove(j, a: EquipmentRemoveIn):
+    return j.accreditations.remove_equipment(a.item)
+
+
 async def audit_evidence(j, a: SchemeIn):
     return await j.accreditations.gather_evidence(a.scheme)
 
@@ -1836,12 +1895,38 @@ TOOLS: list[Tool] = [
                             "acquisition...). Shown on the display.",
          AdviceIn, business_advice, "Preparing business advice"),
     Tool("accreditations_status", "BAFE, SSAIB, CHAS, NSI etc.: certificates, renewal and audit dates, plus "
-                                  "calibration, insurance and policy review dates, soonest first.", NoInput,
+                                  "calibration, insurance and policy review dates, plus van MOT/service/insurance/"
+                                  "tax and ladder/harness/PAT inspection dates, soonest first. Also lists the vans "
+                                  "and equipment in the register; its 'source' says whether these are real records "
+                                  "or the placeholder example.", NoInput,
          accreditations_status, "Checking accreditations"),
     Tool("accreditation_update", "Record accreditation details the owner gives you (certificate number, renewal "
                                  "or audit date, certification body).", AccreditationUpdateIn, accreditation_update,
          "Updating accreditations",
          approval=True, describe=lambda a: f"Update {a.scheme}: " + ", ".join(f"{k}={v}" for k, v in a.model_dump(exclude={"scheme"}).items() if v)),
+    Tool("vehicle_update", "Record a van's compliance dates the owner (or a driver) gives you - MOT, service, "
+                           "insurance and road tax due dates, and who drives it - e.g. \"the YD71 SFS van's MOT is due "
+                           "2 November\". Adds the van if it isn't in the register, otherwise changes only the fields "
+                           "given. These feed the Alerts reminders. Check accreditations_status first: if its source "
+                           "says example/demo, those vans are placeholders, not real.",
+         VehicleUpdateIn, vehicle_update, "Updating the vehicle register",
+         approval=True, describe=lambda a: f"Record van {a.registration.strip().upper()}: " + (
+             ", ".join(f"{k}={v}" for k, v in a.model_dump(exclude={"registration"}).items() if v) or "no dates")),
+    Tool("vehicle_remove", "Take a van that was sold or scrapped out of the vehicle register so it stops "
+                           "generating reminders.", VehicleRemoveIn, vehicle_remove, "Removing a van from the register",
+         approval=True, describe=lambda a: f"Remove van {a.registration.strip().upper()} from the vehicle register"),
+    Tool("equipment_update", "Record an inspection date for work equipment the owner gives you - ladders, steps, "
+                             "harnesses/fall arrest, PAT testing, etc. - e.g. \"the ladders are inspected again on "
+                             "15 October\". Adds the item if it isn't in the register, otherwise changes only the "
+                             "fields given. These feed the Alerts reminders. Use the item's name as it appears in "
+                             "accreditations_status.", EquipmentUpdateIn, equipment_update,
+         "Updating the equipment register",
+         approval=True, describe=lambda a: f"Record equipment '{a.item.strip()}': " + (
+             ", ".join(f"{k}={v}" for k, v in a.model_dump(exclude={"item"}).items() if v) or "no dates")),
+    Tool("equipment_remove", "Take equipment that was sold or retired out of the equipment register so it stops "
+                             "generating reminders.", EquipmentRemoveIn, equipment_remove,
+         "Removing equipment from the register",
+         approval=True, describe=lambda a: f"Remove '{a.item.strip()}' from the equipment register"),
     Tool("audit_evidence", "Raw evidence for a scheme's audit/renewal from live data: competency, qualifications, "
                            "maintenance compliance, job sample, complaints log, calibration, insurance, policies.",
          SchemeIn, audit_evidence, "Gathering audit evidence"),
