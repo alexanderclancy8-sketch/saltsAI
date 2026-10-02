@@ -19,6 +19,7 @@ from ..db import Database
 from ..events import EventBus
 from ..integrations.mail_guard import MANAGEMENT, MailGuardError
 from ..integrations.microsoft365 import TeamsNotifier, text_to_html
+from ..redact import redact_text
 from .digest import DIGEST, IMMEDIATE, parse_route_overrides, route_for
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,8 @@ class Notifier:
         `engineering=True` marks fix / pull request / deploy / triage / security-review notifications: those go
         to Teams only (see send_engineering_update) instead of Teams + email. `issue_id` lets a Teams delivery
         failure be shown against that issue on the issues list."""
+        # Bodies often carry str(exception), and httpx errors include the request URL (keys, webhook signatures).
+        title, body = redact_text(title), redact_text(body)
         importance = importance_for(level, importance)
         nid = self.db.add_notification(level, title, body)
         self.bus.publish("notification", {"id": nid, "level": level, "importance": importance, "title": title,
@@ -189,7 +192,7 @@ class Notifier:
                     await self.teams.post(subject, body)
                     sent.append("Teams")
                 except Exception as e:  # noqa: BLE001 - never let a notification failure break the caller
-                    teams_failed = f"Teams delivery failed: {e}"
+                    teams_failed = redact_text(f"Teams delivery failed: {e}")
                     log.warning("Teams engineering update failed (%s): %s", subject, e)
         want_email = "email" in channels or (teams_failed and self.s.engineering_email_fallback)
         if want_email and self.s.owner_email and not getattr(self.mail, "demo", True):

@@ -430,6 +430,9 @@ SECTIONS: tuple[Section, ...] = (
             Field("security_watch_cron", "Security review of Salts FSM's code", "cron"),
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
             Field("self_learning_cron", "Self-reflection (what to remember)", "cron", advanced=True),
+            Field("conversation_quality_cron", "Weekly conversation quality summary", "cron", advanced=True),
+            Field("conversation_quality_retention_days", "Keep conversation quality records (days)", "number",
+                  advanced=True),
             Field("routine_test_interval_min", "Routine tests every (minutes)", "number", advanced=True),
             Field("inbox_check_interval_min", "Check inbox every (minutes)", "number", advanced=True),
             Field("lone_worker_check_min", "Lone-worker sweep every (minutes)", "number", advanced=True),
@@ -484,6 +487,8 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _hint(value: str) -> str:
+    if "://" in value:
+        return "••••"  # a secret URL (e.g. the Teams/Power Automate webhook) ends in its access signature
     return "•••• " + value[-4:] if len(value) >= 12 else "••••"
 
 

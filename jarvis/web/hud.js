@@ -152,12 +152,28 @@
     S.dashOpen = open;
     store.set("dashboard", open ? "1" : "0");
     document.body.classList.toggle("dash-open", open);
+    fitMapSoon(); // the map is laid out at 0x0 while its column is hidden; re-measure once it can be seen
     const btn = $("#btn-dashboard");
     btn.setAttribute("aria-pressed", String(open));
     btn.title = open ? "Hide dashboard" : "Show dashboard";
   }
   $("#btn-dashboard").addEventListener("click", () => setDashOpen(!S.dashOpen));
   setDashOpen(S.dashOpen); // sync the button label/state with whatever <head> already applied to <body>
+
+  // Below 1150px the open dashboard shows one section at a time (tab bar, see hud.css). "chat" is the phone's main
+  // screen; from 768px up the chat column is always visible beside the tabs, so there "chat" just means "comms".
+  // Not persisted: reopening always lands on the conversation.
+  const wideMQ = window.matchMedia("(min-width: 768px)");
+  function setDashTab(tab) {
+    if (tab === "chat" && wideMQ.matches) tab = "comms";
+    document.body.dataset.dashTab = tab;
+    $$("#dtabs .dtab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.dtab === tab)));
+    document.querySelectorAll(".col.left, .col.right").forEach((c) => { c.scrollTop = 0; });
+    if (tab === "fleet") fitMapSoon();
+  }
+  $("#dtabs").addEventListener("click", (e) => { const b = e.target.closest(".dtab"); if (b) setDashTab(b.dataset.dtab); });
+  wideMQ.addEventListener?.("change", () => setDashTab(document.body.dataset.dashTab || "chat"));
+  setDashTab("chat");
 
   // Approvals/suggestions must never go silently unnoticed just because the dashboard is tucked away -
   // a small pulsing badge on the orb itself covers that, and opens the real panels (with their working
@@ -167,15 +183,20 @@
     const badge = $("#orb-badge");
     badge.hidden = n === 0;
     if (n) badge.textContent = String(n);
+    const tb = $("#dtab-comms-badge"); // same count on the Comms tab, where approvals and suggestions live
+    tb.hidden = n === 0; tb.textContent = String(n);
+    tb.setAttribute("aria-label", `${n} waiting`);
   }
   $("#orb-badge").addEventListener("click", () => {
     setDashOpen(true);
+    setDashTab("comms");
     requestAnimationFrame(() => {
       const target = (S.approvals?.length ? $("#approvals-panel") : $("#suggestions-panel"));
       target?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
 
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)"); // stop the tick ring turning
   const canvas = $("#reactor");
   const ctx = canvas.getContext("2d");
   function drawReactor(t) {
@@ -185,7 +206,7 @@
     const colour = { idle: "76,141,255", listening: "52,211,153", thinking: "245,185,66", speaking: "76,141,255", awaiting: "52,211,153" }[S.hudState] || "76,141,255";
     const lvl = S.level;
     ctx.clearRect(0, 0, w, h);
-    const speed = S.hudState === "thinking" ? 1.4 : 1;
+    const speed = reduceMotion.matches ? 0 : S.hudState === "thinking" ? 1.4 : 1;
     // A calm progress ring plus one slow-rotating tick ring - a status indicator, not a light show.
     ctx.save(); ctx.translate(cx, cy);
     ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,0.06)";
@@ -308,6 +329,7 @@
           return;
         }
         item.started = true;
+        if (!item.filler) noteFirstAudio(); // a thinking-time filler isn't the answer, so it doesn't count
         if (url) {
           player.src = url;
           player.onended = () => { URL.revokeObjectURL(url); if (gen === this.gen) this.next(); };
@@ -398,6 +420,21 @@
     return windowSimilarity(words, said) >= ECHO_SIMILARITY;
   }
   const echoWindowOpen = () => speaker.active || speaker.browserSpeaking || Date.now() - speaker.lastSpokeAt < ECHO_TAIL_MS;
+
+  // ------------------------------------------------------------------ conversation quality reporting
+  // Fire-and-forget: the server keeps per-turn metrics (services/conversation_quality.py), but only the browser
+  // knows when sound actually started and when it threw away something that was Jarvis's own voice. A failure
+  // here must never affect speech or the conversation, so every call swallows its errors.
+  const turnClock = { sentAt: 0, turnId: null }; // sentAt: performance.now() when a spoken request was sent
+  function voiceEvent(body) {
+    try { api("/api/voice-events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}); } catch { /* never matters */ }
+  }
+  function noteFirstAudio() {
+    if (!turnClock.sentAt) return;
+    const ms = Math.round(performance.now() - turnClock.sentAt);
+    turnClock.sentAt = 0;
+    voiceEvent({ kind: "first_audio", ms, turn_id: turnClock.turnId });
+  }
 
   // ------------------------------------------------------------------ barge-in
   // Talking over Jarvis. Inside the echo window the allowlist is still exactly "the wake word or a stop phrase" -
@@ -575,8 +612,44 @@
     el.querySelector(".md").innerHTML = role === "assistant" ? md(text) : esc(text).replace(/\n/g, "<br>");
     $("#conversation").appendChild(el);
     $("#conversation").scrollTop = 1e9;
+    document.body.classList.add("has-chat"); // phones: switch from the orb-first welcome to the chat-first layout
     return el;
   }
+
+  // Good / wrong buttons under a reply. The verdict goes to /api/feedback (one per turn), and "wrong" then offers a
+  // one-line note. They only record a verdict - nothing is sent, changed or approved by pressing them. Saying "that
+  // was wrong" does the same thing by voice (handled server-side).
+  function feedbackHtml(turnId) {
+    return `<div class="fb" data-turn="${esc(turnId)}"><button type="button" data-rating="good" title="That was a good reply">Good</button>` +
+      `<button type="button" data-rating="wrong" title="That was wrong">Wrong</button></div>`;
+  }
+  async function sendFeedback(turn, rating, note = "") {
+    const r = await api("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rating, note, turn_id: Number(turn) }) });
+    return r.ok;
+  }
+  $("#conversation").addEventListener("click", async (e) => {
+    const box = e.target.closest(".fb");
+    if (!box) return;
+    const turn = box.dataset.turn;
+    const rating = e.target.closest("button[data-rating]")?.dataset.rating;
+    try {
+      if (rating) {
+        if (!(await sendFeedback(turn, rating))) { toast("Couldn't save that", "Try again in a moment.", "warning"); return; }
+        box.innerHTML = rating === "good" ? `<span class="fb-done">Marked good</span>`
+          : `<span class="fb-done">Marked wrong</span> <input class="fb-note" type="text" maxlength="500" placeholder="What was wrong? (Enter to save)" aria-label="What was wrong?">`;
+        if (rating === "wrong") box.querySelector(".fb-note").focus();
+      }
+    } catch { /* offline or signed out: api() already handled the sign-out redirect */ }
+  });
+  $("#conversation").addEventListener("keydown", async (e) => {
+    const input = e.target.closest?.(".fb-note");
+    if (!input || e.key !== "Enter") return;
+    e.preventDefault();
+    const box = input.closest(".fb");
+    try {
+      if (await sendFeedback(box.dataset.turn, "wrong", input.value.trim())) box.innerHTML = `<span class="fb-done">Noted - thanks</span>`;
+    } catch { /* see above */ }
+  });
 
   async function loadTranscript() {
     try {
@@ -613,6 +686,7 @@ function send(text, mode = "typed", opts = {}) {
     if (opts.compose && mode === "typed") payload.compose = true;
     S.attachments = []; renderAttachments();
     filler.begin(spoken && mode === "voice"); // after speaker.stop() above, which ended any previous turn's filler
+    turnClock.sentAt = spoken && mode === "voice" ? performance.now() : 0; turnClock.turnId = null;
     if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }
     setHud("thinking");
     streamChat(payload).catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
@@ -645,6 +719,20 @@ function send(text, mode = "typed", opts = {}) {
   });
   const autosize = () => { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; };
   $("#input").addEventListener("input", () => { autosize(); rsSoon(); });
+  // Phones: the welcome block (orb + quick buttons) gives way while the keyboard is up.
+  $("#input").addEventListener("focus", () => document.body.classList.add("composing"));
+  $("#input").addEventListener("blur", () => document.body.classList.remove("composing"));
+  // iOS Safari doesn't shrink the layout viewport for the on-screen keyboard (dvh stays full height), which hid the
+  // composer behind it. Track the visual viewport instead and size the app shell to what's actually visible.
+  if (window.visualViewport) {
+    const fitShell = () => {
+      document.documentElement.style.setProperty("--app-h", window.visualViewport.height + "px");
+      if (window.visualViewport.offsetTop) window.scrollTo(0, 0); // iOS pans the page up to reveal a focused field; the shell is already sized to fit
+    };
+    window.visualViewport.addEventListener("resize", fitShell);
+    window.visualViewport.addEventListener("scroll", fitShell);
+    fitShell();
+  }
   $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
 
   // ------------------------------------------------------------------ learned reply suggestion
@@ -740,9 +828,14 @@ function send(text, mode = "typed", opts = {}) {
     const b = $("#btn-proactive-mute");
     if (!b) return;
     b.setAttribute("aria-pressed", S.proactiveMuted ? "true" : "false");
-    b.textContent = S.proactiveMuted ? "🔕 Muted" : "🔔 Speaks up";
+    // Icon plus a .btn-label span, so the text can be hidden on narrow phones (see hud.css) without losing the button.
+    const label = document.createElement("span");
+    label.className = "btn-label";
+    label.textContent = S.proactiveMuted ? " Muted" : " Speaks up";
+    b.replaceChildren(S.proactiveMuted ? "🔕" : "🔔", label);
     b.title = S.proactiveMuted ? "Jarvis won't post into this session by himself - click to allow it again"
                                 : "Mute Jarvis posting into this session by himself";
+    b.setAttribute("aria-label", b.title);
   }
   $("#btn-proactive-mute")?.addEventListener("click", () => {
     S.proactiveMuted = !S.proactiveMuted;
@@ -775,6 +868,7 @@ function send(text, mode = "typed", opts = {}) {
         break;
       case "thinking":
         setHud("thinking"); toolsSeen = [];
+        turnClock.turnId = d.turn_id ?? null; // which server-side turn the first-audio measurement belongs to
         current = addMessage("assistant", ""); current.querySelector(".md").classList.add("typing");
         current.dataset.raw = "";
         break;
@@ -799,6 +893,7 @@ function send(text, mode = "typed", opts = {}) {
           const body = current.querySelector(".md");
           body.classList.remove("typing"); body.innerHTML = md(current.dataset.raw);
           if (toolsSeen.length) current.insertAdjacentHTML("beforeend", `<div class="tools">${esc([...new Set(toolsSeen)].join(" · "))}</div>`);
+          if (d.turn_id) current.insertAdjacentHTML("beforeend", feedbackHtml(d.turn_id));
         } else addMessage("assistant", d.text);
         if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
@@ -836,7 +931,7 @@ function send(text, mode = "typed", opts = {}) {
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
-      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; caption("Fresh start. What can I do for you?"); break;
+      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; document.body.classList.remove("has-chat"); caption("Fresh start. What can I do for you?"); break;
       case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
@@ -862,6 +957,7 @@ function send(text, mode = "typed", opts = {}) {
     }
     $("#display-body").innerHTML = md(markdown);
     $("#display").classList.add("open");
+    $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
   }
   $("#display-close").addEventListener("click", () => $("#display").classList.remove("open"));
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#display").classList.remove("open"); $("#drawer").classList.remove("open"); } });
@@ -1031,6 +1127,9 @@ function send(text, mode = "typed", opts = {}) {
     });
     if (pts.length) map.fitBounds(pts, { padding: [20, 20], maxZoom: 12 });
   }
+  // Leaflet measures its box once; call this whenever the map's container may have changed size or been revealed.
+  function fitMapSoon() { requestAnimationFrame(() => { if (map) { map.invalidateSize(); refreshMap(); } }); }
+  window.addEventListener("resize", fitMapSoon);
   async function refreshMap() { try { renderMap(await (await api("/api/tracking")).json()); } catch { /* ignore */ } }
 
   // ------------------------------------------------------------------ speech input
@@ -1419,7 +1518,7 @@ function send(text, mode = "typed", opts = {}) {
     // Last line of defence for every listener (browser, Deepgram, Whisper, sentry): anything that looks like
     // Jarvis's own voice - repeated wake phrases mashed together, or a close match for what he recently said -
     // is dropped outright, in every listen mode, and can never be treated as the owner asking something.
-    if (looksLikeSelfEcho(text)) return;
+    if (looksLikeSelfEcho(text)) { voiceEvent({ kind: "echo_suppressed", detail: "self-echo" }); return; }
     // Sampled once, up front, before anything below (e.g. speaker.stop()) can change it: the follow-up exception
     // and the drop toast both depend on this, and neither may ever apply while the echo window is open.
     const inEchoWindow = echoWindowOpen();
@@ -1556,6 +1655,7 @@ function send(text, mode = "typed", opts = {}) {
   // ------------------------------------------------------------------ settings drawer: voice/display tab
   function openDrawer() {
     $("#drawer").classList.add("open");
+    $("#drawer-close").focus({ preventScroll: true });
     if (!Settings.loaded) Settings.load();
   }
   $("#btn-settings").addEventListener("click", openDrawer);

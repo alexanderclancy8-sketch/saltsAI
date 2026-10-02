@@ -238,6 +238,15 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   anything or approves anything. Spoken messages and anything that looks sensitive (codes, numbers, emails, links,
   passwords) are never stored; it stays in Jarvis's own database. Turn it off on Settings → You and the business,
   or forget everything with `DELETE /api/reply-suggestions`. See `jarvis/services/reply_suggestions.py`.
+- **Conversation quality records hold conversation text.** To spot slow, wrong or badly-spoken replies Jarvis keeps
+  per-turn measurements in three tables of its own database (`turn_metrics`, `voice_events`, `turn_feedback`): timings,
+  your Good/Wrong verdicts and notes, and a short excerpt (up to 300 characters, credentials and access codes
+  redacted) of what you asked and what Jarvis replied. The full conversation is kept only in the transcript (2 years).
+  These records are deleted after 90 days (Settings > Schedules, "Keep conversation quality records (days)",
+  `CONVERSATION_QUALITY_RETENTION_DAYS`), checked at start-up and daily. Nothing in them leaves the system. To purge
+  now, while signed in as the owner call `DELETE /api/quality` (everything) or `DELETE /api/quality?older_than_days=30`;
+  or, with database access, `DELETE FROM turn_metrics; DELETE FROM voice_events; DELETE FROM turn_feedback;`. Jarvis
+  himself has no tool to read these tables out or to purge them. See `jarvis/services/conversation_quality.py`.
 - The auto-fix engineer can only read and edit a copy of the code, with no shell and no secrets, and every
   change goes through a pull request and CI.
 - **Self-improvement is PR-only, always.** Jarvis can write changes to its own source and open a pull request,

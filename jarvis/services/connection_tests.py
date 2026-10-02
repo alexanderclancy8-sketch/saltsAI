@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from ..redact import redact_text
+
 log = logging.getLogger(__name__)
 TIMEOUT = 45
 
@@ -22,7 +24,7 @@ def _why(e: Exception) -> str:
         return "couldn't connect - check the address"
     if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
         return "the service didn't answer in time"
-    text = str(e) or type(e).__name__
+    text = redact_text(str(e) or type(e).__name__)
     return text[:300]
 
 
@@ -122,7 +124,7 @@ async def _teamsbot(j) -> tuple[bool, str]:
     try:
         return True, await j.teamsbot.check()
     except TeamsBotError as e:
-        return False, str(e)
+        return False, redact_text(e)
 
 
 async def _voice(j) -> tuple[bool, str]:

@@ -107,7 +107,9 @@ def test_hud_drops_fuzzy_matches_of_the_last_reply_within_ten_seconds():
     assert echo.index("STOP_PHRASE_TEST_RE.test(content.join") < echo.index("similarToRecentReply(content)")
     # utterance() (every listener's last line of defence) still runs looksLikeSelfEcho before anything is sent
     utt = HUD[HUD.index("function utterance(raw)"):]
-    assert utt.index("if (looksLikeSelfEcho(text)) return;") < utt.index("send(")
+    # (the quality log is told about each drop: voiceEvent echo_suppressed - see tests/test_conversation_regression.py)
+    assert utt.index("if (looksLikeSelfEcho(text)) {") < utt.index("send(")
+    assert 'voiceEvent({ kind: "echo_suppressed"' in utt[:utt.index("send(")]
 
 
 # ---------------------------------------------------------------- mic-press barge-in
