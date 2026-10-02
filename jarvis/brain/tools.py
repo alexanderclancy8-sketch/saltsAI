@@ -254,6 +254,24 @@ class LogJobIn(BaseModel):
     customer: str = Field("", description="Customer name, only if different from the site name")
 
 
+class FsmRecordIn(BaseModel):
+    record: Literal["contact", "note", "task", "reminder"] = Field(
+        description="What to create. This only ever CREATES a new contact, note, task or reminder - it can't edit or "
+                    "delete anything, or touch jobs, quotes, invoices, prices or stock. (New customers and sites "
+                    "have their own tools: create_customer / create_site.)")
+    name: str = Field("", description="contact: the person's name")
+    email: str = Field("", description="contact: email address")
+    phone: str = Field("", description="contact: phone number")
+    role: str = Field("", description="contact: their role, e.g. 'Site manager'")
+    parent_type: Literal["customer", "site", "job", ""] = Field(
+        "", description="contact (customer or site) / note (customer, site or job): what it belongs to")
+    parent_id: str = Field("", description="contact / note: the FSM id of the customer, site or job it belongs to")
+    title: str = Field("", description="task / reminder: the title")
+    text: str = Field("", description="note: the note text")
+    description: str = Field("", description="task: details; reminder: extra note")
+    due: str = Field("", description="task / reminder: due date, ISO e.g. 2026-10-12 (blank = none)")
+
+
 class CreateCustomerIn(BaseModel):
     name: str = Field(description="The customer's name exactly as it should appear in Salts FSM, e.g. "
                                   "'Aire Valley Care Ltd'")
@@ -950,8 +968,17 @@ async def create_customer(j, a: CreateCustomerIn):
         summary += " (" + ", ".join(details) + ")"
     if namesake:
         summary += " - NOTE: a customer with this exact name already exists; this makes a second, separate one"
-    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/customers", "body": body})
-    return {"queued_action": action_id, "customer": body, "note": "Queued for approval on the display."}
+    payload: dict[str, Any] = {"method": "POST", "path": "/customers", "body": body}
+    if likely:
+        # Only reachable because confirm_not_duplicate=True - a flag the MODEL sets. So whenever the duplicate check
+        # found ANY lookalike, the payload carries this extra top-level key: the standing-approval allowlist accepts no
+        # extra keys, so it can never auto-run, and a person approves it with the lookalike on the card.
+        payload["needs_human_review"] = {"similar_existing": [str(c.get("name") or "")[:80] for c in likely[:5]]}
+        if not namesake:
+            summary += " - NOTE: similar to existing customer " + ", ".join(
+                f"'{str(c.get('name') or '')[:60]}'" for c in likely[:3]) + "; confirmed as a separate one"
+    action_id = j.actions.queue("fsm_write", summary, payload)
+    return {"queued_action": action_id, "customer": body, "note": _queued_note(j, action_id)}
 
 
 async def create_site(j, a: CreateSiteIn):
@@ -1035,11 +1062,66 @@ async def create_site(j, a: CreateSiteIn):
         summary += f" ({postcode})"
     if twins:
         summary += " - NOTE: a site with this exact name already exists for this customer; this makes a second one"
-    action_id = j.actions.queue("fsm_write", summary, {"method": "POST", "path": "/sites", "body": body})
-    result: dict[str, Any] = {"queued_action": action_id, "site": body, "note": "Queued for approval on the display."}
+    payload = {"method": "POST", "path": "/sites", "body": body}
+    if likely:
+        # As for customers: a lookalike was found and the model's confirm_not_duplicate overrode it, so this must
+        # never auto-run - a person approves it with the lookalike shown.
+        payload["needs_human_review"] = {"similar_existing": [str(s.get("name") or "")[:80] for s in likely[:5]]}
+        if not twins:
+            summary += " - NOTE: similar to existing site " + ", ".join(
+                f"'{str(s.get('name') or '')[:60]}'" for s in likely[:3]) + "; confirmed as a separate one"
+    action_id = j.actions.queue("fsm_write", summary, payload)
+    result: dict[str, Any] = {"queued_action": action_id, "site": body, "note": _queued_note(j, action_id)}
     if not customer_ref:
         result["warning"] = "No customer given - a job can't be booked against this site until it has one."
     return result
+
+
+def _queued_note(j, action_id: int) -> str:
+    """What to tell the model after queue(): normally "waiting for approval", but if the owner's standing approval
+    for record keeping covered it, it was recorded automatically (the decision is made in ActionExecutor.queue(),
+    never here)."""
+    action = j.db.get_action(action_id) or {}
+    if action.get("status") != "pending" and str(action.get("approved_by") or "").startswith("standing approval:"):
+        return "Recorded automatically under the owner's standing approval for record keeping."
+    return "Queued for approval on the display."
+
+
+_RECORD_PARENTS = {"contact": ("customer", "site"), "note": ("customer", "site", "job")}
+_RECORD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
+
+
+async def fsm_create_record(j, a: FsmRecordIn):
+    """Prepare the creation of ONE new contact/note/task/reminder in Salts FSM (customers and sites are
+    create_customer / create_site). This only queues it:
+    whether it then waits for a human or runs at once is decided in ActionExecutor.queue() by the owner's standing
+    approval setting - nothing here can see, set or bypass that."""
+    r = a.record
+    fields = {"contact": {"name": a.name, "email": a.email, "phone": a.phone, "role": a.role},
+              "note": {"text": a.text, "author": "Jarvis"},
+              "task": {"title": a.title, "description": a.description, "due": a.due},
+              "reminder": {"title": a.title, "note": a.description, "due": a.due}}[r]
+    body = {k: v for k, v in fields.items() if v}
+    if not (body.get("name") or body.get("title") or body.get("text")):
+        return {"error": f"A {r} needs its {'text' if r == 'note' else 'title' if r in ('task', 'reminder') else 'name'}."}
+    # Everything Jarvis writes as a note / task / reminder carries a fixed visible prefix so staff can tell it wasn't
+    # typed by a person (and the standing-approval allowlist requires it).
+    from ..services.standing_approvals import AUTO_MARK
+
+    marked = {"note": "text", "task": "title", "reminder": "title"}.get(r)
+    if marked:
+        body[marked] = f"{AUTO_MARK} {body[marked]}"
+    if r in _RECORD_PARENTS:
+        if a.parent_type not in _RECORD_PARENTS[r] or not _RECORD_ID.match(a.parent_id):
+            return {"error": f"A {r} must say which {' / '.join(_RECORD_PARENTS[r])} it belongs to (parent_type "
+                             "and parent_id)."}
+        path = f"/{a.parent_type}s/{a.parent_id}/{r}s"
+    else:
+        path = {"task": "/tasks", "reminder": "/reminders"}[r]
+    label = str(body.get("name") or body.get("title") or body.get("text") or "").removeprefix(AUTO_MARK).strip()[:60]
+    action_id = j.actions.queue("fsm_write", f"Create {r} '{label[:60]}' in Salts FSM",
+                                {"method": "POST", "path": path, "body": body})
+    return {"queued_action": action_id, "record": r, "note": _queued_note(j, action_id)}
 
 
 async def accept_quote(j, a: AcceptQuoteIn):
@@ -1638,6 +1720,12 @@ TOOLS: list[Tool] = [
                         "customer must already exist - if they're new, create_customer first and wait for the "
                         "owner to approve it. Queued for the owner's approval, never created straight away.",
          CreateSiteIn, create_site, "Creating a site"),
+    Tool("fsm_create_record", "Create ONE new contact, note, task or reminder in Salts FSM (record keeping only - it "
+                              "can't edit or delete anything, or touch jobs, quotes, invoices, prices or stock; "
+                              "customers and sites have create_customer / create_site). Goes through the approval "
+                              "queue like every other change; the owner may have allowed this kind of record to be "
+                              "created without waiting, in which case the result says it was recorded "
+                              "automatically.", FsmRecordIn, fsm_create_record, "Recording that"),
     Tool("accept_quote", "Accept a quote and book the resulting job in Salts FSM, together as one step - use "
                         "this rather than fsm_change/log_job separately whenever a quote has just been won. "
                         "Queued for approval; once approved, order any materials the job needs with "
