@@ -1148,7 +1148,9 @@ function send(text, mode = "typed", opts = {}) {
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
-    $("#map-note").textContent = data.working_hours === false ? "outside hours" : data.demo ? "demo" : `${data.engineers.length} vans`;
+    $("#map-note").textContent = data.working_hours === false
+      ? (data.visible ? `outside hours · logged · ${data.engineers.length} vans` : "outside hours")
+      : data.demo ? "demo" : `${data.engineers.length} vans`;
     const pts = [];
     (data.sites || []).forEach((s) => { L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {

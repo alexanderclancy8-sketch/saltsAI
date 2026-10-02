@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from . import plugins
 from ..redact import redact_text
 from ..events import quiet_turn
+from ..services.tracking import requester_label
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
@@ -252,9 +253,12 @@ class MaxBrain:
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
                     speaker: str | None = None, quiet: bool = False) -> str:
         token = quiet_turn.set(quiet)
+        # who is asking, for the out-of-hours van look-up log (read by the tracking tools)
+        self.j.asked_by = requester_label(self.s, speaker, quiet)
         try:
             return await self._turn_events(text, mode, attachments, speaker)
         finally:
+            self.j.asked_by = ""
             quiet_turn.reset(token)
 
     async def _turn_events(self, text: str, mode: str, attachments: list[dict[str, str]] | None,

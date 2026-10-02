@@ -248,6 +248,15 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT NOT NULL,
     markdown TEXT NOT NULL
 );
+-- One row per engineer whose van position/journey was looked up outside working hours (who asked, when, which tool).
+CREATE TABLE IF NOT EXISTS location_lookup_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    asked_by TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    engineer TEXT NOT NULL,
+    mode TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS false_alarm_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -555,6 +564,21 @@ class Database:
     def set_kv(self, key: str, value: str) -> None:
         self.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                      (key, value))
+
+    # -- out-of-hours van location look-ups ---------------------------------------------------
+    def log_location_lookup(self, asked_by: str, tool: str, engineer: str, mode: str) -> int:
+        return self.execute("INSERT INTO location_lookup_log (created_at, asked_by, tool, engineer, mode) "
+                            "VALUES (?,?,?,?,?)", (now_iso(), asked_by, tool, engineer, mode))
+
+    def recent_location_lookup(self, asked_by: str, tool: str, engineer: str, within_minutes: int) -> bool:
+        since = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat(timespec="seconds")
+        return self.query_one("SELECT 1 FROM location_lookup_log WHERE asked_by = ? AND tool = ? AND engineer = ? "
+                              "AND created_at >= ? LIMIT 1", (asked_by, tool, engineer, since)) is not None
+
+    def location_lookups(self, days: int = 7, limit: int = 200) -> list[dict[str, Any]]:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        return self.query("SELECT created_at, asked_by, tool, engineer, mode FROM location_lookup_log "
+                          "WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Awaitable, Callable, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import history
 from ..humanize import human_datetime
@@ -537,6 +537,47 @@ class DateOptIn(BaseModel):
 class VanDayIn(BaseModel):
     engineer: str
     date: str | None = Field(None, description="YYYY-MM-DD, default today")
+
+
+def _check_when(v: str) -> str:
+    """Reject a bad on-call time at the door (before anything is queued for approval); keep it as text so the
+    queued action stays plain JSON."""
+    from ..services.oncall import parse_when
+
+    return parse_when(v).isoformat(sep=" ", timespec="minutes")
+
+
+class OnCallAddIn(BaseModel):
+    engineer: str = Field(description="The engineer's name as in the staff register, e.g. 'Ian Frost'")
+    start: str = Field(description="When the on-call period starts, UK time, YYYY-MM-DD HH:MM")
+    end: str = Field(description="When it ends, UK time, YYYY-MM-DD HH:MM (after the start, at most 31 days later)")
+
+    @field_validator("start", "end")
+    @classmethod
+    def _when(cls, v: str) -> str:
+        return _check_when(v)
+
+    @model_validator(mode="after")
+    def _ends_after_start(self):
+        if self.end <= self.start:  # both normalised "YYYY-MM-DD HH:MM", so text order is time order
+            raise ValueError("The on-call period must end after it starts.")
+        return self
+
+
+class OnCallRemoveIn(BaseModel):
+    engineer: str = Field(description="The engineer's name exactly as on the roster (see oncall_roster)")
+    start: str | None = Field(None, description="Only remove the period starting at this time, YYYY-MM-DD HH:MM; "
+                                                "leave out to remove all of their periods")
+
+    @field_validator("start")
+    @classmethod
+    def _when(cls, v: str | None) -> str | None:
+        return _check_when(v) if v and v.strip() else None
+
+
+class LocationLogIn(BaseModel):
+    days: int = Field(7, description="How many days back, up to 365")
+    limit: int = Field(100, description="Most rows, up to 500")
 
 
 class RegWatchIn(BaseModel):
@@ -1446,18 +1487,58 @@ async def stock_job_materials(j, a: JobRefIn):
     return j.stores.job_materials(a.job_ref)
 
 
+def _asker(j) -> str:
+    """Who is asking in this conversation, for the out-of-hours van look-up log ("" when no turn is running, which
+    keeps out-of-hours positions hidden - see services/tracking.py)."""
+    return str(getattr(j, "asked_by", "") or "")
+
+
 async def engineer_locations(j, a: NoInput):
-    data = await j.tracker.live()
+    data = await j.tracker.live(_asker(j))
     j.bus.publish("map", data)
     return data
 
 
 async def who_is_home(j, a: NoInput):
-    return await j.tracker.home_status()
+    return await j.tracker.home_status(_asker(j))
 
 
 async def nearest_engineer(j, a: PlaceIn):
-    return await j.tracker.nearest(a.place)
+    return await j.tracker.nearest(a.place, _asker(j))
+
+
+def _roster_view(j) -> dict[str, Any]:
+    from datetime import datetime as _dt
+
+    now = _dt.now()
+    return {"setting": j.tracker.ooh_mode, "on_call_now": j.oncall.on_call(now),
+            "roster": [{k: e.get(k) for k in ("engineer", "start", "end")} for e in j.oncall.entries(now)]}
+
+
+async def oncall_roster(j, a: NoInput):
+    return {**_roster_view(j), "note": "The 'setting' (off / on_call / always) is the owner's choice on the Settings "
+            "page (RAM Tracking > Show van locations outside working hours); Jarvis cannot change it. Only in "
+            "'on_call' does this roster matter."}
+
+
+async def oncall_add(j, a: OnCallAddIn):
+    from ..services.oncall import parse_when
+
+    entry = j.oncall.add(a.engineer, parse_when(a.start), parse_when(a.end), added_by=_asker(j))
+    return {"added": {k: entry[k] for k in ("engineer", "start", "end")}, **_roster_view(j)}
+
+
+async def oncall_remove(j, a: OnCallRemoveIn):
+    from ..services.oncall import parse_when
+
+    removed = j.oncall.remove(a.engineer, parse_when(a.start) if a.start else None)
+    return {"removed": removed, **_roster_view(j)}
+
+
+async def location_lookup_log(j, a: LocationLogIn):
+    rows = j.db.location_lookups(max(1, min(a.days, 365)), max(1, min(a.limit, 500)))
+    return {"days": a.days, "lookups": rows, "note": "Every van position or journey look-up made outside working "
+            "hours: who asked, when (UTC), which tool and which engineer, and the setting at the time."}
 
 
 async def attendance_check(j, a: DateOptIn):
@@ -1469,13 +1550,13 @@ async def attendance_check(j, a: DateOptIn):
 async def van_day(j, a: VanDayIn):
     from datetime import date as _date
 
-    return await j.tracker.van_day(a.engineer, _date.fromisoformat(a.date) if a.date else _date.today())
+    return await j.tracker.van_day(a.engineer, _date.fromisoformat(a.date) if a.date else _date.today(), _asker(j))
 
 
 async def timesheet_check(j, a: DateOptIn):
     from datetime import date as _date
 
-    return await j.tracker.timesheet_check(_date.fromisoformat(a.date) if a.date else _date.today())
+    return await j.tracker.timesheet_check(_date.fromisoformat(a.date) if a.date else _date.today(), _asker(j))
 
 
 async def regulatory_watch(j, a: RegWatchIn):
@@ -2056,12 +2137,30 @@ TOOLS: list[Tool] = [
     Tool("engineer_locations", "Live engineer/van locations from Salts FSM tracking: where everyone is, on site or "
                                "not, ETA to next job, and RAM's address label for each van (a home label is shown "
                                "only as 'home'; address_label is null when RAM supplies none). Also puts the map "
-                               "on the display.", NoInput,
+                               "on the display. Outside working hours (Mon-Fri 07:00-18:30) it shows nothing unless "
+                               "the owner has allowed it in Settings (on-call engineers only, or everyone); the "
+                               "result's note says which, and such look-ups are logged.", NoInput,
          engineer_locations, "Locating the team"),
     Tool("who_is_home", "Which engineers are at home (RAM's van address label says home), which are out, which "
-                        "vans have no address label, and who has no recent position. Working hours only. Say "
+                        "vans have no address label, and who has no recent position. Working hours, or outside "
+                        "them only where the owner's setting allows it (logged). Say "
                         "'home' only - never read out or guess a home address.", NoInput, who_is_home,
          "Checking who's home"),
+    Tool("oncall_roster", "Who is on call and when (the on-call roster), plus the owner's current setting for van "
+                          "locations outside working hours. Read-only.", NoInput, oncall_roster,
+         "Checking the on-call roster"),
+    Tool("oncall_add", "Add an on-call period for an engineer to the roster (start and end, UK time). Queued for "
+                       "the owner's approval. The roster only decides whose van can be seen outside working hours "
+                       "when the owner has set that to 'On-call only'.", OnCallAddIn, oncall_add,
+         "Adding an on-call period", approval=True,
+         describe=lambda a: f"On-call roster: {a.engineer} from {a.start} to {a.end}"),
+    Tool("oncall_remove", "Remove an engineer's on-call period (or all their periods) from the roster. Queued for "
+                          "the owner's approval.", OnCallRemoveIn, oncall_remove, "Removing an on-call period",
+         approval=True, describe=lambda a: f"On-call roster: remove {a.engineer}" + (
+             f" (period starting {a.start})" if a.start else " (all periods)")),
+    Tool("location_lookup_log", "The record of van position / journey look-ups made outside working hours: who "
+                                "asked, when, and which engineer. Read-only.", LocationLogIn, location_lookup_log,
+         "Checking the look-up log"),
     Tool("nearest_engineer", "Which engineers are closest to a site or postcode, with estimated drive time - use "
                              "for dispatching call-outs.", PlaceIn, nearest_engineer, "Finding the nearest engineer"),
     Tool("attendance_check", "Check job check-ins against site locations and flag late arrivals for a day.",

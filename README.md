@@ -257,6 +257,13 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
 - **Staff monitoring:** tell staff in writing what is monitored and why (job data, timesheets, vehicle tracking
   during working hours, Microsoft 365 activity *counts*, never message content). This keeps you within UK GDPR
   and ICO employment guidance. Jarvis treats flags as prompts for a conversation, not verdicts.
+- **Van locations outside working hours (Mon-Fri 07:00-18:30) are hidden by default.** Only the owner can change
+  Settings > RAM Tracking > "Show van locations outside working hours" to *On-call only* (just the engineers on
+  the on-call roster - ask Jarvis to add or remove periods; each change waits for approval) or *Always*. Keep your
+  staff notice and contracts in line with whichever you choose. Every out-of-hours look-up (who asked, when, which
+  tool, which engineer) is written to the `location_lookup_log` table and shown by the `location_lookup_log` tool;
+  if the record can't be written, nothing is shown. Background jobs that don't name who is asking never see
+  out-of-hours positions.
 - **This repository is public.** Never commit `.env`, `data/`, `finance_data/` or `knowledge/private/` (all
   git-ignored). Better still, make the repo private.
 - Financial and legal outputs are management estimates and research. Have your accountant or solicitor check
