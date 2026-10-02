@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from . import auth
+from .brain.prompts import address_for
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
@@ -309,7 +310,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
-                    owner=settings.owner_name, company=settings.company_name,
+                    owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
                           "connected": isinstance(j.finance, SageFinance) and j.finance.connected})

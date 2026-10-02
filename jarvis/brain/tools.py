@@ -109,6 +109,14 @@ class DisplayIn(BaseModel):
     markdown: str = Field(description="Markdown content: tables, lists, drafts, figures")
 
 
+async def offer_next_steps(j, a: "NextStepsIn"):
+    """Record up to two follow-up questions (and optionally which pop-up holds the detail) for the reply that has
+    just been written. Nothing is sent or changed: the console shows them as buttons under the reply, and a click is
+    an ordinary chat message from the owner (or the same drawer-open as the rail). Not an approval, not a question."""
+    j.trace.offer(a.panel, a.follow_ups)
+    return "Noted - the buttons will appear under your reply. End your turn now without adding any more text."
+
+
 ASK_MAX_OPTIONS = 4
 # Labels that would read as an approval decision. Approving/rejecting is only ever done with the Approve / Cancel
 # buttons (or the approvals endpoint), never through a question option - so don't let a question pose as one.
@@ -160,6 +168,37 @@ class AskUserIn(BaseModel):
         if sum(1 for o in opts if o.recommended) > 1:
             raise ValueError("mark at most one option as recommended")
         return opts
+
+
+class NextStepsIn(BaseModel):
+    follow_ups: list[str] = Field(default_factory=list, max_length=2,
+                                  description="Up to two short follow-up questions the owner might ask next, written "
+                                              "as he would say them (under ~90 characters). Leave empty if none helps")
+    panel: str | None = Field(None, description="Only when it isn't obvious from the tools you used: which pop-up "
+                                                "holds the detail behind your answer - one of approvals, comms, "
+                                                "issues, health, ops, fleet, finance, presence, upcoming")
+
+    @field_validator("follow_ups")
+    @classmethod
+    def _follow_ups(cls, items: list[str]) -> list[str]:
+        cleaned = [" ".join(str(i).split()) for i in items]
+        if any(not c for c in cleaned):
+            raise ValueError("a follow-up must not be empty")
+        if any(len(c) > 90 for c in cleaned):
+            raise ValueError("keep each follow-up under 90 characters")
+        return cleaned
+
+    @field_validator("panel")
+    @classmethod
+    def _panel(cls, v: str | None) -> str | None:
+        if v in (None, ""):
+            return None
+        from .trace import PANELS
+
+        v = v.strip().lower()
+        if v not in PANELS:
+            raise ValueError("panel must be one of: " + ", ".join(PANELS))
+        return v
 
 
 class JobsIn(BaseModel):
@@ -1773,6 +1812,12 @@ TOOLS: list[Tool] = [
                      "option. The answer arrives as his next message - end your turn after asking. It is NOT an "
                      "approval: changes are still queued for the normal Approve button.",
          AskUserIn, ask_user, "Asking you a question"),
+    Tool("offer_next_steps", "Typed chat only, after your final answer: offer up to two follow-up questions as buttons "
+                             "under the reply, and (only if it isn't obvious from the tools you used) the pop-up that "
+                             "holds the detail. Skip it when nothing would help - most replies need no buttons. It "
+                             "changes nothing, sends nothing and is not an approval. Never use it instead of ask_user "
+                             "when you are asking the owner to choose.",
+         NextStepsIn, offer_next_steps, ""),
     Tool("fsm_jobs", "Jobs from Salts FSM in a date range (default today), optionally by status or engineer.",
          JobsIn, fsm_jobs, "Checking jobs in Salts FSM"),
     Tool("fsm_query", "Read-only GET against any Salts FSM API path, for details not covered by other tools "

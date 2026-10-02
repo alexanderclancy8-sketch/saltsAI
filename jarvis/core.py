@@ -10,6 +10,7 @@ import httpx
 
 from .brain import llm, plugins
 from .brain.agent import JarvisBrain
+from .brain.trace import TurnTrace
 from .config import Settings, apply_timezone
 from .db import Database
 from .events import EventBus
@@ -157,6 +158,9 @@ class Jarvis:
         self.site_access = SiteAccessCodes(self)
         self.false_alarms = FalseAlarmLog(self)  # BS 5839-1 false alarm log; writes to FSM never happen from here
         self.recruiter = Recruiter(self)
+        # Describes each chat turn from the tool events (source line, pop-up button, follow-ups) - see brain/trace.py.
+        self.trace = TurnTrace(self)
+        self.bus.add_tap(self.trace.on_event)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain

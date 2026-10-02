@@ -206,7 +206,17 @@ body[data-hud="speaking"] .state b { animation: status-pulse .7s ease-in-out inf
 .md table { border-collapse: collapse; margin: 6px 0; font-size: 13.5px; display: block; overflow-x: auto; overflow-wrap: normal; max-width: 100%; }  /* normal: .msg's anywhere-wrapping would otherwise crush cells to one letter per line instead of letting the table scroll */
 .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
 .md th { color: var(--text); background: none; font-weight: 600; }
-.msg .tools { font-family: var(--f-mono); font-size: 12px; color: var(--muted); margin-top: 4px; padding-left: 16px; }
+/* Working line above a reply ("Checking jobs in Salts FSM…"), source-and-time line below it, then the extras: a button for
+   the matching pop-up and up to two follow-up questions. All real buttons; only the server's data fills them. */
+.msg .step, .msg .src { font-family: var(--f-mono); font-size: 12px; color: var(--muted); padding-left: 16px; }
+.msg .step { color: var(--ember); }
+.msg .step[hidden] { display: none; }
+.msg .src { margin-top: 4px; }
+.msg .extras { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 0 16px; }
+.reply-chip { background: none; border: 1px solid var(--line); border-radius: 99px; padding: 5px 13px; font: inherit; font-size: 13px; line-height: 1.3;
+  color: var(--muted); cursor: pointer; text-align: left; max-width: 100%; overflow-wrap: anywhere; }
+.reply-chip:hover, .reply-chip:focus-visible { color: var(--text); border-color: var(--core-dim); }
+.reply-chip.panel, .reply-chip.answer { color: var(--core); border-color: var(--core-dim); }
 .msg .fb { margin-top: 4px; padding-left: 16px; display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); }
 .msg .fb button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 1px 8px; font-size: 11px; }
 .msg .fb button:hover, .msg .fb button:focus-visible { color: var(--text); border-color: var(--core-dim); }
@@ -430,7 +440,7 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
 /* Touch targets: 44px minimum on phones and on any coarse pointer (tablets, touch laptops). Small inline controls
    keep their look and get an invisible 44px hit area instead. */
 @media (max-width: 760px), (pointer: coarse) {
-  .icon-btn, .tb-btn, .drawer-close, .rail-item, .need, .pill, .sq, .btn-send, .chip-btn { min-height: 44px; }
+  .icon-btn, .tb-btn, .drawer-close, .rail-item, .need, .pill, .sq, .btn-send, .chip-btn, .reply-chip { min-height: 44px; }
   .icon-btn { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .btn, .btn.small { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .pill, .need, .rail-item { display: inline-flex; align-items: center; }
