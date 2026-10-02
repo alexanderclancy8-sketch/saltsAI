@@ -26,12 +26,13 @@ from .integrations.finance import SageFinance
 from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
+from .redact import install_log_redaction, redact_text
 from .services import connection_tests, documents
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
 from .settings_store import OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines print every request URL (Teams conversation ids, Graph ids)
+install_log_redaction()  # no secrets (webhook signatures, tokens, keys) in the log stream - see jarvis/redact.py
 log = logging.getLogger("jarvis")
 WEB = Path(__file__).parent / "web"
 
@@ -248,7 +249,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return await coro
         except Exception as e:  # noqa: BLE001
             log.warning("status %s failed: %s", label, e)
-            return {"error": f"{type(e).__name__}: {e}"[:200]}
+            return {"error": redact_text(f"{type(e).__name__}: {e}")[:200]}
 
     @app.get("/api/status", dependencies=[Depends(owner)])
     async def status(request: Request):
@@ -278,7 +279,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
         except Exception as e:  # noqa: BLE001 - network trouble reaching the voice service
             log.warning("TTS failed, browser voice used instead: %s", e)
-            return JSONResponse({"fallback": "browser", "detail": f"{type(e).__name__}: {e}"[:300]}, status_code=503)
+            return JSONResponse({"fallback": "browser", "detail": redact_text(f"{type(e).__name__}: {e}")[:300]},
+                                status_code=503)
         return StreamingResponse(stream, media_type=mime)
 
     @app.post("/api/stt", dependencies=[Depends(owner)])

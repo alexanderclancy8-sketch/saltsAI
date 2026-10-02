@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .. import history
 from ..humanize import human_datetime
+from ..redact import redact_text
 from .pr_tools import build_pr_tools
 
 MAX_RESULT_CHARS = 60_000
@@ -51,6 +52,7 @@ async def dispatch(j, tool: Tool, args: BaseModel) -> Any:
 
 def serialise(result: Any) -> str:
     text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
+    text = redact_text(text)  # error strings can carry request URLs with keys / signatures in them
     return text if len(text) <= MAX_RESULT_CHARS else text[:MAX_RESULT_CHARS] + "…[truncated]"
 
 

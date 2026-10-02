@@ -22,6 +22,7 @@ import httpx
 import msal
 
 from ..config import Settings
+from ..redact import describe_http_error
 from .mail_guard import GuardedMessage, guard_message
 
 log = logging.getLogger(__name__)
@@ -473,12 +474,19 @@ class DemoMail:
         return out
 
 
+class TeamsDeliveryError(RuntimeError):
+    """A Teams webhook post failed. The message never contains the webhook URL."""
+
+
 class TeamsNotifier:
     """Posts to a Teams channel through a Workflows ("When a Teams webhook request is received") URL."""
 
     def __init__(self, webhook_url: str, http: httpx.AsyncClient):
-        self.url = webhook_url
+        self.url = webhook_url  # a secret: the trigger URL carries its own access signature (sig=)
         self.http = http
+
+    def __repr__(self) -> str:  # never put the webhook URL in a log line or traceback by accident
+        return f"TeamsNotifier(enabled={self.enabled})"
 
     @property
     def enabled(self) -> bool:
@@ -503,8 +511,12 @@ class TeamsNotifier:
                 },
             }],
         }
-        r = await self.http.post(self.url, json=card)
-        r.raise_for_status()
+        try:
+            r = await self.http.post(self.url, json=card)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            # httpx's own message for these contains the full request URL - i.e. the webhook signature.
+            raise TeamsDeliveryError(f"Teams webhook failed: {describe_http_error(e)}") from None
 
 
 def text_to_html(text: str) -> str:
