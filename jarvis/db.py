@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS issues (
     fix_pr_number INTEGER,
     fix_branch TEXT DEFAULT '',
     image_path TEXT DEFAULT '',
-    notes TEXT DEFAULT ''
+    notes TEXT DEFAULT '',
+    resolved_by TEXT DEFAULT '',
+    resolved_at TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -292,6 +294,10 @@ class Database:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_actions)").fetchall()}
         if "approved_by" not in cols:
             self._conn.execute("ALTER TABLE pending_actions ADD COLUMN approved_by TEXT DEFAULT ''")
+        issue_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(issues)").fetchall()}
+        for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
+            if col not in issue_cols:
+                self._conn.execute(f"ALTER TABLE issues ADD COLUMN {col} TEXT DEFAULT ''")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -336,6 +342,16 @@ class Database:
         if status:
             return self.query("SELECT * FROM issues WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit))
         return self.query("SELECT * FROM issues ORDER BY id DESC LIMIT ?", (limit,))
+
+    def resolve_issue(self, issue_id: int, *, by: str, note: str = "") -> None:
+        """Close an issue by hand: status, note, and who/when. Not an approval - it decides nothing about any action."""
+        ts = now_iso()
+        self.execute("UPDATE issues SET status = 'resolved', notes = ?, resolved_by = ?, resolved_at = ?,"
+                     " updated_at = ? WHERE id = ?", (note, by, ts, ts, issue_id))
+
+    def reopen_issue(self, issue_id: int, *, note: str) -> None:
+        self.execute("UPDATE issues SET status = 'open', notes = ?, resolved_by = '', resolved_at = '',"
+                     " updated_at = ? WHERE id = ?", (note, now_iso(), issue_id))
 
     def find_open_issue_by_title(self, title: str) -> dict[str, Any] | None:
         return self.query_one(

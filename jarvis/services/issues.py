@@ -145,6 +145,35 @@ class IssueService:
             except Exception as e:  # noqa: BLE001
                 log.warning("Could not email reporter: %s", e)
 
+    def mark_resolved(self, issue_id: int, *, by: str, note: str = "") -> dict[str, Any]:
+        """The owner (or Jarvis, at the owner's request) closes an issue by hand. Records who and when, publishes
+        the change, and emails nobody. Separate from the approval gate: nothing is approved or run by this.
+        Raises LookupError if there's no such issue and ValueError if it's already closed."""
+        issue = self.db.get_issue(issue_id)
+        if not issue:
+            raise LookupError(f"No issue #{issue_id}.")
+        if issue["status"] in ("resolved", "wont_fix"):
+            raise ValueError(f"Issue #{issue_id} is already {issue['status'].replace('_', ' ')}.")
+        self.db.resolve_issue(issue_id, by=by, note=(note or "").strip()[:1000])
+        updated = self.db.get_issue(issue_id)
+        self.bus.publish("issue", updated)
+        return updated
+
+    def reopen(self, issue_id: int, *, by: str) -> dict[str, Any]:
+        """Put a resolved issue back to open. Raises LookupError / ValueError like mark_resolved()."""
+        issue = self.db.get_issue(issue_id)
+        if not issue:
+            raise LookupError(f"No issue #{issue_id}.")
+        if issue["status"] != "resolved":
+            raise ValueError(f"Issue #{issue_id} isn't resolved (it's {issue['status'].replace('_', ' ')}).")
+        was = f" Was resolved by {issue['resolved_by']}" if issue.get("resolved_by") else ""
+        was += f" ({issue['resolved_at']})" if issue.get("resolved_at") else ""
+        previous = f" Earlier note: {issue['notes']}" if issue.get("notes") else ""
+        self.db.reopen_issue(issue_id, note=f"Reopened by {by}.{was}{previous}"[:2000])
+        updated = self.db.get_issue(issue_id)
+        self.bus.publish("issue", updated)
+        return updated
+
     async def scan_inbox(self) -> int:
         """Turn emails whose subject contains ISSUE_EMAIL_TAG into issues."""
         tag = self.s.issue_email_tag
@@ -165,4 +194,4 @@ class IssueService:
     def summary(self, issue: dict[str, Any]) -> dict[str, Any]:
         triage = json.loads(issue["triage_json"]) if issue.get("triage_json") else None
         return {k: issue[k] for k in ("id", "created_at", "reporter", "source", "system", "severity", "title",
-                                      "status", "fix_pr_url", "notes")} | {"triage": triage}
+                                      "status", "fix_pr_url", "notes", "resolved_by", "resolved_at")} | {"triage": triage}

@@ -995,9 +995,35 @@ function send(text, mode = "typed", opts = {}) {
       const cls = ["critical", "high"].includes(i.severity) ? "bad" : i.status === "fix_ready" ? "ok" : "warn";
       const pr = i.fix_pr_url ? ` · <a href="${esc(i.fix_pr_url)}" target="_blank" rel="noopener">PR</a>` : "";
       // severity is already shown by the row's accent colour - naming it again in text was noise.
-      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span></li>`;
+      const mark = `<button class="btn small" type="button" data-issue-act="resolve" data-id="${i.id}">Mark resolved</button>`;
+      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span><span class="sub">${mark}</span></li>`;
     }).join("") : `<li class="empty">No open issues.</li>`;
+    renderResolvedIssues(S.status?.resolved_issues || []);
   }
+
+  // Recently resolved issues, each with a Reopen button. Closing or reopening an issue is not an approval.
+  function renderResolvedIssues(resolved = []) {
+    $("#issues-resolved").innerHTML = resolved.map((i) => {
+      const by = i.resolved_by ? ` · by ${esc(i.resolved_by)}` : "";
+      const note = i.notes ? ` · ${esc(i.notes).slice(0, 140)}` : "";
+      return `<li class="ok">#${i.id} ${esc(i.title)}<span class="sub">resolved${by}${note}</span><span class="sub"><button class="btn small" type="button" data-issue-act="reopen" data-id="${i.id}">Reopen</button></span></li>`;
+    }).join("");
+  }
+
+  async function issueAction(id, act) {
+    let body;
+    if (act === "resolve") {
+      const note = window.prompt(`Mark issue #${id} resolved. Optional note:`, "");
+      if (note === null) return; // cancelled
+      body = JSON.stringify({ note });
+    }
+    const r = await api(`/api/issues/${encodeURIComponent(id)}/${act}`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); toast("Couldn't update the issue", e.detail || "", "warning"); }
+    else toast(act === "resolve" ? `Issue #${id} resolved` : `Issue #${id} reopened`);
+    refresh();
+  }
+  $("#issues").addEventListener("click", (e) => { const b = e.target.closest("[data-issue-act]"); if (b) issueAction(b.dataset.id, b.dataset.issueAct); });
+  $("#issues-resolved").addEventListener("click", (e) => { const b = e.target.closest("[data-issue-act]"); if (b) issueAction(b.dataset.id, b.dataset.issueAct); });
 
   function renderTests(tests = []) {
     const failing = tests.filter((t) => !t.ok);
