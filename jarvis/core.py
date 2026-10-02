@@ -10,7 +10,7 @@ import httpx
 
 from .brain import llm, plugins
 from .brain.agent import JarvisBrain
-from .config import Settings
+from .config import Settings, apply_timezone
 from .db import Database
 from .events import EventBus
 from .humanize import cron_to_english
@@ -28,11 +28,16 @@ from .services.accountant import Accountant
 from .services.accreditations import Accreditations
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
+from .services.standing_approvals import StandingApprovals
+from .services.teams_approvals import TeamsApprovals
 from .services.automations import AutomationService
 from .services.billing import Billing
+from .services.customer_comms import CustomerComms
 from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
+from .services.false_alarms import FalseAlarmLog
+from .services.job_intake import JobIntake
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
 from .services.briefing import Briefings
@@ -42,7 +47,9 @@ from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
+from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
+from .services.route_advisor import RouteAdvisor
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
@@ -66,7 +73,9 @@ class Jarvis:
     def __init__(self, settings: Settings, db: Database | None = None, http: httpx.AsyncClient | None = None,
                  client=None):
         s = self.settings = settings
+        apply_timezone(s.timezone)
         self.db = db or Database(settings.db_path)
+        self.db.maintain_transcript()  # 2-year retention; older rows are redacted once
         self.bus = EventBus()
         self.http = http or httpx.AsyncClient(timeout=30, headers={"User-Agent": "salts-jarvis/1.0"})
         self.client = client or llm.make_client(settings)
@@ -105,7 +114,11 @@ class Jarvis:
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
         self.actions.j = self
+        self.actions.standing = StandingApprovals(s, self.db)  # the owner's switches, default off; read-only here
+        self.actions.teams_approvals = TeamsApprovals(s, self.db, self.teamsbot)  # no-op until the bot is set up
         self.po_intake = PoIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
+        # voicemail / call-transcript emails -> proposed jobs; each is queued for approval, never created directly
+        self.job_intake = JobIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
@@ -118,9 +131,11 @@ class Jarvis:
         self.regwatch.actions = self.actions
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
         self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
+        self.route_advisor = RouteAdvisor(self.fsm, self.tracker, self.register)  # read-only route advice
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
         self.renewals = Renewals(self)
+        self.customer_comms = CustomerComms(self)  # drafts lifecycle emails; each is queued for approval, never sent
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
@@ -128,11 +143,13 @@ class Jarvis:
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
+        self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
         self.automations = AutomationService(self)
         self.self_learning = SelfLearning(self)
         self.weekly_digest = WeeklyDigest(self)
         self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
+        self.false_alarms = FalseAlarmLog(self)  # BS 5839-1 false alarm log; writes to FSM never happen from here
         self.recruiter = Recruiter(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
@@ -173,6 +190,9 @@ class Jarvis:
             "Email (Outlook)": "connected" if not self.mail.demo else "DEMO data - connect Microsoft 365",
             "Teams updates": "connected" if self.teams.enabled else "not set up",
             "Teams chat": "connected" if self.teamsbot.configured else "not set up",
+            "Standing approvals": ", ".join(
+                n for n, on in (("record keeping", s.standing_record_keeping),
+                                ("routine acknowledgements", s.standing_acknowledgements)) if on) or "off",
             "Salts FSM": "connected" if not self.fsm.demo else "DEMO data - set FSM_BASE_URL",
             "Accounts": (f"{self.finance.name}" if not getattr(self.finance, "demo", False)
                          else "DEMO data - connect Sage or add CSV exports"),
@@ -186,6 +206,9 @@ class Jarvis:
             "PO intake": (f"scans the inbox every {s.inbox_check_interval_min} min for customer purchase orders, "
                          "matches them to a sent quote and queues the job for your approval" if not self.mail.demo
                          else "DEMO data - connect Microsoft 365"),
+            "Speaking up in chat": (f"on - quiet {s.proactive_quiet_start} to {s.proactive_quiet_end}, at most "
+                                    f"{s.proactive_max_per_hour or 'any number'} an hour"
+                                    if s.proactive_chat_enabled else "off - Jarvis only answers when you ask"),
             "Self-learning": f"reflects on recent conversations {cron_to_english(s.self_learning_cron)}",
             "Weekly digest": (f"routine engineering notices sent to Teams {cron_to_english(s.weekly_digest_cron)}"
                               if s.weekly_digest_enabled else "off - every notice is sent straight away"),
@@ -230,6 +253,7 @@ class Jarvis:
             log.exception("Initial routine test run failed")
 
     async def stop(self) -> None:
+        await self.proactive.stop()
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
         if hasattr(self.brain, "close"):
@@ -247,6 +271,13 @@ class Jarvis:
         result = await self.billing.queue_review_requests()
         if result.get("queued"):
             await self.notifier.notify(f"{result['queued']} review requests ready", "Approve them on the display.",
+                                       importance="normal")
+
+    async def customer_comms_sweep(self) -> None:
+        result = await self.customer_comms.draft_all()
+        if result.get("queued"):
+            await self.notifier.notify(f"{len(result['queued'])} customer email(s) drafted",
+                                       "Approve or cancel them on the display - nothing has been sent.",
                                        importance="normal")
 
     async def lone_worker_sweep(self) -> None:

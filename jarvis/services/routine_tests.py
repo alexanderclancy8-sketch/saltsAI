@@ -167,6 +167,9 @@ class RoutineTester:
         if suite in ("compliance", "all"):
             try:
                 results += await self.run_compliance()
+                # Record the pass too: a failure row is only ever replaced by a newer row for the same check, so
+                # without this a one-off "FSM data" failure stayed on the HUD as the latest result for ever.
+                results.append(CheckResult("compliance", "FSM data", True, "loaded"))
             except Exception as e:  # noqa: BLE001
                 results.append(CheckResult("compliance", "FSM data", False, f"could not load FSM data: {e}"[:300]))
         for r in results:

@@ -1,11 +1,14 @@
 """ThoughtProof: an extra check in front of approved write actions.
 
-An action only reaches here AFTER the owner has clicked Approve (services/actions.py). Before it runs, it is
-described to a local ThoughtProof MCP server together with the written mandates in mandates.yaml, and the
-server must answer ALLOW or BLOCK.
+An action only reaches here AFTER it has been approved (services/actions.py): by a person clicking Approve on the
+display or in Teams, or - for the two narrow classes the owner has switched on in Settings - automatically under
+a standing approval (services/standing_approvals.py). The verifier is told which (context.approval.automatic /
+approved_by) so the mandates can reason about automatic runs. Before it runs, the action is described to a local
+ThoughtProof MCP server together with the written mandates in mandates.yaml, and the server must answer ALLOW or BLOCK.
 
 This layer can only ever make an action LESS likely to run:
-- it never approves, queues or skips anything - the approval click is still required first;
+- it never approves, queues or skips anything - the approval (a click, or the owner's standing approval) is still
+  required first;
 - BLOCK cancels the action and tells the owner why;
 - anything other than a clear ALLOW (an error, a timeout, a missing or badly configured server, an unparseable
   or mixed answer) is treated as BLOCK. It fails closed: a write is never run unchecked while this is switched on.
@@ -25,6 +28,7 @@ from typing import Any, Awaitable, Callable
 import yaml
 
 from ..brain.plugins import launch_config, load_specs
+from .standing_approvals import APPROVER_PREFIX
 
 log = logging.getLogger(__name__)
 MAX_PAYLOAD_CHARS = 8000
@@ -137,13 +141,19 @@ class ActionVerifier:
             spec = self._spec()
             launch, _ = launch_config(spec)
             payload = json.dumps(action.get("payload"), default=str, ensure_ascii=False)
+            by = str(action.get("approved_by") or "")
+            automatic = by.startswith(APPROVER_PREFIX)
             described = {
                 "kind": action.get("kind"), "summary": action.get("summary"),
                 "payload": payload[:MAX_PAYLOAD_CHARS] + ("…[truncated]" if len(payload) > MAX_PAYLOAD_CHARS else ""),
                 "context": {"allowed_finance_recipients": [e for e in (self.s.owner_email, self.s.partner_email) if e],
                             "owner": self.s.owner_name, "partner": self.s.partner_name,
                             # Set by Jarvis itself, never taken from the action's own content.
-                            "came_through_approval_queue": True},
+                            "came_through_approval_queue": True,
+                            # How it was approved, also set by Jarvis: a named person on the display / Teams, or
+                            # automatic = under the owner's own standing approval (Settings, owner-only).
+                            "approval": {"automatic": automatic, "approved_by": by[:120],
+                                         "standing_approval_category": by[len(APPROVER_PREFIX):] if automatic else None}},
             }
             mandates = load_mandates(self.s.mandates_file)
             arguments = {str(spec.get("action_arg") or "action"): json.dumps(described, ensure_ascii=False),

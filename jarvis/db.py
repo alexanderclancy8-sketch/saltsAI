@@ -9,9 +9,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from . import history
+
+TRANSCRIPT_REDACTED_KEY = "transcript:redacted_v1"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS issues (
@@ -86,6 +90,23 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     status TEXT NOT NULL DEFAULT 'pending',
     result TEXT DEFAULT '',
     decided_at TEXT DEFAULT ''
+);
+-- Where each Teams approver's one-to-one chat with the bot lives, so Jarvis can message them first (a Bot Framework
+-- "conversation reference"). Learned when an allowlisted person messages the bot; see services/teams_approvals.py.
+CREATE TABLE IF NOT EXISTS teams_approvers (
+    email TEXT PRIMARY KEY,
+    service_url TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- One row per approval card sent to one approver for one action: the claim that makes sending idempotent, and the
+-- Teams activity id used to update the card once the action is decided.
+CREATE TABLE IF NOT EXISTS teams_approval_cards (
+    action_id INTEGER NOT NULL,
+    email TEXT NOT NULL,
+    activity_id TEXT DEFAULT '',
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (action_id, email)
 );
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
@@ -192,7 +213,28 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT NOT NULL,
     markdown TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS false_alarm_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    job_ref TEXT NOT NULL UNIQUE,
+    site TEXT NOT NULL,
+    system TEXT DEFAULT '',
+    event_date TEXT DEFAULT '',
+    cause_category TEXT DEFAULT '',
+    cause TEXT DEFAULT '',
+    corrective_action TEXT DEFAULT '',
+    action_done_date TEXT DEFAULT '',
+    evidence_ref TEXT DEFAULT '',
+    investigated_by TEXT DEFAULT '',
+    reviewed_by TEXT DEFAULT '',
+    review_date TEXT DEFAULT ''
+);
 """
+
+# Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).
+FALSE_ALARM_FIELDS = ("system", "event_date", "cause_category", "cause", "corrective_action", "action_done_date",
+                      "evidence_ref", "investigated_by", "reviewed_by", "review_date")
 
 
 def now_iso() -> str:
@@ -209,7 +251,14 @@ class Database:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that older databases lack. Safe to run on every start."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_actions)").fetchall()}
+        if "approved_by" not in cols:
+            self._conn.execute("ALTER TABLE pending_actions ADD COLUMN approved_by TEXT DEFAULT ''")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -319,7 +368,26 @@ class Database:
                               (suite, name))
 
     # -- memory -------------------------------------------------------------------
+    @staticmethod
+    def _memory_key(fact: str) -> str:
+        """Comparison form for spotting a fact that is already remembered: case, spacing and a trailing full stop
+        don't make it a different fact."""
+        return " ".join(fact.split()).lower().rstrip(".").strip()
+
+    def find_memory(self, fact: str) -> int | None:
+        """Id of an already-remembered fact that says the same thing as `fact`, if any."""
+        key = self._memory_key(fact)
+        for m in self.memories():
+            if self._memory_key(m["fact"]) == key:
+                return m["id"]
+        return None
+
     def remember(self, fact: str) -> int:
+        """Stores a fact and returns its id - or, if the same fact is already remembered, returns the existing id
+        without adding a duplicate (the scheduled self-reflection can easily re-learn something it already knows)."""
+        existing = self.find_memory(fact)
+        if existing is not None:
+            return existing
         return self.execute("INSERT INTO memory (created_at, fact) VALUES (?,?)", (now_iso(), fact))
 
     def forget(self, memory_id: int) -> None:
@@ -349,9 +417,50 @@ class Database:
         self.execute("DELETE FROM automations WHERE id = ?", (automation_id,))
 
     # -- approvals ------------------------------------------------------------------
-    def create_action(self, kind: str, summary: str, payload: dict[str, Any]) -> int:
-        return self.execute("INSERT INTO pending_actions (created_at, kind, summary, payload_json) VALUES (?,?,?,?)",
-                            (now_iso(), kind, summary, json.dumps(payload)))
+    def create_action(self, kind: str, summary: str, payload: dict[str, Any], status: str = "pending",
+                      approved_by: str = "") -> int:
+        """`status`/`approved_by` are only ever set to "approved"/"standing approval: ..." by ActionExecutor.queue(),
+        when the owner's own standing approval (services/standing_approvals.py) covers this exact action."""
+        return self.execute(
+            "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (now_iso(), kind, summary, json.dumps(payload), status, approved_by,
+             now_iso() if status != "pending" else ""))
+
+    def count_standing_runs_since(self, cutoff_iso: str) -> int:
+        row = self.query_one("SELECT COUNT(*) AS n FROM pending_actions WHERE approved_by LIKE 'standing approval:%'"
+                             " AND created_at >= ?", (cutoff_iso,))
+        return int(row["n"]) if row else 0
+
+    def claim_teams_card(self, action_id: int, email: str) -> bool:
+        """True only for the first caller for this (action, approver) - the idempotency guard for approval cards."""
+        with self._lock:
+            cur = self._conn.execute("INSERT OR IGNORE INTO teams_approval_cards (action_id, email, sent_at)"
+                                     " VALUES (?,?,?)", (action_id, email.lower(), now_iso()))
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def count_teams_cards_since(self, email: str, cutoff_iso: str) -> int:
+        row = self.query_one("SELECT COUNT(*) AS n FROM teams_approval_cards WHERE email = ? AND sent_at >= ?",
+                             (email.lower(), cutoff_iso))
+        return int(row["n"]) if row else 0
+
+    def set_teams_card_activity(self, action_id: int, email: str, activity_id: str) -> None:
+        self.execute("UPDATE teams_approval_cards SET activity_id = ? WHERE action_id = ? AND email = ?",
+                     (activity_id, action_id, email.lower()))
+
+    def teams_cards_for(self, action_id: int) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM teams_approval_cards WHERE action_id = ?", (action_id,))
+
+    def save_teams_approver(self, email: str, service_url: str, conversation_id: str) -> None:
+        self.execute(
+            "INSERT INTO teams_approvers (email, service_url, conversation_id, updated_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(email) DO UPDATE SET service_url = excluded.service_url,"
+            " conversation_id = excluded.conversation_id, updated_at = excluded.updated_at",
+            (email.lower(), service_url, conversation_id, now_iso()))
+
+    def teams_approvers(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM teams_approvers ORDER BY email")
 
     def get_action(self, action_id: int) -> dict[str, Any] | None:
         row = self.query_one("SELECT * FROM pending_actions WHERE id = ?", (action_id,))
@@ -368,6 +477,16 @@ class Database:
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))
+
+    def decide_pending_action(self, action_id: int, status: str, by: str, result: str = "") -> bool:
+        """Move a still-pending action to approved/denied. Atomic: False if someone else decided it first
+        (two approvers tapping at once can't both win)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE pending_actions SET status = ?, result = ?, decided_at = ?, approved_by = ?"
+                " WHERE id = ? AND status = 'pending'", (status, result, now_iso(), by, action_id))
+            self._conn.commit()
+            return cur.rowcount == 1
 
     # -- drafted documents (rendered to PDF/Word on request) ---------------------------------
     def add_document(self, doc_id: str, kind: str, title: str, markdown: str) -> str:
@@ -389,10 +508,52 @@ class Database:
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:
+        """Store one turn, redacted (credentials and access codes never reach the table). For the owner's words,
+        cumulative speech-to-text partials are collapsed, and a longer version of the immediately preceding
+        unanswered line replaces it - so only the final version of an utterance is kept."""
+        text = history.redact_history(text)
+        if role == "user":
+            text = history.collapse_cumulative(text)
+            last = self.query_one("SELECT id, role, text, created_at FROM transcript ORDER BY id DESC LIMIT 1")
+            if last and last["role"] == "user" and history.is_partial_of(last["text"], text):
+                try:
+                    age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds()
+                except ValueError:
+                    age = history.PARTIAL_WINDOW_S + 1
+                if age <= history.PARTIAL_WINDOW_S:
+                    self.execute("UPDATE transcript SET text = ? WHERE id = ?", (text, last["id"]))
+                    return
         self.execute("INSERT INTO transcript (created_at, role, text) VALUES (?,?,?)", (now_iso(), role, text))
 
     def recent_transcript(self, limit: int = 30) -> list[dict[str, Any]]:
         return list(reversed(self.query("SELECT * FROM transcript ORDER BY id DESC LIMIT ?", (limit,))))
+
+    def last_transcript_id(self) -> int:
+        return (self.query_one("SELECT MAX(id) AS m FROM transcript") or {}).get("m") or 0
+
+    def transcript_since(self, since_iso: str, before_id: int | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """The latest ``limit`` turns created at or after ``since_iso`` (optionally only ids <= ``before_id``),
+        oldest first."""
+        if before_id is None:
+            rows = self.query("SELECT * FROM transcript WHERE created_at >= ? ORDER BY id DESC LIMIT ?",
+                              (since_iso, limit))
+        else:
+            rows = self.query("SELECT * FROM transcript WHERE created_at >= ? AND id <= ? ORDER BY id DESC LIMIT ?",
+                              (since_iso, before_id, limit))
+        return list(reversed(rows))
+
+    def maintain_transcript(self) -> None:
+        """Retention: drop turns older than the agreed 2 years, and (once) redact rows written before redaction
+        at rest existed."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=history.RETENTION_DAYS)).isoformat(timespec="seconds")
+        self.execute("DELETE FROM transcript WHERE created_at < ?", (cutoff,))
+        if self.get_kv(TRANSCRIPT_REDACTED_KEY):
+            return
+        for row in self.query("SELECT id, text FROM transcript"):
+            clean = history.redact_history(row["text"])
+            if clean != row["text"]:
+                self.execute("UPDATE transcript SET text = ? WHERE id = ?", (clean, row["id"]))
+        self.set_kv(TRANSCRIPT_REDACTED_KEY, now_iso())
 
     # -- tracked metrics (followers, reviews, rankings) ----------------------------------
     def record_metric(self, day: str, source: str, metric: str, value: float) -> None:
@@ -469,6 +630,35 @@ class Database:
 
     def delete_site_access_code(self, record_id: int) -> None:
         self.execute("DELETE FROM site_access_codes WHERE id = ?", (record_id,))
+
+    # -- false alarm log (BS 5839-1: log, investigate, review, evidence corrective action) --------------
+    def get_false_alarm_record(self, job_ref: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM false_alarm_log WHERE job_ref = ?", (job_ref,))
+
+    def list_false_alarm_records(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM false_alarm_log ORDER BY event_date, id")
+
+    def upsert_false_alarm_record(self, job_ref: str, site: str, **fields: str) -> dict[str, Any]:
+        """Create the record for a job, or update it. On update only non-empty values overwrite, so adding the
+        review later never blanks the cause that was recorded earlier."""
+        unknown = set(fields) - set(FALSE_ALARM_FIELDS)
+        if unknown:
+            raise ValueError(f"Unknown false alarm log field(s): {', '.join(sorted(unknown))}")
+        values = {k: str(v).strip() for k, v in fields.items() if v is not None and str(v).strip()}
+        ts = now_iso()
+        if self.get_false_alarm_record(job_ref):
+            if site:
+                values["site"] = site
+            if values:
+                values["updated_at"] = ts
+                cols = ", ".join(f"{k} = ?" for k in values)
+                self.execute(f"UPDATE false_alarm_log SET {cols} WHERE job_ref = ?", (*values.values(), job_ref))
+        else:
+            row = {"created_at": ts, "updated_at": ts, "job_ref": job_ref, "site": site, **values}
+            cols = ", ".join(row)
+            marks = ", ".join("?" for _ in row)
+            self.execute(f"INSERT INTO false_alarm_log ({cols}) VALUES ({marks})", tuple(row.values()))
+        return self.get_false_alarm_record(job_ref) or {}
 
     # -- processed emails -----------------------------------------------------------------
     def mark_email_processed(self, message_id: str) -> bool:

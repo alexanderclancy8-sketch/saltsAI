@@ -8,8 +8,8 @@ staff: /engineers
 systems: /systems        # maintained systems (fire alarm, EL, intruder, CCTV, access...)
 contracts: /contracts    # maintenance contracts incl. renewal date
 quotes: /quotes
-sites: /sites
-customers: /customers
+sites: /sites           # GET to read; POST to create (create_site, approval-gated)
+customers: /customers   # GET to read; POST to create (create_customer, approval-gated)
 timesheets: /timesheets  # supports ?from=&to=
 locations: /tracking/locations  # latest engineer/van GPS positions (?engineer=&since=)
 stock: /stock            # stock items with location + quantity (stores and vans)

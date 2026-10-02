@@ -51,6 +51,20 @@ def _summarise(msg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+OFFICE_EXTENSIONS = (".docx", ".xlsx")  # macro-enabled (.docm/.xlsm) and legacy formats are deliberately not read
+
+
+def select_office_attachments(items: list[dict[str, Any]], max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+    """The Word/Excel file attachments (name + base64 data) from a Graph /attachments listing."""
+    out = []
+    for a in items:
+        name = a.get("name") or ""
+        if a.get("@odata.type") == "#microsoft.graph.fileAttachment" and name.lower().endswith(OFFICE_EXTENSIONS) \
+                and a.get("contentBytes") and int(a.get("size") or 0) <= max_bytes:
+            out.append({"name": name, "data": a["contentBytes"]})
+    return out
+
+
 class GraphMail:
     demo = False
 
@@ -133,6 +147,14 @@ class GraphMail:
                     and int(a.get("size") or 0) <= max_bytes:
                 out.append({"name": name, "data": a["contentBytes"]})
         return out
+
+    async def office_attachments(self, message_id: str, mailbox: str | None = None,
+                                 max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        """Word (.docx) and Excel (.xlsx) attachments of a message as base64 - read-only, nothing is changed."""
+        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
+        r.raise_for_status()
+        return select_office_attachments(r.json().get("value", []), max_bytes)
 
     async def mark_read(self, message_id: str) -> None:
         r = await self.http.patch(f"{self._mbx}/messages/{message_id}", json={"isRead": True},
@@ -397,6 +419,10 @@ class DemoMail:
 
     async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
                               max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+        return []
+
+    async def office_attachments(self, message_id: str, mailbox: str | None = None,
+                                 max_bytes: int = 15_000_000) -> list[dict[str, str]]:
         return []
 
     async def mark_read(self, message_id: str) -> None:

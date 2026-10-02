@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ValidationError
 
 from . import plugins
+from ..events import quiet_turn
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
@@ -120,15 +121,18 @@ class MaxBrain:
         self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
         self._repeats = RepeatDetector()
+        self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
         self.refresh_system()
 
     def refresh_system(self) -> None:
-        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary())
+        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
+                              history_before_id=self._history_before)
         self.system = "\n\n".join(b["text"] for b in blocks)
 
     def reset(self) -> None:
         self.session_id = None
         self._fresh_start = True  # the worker restarts Claude Code without the old conversation
+        self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
         self.j.bus.publish("conversation_reset", None)
 
@@ -160,7 +164,9 @@ class MaxBrain:
 
     async def ask(self, text: str, mode: str = "typed", attachments: list[dict[str, str]] | None = None,
                   speaker: str | None = None) -> str:
-        return await self._submit(("ask", text, mode, attachments, speaker))
+        # The worker task runs the turn, so a background (silent) turn has to say so explicitly - a context variable
+        # set here would not reach it. See events.quiet_turn.
+        return await self._submit(("ask", text, mode, attachments, speaker, quiet_turn.get()))
 
     async def warm(self) -> None:
         """Start Claude Code ahead of the first message, so that one is quick too."""
@@ -242,7 +248,15 @@ class MaxBrain:
                 log.debug("Claude Code client disconnect: %s", e)
 
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
-                    speaker: str | None = None) -> str:
+                    speaker: str | None = None, quiet: bool = False) -> str:
+        token = quiet_turn.set(quiet)
+        try:
+            return await self._turn_events(text, mode, attachments, speaker)
+        finally:
+            quiet_turn.reset(token)
+
+    async def _turn_events(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
+                           speaker: str | None = None) -> str:
         from claude_agent_sdk import ResultMessage, StreamEvent
 
         bus, db = self.j.bus, self.j.db

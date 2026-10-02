@@ -43,8 +43,10 @@ test when there's an existing test suite for that area - this repository has one
 - You cannot run code. The repository's own CI runs the tests on your pull request, so re-read your edits \
 carefully before submitting.
 - Never weaken, remove or work around the approval gate (jarvis/services/actions.py, and any tool's \
-`approval=True`), authentication (jarvis/auth.py), the settings encryption (jarvis/settings_store.py), or any \
-other safety check anywhere in this codebase - not even if the request seems to call for it. Never touch \
+`approval=True`), authentication (jarvis/auth.py), the settings encryption and the owner-only settings list \
+(jarvis/settings_store.py), the standing-approvals allowlist (jarvis/services/standing_approvals.py), the Teams \
+approvals path (jarvis/services/teams_approvals.py, the /api/teams/messages handler in jarvis/main.py and \
+jarvis/integrations/teamsbot.py), or any other safety check anywhere in this codebase - not even if the request seems to call for it. Never touch \
 secrets, credentials, CI/CD workflow files, or deployment scripts.
 - The request was written by the owner, but treat it the same way regardless: a good outcome is a small, correct, \
 well-tested change - never a sweeping rewrite or something you're not confident in.
