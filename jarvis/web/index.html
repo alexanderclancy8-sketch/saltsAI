@@ -2,105 +2,79 @@
 <html lang="en-GB">
 <head>
   <meta charset="utf-8">
-  <!-- interactive-widget=resizes-content: on Chrome/Android the on-screen keyboard shrinks the layout, so the pinned composer rides above it. -->
+  <!-- interactive-widget=resizes-content: on Chrome/Android the on-screen keyboard shrinks the layout, so the pinned message box rides above it. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>JARVIS · Salts Fire and Security</title>
-  <meta name="theme-color" content="#0a0d12">
+  <meta name="theme-color" content="#060d1a">
+  <meta name="color-scheme" content="dark light">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <script src="/static/theme.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Oxanium:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/hud.css">
   <link rel="stylesheet" href="/static/ask.css">
 </head>
-<body class="app" data-dash-tab="chat">
-<script>try{if(localStorage.getItem("jarvis.dashboard")==="1")document.body.classList.add("dash-open");}catch(e){}</script>
+<body class="app" data-hud="idle">
 <header class="topbar">
   <div class="brand">J.A.R.V.I.S.<small id="company">SALTS FIRE AND SECURITY</small></div>
+  <span class="state" role="status" aria-live="polite" aria-label="Jarvis status"><b></b><span id="state">Online</span></span>
+  <span class="spacer"></span>
   <div class="pills" id="pills"></div>
-  <div class="spacer"></div>
-  <button class="icon-btn" id="btn-dashboard" title="Show dashboard" aria-pressed="false" aria-label="Toggle dashboard"><span aria-hidden="true">▤</span><span class="btn-label"> Dashboard</span></button>
-  <button class="icon-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-label="Mute Jarvis posting into this session by himself" aria-pressed="false">🔔<span class="btn-label"> Speaks up</span></button>
-  <button class="icon-btn" id="btn-briefing" title="Morning briefing">Briefing</button>
-  <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">⚙</button>
-  <div class="clock" id="clock"></div>
+  <span class="clock" id="clock"></span>
+  <nav class="actions" id="actions" aria-label="Console options">
+    <button type="button" class="ghost tb-btn" id="btn-voice" aria-pressed="true" title="Speak replies aloud, or keep Jarvis silent">Voice on</button>
+    <button type="button" class="ghost tb-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-label="Mute Jarvis posting into this session by himself" aria-pressed="false">Speaks up</button>
+    <button type="button" class="ghost tb-btn" id="btn-connections" data-pop="connections">Connections</button>
+    <button type="button" class="ghost tb-btn" id="btn-settings" data-pop="settings">Settings</button>
+  </nav>
 </header>
 
-<main class="hud">
-  <!-- Dashboard section switcher: only shown (CSS) when the dashboard is open on a screen too narrow for three columns.
-       On phones it also carries "Chat", so the conversation is one tap away instead of buried under the panels. -->
-  <nav class="dtabs" id="dtabs" role="tablist" aria-label="Dashboard sections">
-    <button type="button" class="dtab" role="tab" data-dtab="chat" aria-selected="true">Chat</button>
-    <button type="button" class="dtab" role="tab" data-dtab="comms" aria-selected="false">Comms<span class="dtab-badge" id="dtab-comms-badge" hidden></span></button>
-    <button type="button" class="dtab" role="tab" data-dtab="issues" aria-selected="false">Issues</button>
-    <button type="button" class="dtab" role="tab" data-dtab="ops" aria-selected="false">Ops</button>
-    <button type="button" class="dtab" role="tab" data-dtab="fleet" aria-selected="false">Fleet</button>
-    <button type="button" class="dtab" role="tab" data-dtab="finance" aria-selected="false">Finance</button>
+<div class="shell">
+  <!-- Left rail (a scrolling pill strip on phones). Each item opens its pop-up; counts are mono, amber when something
+       needs a look and red when something is failing. Presence has no count; Fleet reads "off" when not connected. -->
+  <nav class="rail" id="rail" aria-label="Dashboard sections">
+    <div class="label">On request</div>
+    <button type="button" class="rail-item" data-pop="approvals">Approvals <span class="rail-count" id="rc-approvals">0</span></button>
+    <button type="button" class="rail-item" data-pop="comms">Comms <span class="rail-count" id="rc-comms">0</span></button>
+    <button type="button" class="rail-item" data-pop="issues">Issues <span class="rail-count" id="rc-issues">0</span></button>
+    <button type="button" class="rail-item" data-pop="health">Health <span class="rail-count" id="rc-health">0</span></button>
+    <button type="button" class="rail-item" data-pop="ops">Ops <span class="rail-count" id="rc-ops">0</span></button>
+    <button type="button" class="rail-item" data-pop="fleet">Fleet <span class="rail-count" id="rc-fleet">off</span></button>
+    <button type="button" class="rail-item" data-pop="finance">Finance <span class="rail-count" id="rc-finance">0</span></button>
+    <button type="button" class="rail-item" data-pop="presence">Presence</button>
+    <button type="button" class="rail-item" data-pop="upcoming">Coming up <span class="rail-count" id="rc-upcoming">0</span></button>
   </nav>
-  <!-- LEFT -->
-  <section class="col left">
-    <div class="panel" data-dtab="comms" id="approvals-panel" hidden>
-      <h2>AWAITING YOUR APPROVAL <span class="count" id="approvals-count"></span></h2>
-      <div id="approvals"></div>
-    </div>
-    <div class="panel" data-dtab="comms" id="suggestions-panel" hidden>
-      <h2>SUGGESTIONS <span class="count" id="suggestions-count"></span></h2>
-      <div id="suggestions"></div>
-    </div>
-    <div class="panel" data-dtab="comms">
-      <h2>COMMS <span class="count" id="inbox-count"></span></h2>
-      <ul class="list" id="inbox"><li class="empty">Loading…</li></ul>
-    </div>
-    <div class="panel" data-dtab="issues">
-      <h2>ISSUES &amp; FIXES <span class="count" id="issues-count"></span></h2>
-      <ul class="list" id="issues"></ul>
-    </div>
-    <div class="panel" data-dtab="issues">
-      <h2>ROUTINE TESTS <span class="count" id="tests-count"></span></h2>
-      <ul class="list" id="tests"></ul>
-      <div style="margin-top:8px"><button class="btn" id="btn-run-tests">Run tests now</button></div>
-    </div>
-    <div class="panel" data-dtab="issues">
-      <h2>ALERTS</h2>
-      <ul class="list" id="notifications"></ul>
-    </div>
-  </section>
 
-  <!-- CENTRE -->
-  <section class="col center">
-    <div class="panel">
-      <div class="core-wrap">
+  <main class="stage">
+    <div class="center-col">
+      <div class="core-block">
         <div class="orb-wrap">
-          <canvas id="reactor" width="340" height="340" role="img" aria-label="Jarvis status"></canvas>
+          <button type="button" class="core-btn" id="core-btn" aria-label="Jarvis core - click to start or stop listening" title="Click to start or stop listening">
+            <canvas id="reactor" width="300" height="300" aria-hidden="true"></canvas>
+          </button>
           <button type="button" class="orb-badge" id="orb-badge" hidden aria-label="Approvals and suggestions waiting - tap to view"></button>
         </div>
-        <div>
-          <div class="state" id="state">Online</div>
-          <div class="caption" id="caption">Good to see you. Ask me anything, or tap the microphone.</div>
-          <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
-          <div class="toolline" id="toolline"></div>
-          <div class="quick" id="quick">
-            <button class="chip-btn" data-q="Give me my briefing">Briefing</button>
-            <button class="chip-btn" data-q="Give me the end-of-day wrap-up">Wrap-up</button>
-            <button class="chip-btn" data-q="How is the team performing this week? Is anyone falling short?">Team review</button>
-            <button class="chip-btn" data-q="Run a business health check and tell me what to improve">Business health</button>
-            <button class="chip-btn" data-q="What's our cash flow looking like for the next 13 weeks?">Cash flow</button>
-            <button class="chip-btn" data-q="Where is everyone right now?">Where's everyone?</button>
-            <button class="chip-btn" data-q="What stock do we need to reorder?">Stock</button>
-            <button class="chip-btn" data-q="Which customers are at risk and what should we do about them?">Customers</button>
-            <button class="chip-btn" data-q="How are our socials and Google ranking doing?">Marketing</button>
-          </div>
+        <p class="caption" id="caption" role="status">Live. Ask me anything about the business.</p>
+        <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
+        <div class="toolline" id="toolline"></div>
+        <div class="needs" id="needs" aria-label="Needs you">
+          <span class="label">Needs you</span>
+          <div class="needs-list" id="needs-list"><span class="needs-clear">Loading…</span></div>
         </div>
       </div>
-    </div>
-    <div class="panel convo-panel">
-      <div class="transcript-wrap" id="transcript-wrap">
-        <h2>CONVERSATION <button class="count linkish" id="btn-new-convo">new conversation</button></h2>
+
+      <section class="convo" id="transcript-wrap" aria-label="Conversation">
+        <div class="convo-head">
+          <h2>Conversation</h2>
+          <button class="linkish" id="btn-new-convo" type="button">New conversation</button>
+        </div>
         <div class="conversation" id="conversation" role="log" aria-live="polite" aria-label="Conversation"></div>
-      </div>
+      </section>
+
       <div class="attachments" id="attachments"></div>
       <div class="reply-hint" id="reply-hint" hidden>
         <span class="rh-text" id="reply-hint-text"></span>
@@ -108,45 +82,28 @@
         <button type="button" id="reply-hint-forget" title="Forget this learned reply" aria-label="Forget this learned reply">✕</button>
       </div>
       <form class="composer" id="composer">
-        <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach">📎</button>
+        <div class="quick" id="quick" role="menu" aria-label="Shortcuts" hidden>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Give me my briefing">Briefing</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Give me the end-of-day wrap-up">Wrap-up</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="How is the team performing this week? Is anyone falling short?">Team review</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Run a business health check and tell me what to improve">Business health</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="What's our cash flow looking like for the next 13 weeks?">Cash flow</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Where is everyone right now?">Where's everyone?</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="What stock do we need to reorder?">Stock</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Which customers are at risk and what should we do about them?">Customers</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="How are our socials and Google ranking doing?">Marketing</button>
+        </div>
+        <button type="button" class="ghost sq" id="btn-shortcuts" aria-haspopup="menu" aria-expanded="false" aria-controls="quick" aria-label="Shortcuts" title="Shortcuts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
+        <textarea class="field" id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis"></textarea>
+        <button type="button" class="ghost sq attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
         <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
-        <textarea id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis…"></textarea>
-        <button type="button" class="mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone">🎙</button>
-        <button type="button" class="mic stop" id="btn-stop" title="Stop" aria-label="Stop" hidden>◼</button>
-        <button type="submit" class="mic" id="btn-send" title="Send" aria-label="Send">➤</button>
+        <button type="button" class="ghost sq mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+        <button type="button" class="btn-send stop" id="btn-stop" title="Stop" aria-label="Stop" hidden>STOP</button>
+        <button type="submit" class="btn-send" id="btn-send" title="Send" aria-label="Send">SEND</button>
       </form>
     </div>
-  </section>
-
-  <!-- RIGHT -->
-  <section class="col right">
-    <div class="panel" data-dtab="ops">
-      <h2>OPERATIONS <span class="count" id="ops-date"></span></h2>
-      <div class="kpis" id="ops-kpis"></div>
-      <ul class="list" id="ops" style="margin-top:10px"></ul>
-    </div>
-    <div class="panel" data-dtab="fleet">
-      <h2>FLEET <span class="count" id="map-note"></span></h2>
-      <div id="map"></div>
-    </div>
-    <div class="panel" data-dtab="finance">
-      <h2>FINANCE <span class="count" id="finance-source"></span></h2>
-      <div class="kpis" id="finance"></div>
-    </div>
-    <div class="panel" data-dtab="ops">
-      <h2>CUSTOMER WATCH <span class="count" id="customers-count"></span></h2>
-      <ul class="list" id="customers"></ul>
-    </div>
-    <div class="panel" data-dtab="ops">
-      <h2>PRESENCE</h2>
-      <ul class="list" id="presence"></ul>
-    </div>
-    <div class="panel" data-dtab="ops">
-      <h2>COMING UP</h2>
-      <ul class="list" id="deadlines"></ul>
-    </div>
-  </section>
-</main>
+  </main>
+</div>
 
 <div class="display" id="display" role="dialog" aria-modal="true" aria-labelledby="display-title">
   <header><h3 id="display-title"></h3>
@@ -159,48 +116,169 @@
   <div class="body md" id="display-body"></div>
 </div>
 
-<aside class="drawer" id="drawer" role="dialog" aria-label="Settings">
+<!-- The ONE pop-up drawer. Every section below is a .pop inside it; Drawer.show(name) in hud.js reveals one, sets the
+     title, and the drawer closes with the Close button, Escape or a click on the scrim. -->
+<div class="scrim" id="scrim" aria-hidden="true"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true">
   <div class="drawer-head">
-    <h2>Settings</h2>
-    <button class="icon-btn" id="drawer-close" aria-label="Close settings">✕</button>
+    <h2 id="drawer-title">Jarvis</h2>
+    <button type="button" class="ghost drawer-close" id="drawer-close">Close</button>
   </div>
-  <div class="drawer-tabs" id="drawer-tabs">
-    <button class="drawer-tab active" data-pane="voice-prefs">Voice &amp; display</button>
-    <button class="drawer-tab" data-pane="connections">Connections</button>
-  </div>
-  <div class="drawer-body">
-    <div class="drawer-pane" id="pane-voice-prefs">
-      <label for="set-listen">Listening</label>
-      <select id="set-listen">
-        <option value="ptt">Tap the mic (or hold Space) to talk</option>
-        <option value="wake">Always listening - say "Jarvis…"</option>
-      </select>
-      <label for="set-speak" style="margin-top:14px">Speak replies</label>
-      <select id="set-speak">
-        <option value="voice">When I talk to Jarvis</option>
-        <option value="always">Always</option>
-        <option value="off">Never</option>
-      </select>
-      <label for="set-bargein" style="margin-top:14px">Talk over Jarvis (always-listening mode)</label>
-      <select id="set-bargein">
-        <option value="1">On - say "Jarvis…" to interrupt him</option>
-        <option value="0">Off - only "Jarvis, stop" interrupts (use this if he cuts himself off on speakers)</option>
-      </select>
-      <label for="set-voice" style="margin-top:14px">Voice</label>
-      <select id="set-voice"><option value="">Default (British)</option></select>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:16px">
-        <a class="btn" id="btn-sage" href="/auth/sage/start" hidden>Connect Sage</a>
-        <button class="btn" id="btn-test-voice" type="button">Test voice</button>
-        <form method="post" action="/logout"><button class="btn stop" type="submit">Sign out</button></form>
+  <div class="drawer-body" id="drawer-body">
+
+    <section class="pop" id="pop-approvals" data-title="Approvals" hidden>
+      <div class="sec" id="approvals-panel">
+        <h3>Awaiting your approval <span class="count" id="approvals-count"></span></h3>
+        <div id="approvals"></div>
       </div>
-      <p class="empty" style="margin-top:18px">Staff report problems at <code id="report-link">/report</code>.
-        Replies are generated by Claude; figures marked DEMO are sample data until each system is connected under
-        the Connections tab.</p>
-    </div>
-    <div class="drawer-pane" id="pane-connections" hidden>
+      <div class="sec" id="suggestions-panel">
+        <h3>Suggestions <span class="count" id="suggestions-count"></span></h3>
+        <div id="suggestions"></div>
+      </div>
+      <p class="empty" id="approvals-empty" hidden>Nothing is waiting for you.</p>
+    </section>
+
+    <section class="pop" id="pop-comms" data-title="Comms" hidden>
+      <div class="sec">
+        <h3>Unread messages <span class="count" id="inbox-count"></span></h3>
+        <ul class="list" id="inbox"><li class="empty">Loading…</li></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-issues" data-title="Issues and fixes" hidden>
+      <div class="sec">
+        <h3>Open issues and fixes <span class="count" id="issues-count"></span></h3>
+        <ul class="list" id="issues"></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-health" data-title="Health" hidden>
+      <div class="sec">
+        <h3>Routine tests <span class="count" id="tests-count"></span></h3>
+        <ul class="list" id="tests"></ul>
+        <div style="margin-top:10px"><button class="btn" id="btn-run-tests" type="button">Run tests now</button></div>
+      </div>
+      <div class="sec">
+        <h3>Alerts</h3>
+        <ul class="list" id="notifications"></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-ops" data-title="Operations" hidden>
+      <div class="sec">
+        <h3>Today <span class="count" id="ops-date"></span></h3>
+        <div class="kpis" id="ops-kpis"></div>
+      </div>
+      <div class="sec">
+        <h3>Engineers</h3>
+        <ul class="list" id="ops"></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-fleet" data-title="Fleet" hidden>
+      <div class="sec">
+        <h3>Vehicle tracking <span class="count" id="map-note"></span></h3>
+        <div class="fleet-note" id="fleet-status"></div>
+        <div id="map"></div>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-finance" data-title="Finance" hidden>
+      <div class="sec">
+        <h3>Position <span class="count" id="finance-source"></span></h3>
+        <div class="kpis" id="finance"></div>
+      </div>
+      <div class="sec">
+        <h3>Customer watch <span class="count" id="customers-count"></span></h3>
+        <ul class="list" id="customers"></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-presence" data-title="Presence" hidden>
+      <div class="sec">
+        <h3>Followers and reviews</h3>
+        <ul class="list" id="presence"></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-upcoming" data-title="Coming up" hidden>
+      <div class="sec">
+        <h3>Dated reminders</h3>
+        <ul class="list" id="deadlines"></ul>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-demo" data-title="Demo data" hidden>
+      <div class="sec">
+        <h3>Sources still showing samples</h3>
+        <p class="empty" id="demo-intro">Figures from these sources are samples until the real systems are connected.</p>
+        <div id="demo-list"><p class="empty">Loading…</p></div>
+      </div>
+      <div class="set-actions"><button class="btn" type="button" data-pop="connections">Open Connections</button></div>
+    </section>
+
+    <section class="pop" id="pop-settings" data-title="Settings" hidden>
+      <div class="sec">
+        <h3>Display</h3>
+        <div class="set-pair">
+          <label for="set-theme">Theme</label>
+          <select id="set-theme">
+            <option value="auto">Auto - follow this device</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </div>
+      <div class="sec">
+        <h3>Voice</h3>
+        <div class="set-pair">
+          <label for="set-listen">Listening</label>
+          <select id="set-listen">
+            <option value="ptt">Tap the mic (or hold Space) to talk</option>
+            <option value="wake">Always listening - say "Jarvis…"</option>
+          </select>
+        </div>
+        <div class="set-pair">
+          <label for="set-speak">Speak replies</label>
+          <select id="set-speak">
+            <option value="voice">When I talk to Jarvis</option>
+            <option value="always">Always</option>
+            <option value="off">Never</option>
+          </select>
+        </div>
+        <div class="set-pair">
+          <label for="set-bargein">Talk over Jarvis (always-listening mode)</label>
+          <select id="set-bargein">
+            <option value="1">On - say "Jarvis…" to interrupt him</option>
+            <option value="0">Off - only "Jarvis, stop" interrupts (use this if he cuts himself off on speakers)</option>
+          </select>
+        </div>
+        <div class="set-pair">
+          <label for="set-voice">Voice</label>
+          <select id="set-voice"><option value="">Default (British)</option></select>
+        </div>
+        <div class="set-actions">
+          <button class="btn" id="btn-test-voice" type="button">Test voice</button>
+          <a class="btn" id="btn-sage" href="/auth/sage/start" hidden>Connect Sage</a>
+        </div>
+      </div>
+      <div class="sec">
+        <h3>Connections and account</h3>
+        <div class="set-actions">
+          <button class="btn" id="btn-open-connections" type="button" data-pop="connections">Connections</button>
+          <button class="btn" id="btn-copy-report" type="button">Copy staff report link</button>
+          <form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>
+        </div>
+        <p class="empty" style="margin-top:16px">Staff report problems at the staff report page (use the button above to copy the link).
+          Replies are generated by Claude; figures marked DEMO are sample data until each system is connected under
+          Connections.</p>
+      </div>
+    </section>
+
+    <section class="pop" id="pop-connections" data-title="Connections" hidden>
       <div id="settings-problem"></div>
       <div id="settings-sections"></div>
-    </div>
+    </section>
   </div>
   <div class="set-save-bar" id="settings-savebar" hidden>
     <span class="status" id="settings-status"></span>
@@ -211,6 +289,7 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/core.js"></script>
 <script src="/static/ask.js"></script>
 <script src="/static/hud.js"></script>
 </body>
