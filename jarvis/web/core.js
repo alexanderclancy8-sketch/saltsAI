@@ -1,80 +1,60 @@
 /* JARVIS core - the canvas animation at the heart of the console and the sign-in page.
  *
- * Its colour and energy follow the agent's state: calm cyan when idle, green while listening, amber while working,
- * brighter cyan while speaking. Colours come from the CSS custom properties (--core-rgb, --ok-rgb, --warn-rgb,
- * --core-hi-rgb, --track-rgb) so both themes and any later retune of the tokens apply without touching this file.
- * Under prefers-reduced-motion nothing animates: a single static frame is drawn and redrawn only when the state or
- * the theme changes. */
+ * Ported from the design mockup (docs/redesign/jarvis-console-mockup.html): a soft glow, a waveform ring whose energy
+ * follows the agent's state, and three rotating arc rings. Colour and energy follow the real state: calm dim cyan when
+ * idle ("standby"), bright cyan while listening, amber while working, green while speaking. Colours come from the CSS
+ * custom properties (--core-dim-rgb, --core-rgb, --ember-rgb, --ok-rgb) so both themes and any later retune of the
+ * tokens apply without touching this file. Under prefers-reduced-motion nothing animates: a single static frame is
+ * drawn and redrawn only when the state or the theme changes. */
 (() => {
   "use strict";
-  const TAU = Math.PI * 2;
-  // tok: which colour token; energy: 0..1 base brightness; spin: ring rotation speed multiplier.
+  // tok: which colour token; energy: how lively the waveform ring is (0..1); fast: the arcs spin 3x faster (working).
   const STATES = {
-    idle: { tok: "core", energy: 0.28, spin: 0.6 },
-    listening: { tok: "ok", energy: 0.62, spin: 1.0 },
-    thinking: { tok: "warn", energy: 0.8, spin: 2.4 },
-    speaking: { tok: "core", energy: 0.72, spin: 1.2 },
-    awaiting: { tok: "ok", energy: 0.5, spin: 0.8 },
+    idle: { tok: "dim", energy: 0.15, fast: false },
+    listening: { tok: "core", energy: 0.6, fast: false },
+    awaiting: { tok: "core", energy: 0.45, fast: false },
+    thinking: { tok: "ember", energy: 0.35, fast: true },
+    speaking: { tok: "ok", energy: 1, fast: false },
   };
-  const FALLBACK = { core: "34,211,238", ok: "52,211,153", warn: "251,191,36", hi: "255,255,255", track: "255,255,255" };
+  const FALLBACK = { dim: "28,111,143", core: "79,216,255", ember: "255,171,74", ok: "95,224,168" };
 
   function readTokens() {
     const cs = getComputedStyle(document.documentElement);
     const get = (name, fb) => (cs.getPropertyValue(name).trim() || fb);
-    return {
-      core: get("--core-rgb", FALLBACK.core), ok: get("--ok-rgb", FALLBACK.ok), warn: get("--warn-rgb", FALLBACK.warn),
-      hi: get("--core-hi-rgb", FALLBACK.hi), track: get("--track-rgb", FALLBACK.track),
-    };
+    return { dim: get("--core-dim-rgb", FALLBACK.dim), core: get("--core-rgb", FALLBACK.core), ember: get("--ember-rgb", FALLBACK.ember), ok: get("--ok-rgb", FALLBACK.ok) };
   }
 
-  function draw(ctx, w, h, t, name, level, tokens) {
+  // t is in seconds; level (0..1) is the live audio level, which adds to the state's base energy.
+  function draw(ctx, w, t, name, level, tokens) {
     const st = STATES[name] || STATES.idle;
     const rgb = tokens[st.tok];
-    const cx = w / 2, cy = h / 2, u = w / 340;           // everything is drawn for a 340px square and scaled
-    const e = Math.min(1, st.energy + level * 0.35);
-    const breathe = 0.5 + 0.5 * Math.sin(t / (name === "thinking" ? 260 : 900));
-    ctx.clearRect(0, 0, w, h);
-    ctx.save(); ctx.translate(cx, cy); ctx.scale(u, u);
-
-    // soft halo behind everything
-    const halo = ctx.createRadialGradient(0, 0, 20, 0, 0, 170);
-    halo.addColorStop(0, `rgba(${rgb},${0.10 + e * 0.16})`); halo.addColorStop(1, `rgba(${rgb},0)`);
-    ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(0, 0, 170, 0, TAU); ctx.fill();
-
-    // outer track and the progress arc whose length is the energy
-    ctx.lineCap = "round"; ctx.lineWidth = 3;
-    ctx.strokeStyle = `rgba(${tokens.track},0.12)`;
-    ctx.beginPath(); ctx.arc(0, 0, 148, 0, TAU); ctx.stroke();
-    ctx.strokeStyle = `rgba(${rgb},${0.55 + e * 0.4})`;
-    ctx.beginPath(); ctx.arc(0, 0, 148, -Math.PI / 2 + t * 0.0004 * st.spin, -Math.PI / 2 + t * 0.0004 * st.spin + (0.16 + e * 0.8) * TAU); ctx.stroke();
-
-    // slow dashed tick ring, and a counter-rotating segmented ring that wakes up with energy
-    ctx.save(); ctx.rotate(t * 0.00028 * st.spin);
-    ctx.setLineDash([2, 15]); ctx.lineWidth = 1.6; ctx.strokeStyle = `rgba(${rgb},0.38)`;
-    ctx.beginPath(); ctx.arc(0, 0, 124, 0, TAU); ctx.stroke(); ctx.restore();
-    ctx.save(); ctx.rotate(-t * 0.0005 * st.spin);
-    ctx.setLineDash([46, 38]); ctx.lineWidth = 2; ctx.strokeStyle = `rgba(${rgb},${0.18 + e * 0.5})`;
-    ctx.beginPath(); ctx.arc(0, 0, 100, 0, TAU); ctx.stroke(); ctx.restore();
-    ctx.setLineDash([]);
-
-    // expanding pulse rings while there is something going on
-    if (st.energy > 0.5) {
-      for (let i = 0; i < 2; i++) {
-        const p = ((t / 1800) + i * 0.5) % 1;
-        ctx.strokeStyle = `rgba(${rgb},${(1 - p) * 0.35})`; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(0, 0, 44 + p * 70, 0, TAU); ctx.stroke();
-      }
+    const r = w / 2;
+    const energy = Math.min(1, st.energy + level * 0.4);
+    ctx.clearRect(0, 0, w, w); ctx.save(); ctx.translate(r, r);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.5);
+    g.addColorStop(0, `rgb(${rgb})`); g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.globalAlpha = 0.25 + 0.15 * Math.sin(t * 2) * energy; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r * 0.5, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = `rgb(${rgb})`; ctx.lineCap = "round"; ctx.lineWidth = w * 0.008; ctx.beginPath();
+    for (let i = 0; i <= 120; i++) {
+      const a = i / 120 * Math.PI * 2;
+      const rr = r * 0.36 + r * 0.07 * energy * Math.sin(a * 6 + t * 5) * Math.sin(a * 3 - t * 3);
+      const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
     }
-
-    // the core itself
-    const core = 34 + e * 18 + breathe * 4 * (1 - level);
-    const g = ctx.createRadialGradient(0, 0, 2, 0, 0, core);
-    g.addColorStop(0, `rgba(${tokens.hi},0.95)`); g.addColorStop(0.45, `rgba(${rgb},0.85)`); g.addColorStop(1, `rgba(${rgb},0)`);
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, core, 0, TAU); ctx.fill();
+    ctx.closePath(); ctx.stroke();
+    const sp = st.fast ? 3 : 1;
+    [[0.58, 0.012, 1, 0.9, 3], [0.72, 0.006, -0.6, 0.5, 5], [0.88, 0.004, 0.35, 0.35, 2]].forEach((p) => {
+      ctx.lineWidth = w * p[1]; ctx.globalAlpha = p[3];
+      const n = p[4];
+      for (let k = 0; k < n; k++) {
+        const s = t * p[2] * sp + k * Math.PI * 2 / n;
+        ctx.beginPath(); ctx.arc(0, 0, r * p[0], s, s + Math.PI * 2 / n * 0.7); ctx.stroke();
+      }
+    });
     ctx.restore();
   }
 
-  // mount(canvas, { frame: (t) => ({ state, level }), reduced: () => boolean }) -> { redraw() }
+  // mount(canvas, { frame: (ms) => ({ state, level }), reduced: () => boolean }) -> { redraw() }
   function mount(canvas, opts = {}) {
     const ctx = canvas.getContext("2d");
     const mq = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -83,12 +63,12 @@
     let tokens = readTokens(), lastKey = "";
     window.addEventListener("jarvis-theme", () => { tokens = readTokens(); lastKey = ""; });
     if (mq && mq.addEventListener) mq.addEventListener("change", () => { lastKey = ""; });
-    function loop(t) {
-      const f = frame(t) || {};
+    function loop(ms) {
+      const f = frame(ms) || {};
       const still = reduced();
-      const key = still ? `${f.state}|${canvas.width}|${tokens.core}|${tokens.hi}` : "";
+      const key = still ? `${f.state}|${canvas.width}|${tokens.core}|${tokens.ok}` : "";
       if (!still || key !== lastKey) {
-        draw(ctx, canvas.width, canvas.height, still ? 0 : t, f.state, still ? 0 : (f.level || 0), tokens);
+        draw(ctx, canvas.width, still ? 0 : ms / 1000, f.state, still ? 0 : (f.level || 0), tokens);
         lastKey = key;
       }
       requestAnimationFrame(loop);

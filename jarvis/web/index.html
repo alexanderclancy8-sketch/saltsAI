@@ -5,7 +5,7 @@
   <!-- interactive-widget=resizes-content: on Chrome/Android the on-screen keyboard shrinks the layout, so the pinned message box rides above it. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>JARVIS · Salts Fire and Security</title>
-  <meta name="theme-color" content="#060c1a">
+  <meta name="theme-color" content="#060d1a">
   <meta name="color-scheme" content="dark light">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="manifest" href="/static/manifest.webmanifest">
@@ -21,31 +21,32 @@
 <body class="app" data-hud="idle">
 <header class="topbar">
   <div class="brand">J.A.R.V.I.S.<small id="company">SALTS FIRE AND SECURITY</small></div>
-  <div class="status-chip" role="status" aria-live="polite" aria-label="Jarvis status"><span class="status-dot" aria-hidden="true"></span><span id="state">Online</span></div>
+  <span class="state" role="status" aria-live="polite" aria-label="Jarvis status"><b></b><span id="state">Online</span></span>
+  <span class="spacer"></span>
   <div class="pills" id="pills"></div>
-  <div class="spacer"></div>
-  <div class="clock" id="clock"></div>
+  <span class="clock" id="clock"></span>
   <nav class="actions" id="actions" aria-label="Console options">
-    <button type="button" class="tb-btn" id="btn-voice" aria-pressed="true" title="Speak replies aloud, or keep Jarvis silent">Voice: On</button>
-    <button type="button" class="tb-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-label="Mute Jarvis posting into this session by himself" aria-pressed="false">Speaks up</button>
-    <button type="button" class="tb-btn" id="btn-connections" data-pop="connections">Connections</button>
-    <button type="button" class="tb-btn" id="btn-settings" data-pop="settings">Settings</button>
+    <button type="button" class="ghost tb-btn" id="btn-voice" aria-pressed="true" title="Speak replies aloud, or keep Jarvis silent">Voice on</button>
+    <button type="button" class="ghost tb-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-label="Mute Jarvis posting into this session by himself" aria-pressed="false">Speaks up</button>
+    <button type="button" class="ghost tb-btn" id="btn-connections" data-pop="connections">Connections</button>
+    <button type="button" class="ghost tb-btn" id="btn-settings" data-pop="settings">Settings</button>
   </nav>
 </header>
 
 <div class="shell">
-  <!-- Left rail (a scrolling chip strip on phones). Each item opens its pop-up and carries one count:
-       amber when something needs a look, red when something is failing. -->
-  <nav class="rail" id="rail" aria-label="Sections">
-    <button type="button" class="rail-item" data-pop="approvals">Approvals<span class="rail-count" id="rc-approvals">0</span></button>
-    <button type="button" class="rail-item" data-pop="comms">Comms<span class="rail-count" id="rc-comms">0</span></button>
-    <button type="button" class="rail-item" data-pop="issues">Issues<span class="rail-count" id="rc-issues">0</span></button>
-    <button type="button" class="rail-item" data-pop="health">Health<span class="rail-count" id="rc-health">0</span></button>
-    <button type="button" class="rail-item" data-pop="ops">Ops<span class="rail-count" id="rc-ops">0</span></button>
-    <button type="button" class="rail-item" data-pop="fleet">Fleet<span class="rail-count" id="rc-fleet">0</span></button>
-    <button type="button" class="rail-item" data-pop="finance">Finance<span class="rail-count" id="rc-finance">0</span></button>
-    <button type="button" class="rail-item" data-pop="presence">Presence<span class="rail-count" id="rc-presence">0</span></button>
-    <button type="button" class="rail-item" data-pop="upcoming">Coming up<span class="rail-count" id="rc-upcoming">0</span></button>
+  <!-- Left rail (a scrolling pill strip on phones). Each item opens its pop-up; counts are mono, amber when something
+       needs a look and red when something is failing. Presence has no count; Fleet reads "off" when not connected. -->
+  <nav class="rail" id="rail" aria-label="Dashboard sections">
+    <div class="label">On request</div>
+    <button type="button" class="rail-item" data-pop="approvals">Approvals <span class="rail-count" id="rc-approvals">0</span></button>
+    <button type="button" class="rail-item" data-pop="comms">Comms <span class="rail-count" id="rc-comms">0</span></button>
+    <button type="button" class="rail-item" data-pop="issues">Issues <span class="rail-count" id="rc-issues">0</span></button>
+    <button type="button" class="rail-item" data-pop="health">Health <span class="rail-count" id="rc-health">0</span></button>
+    <button type="button" class="rail-item" data-pop="ops">Ops <span class="rail-count" id="rc-ops">0</span></button>
+    <button type="button" class="rail-item" data-pop="fleet">Fleet <span class="rail-count" id="rc-fleet">off</span></button>
+    <button type="button" class="rail-item" data-pop="finance">Finance <span class="rail-count" id="rc-finance">0</span></button>
+    <button type="button" class="rail-item" data-pop="presence">Presence</button>
+    <button type="button" class="rail-item" data-pop="upcoming">Coming up <span class="rail-count" id="rc-upcoming">0</span></button>
   </nav>
 
   <main class="stage">
@@ -53,18 +54,17 @@
       <div class="core-block">
         <div class="orb-wrap">
           <button type="button" class="core-btn" id="core-btn" aria-label="Jarvis core - click to start or stop listening" title="Click to start or stop listening">
-            <canvas id="reactor" width="340" height="340" aria-hidden="true"></canvas>
+            <canvas id="reactor" width="300" height="300" aria-hidden="true"></canvas>
           </button>
           <button type="button" class="orb-badge" id="orb-badge" hidden aria-label="Approvals and suggestions waiting - tap to view"></button>
         </div>
-        <div class="caption" id="caption" role="status">Ask me anything, or click the core to talk.</div>
+        <p class="caption" id="caption" role="status">Live. Ask me anything about the business.</p>
         <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
         <div class="toolline" id="toolline"></div>
-      </div>
-
-      <div class="needs" id="needs" aria-label="Needs you">
-        <span class="needs-label">Needs you</span>
-        <div class="needs-list" id="needs-list"><span class="needs-clear">Loading…</span></div>
+        <div class="needs" id="needs" aria-label="Needs you">
+          <span class="label">Needs you</span>
+          <div class="needs-list" id="needs-list"><span class="needs-clear">Loading…</span></div>
+        </div>
       </div>
 
       <section class="convo" id="transcript-wrap" aria-label="Conversation">
@@ -93,16 +93,13 @@
           <button type="button" role="menuitem" class="chip-btn" data-q="Which customers are at risk and what should we do about them?">Customers</button>
           <button type="button" role="menuitem" class="chip-btn" data-q="How are our socials and Google ranking doing?">Marketing</button>
         </div>
-        <textarea id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis…"></textarea>
-        <div class="composer-bar">
-          <button type="button" class="mic" id="btn-shortcuts" aria-haspopup="menu" aria-expanded="false" aria-controls="quick" title="Shortcuts"><span class="lbl">Shortcuts</span><span aria-hidden="true">▾</span></button>
-          <button type="button" class="mic attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg><span class="lbl">Attach</span></button>
-          <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
-          <span class="spacer"></span>
-          <button type="button" class="mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span class="lbl">Mic</span></button>
-          <button type="button" class="mic stop" id="btn-stop" title="Stop" aria-label="Stop" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg><span class="lbl">Stop</span></button>
-          <button type="submit" class="mic send" id="btn-send" title="Send" aria-label="Send"><span class="lbl">Send</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
-        </div>
+        <button type="button" class="ghost sq" id="btn-shortcuts" aria-haspopup="menu" aria-expanded="false" aria-controls="quick" aria-label="Shortcuts" title="Shortcuts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
+        <textarea class="field" id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis"></textarea>
+        <button type="button" class="ghost sq attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
+        <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
+        <button type="button" class="ghost sq mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+        <button type="button" class="btn-send stop" id="btn-stop" title="Stop" aria-label="Stop" hidden>STOP</button>
+        <button type="submit" class="btn-send" id="btn-send" title="Send" aria-label="Send">SEND</button>
       </form>
     </div>
   </main>
@@ -125,7 +122,7 @@
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true">
   <div class="drawer-head">
     <h2 id="drawer-title">Jarvis</h2>
-    <button type="button" class="drawer-close" id="drawer-close">Close</button>
+    <button type="button" class="ghost drawer-close" id="drawer-close">Close</button>
   </div>
   <div class="drawer-body" id="drawer-body">
 
@@ -214,9 +211,10 @@
     <section class="pop" id="pop-demo" data-title="Demo data" hidden>
       <div class="sec">
         <h3>Sources still showing samples</h3>
+        <p class="empty" id="demo-intro">Figures from these sources are samples until the real systems are connected.</p>
         <div id="demo-list"><p class="empty">Loading…</p></div>
-        <div class="set-actions"><button class="btn primary" type="button" data-pop="connections">Open Connections</button></div>
       </div>
+      <div class="set-actions"><button class="btn" type="button" data-pop="connections">Open Connections</button></div>
     </section>
 
     <section class="pop" id="pop-settings" data-title="Settings" hidden>
@@ -267,9 +265,9 @@
       <div class="sec">
         <h3>Connections and account</h3>
         <div class="set-actions">
-          <button class="btn primary" id="btn-open-connections" type="button" data-pop="connections">Open Connections</button>
+          <button class="btn" id="btn-open-connections" type="button" data-pop="connections">Connections</button>
           <button class="btn" id="btn-copy-report" type="button">Copy staff report link</button>
-          <form method="post" action="/logout"><button class="btn stop" type="submit">Sign out</button></form>
+          <form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>
         </div>
         <p class="empty" style="margin-top:16px">Staff report problems at the staff report page (use the button above to copy the link).
           Replies are generated by Claude; figures marked DEMO are sample data until each system is connected under

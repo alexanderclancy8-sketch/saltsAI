@@ -74,36 +74,44 @@ def test_viewport_handles_notches_and_the_on_screen_keyboard():
 
 
 # ------------------------------------------------------------------------------------------ design tokens
+MOCKUP = (Path(__file__).resolve().parent.parent / "docs" / "redesign" / "jarvis-console-mockup.html").read_text(encoding="utf-8")
+SURFACES = ("--navy-deepest", "--navy", "--panel", "--panel-hi")
+
+
+def test_dark_tokens_are_the_mockups_root_block_exactly():
+    mock = _tokens(_block(MOCKUP, ":root{"))
+    assert mock["--navy-deepest"] == "#060d1a" and mock["--core"] == "#4fd8ff"           # sanity: parsed the right block
+    for name, value in mock.items():
+        assert re.sub(r"\s+", "", DARK[name]) == re.sub(r"\s+", "", value), name
+    assert DARK["--f-display"].startswith("'Oxanium'") and DARK["--f-body"].startswith("'IBM Plex Sans'") and DARK["--f-mono"].startswith("'IBM Plex Mono'")
+
+
 def test_design_tokens_live_on_root_and_both_themes_exist():
-    for name in ("--bg", "--bg2", "--panel", "--line", "--core", "--accent", "--ok", "--warn", "--crit", "--text", "--muted", "--muted-dim",
-                 "--font-display", "--font-body", "--font-data", "--radius", "--gap", "--pad", "--rail-w", "--col-max", "--drawer-w",
-                 "--core-rgb", "--ok-rgb", "--warn-rgb", "--crit-rgb"):
+    for name in ("--navy-deepest", "--navy", "--panel", "--panel-hi", "--line", "--text", "--muted", "--core", "--core-dim", "--ember", "--ok", "--warn",
+                 "--f-display", "--f-body", "--f-mono", "--r", "--rail-w", "--col-max", "--drawer-w", "--gap", "--pad",
+                 "--core-rgb", "--core-dim-rgb", "--ember-rgb", "--ok-rgb", "--warn-rgb", "--on-core"):
         assert name in DARK, name
-    assert "Oxanium" in DARK["--font-display"] and "IBM Plex Sans" in DARK["--font-body"] and "IBM Plex Mono" in DARK["--font-data"]
-    assert "system-ui" in DARK["--font-display"] and "sans-serif" in DARK["--font-body"] and "monospace" in DARK["--font-data"]
+    assert "system-ui" in DARK["--f-display"] and "sans-serif" in DARK["--f-body"] and "monospace" in DARK["--f-mono"]
+    assert DARK["--rail-w"] == "190px" and DARK["--col-max"] == "720px"
     for page in (INDEX, LOGIN):
         assert "fonts.googleapis.com/css2" in page and "Oxanium" in page and "IBM+Plex+Sans" in page and "IBM+Plex+Mono" in page
     # Auto follows the device; an explicit Light/Dark choice sets data-theme on <html>. The light block is written
     # twice (media query + attribute) and must not drift apart.
     assert LIGHT_ATTR and LIGHT_ATTR == LIGHT_MEDIA
-    assert set(LIGHT_ATTR) >= {"--bg", "--panel", "--text", "--muted", "--muted-dim", "--accent-text", "--ok-ink", "--warn-ink", "--crit-ink", "--core-rgb"}
-    assert LIGHT_ATTR["--bg"] != DARK["--bg"]
+    assert set(LIGHT_ATTR) >= {"--navy-deepest", "--navy", "--panel", "--panel-hi", "--line", "--text", "--muted", "--core", "--ember", "--ok", "--warn",
+                               "--core-rgb", "--ember-rgb", "--on-core"}
+    assert LIGHT_ATTR["--navy-deepest"] != DARK["--navy-deepest"]
     assert "color-scheme: dark" in CSS and "color-scheme: light" in CSS
 
 
 def test_text_has_sufficient_contrast_in_both_themes():
     for label, tokens in (("dark", DARK), ("light", {**DARK, **LIGHT_ATTR})):
-        surfaces = [tokens[k] for k in ("--bg", "--bg2", "--panel", "--panel-raised")]
-        ink = {"text": "--text", "muted": "--muted", "muted-dim": "--muted-dim", "accent-text": "--accent-text",
-               "ok": "--ok-ink", "warn": "--warn-ink", "crit": "--crit-ink"}
-        for name, key in ink.items():
+        surfaces = [tokens[k] for k in SURFACES]
+        for name in ("--text", "--muted", "--core", "--ember", "--ok", "--warn"):
             for surface in surfaces:
-                assert _contrast(tokens[key], surface) >= 4.5, (label, name, tokens[key], surface)
-        # filled controls: the label on the accent fill
-        assert _contrast(tokens["--on-accent"], tokens["--accent"]) >= 4.5, label
-        # non-text edges of status colours (dots, bars) need 3:1 against the surface
-        for key in ("--ok", "--warn", "--crit", "--accent"):
-            assert _contrast(tokens[key], tokens["--panel"]) >= 3, (label, key)
+                assert _contrast(tokens[name], surface) >= 4.5, (label, name, tokens[name], surface)
+        # filled controls: the label on the core-coloured fill (SEND, SIGN IN)
+        assert _contrast(tokens["--on-core"], tokens["--core"]) >= 4.5, label
 
 
 def test_theme_choice_is_auto_light_dark_and_stored_safely():
@@ -119,6 +127,8 @@ def test_theme_choice_is_auto_light_dark_and_stored_safely():
 # ------------------------------------------------------------------------------------------ shell
 def test_top_bar_buttons_are_all_text_labelled():
     bar = INDEX[INDEX.index('<header class="topbar">'):INDEX.index("</header>")]
+    order = [bar.index(x) for x in ('class="brand"', 'class="state"', 'id="pills"', 'id="clock"', 'id="btn-voice"', 'id="btn-proactive-mute"', 'id="btn-connections"', 'id="btn-settings"')]
+    assert order == sorted(order)                      # the mockup's order
     for ident, word in (("btn-voice", "Voice"), ("btn-proactive-mute", "Speaks up"), ("btn-connections", "Connections"), ("btn-settings", "Settings")):
         m = re.search(rf'<button[^>]*id="{ident}"[^>]*>([^<]+)</button>', bar)
         assert m and word in m.group(1), ident        # visible text, not an icon
@@ -128,13 +138,16 @@ def test_top_bar_buttons_are_all_text_labelled():
 
 
 def test_rail_has_the_nine_sections_each_with_one_count_and_a_popup():
-    items = re.findall(r'<button type="button" class="rail-item" data-pop="(\w+)">[^<]+<span class="rail-count" id="rc-(\w+)">', INDEX)
-    assert [a for a, _ in items] == RAIL and all(a == b for a, b in items)
+    assert 'class="label">On request<' in INDEX
+    items = re.findall(r'<button type="button" class="rail-item" data-pop="(\w+)">[^<]+?(?:<span class="rail-count" id="rc-(\w+)">[^<]*</span>)?</button>', INDEX)
+    assert [a for a, _ in items] == RAIL
+    assert [a for a, b in items if not b] == ["presence"] and all(a == b for a, b in items if b)   # Presence has no count
     for name in RAIL:
         assert f'id="pop-{name}"' in INDEX
     assert "function renderRail()" in HUD and "function setRail(" in HUD
-    # amber for "needs a look", red for failures - and "Needs you" is capped at three, most urgent first
-    assert '[data-level="warn"] .rail-count' in CSS and '[data-level="bad"] .rail-count' in CSS
+    # mono counts, amber for "needs a look", red for failures - and "Needs you" is capped at three, most urgent first
+    assert '[data-level="warn"] .rail-count' in CSS and '[data-level="bad"] .rail-count' in CSS and "font-family: var(--f-mono)" in _block(CSS, ".rail-count {")
+    assert '"off"' in HUD and "tests.length - failing" in HUD                      # Fleet "off"; Health passed/total
     assert "needs.sort((a, b) => b.weight - a.weight)" in HUD and "needs.slice(0, 3)" in HUD
 
 
@@ -154,9 +167,13 @@ def test_every_dashboard_panel_is_reachable_in_a_popup():
 
 
 def test_centre_column_has_core_hint_needs_you_conversation_and_message_box():
-    assert "--col-max: 720px" in CSS and "max-width: var(--col-max)" in CSS
+    assert "--col-max: 720px" in CSS and "min(var(--col-max), 100%)" in CSS
     order = [INDEX.index(s) for s in ('id="core-btn"', 'id="caption"', 'id="needs-list"', 'id="conversation"', 'id="composer"')]
     assert order == sorted(order)
+    comp = INDEX[INDEX.index('<form class="composer"'):INDEX.index("</form>", INDEX.index('<form class="composer"'))]
+    order = [comp.index(x) for x in ('id="btn-shortcuts"', 'id="input"', 'id="btn-mic"', 'id="btn-send"')]
+    assert order == sorted(order) and "M4 7h16M4 12h16M4 17h10" in comp               # hamburger menu button first, SEND last
+    assert ">SEND</button>" in comp and ">STOP</button>" in comp
     for ident in ("btn-shortcuts", "quick", "input", "btn-mic", "btn-send", "btn-stop", "btn-attach", "reply-hint", "reply-hint-forget", "orb-badge"):
         assert f'id="{ident}"' in INDEX, ident
     labels = re.findall(r'role="menuitem" class="chip-btn" data-q="[^"]*">([^<]+)<', INDEX)
@@ -173,13 +190,15 @@ def test_core_follows_state_clicks_to_listen_and_is_static_under_reduced_motion(
     for state in ("idle", "listening", "thinking", "speaking"):
         assert state in CORE
     assert "prefers-reduced-motion" in CORE and "prefers-reduced-motion" in HUD
-    assert "--core-rgb" in CORE and "--warn-rgb" in CORE and "--ok-rgb" in CORE   # colours come from the tokens
+    assert "--core-rgb" in CORE and "--ember-rgb" in CORE and "--ok-rgb" in CORE and "--core-dim-rgb" in CORE   # colours come from the tokens
+    assert "Math.sin(a * 6 + t * 5) * Math.sin(a * 3 - t * 3)" in CORE                # the mockup's waveform ring, ported
     assert "JarvisCore.mount(" in LOGIN and 'id="login-core"' in LOGIN             # the sign-in page animates it too
 
 
 def test_sign_in_page_keeps_the_same_authentication():
     assert 'method="post" action="/login"' in LOGIN and 'name="password"' in LOGIN and 'type="password"' in LOGIN
-    assert "Identify yourself" in LOGIN and "Sign in" in LOGIN and "SALTS FIRE AND SECURITY" in LOGIN
+    assert "Identify yourself, sir." in LOGIN and ">SIGN IN<" in LOGIN and "SALTS FIRE AND SECURITY" in LOGIN and 'placeholder="Password"' in LOGIN
+    assert "width: 180px" in _block(CSS, ".login-core {")
 
 
 # ------------------------------------------------------------------------------------------ the drawer
@@ -206,7 +225,7 @@ def test_one_drawer_that_can_never_be_wider_than_the_window():
 
 
 def test_connections_is_a_list_of_integrations_each_opening_its_own_form_with_a_back_link():
-    assert "data-open-section" in HUD and "data-back" in HUD and "← All connections" in HUD
+    assert "data-open-section" in HUD and "data-back" in HUD and "‹ All connections" in HUD
     assert "showList()" in HUD and "openSection(id)" in HUD and "backToList()" in HUD
     # the existing forms/fields/test/save machinery is reused, not rewritten
     for needle in ("renderField(sectionId, f)", "async test(sectionId)", "async save()", '"/api/settings"', "data-show-advanced", "cronFromParts"):
@@ -222,19 +241,21 @@ def test_staff_report_link_is_copied_never_shown():
 
 
 def test_fleet_shows_vehicles_or_a_clear_not_connected_state():
-    assert "Vehicle tracking is not connected." in HUD and "function renderFleetStatus()" in HUD
+    assert "Vehicle tracking is not connected" in HUD and "function renderFleetStatus()" in HUD
     assert 'connections?.["Vehicle tracking"]' in HUD
 
 
-def test_narrow_layout_turns_the_rail_into_a_scrolling_chip_strip():
-    phone = CSS[CSS.index("@media (max-width: 767px) {"):]
+def test_narrow_layout_turns_the_rail_into_a_scrolling_pill_strip():
+    phone = CSS[CSS.index("@media (max-width: 760px) {"):]
     rail = re.search(r"\.rail \{([^}]*)\}", phone).group(1)
     assert "flex-direction: row" in rail and "overflow-x: auto" in rail
+    assert ".rail .label { display: none; }" in phone and ".clock { display: none; }" in phone
+    assert "width: 110px" in phone                                  # the mockup's smaller core on phones
     assert "grid-template-columns: minmax(0, 1fr)" in phone       # one column: no side rail
     assert "font-size: 16px" in phone                              # 16px: iOS zooms on focus below it
     assert "env(safe-area-inset-bottom)" in phone
-    # the top bar wraps instead of overflowing at tablet widths
-    assert "flex-wrap: wrap" in CSS[CSS.index("@media (max-width: 959px)"):CSS.index("@media (max-width: 767px) {")]
+    # the top bar wraps instead of overflowing
+    assert "flex-wrap: wrap" in _block(CSS, "\n.topbar {")
 
 
 def test_phone_keeps_the_conversation_and_message_box_in_view():
@@ -253,5 +274,5 @@ def test_touch_targets_and_motion_and_contrast_guards():
 
 
 def test_ask_popup_stays_on_screen_and_above_the_phone_composer():
-    phone = ASK_CSS[ASK_CSS.index("@media (max-width: 767px)"):]
+    phone = ASK_CSS[ASK_CSS.index("@media (max-width: 760px)"):]
     assert "max-height: calc(100dvh" in phone and "overflow-y: auto" in phone

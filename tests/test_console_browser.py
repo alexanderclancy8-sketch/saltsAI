@@ -202,11 +202,14 @@ def test_rail_counts_needs_you_strip_and_colours(browser, server):
     ctx, page = _open(browser, server.url, 1280, 800)
     try:
         counts = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll('.rail-item')].map(
-            b => [b.dataset.pop, [b.querySelector('.rail-count').textContent, b.dataset.level]]))""")
+            b => [b.dataset.pop, [b.querySelector('.rail-count')?.textContent ?? null, b.dataset.level]]))""")
         assert set(counts) == set(POPS)
+        assert counts["presence"][0] is None                 # Presence has no count
+        assert counts["fleet"][0] == "off"                   # vehicle tracking is not connected in this app
         assert counts["approvals"] == ["1", "warn"]          # amber: needs a look
-        assert counts["health"] == ["1", "bad"]              # red: a routine test is failing
+        assert counts["health"] == ["0/1", "bad"]            # red: passed/total, a routine test is failing
         assert counts["issues"] == ["1", "bad"]              # red: a critical issue is open
+        assert page.inner_text("#rail .label").lower() == "on request"
         items = page.eval_on_selector_all("#needs-list .need", "els => els.map(e => [e.dataset.pop, e.dataset.level])")
         assert len(items) <= 3
         assert items[0] == ["health", "bad"]                 # most urgent first: the failing test...
@@ -227,13 +230,19 @@ def test_top_bar_buttons_are_text_labelled_and_the_phone_rail_is_a_scrolling_str
                           ("#btn-settings", "Settings")):
             assert word in page.inner_text(sel)
         assert page.text_content("#state") == "Online"
+        # the mockup's order, left to right: brand, status, demo pill, clock, Voice, Speaks up, Connections, Settings
+        xs = [page.eval_on_selector(sel, "e => e.getBoundingClientRect().left") for sel in
+              (".topbar .brand", ".topbar .state", "#pills .pill", "#clock", "#btn-voice", "#btn-proactive-mute", "#btn-connections", "#btn-settings")]
+        assert xs == sorted(xs), xs
+        assert page.evaluate("document.getElementById('rail').getBoundingClientRect().width") == 190
+        assert page.evaluate("document.getElementById('core-btn').getBoundingClientRect().width") == 150
         assert "Demo data" in page.inner_text("#pills") and page.inner_text("#clock").strip()
         assert page.evaluate("getComputedStyle(document.getElementById('rail')).flexDirection") == "column"
         # Voice toggles on/off
         page.click("#btn-voice")
-        assert "Off" in page.inner_text("#btn-voice")
+        assert page.inner_text("#btn-voice") == "Voice off"
         page.click("#btn-voice")
-        assert "On" in page.inner_text("#btn-voice")
+        assert page.inner_text("#btn-voice") == "Voice on"
     finally:
         ctx.close()
     ctx, page = _open(browser, server.url, 400, 820, has_touch=True, is_mobile=True)
@@ -310,9 +319,9 @@ def test_voice_settings_and_theme_choice_persist(browser, server):
         page.select_option("#set-listen", "ptt")
         page.select_option("#set-bargein", "0")
         assert page.evaluate("[localStorage.getItem('jarvis.speak'), localStorage.getItem('jarvis.listen'), localStorage.getItem('jarvis.bargein')]") == ["always", "ptt", "0"]
-        assert "On" in page.inner_text("#btn-voice")
+        assert page.inner_text("#btn-voice") == "Voice on"
         page.select_option("#set-speak", "off")
-        assert "Off" in page.inner_text("#btn-voice")
+        assert page.inner_text("#btn-voice") == "Voice off"
         # the staff report key is never put on the page as text
         assert "key=" not in page.inner_text("#pop-settings")
         # reloading keeps the explicit choice
@@ -410,8 +419,8 @@ def test_sign_in_page_and_same_authentication(browser, password_server):
             page.goto(password_server.url + "/", wait_until="domcontentloaded")   # redirected to /login
             page.wait_for_selector("#pw")
             assert page.url.endswith("/login")
-            assert "Identify yourself" in page.inner_text("h1")
-            assert page.is_visible("#login-core") and page.is_visible(".btn-signin") and page.inner_text(".btn-signin") == "Sign in"
+            assert page.inner_text("h1") == "Identify yourself, sir."
+            assert page.is_visible("#login-core") and page.is_visible(".btn-signin") and page.text_content(".btn-signin") == "SIGN IN"
             assert page.evaluate("document.documentElement.scrollWidth") <= width
             # brand, then the heading, then the form - top to bottom
             ys = [page.eval_on_selector(sel, "e => e.getBoundingClientRect().top") for sel in (".login-core", ".brand", "h1", "#pw", ".btn-signin")]

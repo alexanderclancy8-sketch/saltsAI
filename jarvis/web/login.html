@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jarvis Sign In</title>
-  <meta name="theme-color" content="#060c1a">
+  <meta name="theme-color" content="#060d1a">
   <meta name="color-scheme" content="dark light">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <script src="/static/theme.js"></script>
@@ -16,13 +16,12 @@
 <body class="login-page">
   <main class="login">
     <div class="login-card">
-      <div class="login-core"><canvas id="login-core" width="340" height="340" role="img" aria-label="Jarvis core"></canvas></div>
+      <div class="login-core"><canvas id="login-core" width="360" height="360" role="img" aria-label="Jarvis core"></canvas></div>
       <div class="brand">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY</small></div>
-      <h1>Identify yourself</h1>
+      <h1>Identify yourself, sir.</h1>
       <form method="post" action="/login">
-        <label for="pw">Password</label>
-        <input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
-        <button class="btn-signin" type="submit">Sign in</button>
+        <input class="field" id="pw" name="password" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required autofocus>
+        <button class="btn-signin" type="submit">SIGN IN</button>
         <div class="err" id="err" role="alert"></div>
       </form>
     </div>

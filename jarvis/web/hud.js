@@ -128,7 +128,7 @@
   // ------------------------------------------------------------------ clock
   function tick() {
     const now = new Date();
-    $("#clock").innerHTML = `${now.toLocaleTimeString("en-GB")}<small>${now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</small>`;
+    $("#clock").textContent = `${now.toLocaleTimeString("en-GB")} · ${now.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}`;
   }
   setInterval(tick, 1000); tick();
 
@@ -220,54 +220,55 @@
     const needs = [];
     const add = (weight, level, text, pop) => needs.push({ weight, level, text, pop });
 
+    // Counts follow the design mockup: Approvals = actions waiting for a click (suggestions are listed inside the pop-up and
+    // in "Needs you"); Comms = unread; Issues = open; Health = passed/total; Ops = things needing attention; Fleet reads
+    // "off" when vehicle tracking is not connected; Finance = customers to watch; Presence has no count; Coming up = listed.
     const na = S.approvals?.length || 0, ns = S.suggestions?.length || 0;
-    setRail("approvals", na + ns, na + ns ? "warn" : "", na + ns ? `${plural(na, "approval", "approvals")} and ${plural(ns, "suggestion", "suggestions")} waiting` : "nothing waiting");
+    setRail("approvals", na, na ? "warn" : "", na ? `${plural(na, "action", "actions")} waiting for your approval` : "nothing waiting for you");
     if (na) add(80, "warn", `${plural(na, "action", "actions")} waiting for your approval`, "approvals");
     if (ns) add(35, "warn", `${plural(ns, "suggestion", "suggestions")} from Jarvis`, "approvals");
 
     const unread = Array.isArray(d.inbox?.unread) ? d.inbox.unread : [];
     const hot = unread.filter((m) => m.importance === "high").length;
-    setRail("comms", unread.length, hot ? "warn" : "", `${plural(unread.length, "unread message", "unread messages")}${hot ? `, ${hot} important` : ""}`);
-    if (hot) add(40, "warn", `${plural(hot, "important message", "important messages")} unread`, "comms");
+    setRail("comms", unread.length, unread.length ? "warn" : "", `${plural(unread.length, "unread message", "unread messages")}${hot ? `, ${hot} important` : ""}`);
+    if (unread.length) add(hot ? 40 : 20, "warn", `${unread.length} unread`, "comms");
 
     const issues = d.issues || [];
     const severe = issues.filter((i) => ["critical", "high"].includes(i.severity)).length;
     setRail("issues", issues.length, severe ? "bad" : issues.length ? "warn" : "", `${issues.length} open${severe ? `, ${severe} serious` : ""}`);
     if (severe) add(90, "bad", `${plural(severe, "serious issue", "serious issues")} open`, "issues");
 
-    const failing = (d.tests || []).filter((t) => !t.ok).length;
+    const tests = d.tests || [];
+    const failing = tests.filter((t) => !t.ok).length;
     const alerts = (d.notifications || []).filter((n) => (n.level === "critical" || n.level === "warning") && within24h(n.created_at)).length;
-    setRail("health", failing + alerts, failing ? "bad" : alerts ? "warn" : "", failing || alerts ? `${plural(failing, "test", "tests")} failing, ${plural(alerts, "alert", "alerts")}` : "all healthy");
-    if (failing) add(100, "bad", `${plural(failing, "routine test", "routine tests")} failing`, "health");
-    if (alerts) add(30, "warn", `${plural(alerts, "alert", "alerts")} in the last day`, "health");
+    setRail("health", tests.length ? `${tests.length - failing}/${tests.length}` : "0", failing ? "bad" : alerts ? "warn" : "", tests.length ? `${tests.length - failing} of ${tests.length} routine tests passing${alerts ? `, ${plural(alerts, "alert", "alerts")}` : ""}` : "no test results yet");
+    if (failing) add(100, "bad", `${failing} ${failing === 1 ? "check" : "checks"} failing`, "health");
+    if (alerts && !failing) add(30, "warn", `${plural(alerts, "alert", "alerts")} in the last day`, "health");
 
     const staff = d.staff && !d.staff.error ? d.staff : null;
     const late = staff ? staff.late_starts.length : 0;
     const overdue = Array.isArray(d.overdue_jobs) ? d.overdue_jobs.length : 0;
-    const left = staff ? Math.max(0, staff.jobs_today - staff.completed_today) : 0;
-    setRail("ops", left, late || overdue ? "warn" : "", staff ? `${plural(left, "job", "jobs")} left today${late ? `, ${plural(late, "late start", "late starts")}` : ""}${overdue ? `, ${overdue} overdue` : ""}` : "unavailable");
+    setRail("ops", late + overdue, late + overdue ? "warn" : "", staff ? `${plural(late, "late start", "late starts")}, ${overdue} overdue` : "unavailable");
     if (overdue) add(70, "warn", `${plural(overdue, "job", "jobs")} overdue`, "ops");
     if (late) add(60, "warn", `${plural(late, "late start", "late starts")} today`, "ops");
 
     const vans = S.tracking?.engineers?.length || 0;
-    setRail("fleet", vans, "", S.tracking ? `${plural(vans, "vehicle", "vehicles")} reporting` : "not loaded");
+    const tracked = !!S.status?.connections?.["Vehicle tracking"] && !isDemo(S.status.connections["Vehicle tracking"]);
+    setRail("fleet", tracked ? vans : "off", "", tracked ? `${plural(vans, "vehicle", "vehicles")} reporting` : "vehicle tracking is not connected");
 
     const f = d.finance && !d.finance.error ? d.finance : null;
     const watch = d.customer_watch || [];
     const atRisk = watch.filter((c) => c.status === "at risk").length;
-    const owed = f ? f.debtors_overdue_count || 0 : 0;
-    setRail("finance", owed, owed || watch.length ? "warn" : "", f ? `${plural(owed, "overdue invoice", "overdue invoices")}, ${plural(watch.length, "customer", "customers")} to watch` : "unavailable");
+    setRail("finance", watch.length, watch.length ? "warn" : "", `${plural(watch.length, "customer", "customers")} to watch`);
     if (f && f.debtors_overdue > 0.3 * f.debtors_total) add(50, "warn", `${money(f.debtors_overdue)} overdue from customers`, "finance");
     if (atRisk) add(45, "warn", `${plural(atRisk, "customer", "customers")} at risk`, "finance");
 
-    const plats = Object.values(d.presence?.platforms || {});
-    const falling = plats.filter((v) => { const m = v.followers || v.reviews; return m && m.change_7d < 0; }).length;
-    setRail("presence", plats.length, falling ? "warn" : "", `${plural(plats.length, "channel", "channels")} tracked${falling ? `, ${falling} losing followers` : ""}`);
-
     const dl = deadlineItems(d.deadlines, d.accreditations);
-    const soon = dl.filter((x) => x.days_left <= 14), late2 = dl.filter((x) => x.days_left < 0).length;
-    setRail("upcoming", soon.length, late2 ? "bad" : soon.length ? "warn" : "", `${plural(soon.length, "reminder", "reminders")} due within two weeks${late2 ? `, ${late2} overdue` : ""}`);
+    const late2 = dl.filter((x) => x.days_left < 0).length;
+    setRail("upcoming", dl.length, late2 ? "bad" : "", `${plural(dl.length, "reminder", "reminders")}${late2 ? `, ${late2} overdue` : ""}`);
     if (late2) add(75, "bad", `${plural(late2, "reminder", "reminders")} overdue`, "upcoming");
+    const next = dl.find((x) => x.days_left >= 0 && x.days_left <= 7);
+    if (next) add(10, "", next.what, "upcoming");
 
     needs.sort((a, b) => b.weight - a.weight);
     const top = needs.slice(0, 3);
@@ -1099,12 +1100,14 @@ function send(text, mode = "typed", opts = {}) {
   // Demo data pop-up: which sources are still samples, and how to connect each one (the status text already says).
   function renderDemo() {
     const conns = S.status?.connections;
+    $("#demo-intro").hidden = !conns;
     if (!conns) { $("#demo-list").innerHTML = `<p class="empty">Loading…</p>`; return; }
     const rows = Object.entries(conns).filter(([, v]) => isDemo(v));
     $("#demo-list").innerHTML = rows.length ? rows.map(([k, v]) => {
       const how = (String(v).match(/DEMO[^-:)]*[-:]\s*(.+)$/) || [])[1] || "";
-      return `<div class="demo-row"><b>${esc(k)}</b><span>${how ? esc(how[0].toUpperCase() + how.slice(1)) : "Still showing sample figures."}</span></div>`;
+      return `<div class="demo-row"><b>${esc(k)}</b><span>${how ? esc(how[0].toUpperCase() + how.slice(1)) : "Still showing sample figures"}</span></div>`;
     }).join("") : `<p class="empty">Everything is connected - no sample data is being shown.</p>`;
+    $("#demo-intro").hidden = !rows.length;
   }
 
   function renderInbox(inbox) {
@@ -1130,12 +1133,12 @@ function send(text, mode = "typed", opts = {}) {
     const failing = tests.filter((t) => !t.ok);
     $("#tests-count").textContent = tests.length ? `${tests.length - failing.length}/${tests.length} passing` : "";
     const rows = [...failing, ...tests.filter((t) => t.ok)].slice(0, 10);
-    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}">${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
+    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="split ${t.ok ? "ok" : "bad"}"><span>${esc(t.name)}</span><small>${esc(t.detail).slice(0, 140)}</small></li>`).join("")
       : `<li class="empty">No results yet.</li>`;
   }
 
   function renderNotifications(list = []) {
-    $("#notifications").innerHTML = list.length ? list.slice(0, 6).map((n) => `<li class="${n.level === "critical" ? "bad" : n.level === "warning" ? "warn" : ""}">${esc(n.title)}<span class="sub">${time(n.created_at)}</span></li>`).join("")
+    $("#notifications").innerHTML = list.length ? list.slice(0, 6).map((n) => `<li class="split ${n.level === "critical" ? "bad" : n.level === "warning" ? "warn" : ""}"><span>${esc(n.title)}</span><small>${time(n.created_at)}</small></li>`).join("")
       : `<li class="empty">Nothing to report.</li>`;
   }
 
@@ -1148,7 +1151,7 @@ function send(text, mode = "typed", opts = {}) {
     $("#ops-kpis").innerHTML = kpi("Jobs today", `${staff.completed_today}/${staff.jobs_today}`) +
       kpi("On site now", onJob) + kpi("Late starts", staff.late_starts.length, staff.late_starts.length ? "warn" : "good") +
       kpi("Overdue jobs", Array.isArray(overdue) ? overdue.length : "-", overdue?.length ? "bad" : "good");
-    $("#ops").innerHTML = staff.engineers.map((e) => `<li class="${e.status === "on job" ? "ok" : ""}">${esc(e.name)}<span class="sub">${esc(e.current_job || e.status)}${e.next_job ? " · next " + esc(e.next_job) : ""}</span></li>`).join("");
+    $("#ops").innerHTML = staff.engineers.map((e) => `<li class="split ok"><span>${esc(e.name)}</span><small>${esc(e.current_job || e.status)}${e.next_job ? " · next " + esc(e.next_job) : ""}</small></li>`).join("");
   }
 
   function renderFinance(f) {
@@ -1166,7 +1169,7 @@ function send(text, mode = "typed", opts = {}) {
     const rows = Object.entries(p.platforms || {}).map(([k, v]) => {
       const m = v.followers || v.reviews; const r = v.rating;
       const change = m ? (m.change_7d > 0 ? `+${m.change_7d}` : m.change_7d) : "";
-      return `<li class="${m && m.change_7d > 0 ? "ok" : ""}">${names[k] || k}: <b>${m ? Math.round(m.current) : "-"}</b>${r ? ` · ${r.current}★` : ""}<span class="sub">${change} this week${p.demo ? " · demo" : ""}</span></li>`;
+      return `<li class="split"><span>${names[k] || k} ${m ? Math.round(m.current).toLocaleString("en-GB") : "-"}${r ? ` · ${r.current}★` : ""}</span><small>${change} this week${p.demo ? " · demo" : ""}</small></li>`;
     });
     $("#presence").innerHTML = rows.join("") || `<li class="empty">Connect socials in settings.</li>`;
   }
@@ -1185,7 +1188,7 @@ function send(text, mode = "typed", opts = {}) {
   }
   function renderDeadlines(deadlines = [], accreditations = []) {
     const items = deadlineItems(deadlines, accreditations);
-    $("#deadlines").innerHTML = !items.length ? `<li class="empty">Nothing dated coming up.</li>` : items.map((d) => `<li class="${d.days_left < 0 ? "bad" : d.days_left <= 14 ? "warn" : ""}">${esc(d.what)}<span class="sub">${dayMonth(d.due)} · ${d.days_left < 0 ? Math.abs(d.days_left) + " days overdue" : d.days_left + " days"}</span></li>`).join("");
+    $("#deadlines").innerHTML = !items.length ? `<li class="empty">Nothing dated coming up.</li>` : items.map((d) => `<li class="split ${d.days_left < 0 ? "bad" : d.days_left <= 14 ? "warn" : ""}"><span>${esc(d.what)}</span><small>${dayMonth(d.due)} · ${d.days_left < 0 ? Math.abs(d.days_left) + " days overdue" : d.days_left + " days"}</small></li>`).join("");
   }
 
   function renderApprovals() {
@@ -1241,15 +1244,16 @@ function send(text, mode = "typed", opts = {}) {
     const conn = S.status?.connections?.["Vehicle tracking"] || "";
     const connected = !!conn && !isDemo(conn);
     const vans = data?.engineers?.length || 0;
+    el.className = "fleet-note";
     if (!connected) {
-      el.className = "fleet-note off";
-      el.innerHTML = `<span><b>Vehicle tracking is not connected.</b> ${vans ? "The map below shows sample positions only. " : ""}Add the RAM Tracking details under Connections to see your real vehicles.</span><button class="btn small" type="button" data-pop="connections">Open Connections</button>`;
+      // Not connected: say so plainly and show no map (sample positions are not vehicles).
+      el.innerHTML = `<span>Vehicle tracking is not connected, so there are no live vehicle positions. Add the RAM Tracking details under Connections.</span>`;
+      el.insertAdjacentHTML("beforeend", `<button class="btn small" type="button" data-pop="connections">Open Connections</button>`);
     } else {
-      el.className = "fleet-note";
       el.textContent = !data ? "Loading…" : data.working_hours === false ? (data.note || "Outside working hours - locations are not shown.")
         : vans ? `Live from ${conn}: ${plural(vans, "vehicle", "vehicles")} reporting.` : "Connected, but no vehicles are reporting right now.";
     }
-    $("#map").hidden = !vans;
+    $("#map").hidden = !connected || !vans;
   }
   function renderMap(data) {
     if (!data) return;
@@ -1270,7 +1274,7 @@ function send(text, mode = "typed", opts = {}) {
     }
     layer.clearLayers();
     $("#map-note").textContent = data.working_hours === false ? "outside hours" : data.demo ? "demo" : `${data.engineers.length} vans`;
-    $("#map").hidden = !(data.engineers || []).length; if (map && !$("#map").hidden) map.invalidateSize();
+    if (map && !$("#map").hidden) map.invalidateSize();
     const pts = [];
     (data.sites || []).forEach((s) => { L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {
@@ -1826,7 +1830,7 @@ function send(text, mode = "typed", opts = {}) {
     const on = S.speakPref !== "off", b = $("#btn-voice");
     b.setAttribute("aria-pressed", String(on));
     b.classList.toggle("is-on", on); b.classList.toggle("is-off", !on);
-    b.textContent = on ? "Voice: On" : "Voice: Off";
+    b.textContent = on ? "Voice on" : "Voice off";
     b.title = on ? "Jarvis speaks his replies - click to keep him silent" : "Jarvis is silent - click to let him speak again";
   }
   $("#set-speak").addEventListener("change", (e) => setSpeakPref(e.target.value));
@@ -1921,19 +1925,17 @@ function send(text, mode = "typed", opts = {}) {
       if (!this.sections.length) return `<p class="empty">${this.loaded ? "Nothing to set up." : "Loading…"}</p>`;
       const sec = this.view && this.sections.find((x) => x.id === this.view);
       if (sec) return this.renderSection(sec);
-      const row = (x) => `<button type="button" class="conn-row" data-open-section="${esc(x.id)}">
-          <span class="titles"><b>${esc(x.title)}</b><span>${esc(x.blurb)}</span></span>${this.badge(x)}<span class="chev" aria-hidden="true">›</span></button>`;
-      const integrations = this.sections.filter((x) => x.show_badge), others = this.sections.filter((x) => !x.show_badge);
-      return `<div class="conn-list">${integrations.length ? `<div class="conn-group">Integrations</div>${integrations.map(row).join("")}` : ""}
-        ${others.length ? `<div class="conn-group">${integrations.length ? "Other settings" : "Settings"}</div>${others.map(row).join("")}` : ""}</div>`;
+      const row = (x) => { const st = this.status(x);
+        return `<li><button type="button" class="conn-row" data-open-section="${esc(x.id)}"><span class="name">${esc(x.title)}</span><small class="${st.cls}">${esc(st.text)} ›</small></button></li>`; };
+      return `<ul class="conn-list">${this.sections.map(row).join("")}</ul>`;
     },
 
-    badge(sec) {
-      if (!sec.show_badge) return "";
+    // The status shown on a Connections row and at the top of its form.
+    status(sec) {
+      if (!sec.show_badge) return { text: "Set up", cls: "" };
       const test = sec.last_test;
-      if (test && !test.stale) return test.ok ? `<span class="set-badge on">Working</span>` : `<span class="set-badge fail">Test failed</span>`;
-      if (sec.configured) return `<span class="set-badge on">Connected</span>`;
-      return `<span class="set-badge off">Not set up</span>`;
+      if (test && !test.stale) return test.ok ? { text: "Working", cls: "ok" } : { text: "Test failed", cls: "red" };
+      return sec.configured ? { text: "Connected", cls: "ok" } : { text: "Not set up", cls: "" };
     },
 
     renderSection(sec) {
@@ -1953,10 +1955,11 @@ function send(text, mode = "typed", opts = {}) {
       ` : "";
       return `
         <div class="set-section" data-section="${esc(sec.id)}">
-          <button type="button" class="back-link" data-back>← All connections</button>
+          <button type="button" class="chip back-link" data-back>‹ All connections</button>
           <div class="form-head">
-            <div class="titles"><h3>${esc(sec.title)}</h3><div class="blurb">${esc(sec.blurb)}</div></div>
-            ${this.badge(sec)}
+            <h3>${esc(sec.title)}</h3>
+            <p class="blurb">${esc(sec.blurb)}</p>
+            ${sec.show_badge ? `<p class="status-line"><span class="label">Status</span> <span class="${this.status(sec).cls}">${esc(this.status(sec).text)}</span></p>` : ""}
           </div>
           <div class="set-section-fields">
             ${guide}

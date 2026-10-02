@@ -22,7 +22,7 @@
     const c = get();
     if (c === "auto") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", c);
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", effective() === "light" ? "#eef3fa" : "#060c1a");
+    if (meta) meta.setAttribute("content", effective() === "light" ? "#e8eff9" : "#060d1a");
     window.dispatchEvent(new CustomEvent("jarvis-theme", { detail: effective() }));
   }
   function set(choice) {
