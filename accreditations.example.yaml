@@ -1,5 +1,10 @@
 # Accreditations register. Copy to data/accreditations.yaml (git-ignored) and fill in
-# the real certificate numbers and dates - or tell Jarvis ("our CHAS renews on 14 March").
+# the real certificate numbers and dates - or tell Jarvis ("our CHAS renews on 14 March",
+# "the YD71 SFS van's MOT is due 2 November", "the ladders are inspected again on 15 October").
+# That works for the accreditations, vehicles and equipment sections below; every change waits for
+# the owner's approval. Jarvis creates data/accreditations.yaml for you the first time you tell him a
+# date, using this layout but NOT the placeholder entries in this file - everything here is example
+# data (until the real file exists, the Alerts show it and Jarvis says so).
 # Jarvis reminds you before each renewal/audit and builds the evidence pack.
 
 accreditations:
