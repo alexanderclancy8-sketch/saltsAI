@@ -126,7 +126,10 @@ Do these in any order; each one replaces demo data as soon as it's set.
      `sales_invoices.csv`, `purchase_invoices.csv` and `bank.csv`. Sage's usual column names are recognised.
 4. **RAM Tracking.** In the RAM Tracking portal, go to profile > integrations > API Keys for the Client ID and
    Client secret, and set up a dedicated username/password for the API (RAM's own recommendation - don't use
-   your own login). Put all four on the Settings page. Put each engineer's van registration in the staff register.
+   your own login; give it no two-step verification). Put all four on the Settings page (the API address stays as
+   `https://api.qaifn.co.uk`; only the host is ever used). RAM allows 3 requests a minute per kind of request, so Jarvis
+   caches vehicle positions for a minute and journeys for a few; "rate limited" in the Fleet pop-up is that limit, not a
+   fault. Put each engineer's van registration in the staff register.
 5. **Staff register.** Copy `staff_roles.example.yaml` to `data/staff_roles.yaml` and describe everyone's role,
    duties and targets, or just tell Jarvis ("Jarvis, Josh should be sending 14 quotes a week").
 6. **Accreditations.** Copy `accreditations.example.yaml` to `data/accreditations.yaml` and add your real

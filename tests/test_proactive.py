@@ -264,13 +264,24 @@ async def test_an_automation_runs_silently_and_posts_only_what_it_found(settings
     await j.http.aclose()
 
 
-async def test_an_automation_behaves_as_before_when_proactive_is_off(settings):
-    j = Jarvis(settings, client=FakeClient([message([text_block("All clear.")])]))
+async def test_an_automation_is_just_as_quiet_when_proactive_is_off(settings):
+    # Stricter than before. This used to assert that, with speaking up off, the whole headless turn was typed into the
+    # chat ("a reply event") and that the NOTHING_TO_REPORT instruction was not sent. That was the noise the owner
+    # complained about (a check that found nothing posting into the conversation every run), so a scheduled check is now
+    # silent whether or not speaking up is on: nothing is typed into the chat, the NOTHING instruction is always sent,
+    # a finding is posted as one message, and every run is in the activity log (tests/test_activity_log.py).
+    j = Jarvis(settings, client=FakeClient([message([text_block("All clear.")]),
+                                            message([text_block(f"{NOTHING}: all clear.")])]))
     q = j.bus.subscribe()
     created = j.automations.create("Check", "0 8 * * 1-5", "Check something.")
     await j.automations.run(created["id"])
-    assert "reply" in types(drain(q))  # the turn shows in the chat exactly as it always did
-    assert NOTHING not in j.brain.messages[0]["content"][-1]["text"]
+    first = types(drain(q))
+    assert not {"user_message", "thinking", "delta", "tool", "reply"} & set(first)  # never the turn itself
+    assert first.count("proactive") == 1  # "All clear." is a finding like any other: one message, once
+    assert NOTHING in j.brain.messages[0]["content"][-1]["text"]
+    await j.automations.run(created["id"])
+    assert "proactive" not in types(drain(q))  # the NOTHING reply posts nothing
+    assert j.activity.summary()["jobs"][0]["checks"] == 2
     await j.http.aclose()
 
 

@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from ..integrations.ramtracking import RamError
+
 ONSITE_METRES = 400
 ROAD_FACTOR = 1.35  # straight line -> road distance
 AVG_MPH = 26  # urban/suburban West Yorkshire average
@@ -71,11 +73,21 @@ class Tracker:
             return {"working_hours": False, "engineers": [], "sites": [],
                     "note": "Outside working hours - locations are not shown (private use)."}
         if self.ram is not None and not getattr(self.ram, "demo", True):
+            try:
+                ram_positions = await self.ram.positions()
+            except RamError as e:
+                if e.rate_limited:  # RAM is busy (3 requests a minute), not broken: no vans this moment, and no alarm
+                    return {"working_hours": True, "demo": False, "engineers": [], "sites": [], "rate_limited": True,
+                            "note": str(e)}
+                # RAM is set up but isn't answering (wrong address, refused sign-in...): say so, and show no vans. The
+                # console turns this into "not connected" with the reason; it must never be a blank, working-looking map.
+                return {"working_hours": True, "demo": False, "engineers": [], "sites": [], "ram_error": str(e),
+                        "note": f"Vehicle tracking isn't working: {e}"}
             positions = [{"engineer": p.get("driver") or await self._driver_for(p), "vehicle": p.get("registration"),
                           "lat": p.get("lat"), "lng": p.get("lng"), "timestamp": p.get("timestamp"),
                           "speed_mph": p.get("speed_mph"),
                           "status": "driving" if (p.get("speed_mph") or 0) > 3 else "parked"}
-                         for p in await self.ram.positions()]
+                         for p in ram_positions]
         else:
             positions = await self.fsm.locations()
         sites = await self._sites()

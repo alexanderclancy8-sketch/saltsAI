@@ -166,6 +166,12 @@ body[data-hud="speaking"] .state b { animation: status-pulse .7s ease-in-out inf
 .caption { margin: 0; width: 100%; color: var(--muted); font-size: 13px; line-height: 1.5; min-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .caption .interim { opacity: .8; }
 .caption.error { color: var(--warn); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* Top bar, under the status: shown only while voice input is NOT on the speech-to-text engine chosen in Settings, in full
+   (it wraps rather than being cut off, and sits beside the two-line brand so the bar does not grow). */
+.statusbox { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; max-width: 100%; }
+.stt-status { font-family: var(--f-mono); font-size: 11px; line-height: 1.3; color: var(--ember); border: 1px solid var(--ember); border-radius: 8px;
+  padding: 1px 8px; max-width: 36ch; overflow-wrap: anywhere; }
+.stt-status[hidden] { display: none; }
 .stt-engine { font-size: 12px; color: var(--muted); }
 .stt-engine[hidden] { display: none; }
 .stt-engine.warn { color: var(--warn); }
@@ -187,6 +193,20 @@ body[data-hud="speaking"] .state b { animation: status-pulse .7s ease-in-out inf
 .convo-head h2 { display: none; }
 .linkish { background: none; border: none; font-family: var(--f-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 2px 0; }
 .linkish:hover { color: var(--core); }
+/* Scheduled checks: one quiet, collapsed line per check that ran today ("Pull request watch · 7 checks since 09:30, no
+   change"); opening it lists each run with its time. Never a chat message. Mirrors the mockup's .auto block. */
+.activity { flex: none; display: flex; flex-direction: column; gap: 6px; padding-top: 6px; max-height: 40vh; overflow-y: auto; scrollbar-width: thin; }
+.activity[hidden] { display: none; }
+.auto { border: 1px solid var(--line); border-radius: var(--r); font-size: 13px; color: var(--muted); flex: none; }
+.auto summary { cursor: pointer; padding: 8px 12px; list-style: none; display: flex; gap: 8px; justify-content: space-between; flex-wrap: wrap; }
+.auto summary::-webkit-details-marker { display: none; }
+.auto summary:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; border-radius: var(--r); }
+.auto summary u { color: var(--core); text-decoration: none; }
+.auto[data-level="warn"] summary > span { color: var(--ember); }
+.auto[data-level="bad"] summary > span { color: var(--warn); }
+.auto .auto-runs { padding: 0 12px 10px; font-family: var(--f-mono); font-size: 12px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.auto .auto-runs .changed { color: var(--ember); }
+.auto .auto-runs .failed { color: var(--warn); }
 .conversation { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-block: 8px 14px; scrollbar-width: thin; overscroll-behavior: contain; }
 .conversation:empty::before { content: "Ask me anything below, or open the shortcuts menu."; margin: auto; color: var(--muted); font-size: 14px; text-align: center; }
 .msg { display: flex; flex-direction: column; gap: 3px; max-width: 60ch; min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }

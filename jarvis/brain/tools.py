@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from .. import history
+from .. import demo_guard, history
 from ..humanize import human_datetime
 from ..redact import redact_text
 from .pr_tools import build_pr_tools
@@ -47,7 +47,19 @@ async def dispatch(j, tool: Tool, args: BaseModel) -> Any:
         action_id = j.actions.queue(f"tool:{tool.name}", summary, {"tool": tool.name, "args": args.model_dump()})
         return (f"Suggested, not done: queued as action #{action_id} ('{summary}'). It will only happen when "
                 f"{j.settings.owner_name} approves it on the display.")
-    return await tool.handler(j, args)
+    # A read tool whose answer was built on sample data (accounts, socials, stock, staff register or vehicles that are
+    # not connected yet) never hands it to the model: the result is replaced by "not connected - here is what to
+    # connect" (jarvis/demo_guard.py). The console's own pop-ups don't come through here and keep their demo labels.
+    token = demo_guard.begin()
+    try:
+        result = await tool.handler(j, args)
+    except demo_guard.DemoDataBlocked:
+        result = None
+    finally:
+        demo_sources = demo_guard.end(token)
+    if demo_sources:
+        return demo_guard.refusal(tool.name, demo_sources, j.settings.owner_name or "the owner")
+    return result
 
 
 def serialise(result: Any) -> str:
@@ -1524,6 +1536,11 @@ async def remedial_quotes(j, a: NoInput):
 
 
 async def suggestions_list(j, a: NoInput):
+    if demo_guard.suggestions_rest_on_sample_data(j):
+        # A source the suggestions are built from is still sample data. Sweeping now would build suggestions from the sample figures (and send them to
+        # Claude to be worded), so list what is stored instead, minus anything that rests on sample data. The scheduler
+        # keeps the stored ones fresh, and the console still shows them all with their demo labels.
+        return demo_guard.visible_suggestions(j, j.db.open_suggestions())
     return await j.suggestions.sweep(announce=False)
 
 
