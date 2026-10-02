@@ -57,6 +57,10 @@ class VoiceEventIn(BaseModel):
     detail: str = Field("", max_length=300)
 
 
+class IssueResolveIn(BaseModel):
+    note: str = Field("", max_length=1000)
+
+
 class ForgetIn(BaseModel):
     text: str = Field(min_length=1, max_length=200)
 
@@ -310,6 +314,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name,
+                    resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
                           "connected": isinstance(j.finance, SageFinance) and j.finance.connected})
@@ -533,6 +538,31 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def list_issues(request: Request, status: str = "open"):
         j = J(request)
         return [j.issues.summary(i) for i in j.db.list_issues(None if status == "all" else status, 100)]
+
+    # Closing / reopening an issue is bookkeeping, not an approval: it never touches the actions queue.
+    def _issue_actor(request: Request) -> str:
+        return speaker(request) or settings.owner_name
+
+    @app.post("/api/issues/{issue_id}/resolve", dependencies=[Depends(owner)])
+    async def resolve_issue(issue_id: int, request: Request, body: IssueResolveIn | None = None):
+        try:
+            issue = J(request).issues.mark_resolved(issue_id, by=_issue_actor(request),
+                                                    note=body.note if body else "")
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return J(request).issues.summary(issue)
+
+    @app.post("/api/issues/{issue_id}/reopen", dependencies=[Depends(owner)])
+    async def reopen_issue(issue_id: int, request: Request):
+        try:
+            issue = J(request).issues.reopen(issue_id, by=_issue_actor(request))
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return J(request).issues.summary(issue)
 
     @app.post("/api/issues/{issue_id}/fix", dependencies=[Depends(owner)])
     async def fix_issue(issue_id: int, request: Request):

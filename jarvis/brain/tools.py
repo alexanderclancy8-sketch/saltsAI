@@ -703,6 +703,11 @@ class IssueIdIn(BaseModel):
     issue_id: int
 
 
+class IssueResolveIn(BaseModel):
+    issue_id: int
+    note: str = Field("", description="Optional short note on how or why it was resolved")
+
+
 class SuiteIn(BaseModel):
     suite: Literal["system", "compliance", "all"] = "all"
 
@@ -1660,6 +1665,14 @@ async def issue_fix(j, a: IssueIdIn):
     return f"The engineering agent has started on issue #{a.issue_id}. The fix will come back to you as a pull request."
 
 
+async def issue_resolve(j, a: IssueResolveIn):
+    try:
+        j.issues.mark_resolved(a.issue_id, by=f"Jarvis (at {j.settings.owner_name}'s request)", note=a.note)
+    except (LookupError, ValueError) as e:
+        return str(e)
+    return f"Issue #{a.issue_id} marked resolved."
+
+
 async def routine_tests_run(j, a: SuiteIn):
     results = await j.tester.run(a.suite)
     return {"passed": sum(r["ok"] for r in results), "failed": [r for r in results if not r["ok"]],
@@ -2140,6 +2153,9 @@ TOOLS: list[Tool] = [
     Tool("issues_list", "Problems reported by staff or found by routine tests, with triage and fix status.",
          IssuesIn, issues_list, "Checking reported issues"),
     Tool("issue_report", "Log a new issue on the owner's behalf.", IssueReportIn, issue_report, "Logging the issue"),
+    Tool("issue_resolve", "Close an issue (status resolved, with an optional note) when the owner asks you to. "
+                          "Only on the owner's say-so; records that you did it for them. This is bookkeeping, not "
+                          "an approval and not a fix.", IssueResolveIn, issue_resolve, "Marking the issue resolved"),
     Tool("issue_fix", "Start the engineering agent on an issue: it prepares a code fix as a GitHub pull request "
                       "(deployment still needs approval).", IssueIdIn, issue_fix, "Starting a fix",
          approval=True, describe=lambda a: f"Prepare a code fix for issue #{a.issue_id} (opens a pull request for review)"),
