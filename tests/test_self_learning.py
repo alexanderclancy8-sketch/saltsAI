@@ -75,6 +75,57 @@ async def test_reflect_only_looks_at_turns_since_the_last_reflection(settings):
     await j.http.aclose()
 
 
+async def test_reflect_does_not_skip_turns_that_did_not_fit_the_prompt(settings, monkeypatch):
+    from jarvis.services import self_learning as sl
+
+    monkeypatch.setattr(sl, "PROMPT_CHAR_BUDGET", 250)  # room for two of the six ~97-character lines below
+    j = make(settings, [message([text_block("First batch done.")]), message([text_block("Second batch done.")])])
+    for i in range(1, 7):
+        j.db.add_transcript("user", f"marker{i} " + "a" * 84)
+    ids = [r["id"] for r in j.db.query("SELECT id FROM transcript ORDER BY id")]
+
+    await j.self_learning.reflect()
+    first_prompt = j.brain.messages[0]["content"][-1]["text"]
+    assert "marker1" in first_prompt and "marker2" in first_prompt and "marker3" not in first_prompt
+    assert j.db.get_kv(LAST_ID_KEY) == str(ids[1])  # cursor stops after what was actually shown
+
+    await j.self_learning.reflect()
+    second_prompt = j.brain.messages[2]["content"][-1]["text"]
+    assert "marker3" in second_prompt and "marker1" not in second_prompt
+    await j.http.aclose()
+
+
+async def test_reflect_truncates_one_enormous_turn_instead_of_dropping_the_rest(settings):
+    j = make(settings, [message([text_block("Nothing to keep.")])])
+    j.db.add_transcript("user", "huge " + "z" * 50_000)
+    j.db.add_transcript("user", "Remember the tail marker")
+    await j.self_learning.reflect()
+    prompt = j.brain.messages[0]["content"][-1]["text"]
+    assert "tail marker" in prompt and len(prompt) < 10_000
+    await j.http.aclose()
+
+
+def test_remember_ignores_duplicates_and_bounds_the_fact(tmp_path):
+    import pytest
+    from pydantic import ValidationError
+
+    from jarvis.brain.tools import RememberIn
+    from jarvis.db import Database
+
+    db = Database(tmp_path / "db")
+    first = db.remember("Quote ex-VAT unless asked")
+    assert db.remember("  quote EX-VAT   unless asked ") == first
+    assert len(db.memories()) == 1
+    assert db.remember("Loop the partner in on Kestrel deals") != first
+    assert len(db.memories()) == 2
+
+    with pytest.raises(ValidationError):
+        RememberIn(fact="")
+    with pytest.raises(ValidationError):
+        RememberIn(fact="x" * 1001)
+    assert RememberIn(fact="Quote ex-VAT").fact == "Quote ex-VAT"
+
+
 async def test_reflect_does_not_skip_turns_beyond_one_batch(settings, monkeypatch):
     monkeypatch.setattr("jarvis.services.self_learning.BATCH_LIMIT", 2)
     j = make(settings, [message([text_block("Nothing yet.")]), message([text_block("Nothing else.")])])

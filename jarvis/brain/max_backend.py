@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ValidationError
 
 from . import plugins
+from ..redact import redact_text
 from ..events import quiet_turn
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
@@ -78,7 +79,8 @@ def build_sdk_tools(j, tools: list | None = None) -> list:
             except Exception as e:  # noqa: BLE001
                 log.exception("Tool %s failed", _t.name)
                 j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
-                return {"content": [{"type": "text", "text": f"{type(e).__name__}: {e}"[:2000]}], "is_error": True}
+                return {"content": [{"type": "text", "text": redact_text(f"{type(e).__name__}: {e}")[:2000]}],
+                        "is_error": True}
 
         sdk_tools.append(tool(t.name, t.description, t.definition()["input_schema"])(handler))
     return sdk_tools
@@ -313,7 +315,7 @@ class MaxBrain:
             msg = ("I couldn't reach Claude through your subscription - check CLAUDE_CODE_OAUTH_TOKEN "
                    "(run `claude setup-token`)." if "auth" in str(e).lower() or "login" in str(e).lower()
                    else "Something went wrong talking to Claude. Please try again.")
-            bus.publish("error", {"message": msg, "detail": str(e)[:300]})
+            bus.publish("error", {"message": msg, "detail": redact_text(e)[:300]})
             return msg
         log.info("%s reply: first words after %s, finished after %.1fs", mode,
                  f"{first_words:.1f}s" if first_words is not None else "-", time.monotonic() - started)
@@ -327,7 +329,7 @@ class MaxBrain:
             log.warning("Claude Agent SDK turn returned an error result: %s", detail[:500])
             msg = ("I've hit the usage limit on your Claude plan for now - it resets shortly." if limit
                    else "Sorry, that didn't work - please try again.")
-            bus.publish("error", {"message": msg, "detail": detail[:300]})
+            bus.publish("error", {"message": msg, "detail": redact_text(detail)[:300]})
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
         db.add_transcript("assistant", reply)

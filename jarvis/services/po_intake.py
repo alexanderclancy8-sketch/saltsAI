@@ -14,6 +14,7 @@ every approved action already gets (ActionExecutor._run) - nothing extra needed 
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -23,6 +24,7 @@ from ..brain import llm
 from ..config import Settings
 from ..db import Database
 from ..events import EventBus
+from . import standing_approvals as sa
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +99,25 @@ class PoIntake:
                 return matches[0]
         return None
 
+    def _queue_receipt(self, message_id: str, quote: dict[str, Any], full: dict[str, Any]) -> bool:
+        """Standing approval for routine acknowledgements is ON: queue the receipt-only reply to whoever sent the
+        PO we just matched. (Whether it runs at once is still decided in ActionExecutor.queue(); if the hourly cap is
+        used up it simply waits for a human.) Returns True if one was queued. Never raises."""
+        to = str(full.get("from_email") or "").strip()
+        if not sa.safe_address(to) or not message_id:
+            return False  # not a single plain address (no display name, CR/LF, commas...): send no automatic receipt
+        try:
+            # What makes this an "already matched" PO email: sender + quote recorded here, checked again by the
+            # standing-approval predicate, which only allows a reply to that same sender about that same quote.
+            self.db.set_kv(f"po_match:{message_id}", json.dumps({"from_email": to, "quote_id": str(quote["id"])}))
+            # The receipt is a fixed template: nothing from the incoming email (name, PO number) goes into it.
+            self.actions.queue(sa.PO_ACK_KIND, f"Acknowledge receipt of PO from {to} (receipt only - no job booked)", {
+                "to": to, "quote_id": str(quote["id"]), "source_message_id": message_id})
+            return True
+        except Exception:  # noqa: BLE001 - an acknowledgement problem must never lose the PO itself
+            log.exception("Could not queue the PO receipt acknowledgement for message %s", message_id)
+            return False
+
     async def scan_inbox(self) -> int:
         if getattr(self.mail, "demo", True) or getattr(self.fsm, "demo", True):
             return 0
@@ -132,9 +153,11 @@ class PoIntake:
             summary = (f"PO {extraction.po_number or '(ref not given)'} received from {who} for quote {quote['id']} "
                       f"({quote.get('title') or ''}, £{quote.get('value') or 0:,.0f}){status_note} - accept the "
                       "quote, book the job, record the PO number and send the customer an acknowledgement")
-            self.actions.queue("accept_quote_from_po", summary, {
-                "quote_id": quote["id"], "job_body": job_body, "po_number": extraction.po_number,
-                "ack_to": full.get("from_email"), "ack_name": (full.get("from_name") or "").split()[0] or "there",
-            })
+            first_name = (full.get("from_name") or "").split()[:1] or ["there"]
+            payload = {"quote_id": quote["id"], "job_body": job_body, "po_number": extraction.po_number,
+                       "ack_to": full.get("from_email"), "ack_name": first_name[0]}
+            if self.s.standing_acknowledgements and self._queue_receipt(msg["id"], quote, full):
+                payload["receipt_sent"] = True  # the post-approval email becomes the separate "job booked" one
+            self.actions.queue("accept_quote_from_po", summary, payload)
             found += 1
         return found

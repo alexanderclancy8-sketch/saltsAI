@@ -220,3 +220,10 @@ def test_webhook_ignores_an_untrusted_service_url(settings, monkeypatch):
             "conversation": {"id": "c"}, "from": {"id": "f"}})
         assert r.status_code == 200
     assert calls == []  # never even looked the sender up for an untrusted serviceUrl
+
+
+async def test_verify_activity_returns_the_signed_claims(keys):
+    private_key, _ = keys
+    claims = await verify_activity(
+        f"Bearer {_sign(private_key, serviceurl='https://smba.trafficmanager.net/uk/')}", APP_ID, _http())
+    assert claims["aud"] == APP_ID and claims["serviceurl"] == "https://smba.trafficmanager.net/uk/"

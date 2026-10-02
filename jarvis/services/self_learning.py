@@ -18,6 +18,8 @@ import logging
 log = logging.getLogger(__name__)
 LAST_ID_KEY = "self_learning:last_transcript_id"
 BATCH_LIMIT = 400  # generous - a busy day's worth of turns, kept bounded so the prompt doesn't balloon
+PROMPT_CHAR_BUDGET = 120_000  # transcript text per reflection; anything beyond waits for the next one
+MAX_ROW_CHARS = 4_000  # one enormous turn (a pasted document) must not crowd out everything else
 SELF_PROMPT_TAG = "[Scheduled self-reflection"  # start of the prompt this service sends (and so of its transcript row)
 
 
@@ -33,8 +35,21 @@ class SelfLearning:
                           "ORDER BY id LIMIT ?", (last_id, SELF_PROMPT_TAG + "%", BATCH_LIMIT))
         if not rows:
             return "Nothing new since the last reflection."
+        # Only reflect on what actually fits the prompt budget, and only advance the cursor past what was shown:
+        # cutting the joined text at the budget used to drop the tail silently and then mark it as reflected on.
         newest = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
-        transcript = "\n".join(f"{r['role']}: {r['text']}" for r in rows)
+        lines: list[str] = []
+        used = 0
+        included = 0
+        for r in rows:
+            line = f"{r['role']}: {r['text'][:MAX_ROW_CHARS]}"
+            if lines and used + len(line) + 1 > PROMPT_CHAR_BUDGET:
+                break
+            lines.append(line)
+            used += len(line) + 1
+            included += 1
+        batch_end = rows[included - 1]["id"]
+        transcript = "\n".join(lines)
         # Conversation-quality measurements and any replies the owner marked wrong since the last reflection.
         # Measurement only: never allowed to stop the reflection itself.
         try:
@@ -59,7 +74,7 @@ class SelfLearning:
             "remember. Call `remember` once for each thing worth keeping, in your own words. Don't remember "
             "one-off requests, small talk, or anything already in your memory. If nothing durable stands out, "
             "don't call remember at all - just say so briefly.\n\n"
-            f"<transcript>\n{transcript[:120000]}\n</transcript>"
+            f"<transcript>\n{transcript}\n</transcript>"
             f"{quality_part}"
         )
         reply = await j.brain.ask(prompt, "typed")
@@ -70,11 +85,12 @@ class SelfLearning:
                 log.warning("conversation quality watermark not saved: %s", e)
         # brain.ask() itself writes this reflection's own prompt and reply into the same transcript table -
         # advance past those too (the real current max, not just rows[-1]), or the next reflection would find
-        # its own last turn waiting for it and reflect on itself forever. The exception is a backlog bigger than
-        # one batch: jumping to the max would silently skip the turns that didn't fit, so stop at the batch end
-        # and let the next run pick up the rest.
-        if len(rows) >= BATCH_LIMIT and newest > rows[-1]["id"]:
-            cursor = rows[-1]["id"]
+        # its own last turn waiting for it and reflect on itself forever. The exception is a batch that didn't
+        # cover everything waiting (a very busy day, or a transcript over the prompt budget): jumping to the max
+        # would silently skip the turns that weren't shown, so stop at the end of the batch and let the next run
+        # pick up the rest.
+        if included < len(rows) or (len(rows) >= BATCH_LIMIT and newest > rows[-1]["id"]):
+            cursor = batch_end
         else:
             cursor = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
         j.db.set_kv(LAST_ID_KEY, str(cursor))

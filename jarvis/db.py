@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     result TEXT DEFAULT '',
     decided_at TEXT DEFAULT ''
 );
+-- Where each Teams approver's one-to-one chat with the bot lives, so Jarvis can message them first (a Bot Framework
+-- "conversation reference"). Learned when an allowlisted person messages the bot; see services/teams_approvals.py.
+CREATE TABLE IF NOT EXISTS teams_approvers (
+    email TEXT PRIMARY KEY,
+    service_url TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- One row per approval card sent to one approver for one action: the claim that makes sending idempotent, and the
+-- Teams activity id used to update the card once the action is decided.
+CREATE TABLE IF NOT EXISTS teams_approval_cards (
+    action_id INTEGER NOT NULL,
+    email TEXT NOT NULL,
+    activity_id TEXT DEFAULT '',
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (action_id, email)
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -267,7 +284,14 @@ class Database:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that older databases lack. Safe to run on every start."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_actions)").fetchall()}
+        if "approved_by" not in cols:
+            self._conn.execute("ALTER TABLE pending_actions ADD COLUMN approved_by TEXT DEFAULT ''")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -394,6 +418,7 @@ class Database:
     def remember(self, fact: str) -> int:
         """Stores a fact and returns its id - or, if the same fact is already remembered, returns the existing id
         without adding a duplicate (the scheduled self-reflection can easily re-learn something it already knows)."""
+        fact = fact.strip()
         existing = self.find_memory(fact)
         if existing is not None:
             return existing
@@ -426,9 +451,50 @@ class Database:
         self.execute("DELETE FROM automations WHERE id = ?", (automation_id,))
 
     # -- approvals ------------------------------------------------------------------
-    def create_action(self, kind: str, summary: str, payload: dict[str, Any]) -> int:
-        return self.execute("INSERT INTO pending_actions (created_at, kind, summary, payload_json) VALUES (?,?,?,?)",
-                            (now_iso(), kind, summary, json.dumps(payload)))
+    def create_action(self, kind: str, summary: str, payload: dict[str, Any], status: str = "pending",
+                      approved_by: str = "") -> int:
+        """`status`/`approved_by` are only ever set to "approved"/"standing approval: ..." by ActionExecutor.queue(),
+        when the owner's own standing approval (services/standing_approvals.py) covers this exact action."""
+        return self.execute(
+            "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (now_iso(), kind, summary, json.dumps(payload), status, approved_by,
+             now_iso() if status != "pending" else ""))
+
+    def count_standing_runs_since(self, cutoff_iso: str) -> int:
+        row = self.query_one("SELECT COUNT(*) AS n FROM pending_actions WHERE approved_by LIKE 'standing approval:%'"
+                             " AND created_at >= ?", (cutoff_iso,))
+        return int(row["n"]) if row else 0
+
+    def claim_teams_card(self, action_id: int, email: str) -> bool:
+        """True only for the first caller for this (action, approver) - the idempotency guard for approval cards."""
+        with self._lock:
+            cur = self._conn.execute("INSERT OR IGNORE INTO teams_approval_cards (action_id, email, sent_at)"
+                                     " VALUES (?,?,?)", (action_id, email.lower(), now_iso()))
+            self._conn.commit()
+            return cur.rowcount == 1
+
+    def count_teams_cards_since(self, email: str, cutoff_iso: str) -> int:
+        row = self.query_one("SELECT COUNT(*) AS n FROM teams_approval_cards WHERE email = ? AND sent_at >= ?",
+                             (email.lower(), cutoff_iso))
+        return int(row["n"]) if row else 0
+
+    def set_teams_card_activity(self, action_id: int, email: str, activity_id: str) -> None:
+        self.execute("UPDATE teams_approval_cards SET activity_id = ? WHERE action_id = ? AND email = ?",
+                     (activity_id, action_id, email.lower()))
+
+    def teams_cards_for(self, action_id: int) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM teams_approval_cards WHERE action_id = ?", (action_id,))
+
+    def save_teams_approver(self, email: str, service_url: str, conversation_id: str) -> None:
+        self.execute(
+            "INSERT INTO teams_approvers (email, service_url, conversation_id, updated_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(email) DO UPDATE SET service_url = excluded.service_url,"
+            " conversation_id = excluded.conversation_id, updated_at = excluded.updated_at",
+            (email.lower(), service_url, conversation_id, now_iso()))
+
+    def teams_approvers(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM teams_approvers ORDER BY email")
 
     def get_action(self, action_id: int) -> dict[str, Any] | None:
         row = self.query_one("SELECT * FROM pending_actions WHERE id = ?", (action_id,))
@@ -445,6 +511,16 @@ class Database:
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))
+
+    def decide_pending_action(self, action_id: int, status: str, by: str, result: str = "") -> bool:
+        """Move a still-pending action to approved/denied. Atomic: False if someone else decided it first
+        (two approvers tapping at once can't both win)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE pending_actions SET status = ?, result = ?, decided_at = ?, approved_by = ?"
+                " WHERE id = ? AND status = 'pending'", (status, result, now_iso(), by, action_id))
+            self._conn.commit()
+            return cur.rowcount == 1
 
     # -- drafted documents (rendered to PDF/Word on request) ---------------------------------
     def add_document(self, doc_id: str, kind: str, title: str, markdown: str) -> str:

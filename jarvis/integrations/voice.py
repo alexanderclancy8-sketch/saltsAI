@@ -52,6 +52,7 @@ STT_ATTEMPT_TIMEOUT_S = 8.0
 STT_CONNECT_TIMEOUT_S = 5.0
 STT_RETRY_DELAY_S = 0.5
 STT_MAX_BYTES = 25 * 1024 * 1024
+TTS_RETRY_STATUSES = {429, 500, 502, 503, 504}  # transient upstream failures worth one retry
 TTS_RETRY_DELAY_S = 0.5
 
 
@@ -110,9 +111,94 @@ def speakable(text: str) -> str:
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)
     text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
     text = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", text)
-    text = text.replace("&", " and ").replace(" e.g. ", " for example ").replace(" i.e. ", " that is ")
+    text = _expand_for_speech(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+_MONEY = re.compile(
+    r"£\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2})(?!\d)|,(\d{2})(?!\d|,\d))?"  # £12.50 and the £12,50 typo
+    r"(?:(bn|k|m)\b|\s(thousand|million|billion)\b)?", re.I)
+_MONEY_WORDS = {"k": "thousand", "m": "million", "bn": "billion"}
+
+# Dates and times are matched in ONE pass (so a later rule never re-reads the inside of something an earlier rule
+# deliberately left alone). Order of the alternatives matters:
+#  - a date straight after a reference prefix ("PO 2026-10-01", "INV: 2026-10-01") is an identifier, not a date
+#  - an ISO timestamp that carries a UTC offset ("...Z", "+01:00") is left exactly as written, because
+#    humanize.human_datetime ignores the offset and would speak the wrong hour
+#  - a bare 24-hour time is spoken as 12-hour, a range ("12:30-14:00") as "12:30pm to 2pm"; a time followed by an
+#    offset is left alone, and so is anything that isn't a plausible clock ("3:2", "54-13:2017", "10.0.0.5:8080").
+_HM = r"(?:[01]\d|2[0-3]):[0-5]\d"
+_ISO_DATE_TIME = re.compile(
+    rf"""(?<![\w:.+-])(?:
+      (?P<ref>(?:(?i:po|inv|invoice|ref|reference|job|quote|quotation)|Q)[\s:#.]*\d{{4}}-\d{{2}}-\d{{2}}(?![\d-]))
+    | (?<![\d-])(?P<t_date>\d{{4}}-\d{{2}}-\d{{2}})T(?P<t_hm>{_HM})(?::\d{{2}}(?:[.,]\d+)?)?
+        (?P<t_zone>Z|[+-]\d{{2}}(?::?\d{{2}})?)?(?![\w:])
+    | (?<![\d-])(?P<s_date>\d{{4}}-\d{{2}}-\d{{2}})\s(?P<s_hm>{_HM})(?P<s_sec>:\d{{2}}(?:[.,]\d+)?)?
+        (?:(?P<s_zone>Z|\+\d{{2}}(?::?\d{{2}})?|(?(s_sec)-\d{{2}}(?::?\d{{2}})?|(?!)))
+          |\s?[-–]\s?(?P<s_end>{_HM}))?(?![\w:])
+    | (?<![\d-])(?P<date>\d{{4}}-\d{{2}}-\d{{2}})(?!\d|[TZ+-]|:\d|\.\d)
+    | (?<!\d-)(?P<r_a>{_HM})\s?[-–]\s?(?P<r_b>{_HM})(?![\d:]|\s?[ap]m\b|Z\b)
+    | (?<!\d-)(?P<clock>{_HM})(?![\d:]|\s?[ap]m\b|Z\b|\+\d{{2}}|-\d{{2}}:?\d{{2}})
+    )""", re.X)
+_URL = re.compile(r"https?://(?:www\.)?([^/\s?#)]*[^/\s?#).,;:!])(?:[^\s)]*[^\s).,;:!?])?")
+_EMAIL = re.compile(r"\b([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)\b")
+_BS_PART = re.compile(r"\b(BS(?: EN)?(?: ISO)? \d+)-(\d+)\b")
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿️]")
+
+
+def _money(m: re.Match) -> str:
+    whole, pence = m.group(1).replace(",", ""), m.group(2) or m.group(3)
+    mult = (m.group(4) or m.group(5) or "").lower()
+    if mult:  # "£73k" -> "73 thousand pounds"
+        return f"{whole}{'.' + pence if pence else ''} {_MONEY_WORDS.get(mult, mult)} pounds"
+    unit = "pound" if whole == "1" else "pounds"
+    pence = (pence or "").ljust(2, "0")
+    if int(pence or 0):  # "£12.50" -> "12 pounds 50"; "£12.00" -> "12 pounds"
+        return f"{whole} {unit} {pence}"
+    return f"{whole} {unit}"
+
+
+def _when(m: re.Match) -> str:
+    """One date/time match from _ISO_DATE_TIME -> how a person would say it (or the text unchanged)."""
+    from ..humanize import _format_time, human_datetime
+
+    g = m.groupdict()
+    if g["ref"] or g["t_zone"] or g["s_zone"]:
+        return m.group(0)  # a reference number, or a timestamp whose UTC offset humanize would drop
+    if g["t_date"]:
+        return human_datetime(f"{g['t_date']}T{g['t_hm']}")
+    if g["s_date"]:
+        said = human_datetime(f"{g['s_date']}T{g['s_hm']}")
+        if g["s_end"]:
+            said += " to " + _format_time(int(g["s_end"][:2]), int(g["s_end"][3:]))
+        return said
+    if g["date"]:
+        return human_datetime(g["date"])
+    if g["r_a"]:
+        a, b = g["r_a"], g["r_b"]
+        return f"{_format_time(int(a[:2]), int(a[3:]))} to {_format_time(int(b[:2]), int(b[3:]))}"
+    return _format_time(int(g["clock"][:2]), int(g["clock"][3:]))
+
+
+def _expand_for_speech(text: str) -> str:
+    """Spell out the things a TTS engine reads badly: currency, percentages, ISO dates, 24-hour times, bare
+    URLs and email addresses, British Standard part numbers ("BS 5839-1"), common abbreviations and emoji.
+    Conservative on purpose - anything not clearly one of these is left exactly as written."""
+    text = _MONEY.sub(_money, text)
+    text = re.sub(r"\b(\d{1,3}(?:,\d{3})+)\b", lambda m: m.group(1).replace(",", ""), text)
+    text = re.sub(r"(\d)\s?%", r"\1 percent", text)
+    text = _ISO_DATE_TIME.sub(_when, text)
+    text = _URL.sub(lambda m: m.group(1).replace(".", " dot "), text)
+    text = _EMAIL.sub(lambda m: f"{m.group(1)} at {m.group(2).replace('.', ' dot ')}", text)
+    text = _BS_PART.sub(r"\1 part \2", text)
+    text = re.sub(r"\be\.g\.", "for example", text, flags=re.I)
+    text = re.sub(r"\bi\.e\.", "that is", text, flags=re.I)
+    text = re.sub(r"\betc\.", "et cetera", text, flags=re.I)
+    text = re.sub(r"\bapprox\.", "approximately", text, flags=re.I)
+    text = re.sub(r"\bvs\.?(?=\s)", "versus", text, flags=re.I)
+    text = text.replace("&", " and ").replace("—", ", ").replace("→", " to ")
+    return _EMOJI.sub("", text)
 
 
 def audio_extension(mime: str) -> str:
@@ -182,7 +268,7 @@ class Voice:
                 break
             body = (await resp.aread())[:300]
             await resp.aclose()
-            if attempt == 1 and (resp.status_code >= 500 or resp.status_code == 429):
+            if attempt == 1 and resp.status_code in TTS_RETRY_STATUSES:
                 log.warning("TTS provider returned %s (attempt 1 of 2), retrying", resp.status_code)
                 await asyncio.sleep(TTS_RETRY_DELAY_S)
                 continue
@@ -430,15 +516,23 @@ class Voice:
                     if msg.get("bytes"):
                         await dg.send(msg["bytes"])
                     elif msg.get("text"):
-                        control = json.loads(msg["text"])
-                        if control.get("type") in ("KeepAlive", "Finalize", "CloseStream"):
+                        try:
+                            control = json.loads(msg["text"])
+                        except ValueError:
+                            continue  # a garbled control message must not tear down the live transcription
+                        if isinstance(control, dict) and control.get("type") in ("KeepAlive", "Finalize", "CloseStream"):
                             await dg.send(json.dumps({"type": control["type"]}))
                 with contextlib.suppress(Exception):
                     await dg.send(json.dumps({"type": "CloseStream"}))
 
             async def downstream() -> None:
                 async for raw in dg:
-                    data = json.loads(raw)
+                    try:
+                        data = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(data, dict):
+                        continue
                     kind = data.get("type")
                     if kind == "Results":
                         alt = (data.get("channel", {}).get("alternatives") or [{}])[0]
