@@ -128,9 +128,10 @@ class JarvisBrain:
         rollback_to = len(self.messages)
         self.messages.append({"role": "user", "content": content})
         db.add_transcript("user", text)
+        qt = self.j.quality.begin(text, mode)  # conversation-quality metrics; never raises (see conversation_quality.py)
         bus.publish("user_message", {"text": text, "mode": mode,
                                      "attachments": [a.get("name") for a in attachments or []]})
-        bus.publish("thinking", {"mode": mode})
+        bus.publish("thinking", {"mode": mode, "turn_id": qt.turn_id})
 
         effort = self.s.voice_effort if mode == "voice" else self.s.chat_effort
         params = llm.request_params(self.s, effort, compaction=self.s.jarvis_compaction, model=self.s.model_for(mode))
@@ -145,6 +146,7 @@ class JarvisBrain:
                     ) as stream:
                         async for event in stream:
                             if event.type == "text":
+                                qt.first_delta()
                                 reply_parts.append(event.text)
                                 bus.publish("delta", {"text": event.text, "mode": mode})
                             elif event.type == "content_block_start" and event.content_block.type == "server_tool_use":
@@ -163,8 +165,9 @@ class JarvisBrain:
                 if response.stop_reason == "refusal":
                     del self.messages[rollback_to:]
                     msg = "I'm afraid I can't help with that one."
-                    bus.publish("reply", {"text": msg, "mode": mode, "replace": True})
+                    bus.publish("reply", {"text": msg, "mode": mode, "replace": True, "turn_id": qt.turn_id})
                     db.add_transcript("assistant", msg)
+                    qt.finish(msg)
                     return msg
 
                 self.messages.append({"role": "assistant", "content": response.content})
@@ -173,6 +176,7 @@ class JarvisBrain:
                 tool_uses = [b for b in response.content if b.type == "tool_use"]
                 if not tool_uses:
                     break
+                qt.tools(len(tool_uses))
                 if response.stop_reason == "max_tokens":
                     results = [{"type": "tool_result", "tool_use_id": b.id, "is_error": True,
                                 "content": "Tool input was cut off by max_tokens; send a shorter input."}
@@ -185,8 +189,12 @@ class JarvisBrain:
                     bus.publish("delta", {"text": "\n\n", "mode": mode})
             else:
                 reply_parts.append("\n\n(I stopped there - that took more steps than I allow myself in one go.)")
+        except asyncio.CancelledError:
+            qt.finish("", ok=False, interrupted=True)  # the owner cut this turn off (Stop / barge-in / a new message)
+            raise
         except anthropic.APIError as e:
             del self.messages[rollback_to:]
+            qt.finish("", ok=False)
             log.exception("Claude API error")
             status = getattr(e, "status_code", None)
             msg = ("I can't reach my language model right now - check the ANTHROPIC_API_KEY." if status in (401, 403)
@@ -196,11 +204,13 @@ class JarvisBrain:
             return msg
         except Exception as e:  # noqa: BLE001
             del self.messages[rollback_to:]
+            qt.finish("", ok=False)
             log.exception("Turn failed")
             bus.publish("error", {"message": "Sorry, something went wrong on my side.", "detail": str(e)[:300]})
             return "Sorry, something went wrong on my side."
 
         reply = "".join(reply_parts).strip()
         db.add_transcript("assistant", reply)
-        bus.publish("reply", {"text": reply, "mode": mode})
+        qt.finish(reply)
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id})
         return reply

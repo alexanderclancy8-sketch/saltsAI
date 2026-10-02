@@ -267,8 +267,9 @@ class MaxBrain:
         files = self._save_attachments(attachments)
         note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
         db.add_transcript("user", text)
+        qt = self.j.quality.begin(text, mode)  # conversation-quality metrics; never raises (see conversation_quality.py)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
-        bus.publish("thinking", {"mode": mode})
+        bus.publish("thinking", {"mode": mode, "turn_id": qt.turn_id})
 
         started = time.monotonic()
         first_words: float | None = None
@@ -286,10 +287,13 @@ class MaxBrain:
                         chunk = ev["delta"].get("text", "")
                         if first_words is None:
                             first_words = time.monotonic() - started
+                            qt.first_delta()
                         parts.append(chunk)
                         bus.publish("delta", {"text": chunk, "mode": mode})
                     elif etype == "content_block_start":
                         block = ev.get("content_block") or {}
+                        if block.get("type") in ("tool_use", "server_tool_use"):
+                            qt.tools()
                         if block.get("type") in ("tool_use", "server_tool_use") and not str(block.get("name", "")).startswith("mcp__"):
                             bus.publish("tool", {"id": block.get("id"), "name": block.get("name"),
                                                  "label": _tool_label(block.get("name", "")), "state": "start"})
@@ -299,7 +303,11 @@ class MaxBrain:
                 elif isinstance(msg, ResultMessage):
                     result = msg
                     self.session_id = msg.session_id or self.session_id
+        except asyncio.CancelledError:
+            qt.finish("", ok=False, interrupted=True)  # the owner cut this turn off (Stop / barge-in / a new message)
+            raise
         except Exception as e:  # noqa: BLE001
+            qt.finish("", ok=False)
             log.exception("Claude Agent SDK turn failed")
             await self._disconnect()
             msg = ("I couldn't reach Claude through your subscription - check CLAUDE_CODE_OAUTH_TOKEN "
@@ -315,6 +323,7 @@ class MaxBrain:
             # The SDK's own error/result text is an internal diagnostic (SDK error codes, stop reasons) meant
             # for logs, not something to read out to the owner - surfacing it raw once showed up as literally
             # "Sorry, that didn't work: ['[ede_diagnostic] result_type=user ...']" on the display/voice reply.
+            qt.finish("", ok=False)
             log.warning("Claude Agent SDK turn returned an error result: %s", detail[:500])
             msg = ("I've hit the usage limit on your Claude plan for now - it resets shortly." if limit
                    else "Sorry, that didn't work - please try again.")
@@ -322,7 +331,8 @@ class MaxBrain:
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
         db.add_transcript("assistant", reply)
-        bus.publish("reply", {"text": reply, "mode": mode})
+        qt.finish(reply)
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id})
         return reply
 
 

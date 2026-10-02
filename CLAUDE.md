@@ -143,7 +143,18 @@ once, not per-transport. Voice wake-word listening for cost-free "always listeni
 `SpeechRecognition` (`sentry` in hud.js) until it hears the wake word, then hands off to the configured paid STT
 (Deepgram/Whisper) for the actual command, sleeping back to the free listener after a period of silence
 (`extendFollowUp`/`checkSleep`) - don't reintroduce a fully continuous paid stream for "always listening" mode.
-Barge-in (talking over Jarvis) lives in `utterance()`'s echo-window block: the window stays a strict allowlist (wake
+Conversation quality (`services/conversation_quality.py`, `j.quality`): both brains call `begin()` at the top of `_turn`
+and poke the returned record (`first_delta`/`tools`/`finish`) - keep that in any new brain path. It logs per-turn metrics,
+the HUD's Good/Wrong buttons and "that was wrong" phrases (`/api/feedback`), browser-only signals (`/api/voice-events`),
+and feeds the nightly reflection plus a weekly summary. The regression suite to run after every change is
+`tests/test_conversation_regression.py`. **Privacy:** its tables (`turn_metrics`, `voice_events`, `turn_feedback`) hold
+conversation text - a short (<= 300 chars), credential/access-code-redacted excerpt of what was said and Jarvis's reply, plus
+the owner's feedback note; the full conversation is only in `transcript` (2-year retention). Rows older than the
+`conversation_quality_retention_days` setting (default 90) are deleted at start-up and by a daily job (`ConversationQuality.prune()`,
+id `conversation_quality_retention`). To purge on demand, as the signed-in owner call `DELETE /api/quality` (everything) or
+`DELETE /api/quality?older_than_days=N`, or in SQL `DELETE FROM turn_metrics; DELETE FROM voice_events; DELETE FROM turn_feedback;`.
+It is deliberately not a brain tool. Feedback phrases ("that was wrong") are verdicts, not turns; STT timing is matched to its turn
+by transcript (`note_stt(ms, text)`), and a first-audio report without a turn id is dropped rather than guessed. Barge-in (talking over Jarvis) lives in `utterance()`'s echo-window block: the window stays a strict allowlist (wake
 word or stop phrase only); stop phrases always cut the turn via `stopEverything()`, the wake word additionally needs
 the `bargein` setting on, `bargeInAllowed()`, and to not match Jarvis's own recent speech. Tests: `tests/test_hud_bargein.py`.
 Pressing the mic/Space while he speaks cuts the whole turn (`micPressBargeIn()`). The push-to-talk silence timeout is the
