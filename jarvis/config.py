@@ -310,6 +310,10 @@ class Settings(BaseSettings):
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs
     self_learning_cron: str = "0 21 * * *"  # nightly reflection: remember anything durable from the day's chats
+    conversation_quality_cron: str = "30 8 * * 1"  # weekly short "conversation quality" summary (Mondays 8:30)
+    # Conversation-quality tables (turn_metrics, voice_events, turn_feedback) hold short redacted excerpts of what
+    # was said; rows older than this many days are deleted daily (the full transcript has its own 2-year retention).
+    conversation_quality_retention_days: int = 90
     inbox_check_interval_min: int = 10
     # Weekly digest of Jarvis' own routine engineering notices (PRs, fixes, deploys, test results, triage,
     # non-critical security findings, self-learning). Default Monday 08:00 (in TIMEZONE). Urgent/safety items

@@ -56,6 +56,7 @@ from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
+from .services.conversation_quality import ConversationQuality
 from .services.self_improve import SelfImprove
 from .services.self_learning import SelfLearning
 from .services.site_access import SiteAccessCodes
@@ -145,6 +146,8 @@ class Jarvis:
         self.scheduler = None
         self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
         self.automations = AutomationService(self)
+        self.quality = ConversationQuality(self)  # per-turn metrics + feedback; must exist before the brain below
+        self.quality.prune()  # retention for its tables (default 90 days); also run daily by the scheduler
         self.self_learning = SelfLearning(self)
         self.weekly_digest = WeeklyDigest(self)
         self.reply_suggestions = ReplySuggestions(self)
