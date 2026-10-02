@@ -50,6 +50,11 @@ class Settings(BaseSettings):
 
     # --- Identity -------------------------------------------------------
     company_name: str = "Salts Fire and Security"
+    # Printed in the footer of PDF / Word documents (COMPANY_ADDRESS). Blank = the footer shows the name only.
+    company_address: str = ""
+    # Path to the company logo image (PNG or JPEG) for the header of PDF / Word documents (COMPANY_LOGO_PATH).
+    # Blank, missing or unreadable = documents are branded with the company name and Salts navy only.
+    company_logo_path: str = ""
     company_domain: str = "saltsfireandsecurity.co.uk"
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
