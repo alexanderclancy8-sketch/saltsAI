@@ -262,6 +262,13 @@ class Settings(BaseSettings):
     social_snapshot_cron: str = "20 6 * * *"
     marketing_report_cron: str = "50 7 * * 1"
 
+    # --- Image generation (draft social media graphics; see services/images.py) --------------------------
+    # The provider paints a plain background; Jarvis adds the headline, navy branding and logo itself. With no
+    # key the generate_image tool says it isn't connected and never fakes an image. Drafts only - never posted.
+    image_provider: str = "openai"  # supported: openai
+    image_api_key: str = ""
+    image_model: str = "gpt-image-1"
+
     # --- Voice --------------------------------------------------------------
     tts_provider: str = "auto"  # auto | elevenlabs | azure | piper | browser
     piper_voice: str = "alan"  # free, local TTS (jarvis/integrations/voice.py's PIPER_VOICES) - the default

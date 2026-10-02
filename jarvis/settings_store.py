@@ -314,6 +314,18 @@ SECTIONS: tuple[Section, ...] = (
         test=True,
     ),
     Section(
+        "images", "Image generation", "Draft social media graphics (Facebook, Instagram, LinkedIn, TikTok) with "
+        "your headline, navy branding and logo. Drafts only - Jarvis never posts them anywhere.",
+        (
+            Field("image_provider", "Image provider", "select", "Which service paints the background.",
+                  options=(("openai", "OpenAI"),)),
+            Field("image_api_key", "Image provider API key", "secret",
+                  "Without this Jarvis says image generation isn't connected and makes nothing."),
+            Field("image_model", "Image model", advanced=True, placeholder="gpt-image-1"),
+        ),
+        required=("image_api_key",),
+    ),
+    Section(
         "github", "Auto-fix", "Lets Jarvis prepare Salts FSM bug fixes as pull requests for you to approve.",
         (
             Field("github_token", "GitHub token", "secret",

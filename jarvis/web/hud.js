@@ -79,6 +79,7 @@
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(/!\[([^\]]*)\]\((\/api\/images\/[0-9a-f]{32}\.png)\)/g, '<img class="gen-image" src="$2" alt="$1">') // our own generated graphics only
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     const lines = text.split("\n");
     const out = [];
@@ -924,7 +925,7 @@ function send(text, mode = "typed", opts = {}) {
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
-      case "display": openDisplay(d.title, d.markdown, d.doc_id); break;
+      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id); break;
       case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; renderApprovals(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
@@ -943,18 +944,21 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ display overlay
-  function openDisplay(title, markdown, docId) {
+  function openDisplay(title, markdown, docId, imageId) {
     $("#display-title").textContent = title;
-    // Download buttons only for stored, drafted documents (the id is a 32-char hex string from the server).
+    // Download buttons only for stored, drafted documents / graphics (the id is a 32-char hex string from the server).
     const dl = $("#display-downloads");
-    if (docId && /^[0-9a-f]{32}$/.test(docId)) {
+    const isImage = !!imageId && /^[0-9a-f]{32}$/.test(imageId);
+    const isDoc = !isImage && !!docId && /^[0-9a-f]{32}$/.test(docId);
+    for (const id of ["#display-pdf", "#display-docx", "#display-xlsx"]) $(id).style.display = isDoc ? "" : "none";
+    $("#display-png").style.display = isImage ? "" : "none";
+    if (isDoc) {
       $("#display-pdf").href = `/api/documents/${docId}/pdf`;
       $("#display-docx").href = `/api/documents/${docId}/docx`;
       $("#display-xlsx").href = `/api/documents/${docId}/xlsx`;
-      dl.hidden = false;
-    } else {
-      dl.hidden = true;
     }
+    if (isImage) $("#display-png").href = `/api/images/${imageId}.png?download=1`;
+    dl.hidden = !(isDoc || isImage);
     $("#display-body").innerHTML = md(markdown);
     $("#display").classList.add("open");
     $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
