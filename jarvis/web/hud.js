@@ -133,7 +133,9 @@
   setInterval(tick, 1000); tick();
 
   // ------------------------------------------------------------------ HUD state + reactor
-  const STATE_LABEL = { idle: "Online", listening: "Listening", thinking: "Working", speaking: "Speaking", awaiting: "Yes, sir?" };
+  // What he calls the owner follows the "How Jarvis talks" setting (the server sends it as status.address).
+  const address = () => S.status?.address || "sir";
+  const STATE_LABEL = { idle: "Online", listening: "Listening", thinking: "Working", speaking: "Speaking", get awaiting() { return `Yes, ${address()}?`; } };
   function setHud(state) {
     S.hudState = state;
     $("#state").textContent = STATE_LABEL[state] || state;
@@ -758,6 +760,7 @@ function send(text, mode = "typed", opts = {}) {
     // no-op when nothing is actually running - the listen() loop on the backend awaits it before touching the
     // chat message that follows, so ordering is guaranteed.
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
+    abandonCurrent();
     const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
     // Only text the owner typed into the chat box may be learned as a "usual reply" (never buttons or speech).
     if (opts.compose && mode === "typed") payload.compose = true;
@@ -963,10 +966,38 @@ function send(text, mode = "typed", opts = {}) {
   let refreshTimer = null;
   const refreshSoon = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 1500); };
 
+  // Working-line and reply extras (Phase 2: "how Jarvis talks"). The step line above a reply names what he is checking
+  // right now - it is fed only by real "tool" events from the server, never invented here. Once the reply is done,
+  // the line goes and a source-and-time line goes underneath, with a button for the matching pop-up when there is
+  // detail behind the answer and up to two follow-up questions (all of it sent by the server on the "reply" event).
+  const showStep = (msg, text) => { const st = msg?.querySelector(".step"); if (st) { st.textContent = text; st.hidden = false; } };
+  function replyExtras(msg, d, steps) {
+    if (!msg || d.replace) return;
+    if (typeof d.elapsed_ms === "number") {
+      const secs = (d.elapsed_ms / 1000).toFixed(1) + "s";
+      const src = d.sources?.length ? "Source: " + d.sources.join(", ") : "No systems checked";
+      msg.insertAdjacentHTML("beforeend", `<div class="src"${steps.length ? ` title="${esc(steps.join(" · "))}"` : ""}>${esc(src)} · ${esc(secs)}</div>`);
+    }
+    const chips = [];
+    if (window.JarvisAsk?.canReopen?.()) chips.push(`<button type="button" class="reply-chip answer" data-reask>Answer</button>`);
+    if (d.panel && POPS.includes(d.panel)) chips.push(`<button type="button" class="reply-chip panel" data-pop="${esc(d.panel)}">Open ${esc(d.panel_title || d.panel)}</button>`);
+    (Array.isArray(d.follow_ups) ? d.follow_ups : []).slice(0, 2).forEach((f) => { if (typeof f === "string" && f.trim()) chips.push(`<button type="button" class="reply-chip" data-follow="${esc(f)}">${esc(f)}</button>`); });
+    if (chips.length) msg.insertAdjacentHTML("beforeend", `<div class="extras">${chips.join("")}</div>`);
+  }
+  $("#conversation").addEventListener("click", (e) => {
+    const follow = e.target.closest("[data-follow]");
+    if (follow) { send(follow.dataset.follow, "typed"); return; } // an ordinary chat message, exactly as if typed
+    if (e.target.closest("[data-reask]")) window.JarvisAsk?.reopen?.();
+  });
+
   function handle(ev) {
     const d = ev.data;
+    // The owner pressed Stop: whatever the stopped turn still emits on its way out (a partial reply, a "problem" from
+    // being interrupted) must not appear. The next turn starts with its own user_message, which lifts this.
+    if (S.stopped && ["delta", "tool", "reply", "error"].includes(ev.type)) return;
     switch (ev.type) {
       case "user_message":
+        S.stopped = false; window.JarvisAsk?.forget?.(); $$("#conversation [data-reask]").forEach((b) => b.remove());
         window.JarvisAsk?.close(); // any new message (typed, spoken, from another tab) answers/supersedes an open question
         addMessage("user", d.text + (d.attachments?.length ? `\n📎 ${d.attachments.join(", ")}` : ""), d.mode === "voice" ? "spoken" : "");
         S.lastMode = d.mode;
@@ -975,21 +1006,28 @@ function send(text, mode = "typed", opts = {}) {
         setHud("thinking"); toolsSeen = [];
         turnClock.turnId = d.turn_id ?? null; // which server-side turn the first-audio measurement belongs to
         current = addMessage("assistant", ""); current.querySelector(".md").classList.add("typing");
+        current.querySelector(".md").insertAdjacentHTML("beforebegin", `<div class="step">Thinking…</div>`);
         current.dataset.raw = "";
         break;
       case "delta":
         if (!current) { current = addMessage("assistant", ""); current.dataset.raw = ""; }
+        current.querySelector(".step")?.setAttribute("hidden", ""); // the words have started - the "checking" line steps aside
         current.dataset.raw += d.text;
         current.querySelector(".md").innerHTML = md(current.dataset.raw);
         $("#conversation").scrollTop = 1e9;
         filler.block(); // the real reply has started - no filler, and drop one that hasn't begun playing
         if (shouldSpeak(d.mode)) speaker.feed(d.text);
         break;
-      case "tool":
-        if (d.state === "start") { $("#toolline").textContent = "› " + d.label + "…"; toolsSeen.push(d.label); }
-        else if (d.state === "error") $("#toolline").textContent = "› " + d.label + " - problem";
+      case "tool": {
+        const label = d.label || ""; // a bookkeeping tool (offer_next_steps) has no label and names nothing
+        const line = d.state === "error" ? label + " - problem" : label + "…";
+        if (label && (d.state === "start" || d.state === "error")) {
+          if (d.state === "start") toolsSeen.push(label);
+          if (current) { $("#toolline").textContent = ""; showStep(current, line); } else $("#toolline").textContent = "› " + line;
+        }
         filler.tool(d); // lets a still-pending filler name the running tool; never speaks by itself
         break;
+      }
       case "reply":
         filler.end(); // reply is ready: cancel the pending timer / unstarted filler (a playing one finishes first)
         $("#toolline").textContent = "";
@@ -997,14 +1035,19 @@ function send(text, mode = "typed", opts = {}) {
           if (d.replace || !current.dataset.raw) current.dataset.raw = d.text;
           const body = current.querySelector(".md");
           body.classList.remove("typing"); body.innerHTML = md(current.dataset.raw);
-          if (toolsSeen.length) current.insertAdjacentHTML("beforeend", `<div class="tools">${esc([...new Set(toolsSeen)].join(" · "))}</div>`);
+          current.querySelector(".step")?.remove();
+          replyExtras(current, d, [...new Set(toolsSeen)]);
           if (d.turn_id) current.insertAdjacentHTML("beforeend", feedbackHtml(d.turn_id));
-        } else addMessage("assistant", d.text);
+        } else {
+          const el = addMessage("assistant", d.text);
+          replyExtras(el, d, []);
+        }
         if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
         if (!speaker.active) { setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); }
         caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
         current = null;
+        $("#conversation").scrollTop = 1e9; // the source line and buttons add height under the reply
         refreshSoon();
         rsSoon(); // Jarvis's new reply changes the situation the suggestion is matched to
         break;
@@ -1747,7 +1790,7 @@ function send(text, mode = "typed", opts = {}) {
       }
       const cmd = text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "");
       if (!cmd) {
-        setHud("awaiting"); extendFollowUp(); say("Yes, sir?");
+        setHud("awaiting"); extendFollowUp(); say(`Yes, ${address()}?`);
         // The wake word alone and Jarvis's prompt back is an exchange too - the next words are the request.
         if (S.speakPref === "off" || !speaker.active) finishVoiceTurn(); else S.voiceTurn = "replied";
         return;
@@ -1770,16 +1813,25 @@ function send(text, mode = "typed", opts = {}) {
   });
 
   // ------------------------------------------------------------------ stop
+  // Leave the reply that is still being written as it stands (or drop it if nothing has arrived yet), and ignore
+  // anything that turn still sends while it winds down - see handle(). Used by Stop and by sending a new message.
+  function abandonCurrent() {
+    S.stopped = true;
+    if (!current) return;
+    const msg = current;
+    current = null;
+    const body = msg.querySelector(".md");
+    body.classList.remove("typing");
+    msg.querySelector(".step")?.remove();
+    if (!msg.dataset.raw) { msg.remove(); return; }
+    body.innerHTML = md(msg.dataset.raw);
+    msg.insertAdjacentHTML("beforeend", `<div class="src">Stopped.</div>`);
+  }
   function stopEverything() {
     filler.end();
     speaker.stop(); // instant - halts audio/browser speech straight away
     S.captureUntil = 0;
-    if (current) {
-      const body = current.querySelector(".md");
-      body.classList.remove("typing");
-      if (!current.dataset.raw) current.remove(); else body.innerHTML = md(current.dataset.raw) + `<div class="tools">Stopped.</div>`;
-      current = null;
-    }
+    abandonCurrent();
     S.voiceTurn = false; // an interrupted turn is not a genuine exchange
     setHud("idle");
     $("#toolline").textContent = "";
@@ -1839,7 +1891,7 @@ function send(text, mode = "typed", opts = {}) {
   $("#set-bargein").value = S.bargeIn ? "1" : "0";
   $("#set-bargein").addEventListener("change", (e) => { S.bargeIn = e.target.value !== "0"; store.set("bargein", S.bargeIn ? "1" : "0"); if (!S.bargeIn) S.captureUntil = 0; });
   $("#set-voice").addEventListener("change", (e) => { S.voiceId = e.target.value; store.set("voice", S.voiceId); });
-  $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say("Good to go, sir. This is how I sound."); });
+  $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say(`Good to go, ${address()}. This is how I sound.`); });
   // Theme: Auto follows the device, or force Light / Dark. Kept by theme.js in localStorage (wrapped in try/catch).
   $("#set-theme").value = window.JarvisTheme?.get() || "auto";
   $("#set-theme").addEventListener("change", (e) => window.JarvisTheme?.set(e.target.value));
@@ -1907,6 +1959,29 @@ function send(text, mode = "typed", opts = {}) {
         ? `<div class="set-problem">${esc(problem)}</div>` : "";
       $("#settings-sections").innerHTML = this.renderConnections();
       this.updateSaveBar();
+      this.syncTalk();
+    },
+
+    // "How Jarvis talks" lives in Settings but is stored like every other setting here (talk_style, saved with the
+    // same Save changes bar and the same /api/settings call), so it also appears under Connections > You and the business.
+    syncTalk() {
+      const sel = $("#set-talk");
+      if (!sel) return;
+      sel.disabled = !this.loaded;
+      const style = this.currentValue("talk_style");
+      if (style) sel.value = style;
+      const name = (this.currentValue("owner_name") || "").trim(), salutation = (this.currentValue("owner_salutation") || "").trim();
+      $("#set-talk-note").textContent = !this.loaded ? "Loading…"
+        : sel.value === "formal" ? `Jarvis will call you "${salutation || name}" and keep a more formal tone.`
+          : `Jarvis will call you ${name || salutation} and keep it friendly and plain.`;
+    },
+    setTalk(value) {
+      const f = this.field("talk_style");
+      if (!f) return;
+      if (value === f.value) delete this.edited.talk_style; else this.edited.talk_style = value;
+      this.cleared.delete("talk_style");
+      this.updateSaveBar();
+      this.syncTalk();
     },
 
     // Connections: a list of every integration with its status; each row opens its own setup form, which has a back link.
@@ -2196,6 +2271,7 @@ function send(text, mode = "typed", opts = {}) {
     // switching Voice provider swaps which provider's fields are visible without needing to save first.
     if (f.kind === "select" || f.kind === "bool") Settings.render(); else Settings.updateSaveBar();
   });
+  $("#set-talk").addEventListener("change", (e) => Settings.setTalk(e.target.value));
   $("#btn-settings-save").addEventListener("click", () => Settings.save());
   $("#btn-settings-cancel").addEventListener("click", () => Settings.revert());
 

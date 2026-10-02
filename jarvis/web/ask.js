@@ -1,8 +1,9 @@
-/* JARVIS HUD - question prompt (the `ask_user` tool).
+/* JARVIS HUD - question pop-up (the `ask_user` tool).
  *
- * A small Claude Code-style pop-up: a short question, 2-4 options (click, or keys 1-4 / arrows + Enter, each with an
- * optional one-line description and one optionally marked "Recommended"), and an always-present "Other" that opens a
- * text box. Multi-select shows toggles plus a Send button. Whatever is chosen is sent back as an ordinary chat
+ * A centred pop-up over a dimmed backdrop: "Jarvis is asking", a short question, 2-4 answers as real <button>s (click,
+ * or keys 1-4 / arrows + Enter, each with an optional one-line description and one optionally marked "Recommended"),
+ * and an always-present "Type my own answer" button that opens a text box. Escape, Dismiss or a click on the backdrop
+ * closes it without sending anything. Multi-select shows toggles plus a Send button. Whatever is chosen is sent back as an ordinary chat
  * message - exactly as if it had been typed - through the `send` hook hud.js hands to init().
  *
  * This is deliberately NOT part of the approval mechanism: nothing here touches the Approve/Cancel buttons or the
@@ -18,6 +19,9 @@
   let host = null;      // { send(text, mode, opts), say(text), speakNow(), mode() } - supplied by hud.js
   let state = null;     // { id, question, options, allow_multiple, mode, picked:Set, otherOpen }
   let el = null;
+  let scrim = null;     // the dimmed backdrop; a real element so it takes clicks (a click on it dismisses)
+  let last = null;      // the question as sent, kept until it is answered so an "Answer" button can bring it back
+  let opener = null;    // what had focus before the pop-up opened, so closing without an answer can give it back
 
   // ---------------------------------------------------------------- spoken choice (voice sessions)
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean).join(" ");
@@ -58,9 +62,14 @@
   // ---------------------------------------------------------------- rendering
   function ensureEl() {
     if (el) return el;
+    scrim = document.createElement("div");
+    scrim.id = "ask-scrim"; scrim.className = "ask-scrim"; scrim.hidden = true;
+    scrim.addEventListener("click", () => dismiss());
+    document.body.appendChild(scrim);
     el = document.createElement("div");
     el.id = "ask"; el.className = "ask"; el.hidden = true;
-    el.setAttribute("role", "group");
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-modal", "true");
     el.addEventListener("click", onClick);
     el.addEventListener("keydown", onKey);
     document.body.appendChild(el);
@@ -72,15 +81,16 @@
   function render() {
     const s = state, multi = s.allow_multiple;
     el.setAttribute("aria-labelledby", "ask-q");
-    el.innerHTML = `<div class="ask-q" id="ask-q">${esc(s.question)}</div>
+    el.innerHTML = `<div class="ask-title">Jarvis is asking</div>
+      <div class="ask-q" id="ask-q">${esc(s.question)}</div>
       ${multi ? `<div class="ask-hint">Choose any that apply, then send.</div>` : ""}
       <div class="ask-opts">
         ${s.options.map((o, i) => `<button type="button" class="ask-opt" data-i="${i}"${multi ? ` aria-pressed="false"` : ""}>
           <kbd>${i + 1}</kbd><span class="ask-text"><span class="ask-label">${esc(o.label)}${o.recommended ? ` <span class="ask-rec">Recommended</span>` : ""}</span>${o.description ? `<span class="ask-desc">${esc(o.description)}</span>` : ""}</span></button>`).join("")}
         <button type="button" class="ask-opt ask-other" data-other="1"${multi ? ` aria-pressed="false"` : ` aria-expanded="false"`}>
-          <kbd>${s.options.length + 1}</kbd><span class="ask-text"><span class="ask-label">Other…</span><span class="ask-desc">Type your own answer</span></span></button>
+          <kbd>${s.options.length + 1}</kbd><span class="ask-text"><span class="ask-label">Type my own answer</span></span></button>
       </div>
-      <div class="ask-otherbox" hidden><textarea rows="2" maxlength="2000" placeholder="Type your answer… (Enter to send)" aria-label="Your own answer"></textarea></div>
+      <div class="ask-otherbox" hidden><textarea rows="2" maxlength="2000" placeholder="Type your own answer… (Enter to send)" aria-label="Your own answer"></textarea></div>
       <div class="ask-actions"><button type="button" class="btn go small ask-send"${multi ? "" : " hidden"}>Send</button><button type="button" class="btn small ask-dismiss">Dismiss</button></div>`;
   }
 
@@ -88,11 +98,13 @@
     if (!ev || !Array.isArray(ev.options) || ev.options.length < 2) return;
     close();
     ensureEl();
+    last = ev;
     state = { id: ev.id, question: String(ev.question || ""), allow_multiple: !!ev.allow_multiple, mode: host ? host.mode() : "typed",
       options: ev.options.slice(0, 4).map((o) => ({ label: String(o.label || ""), description: String(o.description || ""), recommended: !!o.recommended })),
       picked: new Set(), otherOpen: false };
+    opener = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
     render();
-    el.hidden = false;
+    scrim.hidden = false; el.hidden = false;
     // Move focus to the recommended (else first) option so the keyboard works straight away - but never steal it
     // from a half-typed message in the chat box.
     const active = document.activeElement;
@@ -105,6 +117,16 @@
   function close() {
     state = null;
     if (el) { el.hidden = true; el.innerHTML = ""; }
+    if (scrim) scrim.hidden = true;
+  }
+
+  // Closing WITHOUT answering (Escape, Dismiss, the backdrop): nothing is sent. Focus goes back to where it was.
+  function dismiss() {
+    if (!state) return;
+    const back = opener;
+    close();
+    const target = back && back.focus && document.contains?.(back) !== false ? back : document.getElementById("input");
+    target?.focus?.({ preventScroll: true });
   }
 
   // ---------------------------------------------------------------- answering
@@ -113,6 +135,7 @@
     if (!state || !text) return;
     const mode = state.mode;
     close();
+    last = null; // answered
     if (host) host.send(text, mode, { ask: true }); // a plain chat message - never an approval
     // Hand the keyboard back to the chat box once the answer has gone.
     document.getElementById("input")?.focus({ preventScroll: true });
@@ -149,7 +172,7 @@
 
   function onClick(e) {
     if (!state) return;
-    if (e.target.closest(".ask-dismiss")) { close(); return; }
+    if (e.target.closest(".ask-dismiss")) { dismiss(); return; }
     if (e.target.closest(".ask-send")) { submit(answerText()); return; }
     const b = e.target.closest(".ask-opt");
     if (b) choose(b);
@@ -157,7 +180,8 @@
 
   function onKey(e) {
     if (!state) return;
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(); return; }
+    if (e.key === "Tab") { trapTab(e); return; }
     if (e.target.tagName === "TEXTAREA") {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); e.stopPropagation(); submit(answerText()); }
       return; // everything else is just typing - digits included
@@ -171,6 +195,23 @@
     else if (/^[1-9]$/.test(e.key) && btns[Number(e.key) - 1]) { e.preventDefault(); choose(btns[Number(e.key) - 1]); }
   }
 
+  // Keep Tab inside the pop-up while it is open (it is modal).
+  function trapTab(e) {
+    const items = Array.from(el.querySelectorAll("button, textarea")).filter((x) => !x.hidden && x.tagName && !(x.closest && x.closest("[hidden]")));
+    if (!items.length) return;
+    const at = items.indexOf(document.activeElement);
+    const next = e.shiftKey ? (at <= 0 ? items.length - 1 : at - 1) : (at < 0 || at === items.length - 1 ? 0 : at + 1);
+    e.preventDefault(); items[next].focus();
+  }
+
+  // Escape closes it from anywhere on the page, not only when focus is inside it. Registered before hud.js's own
+  // Escape handlers, and stopImmediatePropagation keeps those from also closing the drawer or stopping a reply.
+  document.addEventListener("keydown", (e) => {
+    if (!state || e.key !== "Escape") return;
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation?.();
+    dismiss();
+  });
+
   // Number keys also work with nothing focused (e.g. after a click on the page background) - but never while
   // typing in the chat box or any other field, and never with a modifier held.
   document.addEventListener("keydown", (e) => {
@@ -179,5 +220,10 @@
     if (/^[1-9]$/.test(e.key) && optButtons()[Number(e.key) - 1]) { e.preventDefault(); choose(optButtons()[Number(e.key) - 1]); }
   });
 
-  window.JarvisAsk = { init(h) { host = h; }, show, close, spokenReply, speechFor, isOpen: () => !!state };
+  // After a dismissed question the reply keeps an "Answer" button (hud.js); it brings the same question back.
+  const canReopen = () => !!last;
+  const reopen = () => { if (last && !state) show(last); };
+  const forget = () => { last = null; };
+
+  window.JarvisAsk = { init(h) { host = h; }, show, close, dismiss, canReopen, reopen, forget, spokenReply, speechFor, isOpen: () => !!state };
 })();

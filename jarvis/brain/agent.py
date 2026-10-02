@@ -166,7 +166,8 @@ class JarvisBrain:
                 if response.stop_reason == "refusal":
                     del self.messages[rollback_to:]
                     msg = "I'm afraid I can't help with that one."
-                    bus.publish("reply", {"text": msg, "mode": mode, "replace": True, "turn_id": qt.turn_id})
+                    bus.publish("reply", {"text": msg, "mode": mode, "replace": True, "turn_id": qt.turn_id,
+                                          **self.j.trace.finish()})
                     db.add_transcript("assistant", msg)
                     qt.finish(msg)
                     return msg
@@ -191,7 +192,11 @@ class JarvisBrain:
             else:
                 reply_parts.append("\n\n(I stopped there - that took more steps than I allow myself in one go.)")
         except asyncio.CancelledError:
-            qt.finish("", ok=False, interrupted=True)  # the owner cut this turn off (Stop / barge-in / a new message)
+            # The owner cut this turn off (Stop / barge-in / a new message). Roll the whole turn back like any other
+            # failed one: stopped half-way through a tool call, the history would end on a tool_use with no result,
+            # which the API rejects on every later message.
+            del self.messages[rollback_to:]
+            qt.finish("", ok=False, interrupted=True)
             raise
         except anthropic.APIError as e:
             del self.messages[rollback_to:]
@@ -214,5 +219,5 @@ class JarvisBrain:
         reply = "".join(reply_parts).strip()
         db.add_transcript("assistant", reply)
         qt.finish(reply)
-        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id})
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **self.j.trace.finish()})
         return reply

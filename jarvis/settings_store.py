@@ -64,6 +64,11 @@ SECTIONS: tuple[Section, ...] = (
         (
             Field("owner_name", "Your first name", placeholder="Alex"),
             Field("owner_salutation", "What Jarvis calls you", placeholder="sir, boss, or your first name"),
+            Field("talk_style", "How Jarvis talks", "select",
+                  "Natural uses your first name and plain, friendly wording. Formal uses \"What Jarvis calls you\" "
+                  "(above) and a more formal tone.",
+                  options=(("natural", "Natural - uses your first name"),
+                           ("formal", "Formal - uses what Jarvis calls you"))),
             Field("owner_email", "Your email", "email", "Where your updates, briefings and approvals go."),
             Field("partner_name", "Business partner's name", placeholder="First name"),
             Field("partner_email", "Business partner's email", "email",

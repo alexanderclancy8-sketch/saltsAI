@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     company_domain: str = "saltsfireandsecurity.co.uk"
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
+    # "How Jarvis talks": "natural" (uses the owner's first name) or "formal" (uses owner_salutation, the "what Jarvis
+    # calls you" value). Only changes how he addresses the owner and how formal the wording is - it grants nothing.
+    talk_style: str = "natural"
     owner_email: str = ""
     # Private facts Jarvis should know from day one, separated by "|" (kept in .env, never in the repo).
     # They are added to its notes the first time it starts; after that just tell Jarvis new things.
