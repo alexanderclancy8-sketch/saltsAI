@@ -156,6 +156,16 @@ never leaks into a test run). For engineer-loop services, build a small `FakeGit
 `asyncio.sleep()` polling loop (CI-watching, deploy-waiting) needs that patched out in tests
 (`monkeypatch.setattr("jarvis.services.x.asyncio.sleep", instant_sleep)`) or it will actually wait.
 
+**The console's shape (`jarvis/web/`).** `index.html` is a top bar, a left rail (a chip strip on phones), and one centre column
+(core, one-line hint, "Needs you" strip, conversation, message box). Every dashboard section is a `.pop` inside the ONE
+`#drawer` (`Drawer.show(name)` in hud.js, opened by any element with `data-pop`; closed by Close, Escape or the scrim), so a
+new section is a new `<section class="pop" id="pop-x">` plus its name in `POPS` - never a second drawer. The rail counts and
+the "Needs you" strip are computed in `renderRail()` from the same `/api/status` data the pop-ups render. All colours, fonts and
+spacing are custom properties on `:root` in `hud.css`; the light theme block exists twice (media query for Auto, `[data-theme]`
+for an explicit choice) and `tests/test_hud_layout.py` keeps them identical and checks contrast. `theme.js` (loaded in `<head>`)
+owns the Auto/Light/Dark choice; `core.js` draws the core canvas on the console and the sign-in page. Real-browser checks:
+`tests/test_console_browser.py` (Playwright; skipped when it is not installed).
+
 **The HUD (`jarvis/web/hud.js`) talks to the backend over both a WebSocket (`/ws`, live/streaming - `thinking`/
 `delta`/`tool`/`reply` events pushed through `jarvis/events.py`'s `EventBus`) and plain REST fallbacks
 (`/api/chat/stream`, an SSE endpoint that forwards the same bus events, used only when the WebSocket is down).**

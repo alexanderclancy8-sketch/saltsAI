@@ -2,7 +2,7 @@
 /* z-index sits above everything else on the page (.display 20, .drawer 25, .toasts 30) so nothing can cover the options.
    The pop-up is UI chrome, not prose: no text selection and a plain arrow cursor, with a hand over the real buttons
    below. (Chrome showed the text I-beam over the options when they read as selectable text.) */
-.ask { position: fixed; z-index: 40; left: 50%; bottom: 120px; transform: translateX(-50%); width: min(460px, 92vw);
+.ask { position: fixed; z-index: 40; left: 50%; bottom: 132px; transform: translateX(-50%); width: min(460px, 92vw);
   background: var(--bg2); border: 1px solid var(--line-strong); border-left: 2px solid var(--accent); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 14px 16px; pointer-events: auto; cursor: default;
   -webkit-user-select: none; user-select: none; }
@@ -36,7 +36,7 @@
 
 /* Phones: sit just above the (pinned) composer, never taller than the screen, and use the whole width. */
 @media (max-width: 767px) {
-  .ask { bottom: calc(env(safe-area-inset-bottom) + 84px); width: calc(100vw - 24px); max-height: calc(100dvh - 150px); overflow-y: auto; }
+  .ask { bottom: calc(env(safe-area-inset-bottom) + 132px); width: calc(100vw - 24px); max-height: calc(100dvh - 200px); overflow-y: auto; }
   .ask-opt { min-height: 44px; align-items: center; }
   .ask-otherbox textarea { font-size: 16px; }
   .ask-actions .btn { min-height: 44px; }

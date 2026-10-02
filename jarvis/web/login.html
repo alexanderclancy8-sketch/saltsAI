@@ -4,31 +4,40 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jarvis Sign In</title>
-  <meta name="theme-color" content="#0a0d12">
+  <meta name="theme-color" content="#060c1a">
+  <meta name="color-scheme" content="dark light">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="/static/theme.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Oxanium:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/hud.css">
-  <style>
-    .login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 16px; position: relative; z-index: 1; }
-    .card { width: min(380px, 100%); text-align: center; }
-    .card input { width: 100%; margin: 18px 0 12px; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
-      background: var(--bg); color: var(--text); font-size: 17px; font-family: var(--ui); }
-    .card .btn { width: 100%; padding: 12px; font-size: 16px; }
-    .err { color: var(--crit); min-height: 20px; margin-top: 8px; }
-  </style>
 </head>
-<body>
+<body class="login-page">
   <main class="login">
-    <form class="panel card" method="post" action="/login">
-      <div class="brand" style="margin-top:6px">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY</small></div>
-      <label for="pw" class="empty" style="display:block;margin-top:18px">Identify yourself, sir.</label>
-      <input id="pw" name="password" type="password" autocomplete="current-password" placeholder="Password" required autofocus>
-      <button class="btn go" type="submit">Sign in</button>
-      <div class="err" id="err"></div>
-    </form>
+    <div class="login-card">
+      <div class="login-core"><canvas id="login-core" width="340" height="340" role="img" aria-label="Jarvis core"></canvas></div>
+      <div class="brand">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY</small></div>
+      <h1>Identify yourself</h1>
+      <form method="post" action="/login">
+        <label for="pw">Password</label>
+        <input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
+        <button class="btn-signin" type="submit">Sign in</button>
+        <div class="err" id="err" role="alert"></div>
+      </form>
+    </div>
   </main>
+  <script src="/static/core.js"></script>
   <script>
     if (new URLSearchParams(location.search).has("error")) document.getElementById("err").textContent = "That's not right. Try again.";
+    // The core idles on the sign-in page; it wakes up (listening) while a password is being typed.
+    (function () {
+      var pw = document.getElementById("pw"), typing = false;
+      pw.addEventListener("input", function () { typing = pw.value.length > 0; });
+      if (window.JarvisCore) JarvisCore.mount(document.getElementById("login-core"), {
+        frame: function (t) { return { state: typing ? "listening" : "idle", level: typing ? 0.25 + 0.2 * Math.abs(Math.sin(t / 400)) : 0 }; }
+      });
+    })();
   </script>
 </body>
 </html>
