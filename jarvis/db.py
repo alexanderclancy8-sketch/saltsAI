@@ -524,6 +524,14 @@ class Database:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
 
+    def failed_actions(self, since_iso: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """Approved actions that then failed (newest first), optionally only those decided at/after `since_iso`."""
+        rows = self.query("SELECT * FROM pending_actions WHERE status = 'failed' AND decided_at >= ?"
+                          " ORDER BY id DESC LIMIT ?", (since_iso, limit))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        return rows
+
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))

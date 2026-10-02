@@ -31,6 +31,18 @@ _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f]")
 RATE_WARNING_EVERY_S = 15 * 60  # at most one "automatic actions paused" warning per this long
 
 
+def _fsm_ok(result: Any) -> Any:
+    """The FSM client raises for any non-2xx response. This is the second line of defence: a result that itself
+    carries a non-2xx HTTP status (a client that handed the response back instead of raising) is a FAILED action with
+    the error shown, never a silent "done"."""
+    if isinstance(result, dict):
+        for key in ("status", "status_code"):
+            code = result.get(key)
+            if isinstance(code, int) and not isinstance(code, bool) and not 200 <= code < 300:
+                raise RuntimeError(f"Salts FSM did not accept the change (HTTP {code}): {str(result)[:300]}")
+    return result
+
+
 class ActionExecutor:
     def __init__(self, db: Database, bus: EventBus, notifier, mail, fixer, fsm=None):
         self.fsm = fsm
@@ -134,23 +146,23 @@ class ActionExecutor:
         if action["kind"] == "review_requests":
             return await self.billing.send_review_requests(p["requests"], self.mail)
         if action["kind"] == "fsm_write":
-            result = await self.fsm.write(p["method"], p["path"], p.get("body"))
+            result = _fsm_ok(await self.fsm.write(p["method"], p["path"], p.get("body")))
             return f"Salts FSM updated: {str(result)[:300]}"
         if action["kind"] == sa.PO_ACK_KIND:
             subject, html = sa.acknowledgement_email(p)
             await self.mail.send_mail([p["to"]], subject, html)
             return f"Receipt acknowledgement emailed to {p['to']}"
         if action["kind"] == "accept_quote":
-            await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"})
-            result = await self.fsm.write("POST", "/jobs", p["job_body"])
+            _fsm_ok(await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"}))
+            result = _fsm_ok(await self.fsm.write("POST", "/jobs", p["job_body"]))
             return f"Quote {p['quote_id']} accepted; job booked: {str(result)[:250]}"
         if action["kind"] == "accept_quote_from_po":
-            await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"})
-            result = await self.fsm.write("POST", "/jobs", p["job_body"])
+            _fsm_ok(await self.fsm.write("PATCH", f"/quotes/{p['quote_id']}", {"status": "accepted"}))
+            result = _fsm_ok(await self.fsm.write("POST", "/jobs", p["job_body"]))
             job = result.get("job", result) if isinstance(result, dict) else {}
             job_id = job.get("id")
             if job_id and p.get("po_number"):
-                await self.fsm.write("PUT", f"/jobs/{job_id}/customer-po", {"poNumber": p["po_number"]})
+                _fsm_ok(await self.fsm.write("PUT", f"/jobs/{job_id}/customer-po", {"poNumber": p["po_number"]}))
             if p.get("ack_to"):
                 po_ref = f" ({p['po_number']})" if p.get("po_number") else ""
                 if p.get("receipt_sent"):

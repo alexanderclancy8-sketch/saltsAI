@@ -28,6 +28,10 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("compliance", lambda: j.tester.run("compliance")),
                   cron_trigger(s.compliance_check_cron, timezone=s.timezone), id="compliance",
                   max_instances=1, coalesce=True)
+    if s.fsm_engineer_enabled:  # read-only audit; says something only when a failure is new or changed
+        sched.add_job(_guard("FSM engineer bot", j.fsm_engineer.run),
+                      cron_trigger(s.fsm_engineer_cron, timezone=s.timezone), id="fsm_engineer",
+                      max_instances=1, coalesce=True)
     sched.add_job(_guard("morning briefing", j.briefings.morning_briefing),
                   cron_trigger(s.briefing_cron, timezone=s.timezone), id="briefing",
                   max_instances=1, coalesce=True)

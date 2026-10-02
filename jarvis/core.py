@@ -57,6 +57,7 @@ from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
+from .services.fsm_engineer import FsmEngineer
 from .services.security_watch import SecurityWatch
 from .services.conversation_quality import ConversationQuality
 from .services.self_improve import SelfImprove
@@ -124,6 +125,7 @@ class Jarvis:
         self.job_intake = JobIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
+        self.fsm_engineer = FsmEngineer(self)  # read-only FSM audit; hands failures to issue_fix (still needs approval)
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
         self.advisor = Advisor(s, self.db, self.accountant, self.reviewer, self.staff, self.marketing, self.notifier,
