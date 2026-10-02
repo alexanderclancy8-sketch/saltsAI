@@ -187,6 +187,33 @@ class PPMPlanIn(BaseModel):
     risk_margin_days: int = Field(5, description="Flag a visit as at risk if planned this close to its latest date")
 
 
+class FireRoomIn(BaseModel):
+    name: str = Field(description="Room or area name, e.g. 'Open plan office' or 'Ground floor corridor'")
+    floor: str = Field("Ground", description="Storey, e.g. 'Ground', 'First'")
+    use: str = Field("room", description="e.g. office, corridor, stair, kitchen, plant room, bedroom, toilet, store")
+    area_m2: float | None = Field(None, gt=0, description="Floor area; give this or both length_m and width_m")
+    length_m: float | None = Field(None, gt=0)
+    width_m: float | None = Field(None, gt=0)
+    ceiling_height_m: float = Field(2.7, gt=0, le=50)
+    escape_route: bool = Field(False, description="Part of an escape route (corridors and stairs are assumed to be)")
+    opens_onto_escape_route: bool = Field(False, description="Room has a door onto an escape route")
+    high_risk: bool = Field(False, description="Higher-risk room/area (used for L2, L5 and P2 coverage)")
+    sleeping: bool = False
+    needs_vad: bool = Field(False, description="Needs visual alarm devices (hearing impaired alone, high noise)")
+    detector_type: Literal["smoke", "heat", "multi"] | None = Field(None, description="Override the default choice")
+
+
+class FireDesignIn(BaseModel):
+    project: str = Field(description="Project / site name for the draft")
+    category: Literal["M", "L1", "L2", "L3", "L4", "L5", "P1", "P2"] = Field(
+        description="BS 5839-1 system category. Ask if unknown; don't guess for the customer")
+    rooms: list[FireRoomIn] = Field(min_length=1, max_length=300, description="Every room/area from the floorplan "
+                                    "description or upload, as best you can read it. Say what you assumed.")
+    exits_by_floor: dict[str, int] = Field(default_factory=dict, description="Final exits per floor, e.g. {'Ground': 3}")
+    vads_throughout: bool = False
+    category_specified_by: str | None = Field(None, description="Who set the category (fire risk assessment, insurer...)")
+
+
 class RouteAdviceIn(BaseModel):
     plan_date: str | None = Field(None, description="Day to plan, YYYY-MM-DD; default today. Live engineer "
                                                     "locations are only used for today, in working hours")
@@ -787,6 +814,16 @@ async def ppm_schedule_plan(j, a: PPMPlanIn):
                             early_window_days=max(0, min(a.early_window_days, 90)),
                             cluster_radius_miles=max(0.5, min(a.cluster_radius_miles, 30.0)),
                             risk_margin_days=max(0, min(a.risk_margin_days, 30)))
+
+
+async def fire_alarm_design_draft(j, a: FireDesignIn):
+    from ..services.fire_design import DRAFT_STATUS, design
+
+    try:
+        return design(a.project, a.category, [r.model_dump() for r in a.rooms], a.exits_by_floor,
+                      a.vads_throughout, a.category_specified_by)
+    except ValueError as e:
+        return {"status": DRAFT_STATUS, "certified": False, "error": str(e)}
 
 
 async def route_optimise_advice(j, a: RouteAdviceIn):
@@ -1692,6 +1729,15 @@ TOOLS: list[Tool] = [
                               "inferences, never assumed. It books nothing: to act on the plan use log_job or "
                               "fsm_change, which are queued for approval.", PPMPlanIn, ppm_schedule_plan,
          "Planning PPM visits"),
+    Tool("fire_alarm_design_draft", "READ-ONLY, DRAFT-ONLY fire alarm design support for quoting. From rooms you "
+                                    "have extracted from a described or uploaded floorplan, estimates BS 5839-1 style "
+                                    "detector, sounder/VAD and call point numbers and returns a draft device "
+                                    "schedule and specification. Always present the result as a DRAFT estimate that "
+                                    "needs review by a competent fire alarm designer - never as a certified or "
+                                    "compliant design - and tell the owner your assumptions and the 'verify' list. "
+                                    "Cite BS 5839-1 clauses only if you are sure of them; the tool cites none. It "
+                                    "saves and sends nothing.", FireDesignIn, fire_alarm_design_draft,
+         "Drafting a fire alarm estimate"),
     Tool("route_optimise_advice", "READ-ONLY route-optimised scheduling advice for a day's jobs: proposes a "
                                   "re-sequenced route per engineer (SLA-priority jobs kept first) with the "
                                   "drive-time saving against the current order, and - if an urgent call-out site is "
