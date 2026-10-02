@@ -418,6 +418,7 @@ class Database:
     def remember(self, fact: str) -> int:
         """Stores a fact and returns its id - or, if the same fact is already remembered, returns the existing id
         without adding a duplicate (the scheduled self-reflection can easily re-learn something it already knows)."""
+        fact = fact.strip()
         existing = self.find_memory(fact)
         if existing is not None:
             return existing
