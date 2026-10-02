@@ -63,6 +63,24 @@ MIN_PDF_TEXT_CHARS = 40  # less text than this in the whole file = a scan (image
 NAVY_HEX, CARD_HEX, TEAL_HEX = "#0B1F4B", "#173A75", "#2FA4B8"
 
 
+LOGO_EXTS = (".png", ".jpg", ".jpeg")
+MAX_LOGO_BYTES = 2_000_000
+
+
+def brand_logo(path: Any) -> Path | None:
+    """The configured company logo as a Path, or None (no logo set / missing / not a small PNG or JPEG).
+    A logo that doesn't work is treated as 'no logo yet' so documents still render, branded with name and navy only."""
+    if not path:
+        return None
+    try:
+        p = Path(str(path))
+        if p.suffix.lower() in LOGO_EXTS and p.is_file() and p.stat().st_size <= MAX_LOGO_BYTES:
+            return p
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def valid_doc_id(doc_id: str) -> bool:
     return bool(DOC_ID_RE.fullmatch(doc_id or ""))
 
@@ -194,8 +212,10 @@ def _pretty_date(created_at: str) -> str:
         return str(created_at or "")[:10]
 
 
-def render_pdf(doc: dict[str, Any], company: str) -> bytes:
-    """Branded PDF: navy cover page (rounded panels drawn on the reportlab canvas), then clean body pages."""
+def render_pdf(doc: dict[str, Any], company: str, address: str = "", logo: Path | None = None) -> bytes:
+    """Branded PDF: navy cover page (rounded panels drawn on the reportlab canvas), then clean body pages with navy
+    headings and table headers, the company logo in the header (company name instead when there is no logo) and the
+    company name and address in the footer."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
@@ -267,6 +287,9 @@ def render_pdf(doc: dict[str, Any], company: str) -> bytes:
         canvas.drawCentredString(width / 2, 27.2 * mm, TAGLINE)
         canvas.restoreState()
 
+    address_text = _latin1(" ".join((address or "").split()))
+    footer_text = f"{company}  |  {address_text}" if address_text else company
+
     def body_page(canvas, _doc) -> None:
         canvas.saveState()
         canvas.setStrokeColor(teal)
@@ -274,10 +297,27 @@ def render_pdf(doc: dict[str, Any], company: str) -> bytes:
         canvas.line(margin, 16 * mm, width - margin, 16 * mm)
         canvas.setFillColor(colors.HexColor("#555555"))
         canvas.setFont("Helvetica", 8.5)
-        canvas.drawString(margin, 11 * mm, f"{company}  |  {title[:70]}")
-        canvas.drawRightString(width - margin, 11 * mm, f"Page {canvas.getPageNumber()}")
+        canvas.drawString(margin, 11.5 * mm, footer_text[:100])
+        canvas.drawString(margin, 7.5 * mm, title[:70])
+        canvas.drawRightString(width - margin, 11.5 * mm, f"Page {canvas.getPageNumber()}")
         canvas.setFillColor(navy)
         canvas.rect(0, height - 4 * mm, width, 4 * mm, stroke=0, fill=1)
+        # Header: the company logo, or just the company name in navy while no logo has been supplied
+        drawn = False
+        if logo is not None:
+            try:
+                img = ImageReader(str(logo))
+                iw, ih = img.getSize()
+                logo_h = 10 * mm
+                logo_w = min(logo_h * iw / ih, 50 * mm)
+                canvas.drawImage(img, margin, height - 16 * mm, width=logo_w, height=logo_w * ih / iw, mask="auto")
+                drawn = True
+            except Exception as e:  # noqa: BLE001 - a bad logo must not stop the document rendering
+                log.warning("header logo not drawn: %s", e)
+        if not drawn:
+            canvas.setFillColor(navy)
+            canvas.setFont("Helvetica-Bold", 10)
+            canvas.drawString(margin, height - 12 * mm, company)
         canvas.restoreState()
 
     base = ParagraphStyle("body", fontName="Helvetica", fontSize=10, leading=14.5, textColor=colors.HexColor("#1F2933"),
@@ -341,8 +381,9 @@ def render_pdf(doc: dict[str, Any], company: str) -> bytes:
     return buf.getvalue()
 
 
-def render_docx(doc: dict[str, Any], company: str) -> bytes:
-    """Word version of the same document (python-docx, pure Python): title page, then the body with page numbers."""
+def render_docx(doc: dict[str, Any], company: str, address: str = "", logo: Path | None = None) -> bytes:
+    """Word version of the same document (python-docx, pure Python): title page, then the body with navy headings and
+    table headers, the logo (or company name) in the header, and company name, address and page numbers in the footer."""
     from docx import Document as Word
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -371,6 +412,8 @@ def render_docx(doc: dict[str, Any], company: str) -> bytes:
     w.core_properties.author = clean(company)
     w.styles["Normal"].font.name = "Calibri"
     w.styles["Normal"].font.size = Pt(10.5)
+    for level in range(1, 5):
+        w.styles[f"Heading {level}"].font.color.rgb = navy  # Salts navy headings
 
     # Title page
     if LOGO_PATH.exists():
@@ -415,15 +458,41 @@ def render_docx(doc: dict[str, Any], company: str) -> bytes:
             table.style = "Table Grid"
             for r, row in enumerate(rows):
                 for c, text in enumerate(row):
-                    par = table.cell(r, c).paragraphs[0]
+                    cell = table.cell(r, c)
+                    par = cell.paragraphs[0]
                     add_runs(par, text, bold_all=(r == 0), size=9)
+                    if r == 0:  # navy header row with white text
+                        shade = OxmlElement("w:shd")
+                        shade.set(qn("w:val"), "clear")
+                        shade.set(qn("w:color"), "auto")
+                        shade.set(qn("w:fill"), NAVY_HEX.lstrip("#"))
+                        cell._tc.get_or_add_tcPr().append(shade)
+                        for run in par.runs:
+                            run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
             w.add_paragraph()
 
-    # Footer with page numbers (not on the title page)
     section = w.sections[0]
     section.different_first_page_header_footer = True
+    # Header (not on the title page): the company logo, or the company name in navy while there is no logo
+    hp = section.header.paragraphs[0]
+    drawn = False
+    if logo is not None:
+        try:
+            hp.add_run().add_picture(str(logo), height=Inches(0.4))
+            drawn = True
+        except Exception as e:  # noqa: BLE001 - a bad logo must not stop the document rendering
+            log.warning("header logo not added: %s", e)
+    if not drawn:
+        hrun = hp.add_run(clean(company))
+        hrun.bold = True
+        hrun.font.size = Pt(10)
+        hrun.font.color.rgb = navy
+
+    # Footer with company name, address and page numbers (not on the title page)
     fp = section.footer.paragraphs[0]
-    fp.add_run(clean(f"{company}  |  Page ")).font.size = Pt(8.5)
+    address_text = " ".join(clean(address).split())
+    footer_text = f"{company}  |  {address_text}  |  Page " if address_text else f"{company}  |  Page "
+    fp.add_run(clean(footer_text)).font.size = Pt(8.5)
     run = fp.add_run()
     run.font.size = Pt(8.5)
     begin, instr, end = OxmlElement("w:fldChar"), OxmlElement("w:instrText"), OxmlElement("w:fldChar")
@@ -479,9 +548,11 @@ def _sheet_name(raw: str, used: set[str]) -> str:
     return name
 
 
-def render_xlsx(doc: dict[str, Any], company: str) -> bytes:
+def render_xlsx(doc: dict[str, Any], company: str, address: str = "", logo: Path | None = None) -> bytes:
     """Excel version of a stored draft (openpyxl, pure Python): each markdown table becomes a sheet named after the
-    heading above it; any other text goes on a Notes sheet (or one 'Document' sheet if there are no tables)."""
+    heading above it; any other text goes on a Notes sheet (or one 'Document' sheet if there are no tables).
+    Branding is the Salts navy header row; address and logo are accepted only so all three renderers share a signature
+    (a sheet is data, not a letterhead)."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -1272,13 +1343,21 @@ class Documents:
                 "download_url": f"/api/documents/{doc_id}/{fmt}", "note": note}
 
     def create_office_document(self, fmt: str, kind: str, title: str, markdown: str) -> dict[str, Any]:
-        """Store a Word/Excel deliverable (report, schedule, tender document, stock or finance export) as a draft."""
+        """Store a PDF/Word/Excel deliverable (report, schedule, tender document, stock or finance export) as a draft."""
         kind = kind if kind in OFFICE_KINDS else "report"
         title = (title or "").strip()[:120] or KIND_LABELS[kind]
         doc_id = self._save(kind, title, markdown or "")
-        return self._office_result(doc_id, fmt, "Draft saved for review - it has not been sent to anyone. "
-                                                "Download it from the display; sending anything is a separate step "
-                                                "that needs the owner's approval.")
+        out = self._office_result(doc_id, fmt, "Draft saved for review - it has not been sent to anyone. "
+                                               "Download it from the display; sending anything is a separate step "
+                                               "that needs the owner's approval.")
+        if "error" not in out and fmt in ("pdf", "docx"):
+            if brand_logo(getattr(self.j.settings, "company_logo_path", "")) is None:
+                out["branding_note"] = ("No company logo has been set yet, so this is branded with the company name "
+                                        "and Salts navy only - tell the owner, and it will pick the logo up once one "
+                                        "is supplied.")
+            else:
+                out["branding_note"] = "Branded with the Salts navy and the company logo."
+        return out
 
     async def read_attachments(self, message_id: str, name: str | None = None) -> dict[str, Any]:
         """Text of the Word/Excel attachments on an email (optionally just the one called `name`)."""
