@@ -47,6 +47,7 @@ from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
+from .services.supplier_bills import PurchaseOrderBook, SupplierBills
 from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
@@ -56,6 +57,7 @@ from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
 from .services.security_watch import SecurityWatch
+from .services.conversation_quality import ConversationQuality
 from .services.self_improve import SelfImprove
 from .services.self_learning import SelfLearning
 from .services.site_access import SiteAccessCodes
@@ -139,12 +141,16 @@ class Jarvis:
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
+        self.po_book = PurchaseOrderBook(self.db)  # purchase orders raised via log_purchase_order
+        self.supplier_bills = SupplierBills(self)
         self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
         self.automations = AutomationService(self)
+        self.quality = ConversationQuality(self)  # per-turn metrics + feedback; must exist before the brain below
+        self.quality.prune()  # retention for its tables (default 90 days); also run daily by the scheduler
         self.self_learning = SelfLearning(self)
         self.weekly_digest = WeeklyDigest(self)
         self.reply_suggestions = ReplySuggestions(self)
