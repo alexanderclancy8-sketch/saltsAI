@@ -17,4 +17,5 @@ pyyaml>=6
 reportlab>=4.0  # PDF rendering of drafted documents - pure Python, no system libraries (Azure App Service Linux)
 python-docx>=1.1  # Word rendering of drafted documents - pure Python
 openpyxl>=3.1  # Excel (.xlsx) building and reading of drafted documents / email attachments - pure Python
+pypdf>=4.0  # text extraction from emailed PDFs (customer purchase orders) - pure Python
 piper-tts>=1.8  # free, local neural TTS - the default voice when no paid ElevenLabs/Azure key is configured
