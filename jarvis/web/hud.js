@@ -271,8 +271,19 @@
     // callback either re-speaks it in the browser voice (a play() aborted by pause() rejects, which used to fall
     // through to speakBrowser) or calls next() a second time and overlaps the next reply.
     gen: 0,
-    feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
-    flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
+    firstOut: false, // the first sentence of this reply has been handed to the voice
+    feed(delta) {
+      this.buffer += delta;
+      const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p));
+      // Start on the first sentence as soon as it is complete, rather than waiting for the first letter of the
+      // second one to prove it ended. Not after a short run or an abbreviation ("e.g.", "approx.", "Mr."), and a
+      // decimal like 9.30 never matches because it needs whitespace straight after the full stop.
+      if (!this.firstOut) {
+        const m = this.buffer.match(/^([\s\S]{12,}?(?<!\b(?:e\.g|i\.e|etc|vs|approx|Mr|Mrs|Dr|No))[.!?…])\s/);
+        if (m) { this.enqueue(m[1]); this.buffer = this.buffer.slice(m[0].length); }
+      }
+    },
+    flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; this.firstOut = false; },
     // `filler` marks the one-off "let me check the accounts" acknowledgment: it goes through exactly the same
     // queue, recent-speech list and echo window as any other speech, but next() treats it differently on the
     // way out (no HUD flip to "speaking", no follow-up window) because it is not a reply.
@@ -283,6 +294,7 @@
       const now = Date.now();
       this.recent = this.recent.filter((r) => now - r.at < RECENT_TTS_MS).slice(-30);
       this.recent.push({ text: clean, at: now });
+      if (!filler) this.firstOut = true;
       const item = { text: clean, filler, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
       this.queue.push(item);
       if (!this.active) this.next();
@@ -355,7 +367,7 @@
       // silent speaker, and that must not put the owner's own first words inside an "echo window".
       if (this.active || this.queue.length || this.browserSpeaking) this.lastSpokeAt = Date.now();
       this.gen++;
-      this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; this.playingFiller = false;
+      this.queue = []; this.buffer = ""; this.firstOut = false; this.active = false; this.browserSpeaking = false; this.playingFiller = false;
       filler.end(); // any stop (new message, push-to-talk, Stop button) also ends the thinking-time filler for that turn
       player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
   };
@@ -1814,6 +1826,7 @@ function send(text, mode = "typed", opts = {}) {
       if (f.kind === "select") {
         const current = hasEdit ? this.edited[f.key] : f.value;
         control = `<select id="f-${f.key}" data-field="${f.key}">${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === current ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+        if (f.key === "azure_tts_voice") control += ` <button class="btn small" data-voice-sample="${f.key}" type="button">Play sample</button>`;
       } else if (f.kind === "secret") {
         if (isCleared) {
           control = `<div class="set-secret-row"><span class="set-hint">will be cleared</span><button class="btn small" data-undo-clear="${f.key}" type="button">Undo</button></div>`;
@@ -1901,6 +1914,24 @@ function send(text, mode = "typed", opts = {}) {
       this.render();
     },
 
+    // Speaks a fixed sample line in the voice currently picked in the box (saved or not). Audio only.
+    async playSample(voice) {
+      speaker.stop(); ensureAudio();
+      try {
+        const r = await api("/api/tts/sample", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+        if (!r.ok) {
+          let detail = `error ${r.status}`;
+          try { detail = (await r.json()).detail || detail; } catch { /* not JSON */ }
+          toast("Couldn't play the sample", detail, "warning");
+          return;
+        }
+        const url = URL.createObjectURL(await r.blob());
+        player.src = url;
+        player.onended = player.onerror = () => URL.revokeObjectURL(url);
+        await player.play();
+      } catch { toast("Couldn't play the sample", "Check the connection and try again.", "warning"); }
+    },
+
     async save() {
       $("#btn-settings-save").disabled = true;
       $("#btn-settings-save").textContent = "Saving…";
@@ -1939,6 +1970,8 @@ function send(text, mode = "typed", opts = {}) {
     if (toggle) { const id = toggle.dataset.toggle; Settings.open.has(id) ? Settings.open.delete(id) : Settings.open.add(id); Settings.render(); return; }
     const test = e.target.closest("[data-test]");
     if (test) { Settings.test(test.dataset.test); return; }
+    const sample = e.target.closest("[data-voice-sample]");
+    if (sample) { Settings.playSample(Settings.currentValue(sample.dataset.voiceSample)); return; }
     const showAdv = e.target.closest("[data-show-advanced]");
     if (showAdv) { Settings.advanced.add(showAdv.dataset.showAdvanced); Settings.render(); return; }
     const hideAdv = e.target.closest("[data-hide-advanced]");
