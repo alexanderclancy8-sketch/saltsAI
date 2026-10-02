@@ -19,6 +19,28 @@ ROAD_FACTOR = 1.35  # straight line -> road distance
 AVG_MPH = 26  # urban/suburban West Yorkshire average
 WORK_START, WORK_END = time(7, 0), time(18, 30)
 POSTCODE = re.compile(r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b", re.I)
+HOME_WORD = re.compile(r"\bhome\b", re.I)
+STALE_POSITION_MINS = 60  # a fix older than this isn't "where they are now"
+MAX_LABEL_CHARS = 120
+
+
+def label_status(label: Any, site_names: Any = ()) -> tuple[str | None, bool | None]:
+    """(label to show, at_home) from the address label RAM already supplies - nothing is stored.
+
+    at_home is True when the label contains the word "home" (case-insensitive), False for any other label and None
+    when RAM supplied none (unknown - not the same as "out"). A home label is shown as just "home": the rest of it
+    could be a street address and must never reach chat, the display or the logs. A customer site whose own name
+    has the word in it (a care home) is not somebody's house.
+    """
+    text = " ".join(str(label).split()) if label else ""
+    if not text:
+        return None, None
+    low = text.lower()
+    if any(n and HOME_WORD.search(n) and str(n).lower() in low for n in site_names):
+        return text[:MAX_LABEL_CHARS], False
+    if HOME_WORD.search(text):
+        return "home", True
+    return text[:MAX_LABEL_CHARS], False
 
 
 def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -73,7 +95,7 @@ class Tracker:
         if self.ram is not None and not getattr(self.ram, "demo", True):
             positions = [{"engineer": p.get("driver") or await self._driver_for(p), "vehicle": p.get("registration"),
                           "lat": p.get("lat"), "lng": p.get("lng"), "timestamp": p.get("timestamp"),
-                          "speed_mph": p.get("speed_mph"),
+                          "speed_mph": p.get("speed_mph"), "address_label": p.get("address_label"),
                           "status": "driving" if (p.get("speed_mph") or 0) > 3 else "parked"}
                          for p in await self.ram.positions()]
         else:
@@ -92,7 +114,9 @@ class Tracker:
             nxt = next((j for j in sorted(jobs, key=lambda j: str(j.get("scheduled_start")))
                         if j.get("engineer") == p.get("engineer")
                         and str(j.get("status")).lower() in ("scheduled", "assigned", "booked")), None)
+            label, at_home = label_status(p.get("address_label"), sites)
             row = {"engineer": p.get("engineer"), "vehicle": p.get("vehicle"), "lat": here[0], "lng": here[1],
+                   "address_label": label, "at_home": at_home,
                    "status": p.get("status"), "speed_mph": p.get("speed_mph"),
                    "last_seen_mins": int((now - seen).total_seconds() // 60) if seen else None,
                    "current_job": f"{current.get('ref')} {current.get('site')}" if current else None,
@@ -105,8 +129,58 @@ class Tracker:
                 row["eta_next_job_mins"] = drive_minutes(haversine_m(here, sites[nxt["site"]]))
             rows.append(row)
         today_sites = {j.get("site") for j in jobs}
-        return {"working_hours": True, "demo": self.demo, "engineers": rows,
-                "sites": [{"name": n, "lat": c[0], "lng": c[1]} for n, c in sites.items() if n in today_sites]}
+        out = {"working_hours": True, "demo": self.demo, "engineers": rows,
+               "sites": [{"name": n, "lat": c[0], "lng": c[1]} for n, c in sites.items() if n in today_sites]}
+        # Mismatches worth knowing about rather than silently showing: one engineer on two vans gives two positions.
+        vans_by_engineer: dict[str, list[str]] = {}
+        for r in rows:
+            if r.get("engineer"):
+                vans_by_engineer.setdefault(str(r["engineer"]), []).append(str(r.get("vehicle")))
+        warnings = [f"{name} is listed as the driver of {len(vans)} vans ({', '.join(vans)}) in RAM Tracking, so "
+                    "they show here at more than one position - check which van they are actually using."
+                    for name, vans in vans_by_engineer.items() if len(vans) > 1]
+        if warnings:
+            out["warnings"] = warnings
+        unlabelled = [str(r.get("engineer") or r.get("vehicle")) for r in rows if r["address_label"] is None]
+        if unlabelled:
+            out["address_label_note"] = ("RAM Tracking didn't supply an address label for: "
+                                         f"{', '.join(unlabelled)} - can't say whether they're at home.")
+        return out
+
+    async def home_status(self) -> dict[str, Any]:
+        """Who is at home, who is out, who has no recent position (working hours only, via live())."""
+        live = await self.live()
+        res: dict[str, Any] = {"working_hours": live.get("working_hours", False), "at_home": [], "out": [],
+                               "no_address_label": [], "no_recent_position": []}
+        if not live.get("working_hours"):
+            res["note"] = live.get("note")
+            return res
+        seen_names = set()
+        for e in live["engineers"]:
+            seen_names.add(str(e.get("engineer")))
+            entry = {"engineer": e.get("engineer"), "vehicle": e.get("vehicle"), "address_label": e.get("address_label"),
+                     "last_seen_mins": e.get("last_seen_mins")}
+            mins = e.get("last_seen_mins")
+            if mins is None or mins > STALE_POSITION_MINS:
+                res["no_recent_position"].append({**entry, "reason": "no timestamp on the last position" if mins is None
+                                                  else f"last position was {mins} minutes ago"})
+            elif e.get("at_home") is None:
+                res["no_address_label"].append(entry)
+            elif e["at_home"]:
+                res["at_home"].append(entry)
+            else:
+                res["out"].append(entry)
+        if self.ram is not None and not getattr(self.ram, "demo", True):
+            for v in await self.ram.vehicles():
+                if v.get("lat") is None or v.get("lng") is None:
+                    name = v.get("driver") or await self._driver_for(v) or v.get("registration")
+                    if str(name) not in seen_names:
+                        res["no_recent_position"].append({"engineer": name, "vehicle": v.get("registration"),
+                                                          "address_label": None, "last_seen_mins": None,
+                                                          "reason": "RAM Tracking has no position for this van"})
+        res["note"] = ("'At home' means RAM's address label for the van contains the word home; a van with no label "
+                       "is listed separately because it can't be told either way. Working hours only.")
+        return res
 
     async def _geocode(self, place: str) -> tuple[tuple[float, float], str] | None:
         sites = await self._sites()
@@ -132,7 +206,8 @@ class Tracker:
         measured = sorted(((haversine_m((e["lat"], e["lng"]), coords), e) for e in live["engineers"]),
                           key=lambda de: (de[0], str(de[1].get("engineer") or "")))
         ranked = [{"engineer": e["engineer"], "distance_miles": round(d / 1609.34, 1), "eta_mins": drive_minutes(d),
-                   "currently": e.get("current_job") or e.get("status"), "next_job": e.get("next_job")}
+                   "currently": e.get("current_job") or e.get("status"), "next_job": e.get("next_job"),
+                   "address_label": e.get("address_label"), "at_home": e.get("at_home")}
                   for d, e in measured]
         return {"destination": label, "demo": self.demo, "engineers": ranked,
                 "note": "ETAs are straight-line estimates at typical local speeds, not live traffic."}
@@ -174,12 +249,45 @@ class Tracker:
             if person:
                 engineer = person["name"]
                 wanted_reg = str(person.get("vehicle") or "").replace(" ", "").upper() or None
-        for v in vehicles:
-            if wanted_reg and str(v.get("registration") or "").replace(" ", "").upper() == wanted_reg:
-                return {**v, "engineer": engineer}
-            if v.get("driver") and engineer.lower() in str(v["driver"]).lower():
-                return {**v, "engineer": v["driver"]}
-        return None
+        # The van registered to them wins outright. (Matching on RAM's driver name in the same pass let an earlier
+        # van that also lists them as driver shadow their own van, so van_day looked at the wrong vehicle.)
+        match, name = None, engineer
+        if wanted_reg:
+            match = next((v for v in vehicles
+                          if str(v.get("registration") or "").replace(" ", "").upper() == wanted_reg), None)
+        if match is None:
+            match = next((v for v in vehicles if v.get("driver") and engineer.lower() in str(v["driver"]).lower()),
+                         None)
+            if match is not None:
+                name = match["driver"]
+        if match is None:
+            return None
+        others = [str(v.get("registration")) for v in vehicles if v is not match and v.get("driver")
+                  and str(v["driver"]).strip().lower() == str(name).strip().lower()]
+        return {**match, "engineer": name, "other_vehicles": others}
+
+    async def _van_extras(self, vehicle: dict[str, Any], day: date, no_journeys: bool) -> dict[str, Any]:
+        """Mismatch warnings plus (today, working hours only) RAM's current address label for the van."""
+        out: dict[str, Any] = {}
+        warnings = []
+        if vehicle.get("other_vehicles"):
+            warnings.append(f"RAM lists {vehicle['engineer']} as driver of more than one van "
+                            f"({', '.join([str(vehicle.get('registration'))] + vehicle['other_vehicles'])}), so "
+                            "positions and journeys can differ between vans - check which one they used.")
+        fix = _ts(vehicle.get("timestamp"))
+        if no_journeys and fix and fix.date() == day:
+            warnings.append(f"RAM has a position for this van at {fix.strftime('%H:%M')} on {day.isoformat()} but "
+                            "no journeys: it may be mid-journey (a trip only counts once RAM has both its start and "
+                            "its stop), or the start/stop events were missed. Treat 'didn't move' with caution.")
+        if warnings:
+            out["warnings"] = warnings
+        if day == date.today() and (self.in_working_hours() or self.demo):
+            label, at_home = label_status(vehicle.get("address_label"), await self._sites())
+            out["current_address_label"] = label
+            out["at_home"] = at_home
+            if label is None:
+                out["address_label_note"] = "RAM Tracking supplied no address label for this van."
+        return out
 
     async def van_day(self, engineer: str, day: date) -> dict[str, Any]:
         """When did they set off, where did they go, how long on site, when did they get home."""
@@ -192,7 +300,8 @@ class Tracker:
         legs = await self.ram.journeys(str(vehicle["id"]), day)
         if not legs:
             return {"engineer": vehicle["engineer"], "date": day.isoformat(), "vehicle": vehicle.get("registration"),
-                    "summary": "No journeys recorded - the van didn't move (day off, sick, or used another vehicle)."}
+                    "summary": "No journeys recorded - the van didn't move (day off, sick, or used another vehicle).",
+                    **await self._van_extras(vehicle, day, True)}
         sites = await self._sites()
 
         def site_name(lat: Any, lng: Any, fallback: Any) -> str:
@@ -229,7 +338,8 @@ class Tracker:
                 "got_home": home.strftime("%H:%M") if home else None,
                 "working_day_hours": round(working_mins / 60, 2) if working_mins else None,
                 "driving_hours": round(driving / 60, 2), "time_stopped_hours": round(stopped / 60, 2),
-                "miles": round(miles, 1), "timeline": timeline, "demo": getattr(self.ram, "demo", False)}
+                "miles": round(miles, 1), "timeline": timeline, "demo": getattr(self.ram, "demo", False),
+                **await self._van_extras(vehicle, day, False)}
 
     async def timesheet_check(self, day: date) -> dict[str, Any]:
         """Compare RAM Tracking working day (set off -> home) with Salts FSM timesheet hours."""

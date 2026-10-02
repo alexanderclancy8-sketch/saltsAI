@@ -59,7 +59,8 @@ async def test_vehicles_parses_rams_nested_shape():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         vehicles = await RamTracking(s, http).vehicles()
     assert vehicles[0] == {"id": 101, "registration": "YD71 SFS", "driver": "Dan Harper", "lat": 53.83,
-                           "lng": -1.78, "timestamp": "2026-10-01T09:00:00Z", "moving": True}
+                           "lng": -1.78, "address_label": None, "timestamp": "2026-10-01T09:00:00Z",
+                           "moving": True}
     assert vehicles[1]["driver"] == "Priya Shah" and vehicles[1]["moving"] is False
 
 
