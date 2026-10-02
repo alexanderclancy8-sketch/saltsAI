@@ -47,6 +47,7 @@ from .services.marketing import MarketingTracker
 from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
+from .services.supplier_bills import PurchaseOrderBook, SupplierBills
 from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
@@ -140,6 +141,8 @@ class Jarvis:
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
+        self.po_book = PurchaseOrderBook(self.db)  # purchase orders raised via log_purchase_order
+        self.supplier_bills = SupplierBills(self)
         self.documents = Documents(self)
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
