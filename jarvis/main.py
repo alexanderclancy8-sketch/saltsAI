@@ -27,7 +27,8 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import connection_tests, documents
+from .services import connection_tests, documents, images
+from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
 from .settings_store import OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
@@ -322,7 +323,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/tracking", dependencies=[Depends(owner)])
     async def tracking(request: Request):
-        return await J(request).tracker.live()
+        # The Fleet panel. Outside working hours this only shows vans if the owner's setting allows it, and then the
+        # look-up is logged against whoever is signed in (the manager's name, or the owner's own display session).
+        return await J(request).tracker.live(requester_label(settings, speaker(request)), tool="fleet_panel")
 
     # ------------------------------------------------------------------ voice
     @app.post("/api/tts", dependencies=[Depends(owner)])
@@ -475,6 +478,32 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return Response(data, media_type=mime,
                         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                                  "Cache-Control": "no-store"})
+
+    # ------------------------------------------------------------------ draft social media graphics (PNG)
+    @app.get("/api/images/{image_name}", dependencies=[Depends(owner)])
+    async def get_image(image_name: str, download: int = 0):
+        image_id = image_name[:-4] if image_name.endswith(".png") else ""
+        if not images.IMAGE_ID_RE.match(image_id):
+            raise HTTPException(404, "No such image")
+        path = images.images_dir(settings) / f"{image_id}.png"
+        if not path.is_file():
+            raise HTTPException(404, "No such image")
+        headers = {"Cache-Control": "no-store"}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="salts-draft-post-{image_id[:8]}.png"'
+        return Response(path.read_bytes(), media_type="image/png", headers=headers)
+
+    @app.post("/api/brand/logo", dependencies=[Depends(owner)])
+    async def upload_logo(logo: UploadFile = File(...)):
+        """Supply the company logo once; generated graphics use it from then on (over the bundled Salts logo)."""
+        data = await logo.read(images.MAX_LOGO_BYTES + 1)
+        try:
+            await asyncio.to_thread(images.save_logo, settings, data)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except ImportError:
+            raise HTTPException(503, "Image handling isn't installed on this server.") from None
+        return {"saved": True, "message": "Logo saved - it will be used on every graphic from now on."}
 
     # ------------------------------------------------------------------ approvals
     @app.get("/api/approvals", dependencies=[Depends(owner)])
@@ -731,7 +760,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
-                                     "or the display password and staff key.")
+                                     "the display password and staff key, or whether van locations show outside "
+                                     "working hours.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

@@ -34,6 +34,22 @@ DEFAULT_ENDPOINTS = {
 }
 
 
+def _address_label(status: dict[str, Any], loc: dict[str, Any]) -> str | None:
+    """RAM's own text label for where the van is (for most vans parked at home it reads "<name> home").
+
+    History events carry it as `formattedAddress`; the vehicle status is expected to carry the same on its
+    location. The Swagger isn't reachable from here, so a few likely spellings are tried - if RAM uses none of
+    them this stays None and callers say plainly that no label was supplied. Never stored, only passed through.
+    """
+    for source, keys in ((loc, ("formattedAddress", "formatted_address", "address", "label")),
+                         (status, ("formattedAddress", "formatted_address", "address", "current_address"))):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def _vehicle_row(v: dict[str, Any]) -> dict[str, Any]:
     status = v.get("vehicle_status") or {}
     loc = status.get("location") or {}
@@ -45,6 +61,7 @@ def _vehicle_row(v: dict[str, Any]) -> dict[str, Any]:
         "driver": driver.get("name"),
         "lat": loc.get("latitude"),
         "lng": loc.get("longitude"),
+        "address_label": _address_label(status, loc),
         "timestamp": status.get("event_date"),
         # RAM's vehicle status doesn't include a live speed figure - the last ignition/transit
         # event is the closest signal available for a driving-vs-parked guess.
@@ -106,7 +123,8 @@ class RamTracking:
             row = _vehicle_row(v)
             if row["lat"] is None or row["lng"] is None:
                 continue
-            rows.append({**row, "vehicle_id": row["id"], "speed_mph": 15 if row["moving"] else 0, "address": None})
+            rows.append({**row, "vehicle_id": row["id"], "speed_mph": 15 if row["moving"] else 0,
+                         "address": row["address_label"]})
         return rows
 
     async def journeys(self, vehicle_id: str, day: date) -> list[dict[str, Any]]:

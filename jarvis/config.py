@@ -244,6 +244,10 @@ class Settings(BaseSettings):
     ram_username: str = ""
     ram_password: str = ""
     timesheet_tolerance_min: int = 30
+    # Van locations outside working hours (Mon-Fri 07:00-18:30): "off" (default - hidden, private use), "on_call"
+    # (only engineers on the on-call roster) or "always". Every out-of-hours look-up is logged. Owner-only on the
+    # Settings page (settings_store.OWNER_ONLY_KEYS); an unknown value is treated as "off" (services/tracking.py).
+    van_locations_out_of_hours: str = "off"
 
     # --- Marketing: socials, Google reviews, search ranking -------------------
     website_url: str = "https://www.saltsfireandsecurity.co.uk"
@@ -266,6 +270,13 @@ class Settings(BaseSettings):
     pagespeed_api_key: str = ""
     social_snapshot_cron: str = "20 6 * * *"
     marketing_report_cron: str = "50 7 * * 1"
+
+    # --- Image generation (draft social media graphics; see services/images.py) --------------------------
+    # The provider paints a plain background; Jarvis adds the headline, navy branding and logo itself. With no
+    # key the generate_image tool says it isn't connected and never fakes an image. Drafts only - never posted.
+    image_provider: str = "openai"  # supported: openai
+    image_api_key: str = ""
+    image_model: str = "gpt-image-1"
 
     # --- Voice --------------------------------------------------------------
     tts_provider: str = "auto"  # auto | elevenlabs | azure | piper | browser
@@ -309,6 +320,11 @@ class Settings(BaseSettings):
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
     technical_watch_cron: str = "30 6 * * 2"  # weekly fire & security technical/standards deep-dive
     security_watch_cron: str = "0 6 * * 1"  # weekly review of the Salts FSM codebase for vulnerabilities
+    # The standing FSM engineer bot: a read-only audit of routine tests, open issues and Salts FSM health that tells the
+    # owner on Teams only when a failure is new or changed, and hands each to the engineering agent via issue_fix
+    # (which still waits for a human's approval). It never writes to FSM, merges, deploys or approves anything.
+    fsm_engineer_enabled: bool = True
+    fsm_engineer_cron: str = "*/30 * * * *"
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
     lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
     wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)

@@ -19,7 +19,9 @@ import anthropic
 from pydantic import ValidationError
 
 from . import llm
+from ..events import quiet_turn
 from ..redact import redact_text
+from ..services.tracking import requester_label
 from .prompts import build_system
 from .repeats import RepeatDetector, repeat_note
 from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, dispatch, serialise
@@ -104,7 +106,12 @@ class JarvisBrain:
             self._active.add(task)
         try:
             async with self._lock:
-                return await self._turn(text, mode, attachments, speaker)
+                # who is asking, for the out-of-hours van look-up log (read by the tracking tools)
+                self.j.asked_by = requester_label(self.s, speaker, quiet_turn.get())
+                try:
+                    return await self._turn(text, mode, attachments, speaker)
+                finally:
+                    self.j.asked_by = ""
         finally:
             if task is not None:
                 self._active.discard(task)

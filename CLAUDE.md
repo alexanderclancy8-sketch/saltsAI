@@ -108,6 +108,20 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
 
+**The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
+`tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
+`fsm_engineer_enabled`, both env-only): it reads the latest routine test results, open issues, failed approved writes and two live
+read-only probes of Salts FSM (`check()` and today's `jobs()`), and builds one JSON payload per failure (`PAYLOAD_KEYS`) with a
+root-cause category from `classify()`. A cause is CONFIRMED only when recorded tool output itself says so; issue/report wording
+can suggest a category but never confirm it, and the payload states that no logs are available - never invent log lines. It
+hands each new/changed failure to the engineering agent by queueing the existing `tool:issue_fix` action (a human still approves
+it; the payload is stored in kv `fsm_engineer:payload:<issue id>` and `Fixer.engineer_payload_note()` shows it to the engineer as
+untrusted data). It never writes to FSM, merges, deploys, approves or changes settings (a test greps the module), tells Alex on
+Teams only when a failure is new or changed (state in kv `fsm_engineer:state`; fingerprints ignore timings), and a scheduled run
+with no change returns `NOTHING_TO_REPORT`. Everything it reads is untrusted data and is redacted before it is stored or sent.
+`FSMClient.write` raises for any non-2xx (including 3xx) and the executor's `_fsm_ok` fails any result carrying a non-2xx status,
+so a rejected approved write shows as failed with the error rather than done.
+
 **GitHub PR tools for Jarvis's own repo (`jarvis/brain/pr_tools.py`, `jarvis/integrations/github_pr.py`,
 `jarvis/services/pr_resolver.py`; full list and rules in `docs/github-pr-tools.md`).** Reads: `pr_list`, `pr_detail`,
 `repo_read`, `repo_search`, `run_tests`. Writes, all `approval=True`: `pr_comment`, `pr_resolve_conflicts`, `pr_merge`,
