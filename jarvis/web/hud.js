@@ -506,7 +506,7 @@
   // First matching pattern wins; matched against the tool name carried on the "tool" start event.
   const FILLER_TOOL_PHRASES = [
     [/^(finance_|unbilled_jobs$|raise_invoices$|draft_credit_control$|business_health$)/, ["Let me check the accounts.", "Checking the accounts."]],
-    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
+    [/^(fsm_|job_detail$|staff_|office_productivity$|ppm_|log_job$|create_(customer|site)$|accept_quote$|remedial_quotes$|contract_renewals$)/, ["Let me look at the jobs.", "Looking at the jobs now."]],
     [/^email_/, ["Checking your email.", "Let me check your email."]],
     [/^stock_/, ["Let me check the stock.", "Checking the stock."]],
     [/^(web_search|web_fetch|search_rankings$|seo_audit$|competitor_audit$)/, ["Let me look that up.", "Looking that up."]],
