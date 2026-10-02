@@ -228,6 +228,12 @@ SECTIONS: tuple[Section, ...] = (
             Field("ram_password", "API password", "secret"),
             Field("ram_api_base_url", "API address", "url", advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
+            Field("van_locations_out_of_hours", "Show van locations outside working hours", "select",
+                  "Off (default): vans are hidden outside Mon-Fri 07:00-18:30. On-call only: just the engineers on "
+                  "the on-call roster (set it by asking Jarvis) are shown. Always: every van, any hour. Only the "
+                  "owner can change this. Every out-of-hours look-up is logged (who asked, when, which engineer). "
+                  "Make sure engineers' contracts and tracking policy cover this.",
+                  options=(("off", "Off"), ("on_call", "On-call only"), ("always", "Always"))),
         ),
         required=("ram_client_id", "ram_api_key", "ram_username", "ram_password"),
         test=True,
@@ -493,7 +499,7 @@ FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
 OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
 OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
-    "staff_report_key"})
+    "staff_report_key", "van_locations_out_of_hours"})  # the last widens who can see where staff are out of hours
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

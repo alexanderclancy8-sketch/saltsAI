@@ -3,6 +3,12 @@ check-in verification and idle / late-arrival flags.
 
 Only used for work purposes during working hours. Staff must be told vehicles are
 tracked and why (UK GDPR transparency; ICO employment practices guidance).
+
+Outside working hours van locations stay hidden ("private use") unless the OWNER has switched on the setting
+`van_locations_out_of_hours` ("on_call" = only engineers on the on-call roster, "always" = every van). Even then the
+caller must say who is asking (`asked_by` - an unattributed background caller is treated as "off"), the look-up is
+logged per engineer (db.location_lookup_log) BEFORE anything is returned, and if the log can't be written nothing is
+shown. A missing setting, missing database or unknown value all mean "off".
 """
 
 from __future__ import annotations
@@ -14,6 +20,10 @@ from typing import Any
 
 import httpx
 
+from .oncall import OnCallRoster, name_matches
+
+OOH_MODES = ("off", "on_call", "always")
+PANEL_LOG_MINUTES = 10  # the Fleet panel refreshes every minute: log it once per engineer per this many minutes
 ONSITE_METRES = 400
 ROAD_FACTOR = 1.35  # straight line -> road distance
 AVG_MPH = 26  # urban/suburban West Yorkshire average
@@ -61,13 +71,25 @@ def _ts(value: Any) -> datetime | None:
         return None
 
 
+def requester_label(settings: Any, speaker: str | None, quiet: bool = False) -> str:
+    """Who is asking, for the out-of-hours look-up log: the named person if the chat knows them, a background
+    automation, or else the signed-in display (the owner's own session)."""
+    if speaker:
+        return str(speaker)
+    return "automation" if quiet else f"{getattr(settings, 'owner_name', '') or 'owner'} (display)"
+
+
 class Tracker:
-    def __init__(self, fsm, http: httpx.AsyncClient, ram=None, register=None, tolerance_min: int = 30):
+    def __init__(self, fsm, http: httpx.AsyncClient, ram=None, register=None, tolerance_min: int = 30,
+                 settings=None, db=None):
         self.fsm = fsm
         self.http = http
         self.ram = ram  # RAM Tracking (or demo stand-in) - journeys and positions from the vans
         self.register = register
         self.tolerance = tolerance_min
+        self.settings = settings  # for van_locations_out_of_hours; None = always "off"
+        self.db = db  # for the out-of-hours look-up log and the on-call roster; None = always "off"
+        self.roster = OnCallRoster(db) if db is not None else None
 
     @property
     def demo(self) -> bool:
@@ -78,6 +100,44 @@ class Tracker:
         now = now or datetime.now()
         return now.weekday() < 5 and WORK_START <= now.time() <= WORK_END
 
+    # ------------------------------------------------------------------ out-of-hours policy
+    @property
+    def ooh_mode(self) -> str:
+        """The owner's setting. Anything unexpected - or no way to keep the log - is "off"."""
+        if self.settings is None or self.db is None:
+            return "off"
+        mode = str(getattr(self.settings, "van_locations_out_of_hours", "off") or "off").strip().lower()
+        return mode if mode in OOH_MODES else "off"
+
+    def _ooh_policy(self, now: datetime, asked_by: str) -> tuple[str, list[str]]:
+        """(mode, names on call) that apply to this look-up outside working hours. "off" when nobody is named as
+        asking, so a background caller that doesn't identify itself never sees positions out of hours."""
+        mode = self.ooh_mode
+        if mode == "off" or not str(asked_by or "").strip():
+            return "off", []
+        return mode, (self.roster.on_call(now) if mode == "on_call" else [])
+
+    @staticmethod
+    def _on_call_match(on_call: list[str], engineer: Any) -> bool:
+        return any(name_matches(n, engineer) for n in on_call)
+
+    def _log_lookups(self, asked_by: str, tool: str, engineers: list[str], mode: str) -> None:
+        """Record who looked at which engineer out of hours. Raises if it can't - the caller then shows nothing."""
+        if self.db is None:
+            return
+        for name in dict.fromkeys(str(e) for e in engineers if e):
+            if tool == "fleet_panel" and self.db.recent_location_lookup(asked_by, tool, name, PANEL_LOG_MINUTES):
+                continue
+            self.db.log_location_lookup(asked_by, tool, name, mode)
+
+    @staticmethod
+    def _blocked(mode: str) -> dict[str, Any]:
+        if mode == "on_call":
+            why = "Outside working hours - van locations are shown only for engineers on call, and nobody is on call now."
+        else:
+            why = "Outside working hours - locations are not shown (private use)."
+        return {"working_hours": False, "visible": False, "engineers": [], "sites": [], "note": why}
+
     async def _sites(self) -> dict[str, tuple[float, float]]:
         out = {}
         for s in await self.fsm.sites():
@@ -87,11 +147,16 @@ class Tracker:
                 continue
         return out
 
-    async def live(self) -> dict[str, Any]:
+    async def live(self, asked_by: str = "", tool: str = "engineer_locations") -> dict[str, Any]:
+        """Where the vans are. `working_hours` is True in working hours (and for demo data); `visible` says whether
+        positions are being shown at all - outside working hours that needs the owner's setting AND `asked_by`."""
         now = datetime.now()
-        if not self.in_working_hours(now) and not self.demo:
-            return {"working_hours": False, "engineers": [], "sites": [],
-                    "note": "Outside working hours - locations are not shown (private use)."}
+        out_of_hours = not self.in_working_hours(now) and not self.demo
+        mode, on_call = "working_hours", []
+        if out_of_hours:
+            mode, on_call = self._ooh_policy(now, asked_by)
+            if mode == "off" or (mode == "on_call" and not on_call):
+                return self._blocked(mode)
         if self.ram is not None and not getattr(self.ram, "demo", True):
             positions = [{"engineer": p.get("driver") or await self._driver_for(p), "vehicle": p.get("registration"),
                           "lat": p.get("lat"), "lng": p.get("lng"), "timestamp": p.get("timestamp"),
@@ -128,9 +193,21 @@ class Tracker:
             if nxt and nxt.get("site") in sites:
                 row["eta_next_job_mins"] = drive_minutes(haversine_m(here, sites[nxt["site"]]))
             rows.append(row)
+        if out_of_hours and mode == "on_call":
+            rows = [r for r in rows if self._on_call_match(on_call, r.get("engineer"))]
+        if out_of_hours:
+            # Logged before anything is returned: if the record can't be kept, nothing is shown.
+            self._log_lookups(asked_by, tool, [str(r.get("engineer") or r.get("vehicle") or "") for r in rows], mode)
         today_sites = {j.get("site") for j in jobs}
-        out = {"working_hours": True, "demo": self.demo, "engineers": rows,
+        out = {"working_hours": not out_of_hours, "visible": True, "demo": self.demo, "engineers": rows,
                "sites": [{"name": n, "lat": c[0], "lng": c[1]} for n, c in sites.items() if n in today_sites]}
+        if out_of_hours:
+            out["out_of_hours_access"] = mode
+            out["note"] = ("Outside working hours: shown because the owner has allowed it (" +
+                           ("only engineers on call: " + ", ".join(on_call) if mode == "on_call" else "all vans") +
+                           "). This look-up has been logged.")
+            if mode == "on_call":
+                out["on_call"] = on_call
         # Mismatches worth knowing about rather than silently showing: one engineer on two vans gives two positions.
         vans_by_engineer: dict[str, list[str]] = {}
         for r in rows:
@@ -147,14 +224,18 @@ class Tracker:
                                          f"{', '.join(unlabelled)} - can't say whether they're at home.")
         return out
 
-    async def home_status(self) -> dict[str, Any]:
-        """Who is at home, who is out, who has no recent position (working hours only, via live())."""
-        live = await self.live()
+    async def home_status(self, asked_by: str = "") -> dict[str, Any]:
+        """Who is at home, who is out, who has no recent position (working hours, or outside them only when the
+        owner's setting allows it - see live(), which also logs the look-up)."""
+        live = await self.live(asked_by, tool="who_is_home")
         res: dict[str, Any] = {"working_hours": live.get("working_hours", False), "at_home": [], "out": [],
                                "no_address_label": [], "no_recent_position": []}
-        if not live.get("working_hours"):
+        if not live.get("visible"):
             res["note"] = live.get("note")
             return res
+        out_of_hours = not live.get("working_hours")
+        if out_of_hours:
+            res["out_of_hours_access"] = live.get("out_of_hours_access")
         seen_names = set()
         for e in live["engineers"]:
             seen_names.add(str(e.get("engineer")))
@@ -174,12 +255,19 @@ class Tracker:
             for v in await self.ram.vehicles():
                 if v.get("lat") is None or v.get("lng") is None:
                     name = v.get("driver") or await self._driver_for(v) or v.get("registration")
+                    if out_of_hours and live.get("out_of_hours_access") == "on_call" \
+                            and not self._on_call_match(live.get("on_call") or [], name):
+                        continue  # out of hours, only the engineers on call are named at all
                     if str(name) not in seen_names:
                         res["no_recent_position"].append({"engineer": name, "vehicle": v.get("registration"),
                                                           "address_label": None, "last_seen_mins": None,
                                                           "reason": "RAM Tracking has no position for this van"})
+                        if out_of_hours:  # live() logged the engineers it showed; log these named ones too
+                            self._log_lookups(asked_by, "who_is_home", [str(name)], str(live.get("out_of_hours_access")))
         res["note"] = ("'At home' means RAM's address label for the van contains the word home; a van with no label "
-                       "is listed separately because it can't be told either way. Working hours only.")
+                       "is listed separately because it can't be told either way. " +
+                       ("Outside working hours this is shown only because the owner has allowed it, and the look-up "
+                        "was logged." if out_of_hours else "Working hours only."))
         return res
 
     async def _geocode(self, place: str) -> tuple[tuple[float, float], str] | None:
@@ -195,12 +283,12 @@ class Tracker:
                 return (res["latitude"], res["longitude"]), m.group(1).upper()
         return None
 
-    async def nearest(self, place: str) -> dict[str, Any]:
+    async def nearest(self, place: str, asked_by: str = "") -> dict[str, Any]:
         target = await self._geocode(place)
         if not target:
             return {"error": f"Couldn't locate '{place}'. Give a site name from Salts FSM or a UK postcode."}
         coords, label = target
-        live = await self.live()
+        live = await self.live(asked_by, tool="nearest_engineer")
         # Rank on the exact distance, not the rounded display figure, and break any remaining tie by engineer name
         # so the suggestion never depends on the order the position feed happened to return.
         measured = sorted(((haversine_m((e["lat"], e["lng"]), coords), e) for e in live["engineers"]),
@@ -209,8 +297,10 @@ class Tracker:
                    "currently": e.get("current_job") or e.get("status"), "next_job": e.get("next_job"),
                    "address_label": e.get("address_label"), "at_home": e.get("at_home")}
                   for d, e in measured]
-        return {"destination": label, "demo": self.demo, "engineers": ranked,
-                "note": "ETAs are straight-line estimates at typical local speeds, not live traffic."}
+        note = "ETAs are straight-line estimates at typical local speeds, not live traffic."
+        if not live.get("visible", True) or live.get("out_of_hours_access"):
+            note = f"{live.get('note')} {note}"  # why the list is empty, or that it is out-of-hours and logged
+        return {"destination": label, "demo": self.demo, "engineers": ranked, "note": note}
 
     async def attendance(self, day: datetime | None = None) -> dict[str, Any]:
         """Check that job check-ins happened at the job site and flag late arrivals."""
@@ -266,9 +356,20 @@ class Tracker:
                   and str(v["driver"]).strip().lower() == str(name).strip().lower()]
         return {**match, "engineer": name, "other_vehicles": others}
 
-    async def _van_extras(self, vehicle: dict[str, Any], day: date, no_journeys: bool) -> dict[str, Any]:
-        """Mismatch warnings plus (today, working hours only) RAM's current address label for the van."""
+    async def _van_extras(self, vehicle: dict[str, Any], day: date, no_journeys: bool, asked_by: str = "",
+                          tool: str = "van_day") -> dict[str, Any]:
+        """Mismatch warnings plus (today) RAM's current address label for the van - in working hours, or outside
+        them only when the owner's setting allows it for this engineer (and the look-up is then logged)."""
         out: dict[str, Any] = {}
+        now = datetime.now()
+        out_of_hours = not self.in_working_hours(now) and not self.demo
+        show_label = not out_of_hours
+        if out_of_hours and str(asked_by or "").strip():
+            # Looking at an engineer's van out of hours is always recorded, whatever the setting says.
+            mode, on_call = self._ooh_policy(now, asked_by)
+            self._log_lookups(asked_by, tool, [str(vehicle.get("engineer") or vehicle.get("registration"))],
+                              self.ooh_mode)
+            show_label = mode == "always" or (mode == "on_call" and self._on_call_match(on_call, vehicle.get("engineer")))
         warnings = []
         if vehicle.get("other_vehicles"):
             warnings.append(f"RAM lists {vehicle['engineer']} as driver of more than one van "
@@ -281,7 +382,7 @@ class Tracker:
                             "its stop), or the start/stop events were missed. Treat 'didn't move' with caution.")
         if warnings:
             out["warnings"] = warnings
-        if day == date.today() and (self.in_working_hours() or self.demo):
+        if day == date.today() and show_label:
             label, at_home = label_status(vehicle.get("address_label"), await self._sites())
             out["current_address_label"] = label
             out["at_home"] = at_home
@@ -289,8 +390,10 @@ class Tracker:
                 out["address_label_note"] = "RAM Tracking supplied no address label for this van."
         return out
 
-    async def van_day(self, engineer: str, day: date) -> dict[str, Any]:
-        """When did they set off, where did they go, how long on site, when did they get home."""
+    async def van_day(self, engineer: str, day: date, asked_by: str = "", tool: str = "van_day") -> dict[str, Any]:
+        """When did they set off, where did they go, how long on site, when did they get home. A look-up made
+        outside working hours (with `asked_by` given) is logged; today's address label is only added out of hours
+        when the owner's setting allows it for this engineer."""
         if self.ram is None:
             return {"error": "RAM Tracking isn't connected (RAM_API_BASE_URL / RAM_API_KEY)."}
         vehicle = await self._vehicle_for(engineer)
@@ -301,7 +404,7 @@ class Tracker:
         if not legs:
             return {"engineer": vehicle["engineer"], "date": day.isoformat(), "vehicle": vehicle.get("registration"),
                     "summary": "No journeys recorded - the van didn't move (day off, sick, or used another vehicle).",
-                    **await self._van_extras(vehicle, day, True)}
+                    **await self._van_extras(vehicle, day, True, asked_by, tool)}
         sites = await self._sites()
 
         def site_name(lat: Any, lng: Any, fallback: Any) -> str:
@@ -339,15 +442,15 @@ class Tracker:
                 "working_day_hours": round(working_mins / 60, 2) if working_mins else None,
                 "driving_hours": round(driving / 60, 2), "time_stopped_hours": round(stopped / 60, 2),
                 "miles": round(miles, 1), "timeline": timeline, "demo": getattr(self.ram, "demo", False),
-                **await self._van_extras(vehicle, day, False)}
+                **await self._van_extras(vehicle, day, False, asked_by, tool)}
 
-    async def timesheet_check(self, day: date) -> dict[str, Any]:
+    async def timesheet_check(self, day: date, asked_by: str = "") -> dict[str, Any]:
         """Compare RAM Tracking working day (set off -> home) with Salts FSM timesheet hours."""
         sheets = {t.get("engineer"): float(t.get("hours") or 0)
                   for t in await self.fsm.timesheets(day, day) if str(t.get("date"))[:10] == day.isoformat()}
         rows, flags = [], []
         for s in await self.fsm.staff():
-            van = await self.van_day(s["name"], day)
+            van = await self.van_day(s["name"], day, asked_by, tool="timesheet_check")
             tracked = van.get("working_day_hours")
             claimed = sheets.get(s["name"])
             row = {"engineer": s["name"], "set_off": van.get("set_off"), "got_home": van.get("got_home"),

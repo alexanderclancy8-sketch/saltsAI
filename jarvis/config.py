@@ -239,6 +239,10 @@ class Settings(BaseSettings):
     ram_username: str = ""
     ram_password: str = ""
     timesheet_tolerance_min: int = 30
+    # Van locations outside working hours (Mon-Fri 07:00-18:30): "off" (default - hidden, private use), "on_call"
+    # (only engineers on the on-call roster) or "always". Every out-of-hours look-up is logged. Owner-only on the
+    # Settings page (settings_store.OWNER_ONLY_KEYS); an unknown value is treated as "off" (services/tracking.py).
+    van_locations_out_of_hours: str = "off"
 
     # --- Marketing: socials, Google reviews, search ranking -------------------
     website_url: str = "https://www.saltsfireandsecurity.co.uk"

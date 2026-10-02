@@ -134,7 +134,11 @@ class Jarvis:
         self.stores = Stores(self.db, demo_seed=self.fsm.demo, fsm=self.fsm)
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
-        self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
+        # settings + db: the owner's out-of-hours van-location setting, its look-up log and the on-call roster
+        self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min,
+                               settings=s, db=self.db)
+        self.oncall = self.tracker.roster
+        self.asked_by = ""  # who is asking in the current chat turn (set by the brains); "" outside a turn
         self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
         self.route_advisor = RouteAdvisor(self.fsm, self.tracker, self.register)  # read-only route advice
         self.customers = CustomerHealth(self)

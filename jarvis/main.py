@@ -28,6 +28,7 @@ from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_serv
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
 from .services import connection_tests, documents, images
+from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
 from .settings_store import OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
@@ -322,7 +323,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/tracking", dependencies=[Depends(owner)])
     async def tracking(request: Request):
-        return await J(request).tracker.live()
+        # The Fleet panel. Outside working hours this only shows vans if the owner's setting allows it, and then the
+        # look-up is logged against whoever is signed in (the manager's name, or the owner's own display session).
+        return await J(request).tracker.live(requester_label(settings, speaker(request)), tool="fleet_panel")
 
     # ------------------------------------------------------------------ voice
     @app.post("/api/tts", dependencies=[Depends(owner)])
@@ -756,7 +759,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
-                                     "or the display password and staff key.")
+                                     "the display password and staff key, or whether van locations show outside "
+                                     "working hours.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
