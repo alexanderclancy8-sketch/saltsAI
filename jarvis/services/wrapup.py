@@ -9,6 +9,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from .. import demo_guard
 from ..brain import llm
 
 log = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ class WrapUp:
             _safe(j.staff.board(), "board"), _safe(j.staff.overdue_jobs(), "overdue"),
             _safe(j.fsm.jobs(day, day), "jobs today"), _safe(j.fsm.jobs(tomorrow, tomorrow), "jobs tomorrow"),
             _safe(j.mail.list_messages(unread_only=True, top=25), "inbox"), _safe(j.tracker.live(), "fleet"),
-            _safe(j.accountant.snapshot(), "finance"))
+            _safe(demo_guard.section(j.accountant.snapshot()), "finance"))
 
         slipped = []
         if isinstance(jobs_today, list):
@@ -85,7 +86,8 @@ class WrapUp:
             "issues_raised_today": [i["title"] for i in issues if i["created_at"][:10] == today_iso],
             "issues_fixed_today": [i["title"] for i in issues if i["status"] == "resolved" and i["updated_at"][:10] == today_iso],
             "awaiting_approval": [a["summary"] for a in j.db.pending_actions()],
-            "suggestions": [s["title"] for s in j.db.open_suggestions()],
+            "suggestions": [s["title"] for s in (demo_guard.visible_suggestions(j, j.db.open_suggestions())
+                                                 if demo_guard.active() else j.db.open_suggestions())],
             "unread_email": {"count": len(unread),
                              "important": [m["subject"] for m in unread if m.get("importance") == "high"][:5]},
             "money": {k: finance.get(k) for k in ("cash_at_bank", "debtors_overdue", "vat_due")}
@@ -93,7 +95,8 @@ class WrapUp:
             "failing_checks": [t["name"] for t in j.db.latest_test_results() if not t["ok"]],
             "meeting_actions_overdue": [f"{a['owner']}: {a['action']} (due {a['due']})" for a in j.meetings.overdue()][:6],
             "customers_at_risk": [f"{c['customer']} (score {c['score']}): {'; '.join(c['reasons'][:2])}"
-                                  for c in (await _safe(j.customers.scores(), "customers")).get("at_risk", [])][:5],
+                                  for c in (await _safe(demo_guard.section(j.customers.scores()), "customers"))
+                                  .get("at_risk", [])][:5],
             "tomorrow": tomorrow_view,
             "deadlines_next_14_days": [d for d in j.accountant.deadlines() if 0 <= d["days_left"] <= 14],
         }
@@ -101,7 +104,12 @@ class WrapUp:
     async def run(self, deliver: bool = True) -> str:
         j = self.j
         try:
-            await j.suggestions.sweep(announce=False)  # make sure the suggestions are current
+            # Refresh the suggestions first, unless the model is reading this and a source is still sample data: the sweep
+            # would build suggestions from the sample figures (and have them worded by Claude). The scheduler keeps them
+            # fresh anyway, and what rests on sample data is filtered out of the wrap-up below.
+            if not (demo_guard.active() and demo_guard.suggestions_rest_on_sample_data(j)):
+                with demo_guard.suspended():
+                    await j.suggestions.sweep(announce=False)  # make sure the suggestions are current
         except Exception as e:  # noqa: BLE001
             log.info("suggestion refresh before wrap-up failed: %s", e)
         data = await self.gather()

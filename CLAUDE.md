@@ -196,6 +196,25 @@ Decisions use the `ask_user` tool (`brain/tools.py`) and the small question pop-
 only publishes an `ask` bus event and returns at once (no blocking); the chosen/typed/spoken answer comes back as an ordinary
 chat message. It is separate from, and must never call or imitate, the approval path (`decide()`, `/api/approvals`,
 `ActionExecutor`). Tests: `tests/test_ask_user.py`.
+Phase 3 of the console redesign ("fixes found on 2 Oct"):
+(1) **Sample data is never reasoned from** (`jarvis/demo_guard.py`). A demo source (`DemoFinance`, the seeded stock, sample social figures, the
+example staff register, `DemoRamTracking`) calls `demo_guard.touch(source)` where it serves sample figures; inside `tools.dispatch()` that raises
+`DemoDataBlocked` (a BaseException, so no `except Exception` fallback can swallow it), the tool's result is replaced by `demo_guard.refusal()`
+(`demo_data_withheld`, which source, what to connect) and the persona's "Sample data is never an answer" rule tells him to say so. Composite answers
+(briefing, wrap-up, business advice) wrap each source in `demo_guard.section()` so only the sample part is dropped; stored suggestions that rest on
+sample data are filtered (`visible_suggestions`). `StaffRegister.prompt_summary()` returns a neutral line while the register is the example. Nothing
+outside a tool call changes: the console's pop-ups keep their sample data and "demo" labels. When adding a demo source, add a `touch()` there and a
+`Source` in `demo_guard.SOURCES`. Salts FSM and Outlook demo are NOT gated (every test uses them as its stand-in; the prompt rule still covers them).
+(3) Speech-to-text: `stt_chain.stt_problem()` says why the chosen engine can't be used; `voice.client_config()` carries it as `stt_problem`;
+the top bar's `#stt-status` shows "Voice input: browser fallback - <why>" (hud.js `sttStatus`, also fed by a failure while listening).
+(4) RAM Tracking: a `RamError` per failure with plain-English text (no secrets), `RamTracking.health`/`probe()`, one cache and one request budget for
+RAM's 3-requests-a-minute-per-endpoint limit (429 = "rate limited", never "not connected"), the API address reduced to its host (`origin_of`), all
+parsing defensive against RAM's published schema (`last_event` is a STRING). `Jarvis.vehicle_tracking_status()` feeds the Connections line and the Fleet
+pop-up ("DEMO ... still missing: ...", "NOT CONNECTED - ... <reason>", or live). Tests mock RAM; none has been run against the real API.
+(5) The staff report key is never in any payload or page: the "Copy staff report link" button fetches `/api/staff-report-address` when pressed
+(`NO_TAIL_HINT` also stops the key's and the display password's last four characters showing). Tests: `tests/test_demo_guard.py`,
+`tests/test_activity_log.py`, `tests/test_stt_status.py`, `tests/test_ramtracking_connection.py`, `tests/test_ramtracking_schema.py`,
+`tests/test_staff_report_link.py`, `tests/test_console_browser_phase3.py`.
 Phase 2 of the console redesign ("how Jarvis talks"): the question pop-up is a centred dialog over a real backdrop element (`.ask-scrim`) whose answers, and "Type my own answer", are real `<button>`s; Escape (anywhere on the page), Dismiss or a click on the backdrop closes it without sending, and the reply keeps an "Answer" button to bring it back. Tests: `tests/test_question_popup.py` (plus the node harness `tests/ask_dom_harness.js`).
 What surrounds a reply is built from what really happened, not from text the model wrote: `jarvis/brain/trace.py`'s `TurnTrace` (`j.trace`) listens to the event bus (`EventBus.add_tap`) from the `thinking` event, notes each `tool` start, and each brain merges `j.trace.finish()` into its final `reply` event: `sources` (named from the tools used, with "(demo data)" where that source is still demo), `elapsed_ms`, `panel` (the pop-up with the detail: approvals if the turn queued something, else what the model asked for via `offer_next_steps`, else the pop-up of the tools used - the mapping is `_TOOL_INFO` there, so a new read tool should be added to it) and up to two `follow_ups` (only from the `offer_next_steps` tool, which changes nothing, is not an approval and is in `NO_RECURSE`). hud.js shows a working line above the reply from the live `tool` events (`.step`), then the source-and-time line, the pop-up button and follow-up chips under it. Stop (`stopEverything()`, or sending a new message) abandons the reply being written and sets `S.stopped` so late events of that turn are ignored until the next `user_message`; server-side it cancels the API-brain task (the whole turn is rolled back so the history stays valid) or interrupts Claude Code (`MaxBrain._stop_requested` - no half-answer is published or stored). "How Jarvis talks" is the `talk_style` setting (`natural` default = `owner_name`, `formal` = `owner_salutation`), shown in Settings (`#set-talk`, saved through the same Save changes bar) and under Connections > You and the business; `prompts.address_for()` picks the name and `TALK_NATURAL`/`TALK_FORMAL` are appended to the persona. It is a display preference like `owner_salutation`, not an owner-only setting. Tests: `tests/test_talk_style.py`, `tests/test_reply_extras.py`, `tests/test_streaming_stop.py`, `tests/test_console_browser_phase2.py`.
 
@@ -220,6 +239,15 @@ approval path), and every message is run through `history.redact_history` (the s
   `Jarvis.stop()`) and posts the result or the failure; `poller(...)` builds a `work` that polls a `check()` and posts status
   changes; the tools `watch_ci` (GitHub Actions on a branch of Jarvis's repo) and `watch_action` (a queued action's outcome - it
   only reads its status) use it. Both are read-only, are in `recruiter.NO_RECURSE`, and say so if proactive messages are off.
+- **Quiet scheduled checks and the activity log** (`services/activity.py`, `j.activity`; console redesign phase 3): a scheduled
+  check that finds nothing new posts NOTHING into the conversation. Every run is a row in `check_runs` (`ActivityLog.record(key, name,
+  outcome, detail)`; outcomes `no_change`/`changed`/`failed`/`baseline`, kept 7 days) and `/api/status` -> `activity` (read every minute and after
+  each reply; recording a run publishes nothing on the bus) gives today's runs per check; hud.js `renderActivity()` draws ONE collapsed `details.auto` line per check
+  ("Pull request watch · 7 checks since 09:30, no change", opening to list each run with its time), above the conversation and never a
+  chat message. Recorded by `pr_watch()`, by `AutomationService.run()` and by the scheduler's `_check()` wrapper (lone-worker and inbox
+  sweeps). Automations now ALWAYS run as a `quiet_turn` and are always told to start with `NOTHING_TO_REPORT` when there is nothing new;
+  a finding goes through `Proactive.tell()` (= `announce()` when speaking up is on; otherwise one message in the open chat, once, or a
+  quiet notification if no chat is open). A check that DOES find a change still posts normally and is logged as `changed`.
 - **Pull request watch**: `pr_watch()` (scheduled every `proactive_pr_watch_min` only when proactive is on and the Jarvis repo is
   connected) lists the open PRs read-only, compares with the last snapshot (kv `proactive:pr_watch`) and announces new PRs, CI
   passing/failing, conflicts and closed PRs. The first look only records a baseline.

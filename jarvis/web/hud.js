@@ -255,8 +255,11 @@
     if (late) add(60, "warn", `${plural(late, "late start", "late starts")} today`, "ops");
 
     const vans = S.tracking?.engineers?.length || 0;
-    const tracked = !!S.status?.connections?.["Vehicle tracking"] && !isDemo(S.status.connections["Vehicle tracking"]);
-    setRail("fleet", tracked ? vans : "off", "", tracked ? `${plural(vans, "vehicle", "vehicles")} reporting` : "vehicle tracking is not connected");
+    const fleet = fleetState();
+    const tracked = fleet.live;
+    setRail("fleet", tracked ? vans : fleet.failing ? "failing" : "off", fleet.failing ? "bad" : "",
+      tracked ? `${plural(vans, "vehicle", "vehicles")} reporting` : fleet.failing ? `vehicle tracking is not connected: ${fleet.why}` : "vehicle tracking is not connected");
+    if (fleet.failing) add(55, "bad", "RAM Tracking isn't connected", "fleet");
 
     const f = d.finance && !d.finance.error ? d.finance : null;
     const watch = d.customer_watch || [];
@@ -1121,16 +1124,50 @@ function send(text, mode = "typed", opts = {}) {
   async function refresh() {
     try {
       const st = await (await api("/api/status")).json();
-      S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
+      S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); sttStatus.render(); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
       S.data = { inbox: st.inbox, issues: st.issues, tests: st.tests, notifications: st.notifications, staff: st.staff, overdue_jobs: st.overdue_jobs,
         finance: st.finance, presence: st.presence, customer_watch: st.customer_watch, deadlines: st.deadlines, accreditations: st.accreditations };
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
       renderPresence(st.presence); renderCustomers(st.customer_watch); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSuggestions(); renderSettings(st);
+      renderActivity(st.activity);
       renderRail(); if (Drawer.current === "demo") renderDemo(); if (Drawer.current === "fleet") renderFleetStatus();
     } catch (e) { console.warn(e); }
   }
+
+  // ------------------------------------------------------------------ scheduled checks (activity log)
+  // A scheduled check that found nothing posts nothing into the chat. Every run is in the activity log and shows here as
+  // ONE collapsed line per check ("Pull request watch · 7 checks since 09:30, no change") that opens to list each run
+  // with its time. A check that did find something has also posted its message in the chat as usual.
+  const activityOpen = new Set();
+  function activityLine(job) {
+    const parts = [];
+    if (job.failed) parts.push(`${job.failed} failed`);
+    if (job.changed) parts.push(plural(job.changed, "change", "changes"));
+    return `${job.name} · ${plural(job.checks, "check", "checks")} since ${job.since}, ${parts.length ? parts.join(", ") : "no change"}`;
+  }
+  let activityShown = "";
+  function renderActivity(a) {
+    const box = $("#activity"); if (!box) return;
+    const jobs = (a && a.jobs) || [];
+    // Nothing new since the last look: leave the lines alone (a re-render would drop the focus and scroll of a line the
+    // owner has open and is reading).
+    const stamp = JSON.stringify(jobs); if (stamp === activityShown) return; activityShown = stamp;
+    box.hidden = !jobs.length;
+    box.innerHTML = jobs.map((job) => {
+      const open = activityOpen.has(job.key);
+      const runs = job.runs.map((r) => `<span class="${r.outcome === "changed" ? "changed" : r.outcome === "failed" ? "failed" : ""}">${esc(r.time)} ${esc(r.detail || (r.outcome === "no_change" ? "No change." : r.outcome))}</span>`).join("");
+      return `<details class="auto" data-job="${esc(job.key)}"${job.failed ? ' data-level="bad"' : job.changed ? ' data-level="warn"' : ""}${open ? " open" : ""}>` +
+        `<summary><span>${esc(activityLine(job))}</span><u>${open ? "Hide" : "Show"}</u></summary><div class="auto-runs">${runs}</div></details>`;
+    }).join("");
+  }
+  // `toggle` does not bubble, so listen in the capture phase on the container (it survives the re-renders above).
+  $("#activity")?.addEventListener("toggle", (e) => {
+    const d = e.target; if (!d.matches?.("details.auto")) return;
+    d.open ? activityOpen.add(d.dataset.job) : activityOpen.delete(d.dataset.job);
+    const u = d.querySelector("summary u"); if (u) u.textContent = d.open ? "Hide" : "Show";
+  }, true);
 
   // The top-bar pill: how many sources are still samples. Opens the Demo data pop-up.
   const isDemo = (v) => String(v).includes("DEMO");
@@ -1282,18 +1319,29 @@ function send(text, mode = "typed", opts = {}) {
   const tileUrl = () => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${window.JarvisTheme?.effective() === "light" ? "Light" : "Dark"}_Gray_Base/MapServer/tile/{z}/{y}/{x}`;
   window.addEventListener("jarvis-theme", () => { if (tiles) tiles.setUrl(tileUrl()); });
   // The Fleet pop-up: real vehicles when RAM Tracking is connected, otherwise a clear "not connected" state.
+  // live: RAM answers. failing: its details are entered but it is not answering (why = the reason, in words). Otherwise
+  // it is still on sample data (why = what is still missing). Only "live" ever shows vehicles.
+  function fleetState() {
+    const conn = S.status?.connections?.["Vehicle tracking"] || "";
+    const failing = /^NOT CONNECTED/.test(conn) || !!S.tracking?.ram_error;
+    const live = !!conn && !isDemo(conn) && !failing;
+    const detail = (String(conn).match(/^NOT CONNECTED\s*-\s*(?:RAM Tracking is failing:\s*)?(.+)$/) || [])[1] || S.tracking?.ram_error || "";
+    const missing = (String(conn).match(/DEMO[^-:)]*[-:]\s*(.+)$/) || [])[1] || "";
+    return { live, failing, why: failing ? detail : missing };
+  }
   function renderFleetStatus() {
     const el = $("#fleet-status"), data = S.tracking;
     const conn = S.status?.connections?.["Vehicle tracking"] || "";
-    const connected = !!conn && !isDemo(conn);
+    const fleet = fleetState(), connected = fleet.live;
     const vans = data?.engineers?.length || 0;
     el.className = "fleet-note";
     if (!connected) {
-      // Not connected: say so plainly and show no map (sample positions are not vehicles).
-      el.innerHTML = `<span>Vehicle tracking is not connected, so there are no live vehicle positions. Add the RAM Tracking details under Connections.</span>`;
+      // Not connected (still sample data, or entered but not answering): say so plainly, with the reason, and show no
+      // map (sample positions are not vehicles).
+      el.innerHTML = `<span>Vehicle tracking is not connected, so there are no live vehicle positions. ${fleet.failing ? esc(fleet.why) : fleet.why ? esc(fleet.why[0].toUpperCase() + fleet.why.slice(1)) : "Add the RAM Tracking details under Connections."}</span>`;
       el.insertAdjacentHTML("beforeend", `<button class="btn small" type="button" data-pop="connections">Open Connections</button>`);
     } else {
-      el.textContent = !data ? "Loading…" : data.working_hours === false ? (data.note || "Outside working hours - locations are not shown.")
+      el.textContent = !data ? "Loading…" : data.rate_limited ? data.note : data.working_hours === false ? (data.note || "Outside working hours - locations are not shown.")
         : vans ? `Live from ${conn}: ${plural(vans, "vehicle", "vehicles")} reporting.` : "Connected, but no vehicles are reporting right now.";
     }
     $("#map").hidden = !connected || !vans;
@@ -1383,10 +1431,29 @@ function send(text, mode = "typed", opts = {}) {
   };
   // Says which engine voice input is using right now (and why it changed), so a silent fallback is never a mystery.
   function showSttEngine(engine, note = "", warn = false) {
+    sttStatus.engine(engine, note, warn);
     const el = $("#stt-engine"); if (!el) return;
     el.hidden = false; el.classList.toggle("warn", warn);
     el.textContent = `Voice input: ${STT_LABEL[engine] || engine}${note ? ` - ${note}` : ""}`;
   }
+  // The top-bar label for voice input. Shown ONLY while it is not on the engine chosen in Settings (an engine with no
+  // key, or one that just failed), in words, with the reason - so a fallback to the browser's speech recognition is never
+  // silent. Hidden while everything is as chosen. (The line under the core says the same but hides once a chat starts.)
+  const sttStatus = {
+    runtime: "",
+    engine(engine, note, warn) {
+      const off = engine !== (S.voice && S.voice.stt);
+      const why = off && stt.lastError ? ` (${stt.lastError.replace(/\s+/g, " ").slice(0, 80)})` : "";
+      this.runtime = warn || off ? `Voice input: ${STT_LABEL[engine] || engine}${note ? ` - ${note}` : off ? " - switched automatically" : ""}${why}` : "";
+      this.render();
+    },
+    render() {
+      const el = $("#stt-status"); if (!el) return;
+      const problem = (S.voice && S.voice.stt_problem) || "";
+      const text = problem ? `Voice input: browser fallback - ${problem}` : this.runtime;
+      el.hidden = !text; el.textContent = text; el.title = text;
+    },
+  };
   const stt = {
     mode: null, lastError: "", on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
@@ -1857,8 +1924,8 @@ function send(text, mode = "typed", opts = {}) {
   window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && !$("#btn-stop").hidden) stopEverything(); });
   let spaceHeld = false;
   window.addEventListener("keydown", (e) => {
-    if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
-    e.preventDefault(); spaceHeld = true;
+    if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT", "SUMMARY"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
+    e.preventDefault(); spaceHeld = true;  // (SUMMARY: Space opens and closes a scheduled check's line, as it does any disclosure)
     if (!micPressBargeIn()) stt.start();
   });
   window.addEventListener("keyup", (e) => { if (e.code === "Space" && spaceHeld) { spaceHeld = false; stt.stop(true); } });
@@ -1898,8 +1965,7 @@ function send(text, mode = "typed", opts = {}) {
   // The staff report link carries a key, so it is never shown on screen: this copies it to the clipboard instead.
   $("#btn-copy-report").addEventListener("click", async () => {
     try {
-      if (!Settings.loaded) await Settings.load();
-      const link = Settings.staffReportLink;
+      const link = await Settings.staffReportLink();
       if (!link) { toast("No staff report link yet", "Set a staff report key under Connections, then try again.", "warning"); return; }
       await navigator.clipboard.writeText(link);
       toast("Link copied", "The staff report link is on your clipboard.");
@@ -1919,17 +1985,22 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ settings drawer: connections tab
+  // The browser and password managers must not fill these boxes by themselves. An "API username" box beside a password box
+  // looks like a sign-in form to them, and an autofilled value is saved as if it had been typed (with the wrong name or
+  // password in it, a connection that was entered correctly stops working and nothing says why).
+  const NO_AUTOFILL = 'autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-form-type="other"';
   const Settings = {
     loaded: false, sections: [], edited: {}, cleared: new Set(), advanced: new Set(), testing: new Set(),
     view: null,            // null = the list of integrations; otherwise the id of the one whose setup form is showing
-    staffReportLink: "",   // kept in memory for "Copy staff report link" - it carries a key, so it is never put on screen
+    // The staff report link carries a key, so it is never in the settings data or on screen: "Copy staff report link"
+    // asks the server for it when pressed, copies it, and lets go of it.
+    async staffReportLink() { return (await (await api("/api/staff-report-address")).json()).link || ""; },
 
     async load() {
       try {
         const data = await (await api("/api/settings")).json();
         this.loaded = true;
         this.sections = data.sections;
-        this.staffReportLink = data.context?.staff_report_link || "";
         this.render(data.problem);
       } catch {
         toast("Couldn't load settings", "Check the connection and try again.", "warning");
@@ -2068,7 +2139,7 @@ function send(text, mode = "typed", opts = {}) {
         } else {
           const hint = hasEdit ? "new value entered" : (f.is_set ? f.hint : "not set");
           control = `<div class="set-secret-row">
-            <input type="password" id="f-${f.key}" data-field="${f.key}" placeholder="${f.is_set ? "Leave blank to keep the current one" : esc(f.placeholder || "")}" autocomplete="new-password">
+            <input type="password" id="f-${f.key}" data-field="${f.key}" placeholder="${f.is_set ? "Leave blank to keep the current one" : esc(f.placeholder || "")}" autocomplete="new-password" ${NO_AUTOFILL}>
             <span class="set-hint">${esc(hint)}</span>
             ${f.is_set ? `<button class="btn small" data-clear="${f.key}" type="button">Clear</button>` : ""}
           </div>`;
@@ -2117,7 +2188,7 @@ function send(text, mode = "typed", opts = {}) {
         if (f.kind === "url" && !current) current = "https://";
         const type = f.kind === "number" ? "number" : f.kind === "email" ? "email" : f.kind === "url" ? "url" : "text";
         const step = f.kind === "number" ? ' step="any"' : "";  // some settings (voice stability etc.) are fractional
-        control = `<input type="${type}"${step} id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}">`;
+        control = `<input type="${type}"${step} id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}" autocomplete="off" ${NO_AUTOFILL}>`;
       }
       return `<div class="set-field${error ? " has-error" : ""}">
         <label for="f-${f.key}">${esc(f.label)}${sourceNote ? `<span class="set-source">${sourceNote}</span>` : ""}</label>

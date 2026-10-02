@@ -21,7 +21,10 @@
 <body class="app" data-hud="idle">
 <header class="topbar">
   <div class="brand">J.A.R.V.I.S.<small id="company">SALTS FIRE AND SECURITY</small></div>
-  <span class="state" role="status" aria-live="polite" aria-label="Jarvis status"><b></b><span id="state">Online</span></span>
+  <div class="statusbox">
+    <span class="state" role="status" aria-live="polite" aria-label="Jarvis status"><b></b><span id="state">Online</span></span>
+    <span class="stt-status" id="stt-status" role="status" aria-live="polite" hidden></span>
+  </div>
   <span class="spacer"></span>
   <div class="pills" id="pills"></div>
   <span class="clock" id="clock"></span>
@@ -72,6 +75,7 @@
           <h2>Conversation</h2>
           <button class="linkish" id="btn-new-convo" type="button">New conversation</button>
         </div>
+        <div class="activity" id="activity" aria-label="Scheduled checks" hidden></div>
         <div class="conversation" id="conversation" role="log" aria-live="polite" aria-label="Conversation"></div>
       </section>
 

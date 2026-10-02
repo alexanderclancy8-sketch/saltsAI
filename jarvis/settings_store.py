@@ -227,11 +227,14 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "ram", "RAM Tracking", "Van locations, set-off and home times, journeys and timesheet checks.",
         (
-            Field("ram_client_id", "Client ID"),
+            Field("ram_client_id", "Client ID", help="Shown on RAM's API Keys page. It can be a name, e.g. the account holder's."),
             Field("ram_api_key", "Client secret", "secret"),
-            Field("ram_username", "API username"),
+            Field("ram_username", "API username",
+                  help="The RAM username of the dedicated API user, exactly as RAM issued it."),
             Field("ram_password", "API password", "secret"),
-            Field("ram_api_base_url", "API address", "url", advanced=True),
+            Field("ram_api_base_url", "API address", "url",
+                  help="Leave as https://api.qaifn.co.uk. Only the address: anything after the host is ignored.",
+                  advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
         ),
         required=("ram_client_id", "ram_api_key", "ram_username", "ram_password"),
@@ -240,6 +243,8 @@ SECTIONS: tuple[Section, ...] = (
             "In the RAM Tracking portal: profile - integrations - API Keys shows the Client ID and Client secret.",
             "That page also says you need a dedicated account's username and password for the API - "
             "RAM recommend a separate login just for this, not your own.",
+            "Give the API user no two-step verification (MFA): RAM's API sign-in is a plain username and password, so an "
+            "account that asks for a code can't be used.",
         ),
     ),
     Section(
@@ -491,6 +496,11 @@ SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+# Secrets that are credentials for getting INTO Jarvis (or part of a link that does): not even their last four characters
+# are shown on the page. Everything else shows "•••• abcd" so you can tell which key is saved.
+NO_TAIL_HINT = frozenset({"staff_report_key", "jarvis_owner_password"})
+
+
 def _hint(value: str) -> str:
     if "://" in value:
         return "••••"  # a secret URL (e.g. the Teams/Power Automate webhook) ends in its access signature
@@ -575,6 +585,10 @@ class SettingsStore:
                 value = f"https://{value}"
             if not re.match(r"^https?://[^\s/]+", value):
                 return None, "Start with https://"
+        if key == "ram_api_base_url" and value:
+            from .integrations.ramtracking import origin_of
+
+            value = origin_of(value)  # RAM's calls are all absolute paths; a pasted endpoint or Swagger link would 404
         if f.kind == "select" and value not in {v for v, _ in f.options}:
             return None, "Pick one of the options."
         if f.kind == "cron" and value:
@@ -667,7 +681,8 @@ class SettingsStore:
                         "options": [list(o) for o in f.options], "advanced": f.advanced, "source": self._source(f.key),
                         "depends_on": list(f.depends_on) if f.depends_on else None}
                 if f.kind == "secret":
-                    item.update(is_set=bool(value), hint=_hint(str(value)) if value else "")
+                    item.update(is_set=bool(value),
+                                hint=("••••" if f.key in NO_TAIL_HINT else _hint(str(value))) if value else "")
                 else:
                     shown = str(value).replace(" | ", "\n").replace("|", "\n") if f.kind == "notes" else value
                     item.update(value=shown, is_set=value not in ("", None))

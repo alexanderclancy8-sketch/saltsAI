@@ -19,6 +19,7 @@ from ..cron import cron_trigger
 from ..db import now_iso
 from ..events import quiet_turn
 from ..humanize import cron_to_english, human_datetime
+from .activity import CHANGED, NO_CHANGE
 from .proactive import NOTHING
 
 log = logging.getLogger(__name__)
@@ -87,25 +88,36 @@ class AutomationService:
         except Exception as e:  # noqa: BLE001
             log.exception("Automation %s failed", automation_id)
             self.j.db.update_automation(automation_id, last_run_at=now_iso(), last_result=f"Failed: {e}"[:2000])
+            automation = self.j.db.get_automation(automation_id) or {}
+            self.j.activity.record(self._job_id(automation_id), automation.get("description") or f"Automation {automation_id}",
+                                   "failed", f"Failed: {type(e).__name__}")
 
     async def run(self, automation_id: int) -> str:
         automation = self.j.db.get_automation(automation_id)
         if not automation:
             return f"No automation #{automation_id}."
-        proactive = self.j.proactive.enabled
         prompt = (f"[Scheduled check you set up: \"{automation['description']}\"]\n{automation['prompt']}\n\n"
                  "This is an automation running on its own schedule, not something typed live - if there's "
-                 "nothing worth mentioning, say so briefly rather than manufacturing a finding.")
-        if proactive:
-            prompt += f" If there is nothing worth mentioning, start your reply with {NOTHING}."
-        # With proactive chat on, the check runs silently and only what changed is posted (below), instead of the
-        # whole headless turn being typed into whatever chat happens to be open.
-        token = quiet_turn.set(proactive)
+                 "nothing worth mentioning, say so briefly rather than manufacturing a finding. "
+                 f"If there is nothing new to report, start your reply with {NOTHING}.")
+        # A scheduled check always runs silently: the headless turn is never typed into whatever chat happens to be
+        # open. Only what it found is posted (below), and only when it is new; every run is in the activity log.
+        token = quiet_turn.set(True)
         try:
             reply = await self.j.brain.ask(prompt, "typed")
         finally:
             quiet_turn.reset(token)
         self.j.db.update_automation(automation_id, last_run_at=now_iso(), last_result=reply[:2000])
-        if proactive:
-            await self.j.proactive.announce(f"automation:{automation_id}", automation["description"], reply)
+        title, key = automation["description"], f"automation:{automation_id}"
+        if not reply.strip() or reply.strip().upper().startswith(NOTHING):
+            outcome, detail = NO_CHANGE, reply.strip()[len(NOTHING):].lstrip(" :-.") or "Nothing to report."
+        else:
+            result = await self.j.proactive.tell(key, title, reply)
+            if result["delivered"]:
+                outcome, detail = CHANGED, reply
+            elif result["reason"] in ("unchanged", "nothing to report"):
+                outcome, detail = NO_CHANGE, "Same as last time."
+            else:  # something new, but it could not be said right now (quiet hours, you were mid-conversation)
+                outcome, detail = CHANGED, f"{reply} (held back: {result['reason']})"
+        self.j.activity.record(self._job_id(automation_id), title, outcome, detail)
         return reply
