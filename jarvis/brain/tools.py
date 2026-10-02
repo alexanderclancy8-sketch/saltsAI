@@ -663,6 +663,19 @@ class OfficeEditIn(BaseModel):
     doc_id: str | None = Field(None, description="...or edit an earlier draft by its doc_id instead")
 
 
+class ImageIn(BaseModel):
+    headline: str = Field(min_length=1, max_length=90,
+                          description="The headline text printed on the graphic, e.g. 'Is your fire alarm "
+                                      "serviced every six months?'. No customer or site details, no phone "
+                                      "numbers, emails or postcodes")
+    platform: Literal["facebook", "instagram", "linkedin", "tiktok"] = Field(
+        "facebook", description="Which platform the post is for - sets the image size")
+    subtext: str = Field("", max_length=140, description="Optional smaller line under the headline")
+    visual: str = Field("", max_length=300,
+                        description="Optional description of the background picture: objects or abstract shapes "
+                                    "only (fire alarm panel, smoke detector, padlock). Never people or faces")
+
+
 class HoursIn(BaseModel):
     hours: int | None = Field(None, description="Look back this many hours; default is since the office last "
                                                "closed (so Monday covers the weekend)")
@@ -1602,6 +1615,10 @@ async def edit_office_document(j, a: OfficeEditIn):
     return await j.documents.edit_office_document(a.instructions, a.format, a.message_id, a.attachment_name, a.doc_id)
 
 
+async def generate_image(j, a: ImageIn):
+    return await j.images.generate(a.headline, a.platform, a.subtext, a.visual)
+
+
 async def draft_credit_control(j, a: CreditControlDraftIn):
     return {"shown_on_display": True, "draft": await j.documents.credit_control_draft(a.target, a.channel),
             "note": "Draft only - nothing has been sent."}
@@ -1784,6 +1801,13 @@ TOOLS: list[Tool] = [
                                  "and styling are not kept); the original is untouched and nothing is sent - "
                                  "sending goes through email_send, which needs the owner's approval.",
          OfficeEditIn, edit_office_document, "Editing the document"),
+    Tool("generate_image", "Make a DRAFT social media post graphic (headline text, Salts navy blue branding, company "
+                           "logo) sized for Facebook, Instagram, LinkedIn or TikTok. Shown on the display with a "
+                           "PNG download for the owner to review; it is never posted or sent anywhere by this tool. "
+                           "If no image provider key is set it says so and makes nothing - tell the owner what it "
+                           "says, never pretend an image exists. Never put customer or site details in the "
+                           "headline or visual, and never ask for people or faces.",
+         ImageIn, generate_image, "Making the graphic"),
     Tool("email_draft_reply", "Save a reply to an email as a draft in Outlook for the owner to review and send.",
          DraftIn, email_draft_reply, "Drafting a reply"),
     Tool("email_send", "Send an email from the owner's mailbox. Emails to anyone except the owner are queued for "

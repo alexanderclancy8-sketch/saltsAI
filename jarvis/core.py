@@ -37,6 +37,7 @@ from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.false_alarms import FalseAlarmLog
+from .services.images import ImageGenerator
 from .services.job_intake import JobIntake
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
@@ -144,6 +145,7 @@ class Jarvis:
         self.po_book = PurchaseOrderBook(self.db)  # purchase orders raised via log_purchase_order
         self.supplier_bills = SupplierBills(self)
         self.documents = Documents(self)
+        self.images = ImageGenerator(self)  # draft social media graphics; never posted anywhere
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
@@ -221,6 +223,7 @@ class Jarvis:
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",
+            "Image generation": self.images.status(),
             "Socials / Google": ", ".join(k for k, v in presence.items() if v) or "DEMO data - not connected",
             "Stores / stock": self.stores.source + (" (DEMO stock)" if self.stores.demo else ""),
             "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
