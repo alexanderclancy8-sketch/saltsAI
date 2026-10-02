@@ -311,6 +311,11 @@ class Settings(BaseSettings):
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
     technical_watch_cron: str = "30 6 * * 2"  # weekly fire & security technical/standards deep-dive
     security_watch_cron: str = "0 6 * * 1"  # weekly review of the Salts FSM codebase for vulnerabilities
+    # The standing FSM engineer bot: a read-only audit of routine tests, open issues and Salts FSM health that tells the
+    # owner on Teams only when a failure is new or changed, and hands each to the engineering agent via issue_fix
+    # (which still waits for a human's approval). It never writes to FSM, merges, deploys or approves anything.
+    fsm_engineer_enabled: bool = True
+    fsm_engineer_cron: str = "*/30 * * * *"
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
     lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
     wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)
