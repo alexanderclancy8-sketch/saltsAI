@@ -1452,6 +1452,10 @@ async def engineer_locations(j, a: NoInput):
     return data
 
 
+async def who_is_home(j, a: NoInput):
+    return await j.tracker.home_status()
+
+
 async def nearest_engineer(j, a: PlaceIn):
     return await j.tracker.nearest(a.place)
 
@@ -2050,8 +2054,14 @@ TOOLS: list[Tool] = [
     Tool("stock_job_materials", "Materials issued to a job and their cost (for job costing).", JobRefIn,
          stock_job_materials, "Costing job materials"),
     Tool("engineer_locations", "Live engineer/van locations from Salts FSM tracking: where everyone is, on site or "
-                               "not, ETA to next job. Also puts the map on the display.", NoInput,
+                               "not, ETA to next job, and RAM's address label for each van (a home label is shown "
+                               "only as 'home'; address_label is null when RAM supplies none). Also puts the map "
+                               "on the display.", NoInput,
          engineer_locations, "Locating the team"),
+    Tool("who_is_home", "Which engineers are at home (RAM's van address label says home), which are out, which "
+                        "vans have no address label, and who has no recent position. Working hours only. Say "
+                        "'home' only - never read out or guess a home address.", NoInput, who_is_home,
+         "Checking who's home"),
     Tool("nearest_engineer", "Which engineers are closest to a site or postcode, with estimated drive time - use "
                              "for dispatching call-outs.", PlaceIn, nearest_engineer, "Finding the nearest engineer"),
     Tool("attendance_check", "Check job check-ins against site locations and flag late arrivals for a day.",

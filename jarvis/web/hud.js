@@ -1129,11 +1129,12 @@ function send(text, mode = "typed", opts = {}) {
 
   // ------------------------------------------------------------------ map
   let map = null, layer = null;
+  const NO_LABEL = "no address label from RAM";
   function renderMap(data) {
     if (!data) return;
     if (!window.L) {  // map library blocked/offline: show a list instead
       $("#map").innerHTML = `<ul class="list" style="padding:8px">${(data.engineers || []).map((e) =>
-        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""}</span></li>`).join("") ||
+        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(e.address_label || NO_LABEL)}</span></li>`).join("") ||
         `<li class="empty">${esc(data.note || "No vehicles reporting.")}</li>`}</ul>`;
       $("#map").style.height = "auto";
       return;
@@ -1152,9 +1153,15 @@ function send(text, mode = "typed", opts = {}) {
     (data.sites || []).forEach((s) => { L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {
       L.circleMarker([e.lat, e.lng], { radius: 7, color: e.status === "driving" ? "#ffb020" : "#26d9ff", weight: 2, fillOpacity: 0.85 })
-        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}`).addTo(layer);
+        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(e.address_label || NO_LABEL)}`).addTo(layer);
       pts.push([e.lat, e.lng]);
     });
+    const fleetList = $("#fleet-list");
+    if (fleetList) {
+      const warnings = (data.warnings || []).map((w) => `<li class="warn">${esc(w)}</li>`).join("");
+      fleetList.innerHTML = (data.engineers || []).map((e) =>
+        `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(e.address_label || NO_LABEL)}${e.at_home ? "" : e.status ? " · " + esc(e.status) : ""}</span></li>`).join("") + warnings;
+    }
     if (pts.length) map.fitBounds(pts, { padding: [20, 20], maxZoom: 12 });
   }
   // Leaflet measures its box once; call this whenever the map's container may have changed size or been revealed.
