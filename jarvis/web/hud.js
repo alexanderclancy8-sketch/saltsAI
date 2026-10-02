@@ -329,6 +329,7 @@
           return;
         }
         item.started = true;
+        if (!item.filler) noteFirstAudio(); // a thinking-time filler isn't the answer, so it doesn't count
         if (url) {
           player.src = url;
           player.onended = () => { URL.revokeObjectURL(url); if (gen === this.gen) this.next(); };
@@ -419,6 +420,21 @@
     return windowSimilarity(words, said) >= ECHO_SIMILARITY;
   }
   const echoWindowOpen = () => speaker.active || speaker.browserSpeaking || Date.now() - speaker.lastSpokeAt < ECHO_TAIL_MS;
+
+  // ------------------------------------------------------------------ conversation quality reporting
+  // Fire-and-forget: the server keeps per-turn metrics (services/conversation_quality.py), but only the browser
+  // knows when sound actually started and when it threw away something that was Jarvis's own voice. A failure
+  // here must never affect speech or the conversation, so every call swallows its errors.
+  const turnClock = { sentAt: 0, turnId: null }; // sentAt: performance.now() when a spoken request was sent
+  function voiceEvent(body) {
+    try { api("/api/voice-events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}); } catch { /* never matters */ }
+  }
+  function noteFirstAudio() {
+    if (!turnClock.sentAt) return;
+    const ms = Math.round(performance.now() - turnClock.sentAt);
+    turnClock.sentAt = 0;
+    voiceEvent({ kind: "first_audio", ms, turn_id: turnClock.turnId });
+  }
 
   // ------------------------------------------------------------------ barge-in
   // Talking over Jarvis. Inside the echo window the allowlist is still exactly "the wake word or a stop phrase" -
@@ -600,6 +616,41 @@
     return el;
   }
 
+  // Good / wrong buttons under a reply. The verdict goes to /api/feedback (one per turn), and "wrong" then offers a
+  // one-line note. They only record a verdict - nothing is sent, changed or approved by pressing them. Saying "that
+  // was wrong" does the same thing by voice (handled server-side).
+  function feedbackHtml(turnId) {
+    return `<div class="fb" data-turn="${esc(turnId)}"><button type="button" data-rating="good" title="That was a good reply">Good</button>` +
+      `<button type="button" data-rating="wrong" title="That was wrong">Wrong</button></div>`;
+  }
+  async function sendFeedback(turn, rating, note = "") {
+    const r = await api("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rating, note, turn_id: Number(turn) }) });
+    return r.ok;
+  }
+  $("#conversation").addEventListener("click", async (e) => {
+    const box = e.target.closest(".fb");
+    if (!box) return;
+    const turn = box.dataset.turn;
+    const rating = e.target.closest("button[data-rating]")?.dataset.rating;
+    try {
+      if (rating) {
+        if (!(await sendFeedback(turn, rating))) { toast("Couldn't save that", "Try again in a moment.", "warning"); return; }
+        box.innerHTML = rating === "good" ? `<span class="fb-done">Marked good</span>`
+          : `<span class="fb-done">Marked wrong</span> <input class="fb-note" type="text" maxlength="500" placeholder="What was wrong? (Enter to save)" aria-label="What was wrong?">`;
+        if (rating === "wrong") box.querySelector(".fb-note").focus();
+      }
+    } catch { /* offline or signed out: api() already handled the sign-out redirect */ }
+  });
+  $("#conversation").addEventListener("keydown", async (e) => {
+    const input = e.target.closest?.(".fb-note");
+    if (!input || e.key !== "Enter") return;
+    e.preventDefault();
+    const box = input.closest(".fb");
+    try {
+      if (await sendFeedback(box.dataset.turn, "wrong", input.value.trim())) box.innerHTML = `<span class="fb-done">Noted - thanks</span>`;
+    } catch { /* see above */ }
+  });
+
   async function loadTranscript() {
     try {
       const rows = await (await api("/api/transcript")).json();
@@ -635,6 +686,7 @@ function send(text, mode = "typed", opts = {}) {
     if (opts.compose && mode === "typed") payload.compose = true;
     S.attachments = []; renderAttachments();
     filler.begin(spoken && mode === "voice"); // after speaker.stop() above, which ended any previous turn's filler
+    turnClock.sentAt = spoken && mode === "voice" ? performance.now() : 0; turnClock.turnId = null;
     if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }
     setHud("thinking");
     streamChat(payload).catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
@@ -816,6 +868,7 @@ function send(text, mode = "typed", opts = {}) {
         break;
       case "thinking":
         setHud("thinking"); toolsSeen = [];
+        turnClock.turnId = d.turn_id ?? null; // which server-side turn the first-audio measurement belongs to
         current = addMessage("assistant", ""); current.querySelector(".md").classList.add("typing");
         current.dataset.raw = "";
         break;
@@ -840,6 +893,7 @@ function send(text, mode = "typed", opts = {}) {
           const body = current.querySelector(".md");
           body.classList.remove("typing"); body.innerHTML = md(current.dataset.raw);
           if (toolsSeen.length) current.insertAdjacentHTML("beforeend", `<div class="tools">${esc([...new Set(toolsSeen)].join(" · "))}</div>`);
+          if (d.turn_id) current.insertAdjacentHTML("beforeend", feedbackHtml(d.turn_id));
         } else addMessage("assistant", d.text);
         if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
@@ -1464,7 +1518,7 @@ function send(text, mode = "typed", opts = {}) {
     // Last line of defence for every listener (browser, Deepgram, Whisper, sentry): anything that looks like
     // Jarvis's own voice - repeated wake phrases mashed together, or a close match for what he recently said -
     // is dropped outright, in every listen mode, and can never be treated as the owner asking something.
-    if (looksLikeSelfEcho(text)) return;
+    if (looksLikeSelfEcho(text)) { voiceEvent({ kind: "echo_suppressed", detail: "self-echo" }); return; }
     // Sampled once, up front, before anything below (e.g. speaker.stop()) can change it: the follow-up exception
     // and the drop toast both depend on this, and neither may ever apply while the echo window is open.
     const inEchoWindow = echoWindowOpen();

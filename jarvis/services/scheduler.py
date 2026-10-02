@@ -74,6 +74,12 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("self-learning reflection", j.self_learning.reflect),
                   cron_trigger(s.self_learning_cron, timezone=s.timezone), id="self_learning",
                   max_instances=1, coalesce=True)
+    sched.add_job(_guard("conversation quality summary", j.quality.weekly_summary),
+                  cron_trigger(s.conversation_quality_cron, timezone=s.timezone), id="conversation_quality",
+                  max_instances=1, coalesce=True)
+    sched.add_job(_guard("conversation quality retention", j.quality.prune_job),
+                  cron_trigger("20 3 * * *", timezone=s.timezone), id="conversation_quality_retention",
+                  max_instances=1, coalesce=True)
     sched.add_job(_guard("weekly digest", j.weekly_digest.scheduled),
                   cron_trigger(s.weekly_digest_cron, timezone=s.timezone), id="weekly_digest",
                   max_instances=1, coalesce=True)

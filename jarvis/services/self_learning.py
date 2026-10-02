@@ -4,7 +4,10 @@ got wrong, a recurring pattern - without needing to be told "remember that" ever
 
 This reuses the existing `remember` tool and memory store rather than inventing a second one: the prompt
 below just asks the ordinary conversational loop to review a stretch of transcript and call `remember` for
-whatever's worth it, exactly as if the owner had asked it to. Nothing here writes to Salts FSM, sends
+whatever's worth it, exactly as if the owner had asked it to. The same prompt also carries the conversation-quality
+measurements and any replies the owner marked wrong (services/conversation_quality.py), and asks for concrete prompt
+or memory improvements - prompt changes are only ever proposals in its reply, which the weekly quality summary
+repeats; nothing edits the prompt. Nothing here writes to Salts FSM, sends
 anything, or changes external state - it only ever adds to Jarvis's own memory, so it needs no approval gate.
 """
 
@@ -32,6 +35,22 @@ class SelfLearning:
             return "Nothing new since the last reflection."
         newest = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
         transcript = "\n".join(f"{r['role']}: {r['text']}" for r in rows)
+        # Conversation-quality measurements and any replies the owner marked wrong since the last reflection.
+        # Measurement only: never allowed to stop the reflection itself.
+        try:
+            brief, newest_turn, newest_event = j.quality.reflection_brief()
+        except Exception as e:  # noqa: BLE001
+            log.warning("conversation quality brief skipped: %s", e)
+            brief, newest_turn, newest_event = "", None, None
+        quality_part = (
+            f"\n\n<conversation_quality>\n{brief[:20000]}\n</conversation_quality>\n"
+            "Also look at the conversation-quality measurements above. Where the numbers or the flagged replies "
+            "point at a pattern (slow replies, replies that broke the spoken format, echo, questions asked twice, "
+            "replies the owner marked wrong), propose concrete fixes in your reply: for each, the exact wording "
+            "of a change to your system prompt, or a fact worth keeping in memory. Call `remember` for a durable "
+            "fact or preference; for a prompt change just write the proposed wording out - you can't edit your "
+            "own prompt here, it is only a proposal for the owner to review. Skip this if nothing stands out."
+        ) if brief else ""
         prompt = (
             f"{SELF_PROMPT_TAG} - nobody typed this, it's you looking back over recent conversations]\n"
             "Here's everything said since your last reflection. Look for anything durable worth remembering "
@@ -41,8 +60,14 @@ class SelfLearning:
             "one-off requests, small talk, or anything already in your memory. If nothing durable stands out, "
             "don't call remember at all - just say so briefly.\n\n"
             f"<transcript>\n{transcript[:120000]}\n</transcript>"
+            f"{quality_part}"
         )
         reply = await j.brain.ask(prompt, "typed")
+        if newest_turn is not None:
+            try:
+                j.quality.mark_reflected(newest_turn, newest_event, reply if brief else "")
+            except Exception as e:  # noqa: BLE001
+                log.warning("conversation quality watermark not saved: %s", e)
         # brain.ask() itself writes this reflection's own prompt and reply into the same transcript table -
         # advance past those too (the real current max, not just rows[-1]), or the next reflection would find
         # its own last turn waiting for it and reflect on itself forever. The exception is a backlog bigger than
