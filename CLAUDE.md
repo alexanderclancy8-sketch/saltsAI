@@ -70,6 +70,27 @@ in the codebase (tool dispatch, `fixer.py`'s deploy step, `stock_purchase_order`
 `pending_actions` row rather than acting directly. When adding a new capability that changes something, use this
 gate rather than inventing a new confirmation mechanism.
 
+*Who can approve.* Only humans: the display (`/api/approvals/...`, owner-authenticated), and the owner/partner/managers
+on Microsoft Teams - `services/teams_approvals.py` sends each approver who has said hello an Adaptive Card when
+`queue()` runs, and `main.teams_messages` handles the button press (and the typed `approve 12` / `deny 12`) BEFORE and
+separate from the brain: JWT check -> sender email -> `approver_emails()` allowlist -> `actions.approve/deny` directly.
+No brain tool can approve, and `tests/test_standing_approvals.py` greps the code to keep it that way (only `main.py`
+may call `approve()`/`deny()`).
+
+*Standing approvals (the one deliberate exception to "queue, then a human clicks").* `services/standing_approvals.py`
+lets the OWNER, in Settings only, pre-approve two narrow classes: "Record keeping" (a `fsm_write` POST creating a
+customer/site/contact/note/task/reminder, exact path shapes and body keys) and "Routine acknowledgements" (the
+`po_acknowledgement` kind: a fixed receipt-only email to the sender of an already-matched PO). Invariants: both
+switches default off and are in `settings_store.OWNER_ONLY_KEYS` - along with owner/partner email, display password
+and staff key, so a manager can't promote themselves - and the Settings API 403s anyone but the owner themself
+(`auth.is_principal_owner`, which trusts the OWNER_EMAIL captured at startup, never the editable live value); the allowlist is closed (anything unknown, any other method/path/key, any
+`tool:*`, money, deletes, job booking, `email_send`, `deploy_fix`... simply queues as before); the payload judged is
+the payload stored and run (and re-checked in `_run`); automatic runs use the same `_run` path (ThoughtProof etc.),
+record `approved_by = "standing approval: <category>"`, are announced on the display and in Teams, and are capped per
+rolling hour. Standing approvals are the owner's own advance approval - Jarvis never sets, widens or approves them,
+and nothing a model, an email, a pending-action payload or a Teams message says can. When adding a capability, do NOT
+add it to the allowlist to save the owner a click; that decision is the owner's.
+
 **The engineer-loop pattern (`fixer.py`, `security_watch.py`, `self_improve.py`).** All three download a
 tarball snapshot of a repo into a temp dir (`GitHub.download_tree`), wrap it in `services/workspace.py`'s
 `Workspace` (a virtual `/repo` root with `view`/`str_replace`/`create`/`grep`/`find`, path-confined so the model

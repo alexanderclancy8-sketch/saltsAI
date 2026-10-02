@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     teams_bot_app_id: str = ""
     teams_bot_app_password: str = ""
     teams_bot_tenant_id: str = ""
+    # Standing approvals: the OWNER's advance approval for two narrow classes of action (see
+    # services/standing_approvals.py). Both default OFF. Changeable only from the owner-authenticated Settings
+    # page (settings_store.OWNER_ONLY_KEYS) - never by the AI, a pending action or a Teams message.
+    standing_record_keeping: bool = False
+    standing_acknowledgements: bool = False
+    standing_max_per_hour: int = 20  # most automatic runs per rolling hour, across both categories
+    teams_cards_per_hour: int = 30  # most approval cards sent to one approver per rolling hour (then one summary)
     # Where engineering-agent notifications go (pull request ready, fix ready, deploy/merge results, issue triage,
     # security review): comma-separated "teams" and/or "email". Default is Teams only - no email at all.
     engineering_notify_channels: str = "teams"
