@@ -12,7 +12,8 @@ actions - it is not Jarvis approving itself. Hence:
   queued for a human exactly as before. There is no "else: allow".
 * Money (invoices, Sage, supplier POs, stock), deletes, job creation/assignment/scheduling (`log_job`,
   `accept_quote`, `accept_quote_from_po`), `email_send`, `deploy_fix`, every `tool:*` action, and settings /
-  accreditation / staff edits are never matched, because only `fsm_write` and `po_acknowledgement` are even looked at.
+  accreditation / van and equipment register / staff edits are never matched, because only `fsm_write` and
+  `po_acknowledgement` are even looked at.
 * The payload that matches is the payload that runs: `ActionExecutor.queue()` decides on the canonical JSON
   round-trip of the payload, stores that, and `_run` re-checks the stored row before executing it.
 * A rolling per-hour cap (`standing_max_per_hour`, default 20) blunts a runaway loop or an injected flood: past it

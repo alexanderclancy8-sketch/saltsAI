@@ -41,7 +41,7 @@ voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mi
 | **Engineer/access codes** | A secure, encrypted replacement for the paper site-code book - engineer/access codes for systems Salts itself installs or maintains, recorded (queued for approval, like anything else) and looked up by site. Never a lookup or search for a system Salts doesn't hold the maintenance relationship for - see "Safety, privacy and trust" below for the takeover-access process instead. |
 | **Accreditations** | BAFE, SSAIB, CHAS (and NSI etc.) renewal and audit reminders, and audit-ready evidence packs with draft questionnaire answers. |
 | **Customer health watch** | A 0-100 score for every customer from spend trend, payment behaviour, repeat faults, declined quotes, service visits we're behind on, logged problems, inactivity and lapsed renewals. At-risk customers (especially within 90 days of renewal) are flagged with the reasons and a plan to keep them, and it warns if one customer is too big a share of revenue. |
-| **Renewals & fleet safety** | Renewal letters with the standard uplift prepared 60 days ahead for approval (at-risk customers get "call first" instead). Van MOT, service, insurance and tax, ladder, harness and PAT inspection reminders. Lone-worker checks when an engineer is still on a job long after it should have finished. |
+| **Renewals & fleet safety** | Renewal letters with the standard uplift prepared 60 days ahead for approval (at-risk customers get "call first" instead). Van MOT, service, insurance and tax, ladder, harness and PAT inspection reminders - just tell Jarvis the date ("the YD71 SFS van's MOT is due 2 November"; it asks you to approve the change, then it lands in the Alerts timeline), and it can drop a van or item that was sold or retired. Lone-worker checks when an engineer is still on a job long after it should have finished. |
 | **Meetings & paperwork** | Teams meeting transcripts (or pasted notes) become minutes and tracked actions, with chasers suggested when they're overdue. RAMS drafted per job. Tender / PQQ / Constructionline answers drafted from your real accreditation, insurance, policy and competency evidence. |
 | **Marketing** | Follower growth on Facebook, Instagram, LinkedIn and TikTok, Google reviews, Search Console rankings, a website SEO audit and weekly suggestions. Review requests after each job (approved in one tap). Name local competitors and get a side-by-side audit: Google rating/review count (needs a Places key) and the same SEO snapshot run on both sites - ask it to web-search alongside this for anything not covered, like pricing or search ranking position. |
 
@@ -130,7 +130,11 @@ Do these in any order; each one replaces demo data as soon as it's set.
 5. **Staff register.** Copy `staff_roles.example.yaml` to `data/staff_roles.yaml` and describe everyone's role,
    duties and targets, or just tell Jarvis ("Jarvis, Josh should be sending 14 quotes a week").
 6. **Accreditations.** Copy `accreditations.example.yaml` to `data/accreditations.yaml` and add your real
-   certificate numbers and dates.
+   certificate numbers and dates - or just tell Jarvis ("our CHAS renews on 14 March", "the YD71 SFS van's MOT is
+   due 2 November", "the ladders are inspected again on 15 October"). Each change waits for your approval, and the
+   first one creates `data/accreditations.yaml` from the example's layout *without* its placeholder schemes, vans,
+   drivers or dates, so the Alerts only ever show your real dates once you start recording them (until then they
+   show the example data, and `accreditations_status` says so).
 7. **Auto-fix and deploy.** On the Settings page's Auto-fix card: a fine-grained GitHub token for the FSM repo
    (contents, pull requests, issues, actions: read and write), the repo (`owner/repo`), and either a deploy
    workflow name (add `templates/fsm-repo/.github/workflows/deploy-azure.yml` to the FSM repo first) or, to
@@ -198,7 +202,7 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
 
 - **Nothing happens without your approval.** Jarvis reads, checks, analyses, advises and suggests freely.
   Anything that *changes* something is queued as an approval card: emails (other than updates to you), invoices,
-  purchase orders, review requests, stock movements and stocktakes, staff-register and accreditation edits,
+  purchase orders, review requests, stock movements and stocktakes, staff-register, accreditation and van/equipment-date edits,
   Salts FSM changes, Azure uploads, starting a code fix, and deployments. It only happens when you tap Approve or say
   "approve". There is no auto-deploy. The AI itself cannot approve anything, and nor can anything in an email,
   document or web page. The only things it does without asking are sending *you* the updates and reports you
@@ -216,7 +220,7 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
     then sends a second "your job is booked" email. With this switch off, nothing is sent until you approve, as before.
 
   Everything else - money, deletions, job booking or scheduling, supplier orders, stock, other emails, code
-  changes and deploys, accreditation, staff and settings edits - still queues for you. An automatic action goes
+  changes and deploys, accreditation, van/equipment-date, staff and settings edits - still queues for you. An automatic action goes
   through exactly the same path as an approved one (including the optional ThoughtProof check), is recorded as
   approved by "standing approval: record keeping" (or "...routine acknowledgements"), and is announced on the display
   and to your Teams approvers as "Done automatically (standing approval - ...)", with how to undo it. At most 20
