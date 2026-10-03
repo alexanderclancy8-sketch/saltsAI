@@ -12,10 +12,17 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+# Effort levels both the Claude Agent SDK (EffortLevel) and the API (output_config.effort) accept, lowest to highest.
+# Keep in step with the Literal on Settings.engineer_effort. "xhigh" only has an effect on some models (the SDK falls
+# back to "high" elsewhere).
+ENGINEER_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def apply_timezone(name: str) -> None:
@@ -94,7 +101,12 @@ class Settings(BaseSettings):
     voice_model: str = "claude-sonnet-5-5"  # spoken replies default to the quicker model; blank = same as JARVIS_MODEL
     voice_effort: str = "low"  # spoken conversation: quick, natural replies
     chat_effort: str = "medium"  # typed chat: thorough answers without long waits (raise to high for deep work)
-    engineer_effort: str = "high"  # code fixes
+    # The engineering agents (self-improve, auto-fix, security review) can run on a stronger model than the chat
+    # brain. Blank = same as JARVIS_MODEL. Use engineer_model_or_default(); the owner supplies the exact model ID.
+    engineer_model: str = ""
+    # Thinking depth for those agents: low | medium | high | xhigh | max (what the Agent SDK and API accept).
+    # An unsupported value is rejected at startup rather than silently ignored; see _check_engineer_effort.
+    engineer_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"  # code fixes
     jarvis_fallbacks: bool = True
     jarvis_compaction: bool = True
     web_search_enabled: bool = True  # lets Jarvis search/fetch the web like Claude chat
@@ -392,6 +404,23 @@ class Settings(BaseSettings):
     def model_for(self, mode: str) -> str:
         """The Claude model for a spoken ("voice") or typed turn."""
         return (self.voice_model or self.jarvis_model) if mode == "voice" else self.jarvis_model
+
+    def engineer_model_or_default(self) -> str:
+        """The Claude model for the engineering agents: ENGINEER_MODEL, or JARVIS_MODEL when that is blank."""
+        return (self.engineer_model or "").strip() or self.jarvis_model
+
+    @field_validator("engineer_effort", mode="before")
+    @classmethod
+    def _check_engineer_effort(cls, value):
+        """Normalise (case, spaces; blank = the default 'high') and reject anything the SDK/API wouldn't accept."""
+        if value is None:
+            return "high"
+        level = str(value).strip().lower()
+        if not level:
+            return "high"
+        if level not in ENGINEER_EFFORT_LEVELS:
+            raise ValueError(f"ENGINEER_EFFORT must be one of {', '.join(ENGINEER_EFFORT_LEVELS)} (got {value!r})")
+        return level
 
     @property
     def effective_llm_backend(self) -> str:
