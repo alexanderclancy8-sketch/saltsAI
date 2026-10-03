@@ -139,7 +139,12 @@ allowlisted domains) goes to conversational Jarvis only; ThoughtProof checks an 
 inside `ActionExecutor._run`, and can only stop it (BLOCK, or fail closed if unavailable) - never approve, queue or skip.
 External MCP servers only reach the Max/Agent SDK backend (the API-backend engineer loop is hand-rolled and has no MCP),
 must be pinned to an exact version in `mcp_plugins.yaml`, and only tools listed in `allowed_tools` are callable
-(`permission_mode="dontAsk"` denies the rest). Never add a plugin tool that can change something without going through
+(`permission_mode="dontAsk"` denies the rest). Browser Use extras: the allowlist of dealer/government/industry sites lives in
+`mcp_plugins.yaml` (`allowed_domains`, a ceiling the Settings field can only narrow); login/credential/checkout/payment/
+download/script/cookie/agent tools, such web-address paths and file types are denied in code (`DENIED_TOOL_WORDS`,
+`BLOCKED_PATH_WORDS`); a listed typing tool (`search_tools`) may only be given a number plate; `sandbox_confirmed` stays
+false until a human confirms a real sandbox (the code can't create one); the version stays blank until verified on PyPI.
+The single on-switch is `plugin_browser_use_enabled`. Never add a plugin tool that can change something without going through
 `dispatch()`'s approval gate.
 
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through

@@ -375,11 +375,14 @@ SECTIONS: tuple[Section, ...] = (
                   "Makes the engineering agent plan first, write the test first and review its own change "
                   "before opening a pull request. Adds written instructions only - no software is installed."),
             Field("plugin_browser_use_enabled", "Browser Use (read-only browsing)", "bool",
-                  "Off by default. Jarvis may read pages on the domains below; it can never click, log in, "
-                  "submit or buy. Needs a reviewed, pinned install in mcp_plugins.yaml before it does anything."),
+                  "Off by default - this is the one switch that turns it on. Jarvis may read pages on the approved "
+                  "domains (and type a number plate into a dealer's search box); it can never log in, submit, "
+                  "download, run scripts, read cookies or buy. Needs a reviewed, pinned install and a confirmed "
+                  "sandbox in mcp_plugins.yaml before it does anything."),
             Field("plugin_browser_allowed_domains", "Browser Use allowed domains", "textarea",
-                  "Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Finance, Sage and bank "
-                  "sites are always refused, even if listed.", advanced=True),
+                  "Optional. Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Can only narrow "
+                  "the approved list in mcp_plugins.yaml, never widen it; blank means the whole approved list. "
+                  "Finance, Sage and bank sites are always refused, even if listed.", advanced=True),
             Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
                   "Off by default. When on, every action you approve is first checked against the rules in "
                   "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
