@@ -350,8 +350,10 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                    tools: list[str] | None = None, disallowed_tools: list[str] | None = None,
                    output_schema: dict[str, Any] | None = None,
                    max_turns: int = 10, cwd: str | None = None,
-                   mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None):
-    """Single headless Claude Code run; returns the ResultMessage. `disallowed_tools` defaults to `BLOCKED`
+                   mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None,
+                   model: str | None = None):
+    """Single headless Claude Code run; returns the ResultMessage. `model` defaults to `settings.jarvis_model` (the
+    engineer loops pass `settings.engineer_model_or_default()`). `disallowed_tools` defaults to `BLOCKED`
     (no shell, no file writes) - pass `ENGINEER_BLOCKED` for a caller that puts Write/Edit in `tools` on
     purpose (an engineer loop confined to a throwaway Workspace checkout), otherwise those get silently
     stripped anyway since disallowed_tools wins over allowed_tools. `mcp_servers` adds external MCP servers
@@ -392,7 +394,7 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
         kw["cwd"] = cwd
     result = None
     try:
-        async for msg in query(prompt=text, options=base_options(settings, **kw)):
+        async for msg in query(prompt=text, options=base_options(settings, model=model, **kw)):
             if isinstance(msg, ResultMessage):
                 result = msg
     finally:

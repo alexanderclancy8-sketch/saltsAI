@@ -100,6 +100,14 @@ prompt) until the model calls a terminal tool (`submit_fix`/`submit_findings`/`s
 rejects every command but `view`). `self_improve.py` is deliberately narrower than `fixer.py`: no merge step, no
 deploy step, ever, not even behind an approval click - a human always merges it. Copy the shape of whichever of
 these three is closest to a new engineer/review-style feature rather than starting from scratch.
+*Model and effort for these three.* They use `Settings.engineer_model_or_default()` (`ENGINEER_MODEL`; blank = same as
+`JARVIS_MODEL`; never hard-code an ID - the owner supplies it) and `Settings.engineer_effort` (`ENGINEER_EFFORT`), on both
+backends: `llm.request_params(..., model=...)` for the API loop and `max_backend.run_once(..., model=...)` for the `_max`
+variants. `engineer_effort` is one of `low|medium|high|xhigh|max` (what the Agent SDK's `EffortLevel` and the API's
+`output_config.effort` accept); it is lower-cased/trimmed, blank means `high`, and anything else raises a clear validation
+error at startup (`Settings._check_engineer_effort`) instead of being ignored. Both appear (advanced) in the Settings page's
+Claude section and are in `settings_store.OWNER_ONLY_KEYS`, so only the owner can change them. A new engineer-style service
+must pass both too. Tests: `tests/test_engineer_model.py`.
 `services/recruiter.py` (the `recruit_agent` tool) generalises the same shape beyond code: a fresh agent, a
 fixed turn budget, a final answer - but against Jarvis's own tool set via `dispatch()` (so a write it proposes
 queues for approval exactly like anything else) rather than a code checkout, for research/drafting/analysis
