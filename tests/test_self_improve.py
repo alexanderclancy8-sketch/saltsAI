@@ -239,6 +239,153 @@ async def test_run_with_nothing_to_change_reports_and_opens_no_pr(settings, monk
     await j.http.aclose()
 
 
+# --------------------------------------------------------------------------- turn budget exhaustion
+async def test_engineer_turn_budget_exhaustion_is_an_explicit_give_up(settings, tmp_path, monkeypatch):
+    """The agent keeps calling tools and never calls submit_change/give_up: the loop must end in a clear give_up
+    that says so, not fall out with nothing."""
+    monkeypatch.setattr("jarvis.services.self_improve.MAX_TURNS", 3)
+    j = make(settings, [message([tool_block("find_files", {"glob": "*.py"}, f"t{n}")], "tool_use")
+                        for n in range(3)])
+    result = await j.self_improve._engineer("Do something", Workspace(tmp_path))  # noqa: SLF001
+    assert result["kind"] == "give_up"
+    assert "Stopped after 3 turns" in result["analysis"] and "submit_change or give_up" in result["analysis"]
+    assert not j.client.beta.messages.script  # it really did use every turn
+    await j.http.aclose()
+
+
+async def test_engineer_max_turn_limit_is_an_explicit_give_up(settings, tmp_path, monkeypatch):
+    from jarvis.brain.max_backend import MaxTurnsExceeded
+
+    j = make(settings)
+
+    async def fake_run_once(s, **kw):
+        raise MaxTurnsExceeded("hit the limit")
+
+    monkeypatch.setattr("jarvis.brain.max_backend.run_once", fake_run_once)
+    result = await j.self_improve._engineer_max("Do something", Workspace(tmp_path))  # noqa: SLF001
+    assert result["kind"] == "give_up" and "without finishing" in result["analysis"]
+    await j.http.aclose()
+
+
+async def test_run_reports_turn_budget_exhaustion_to_the_owner(settings, monkeypatch):
+    j = make(settings)
+    gh = FakeGitHub({})
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append((title, body))
+
+    async def exhausted(request, ws):
+        return {"kind": "give_up", "analysis": "Stopped after 60 turns without finishing."}
+
+    j.notifier.notify = fake_notify
+    monkeypatch.setattr(si, "_engineer", exhausted)
+    result = await si.run("something big")
+    assert result["outcome"] == "give_up"
+    assert any(t == "Nothing to propose" and "Stopped after 60 turns" in b for t, b in notified)
+    assert j.db.recent_self_improve_runs()[0]["status"] == "gave_up"
+    await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- every run leaves a trace
+async def test_run_start_is_recorded_before_any_work_begins(settings, monkeypatch):
+    j = make(settings)
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub({}))
+    seen = {}
+
+    async def fake_inner(request):
+        seen["rows"] = j.db.recent_self_improve_runs()
+        return {"outcome": "give_up", "analysis": "nothing"}
+
+    monkeypatch.setattr(si, "_run", fake_inner)
+    await si.run("add a tool")
+    assert [(r["status"], r["request"]) for r in seen["rows"]] == [("running", "add a tool")]
+    assert j.db.recent_self_improve_runs()[0]["status"] == "gave_up"
+    await j.http.aclose()
+
+
+async def test_run_start_is_recorded_even_if_everything_after_it_raises(settings, monkeypatch):
+    j = make(settings)
+    gh = FakeGitHub({})
+
+    async def boom(*a, **k):
+        raise RuntimeError("everything is broken")
+
+    gh.branch_sha = boom
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+    j.notifier.notify = boom  # even the failure notification can't be sent
+    result = await si.run("add a tool")
+
+    assert "error" in result
+    rows = j.db.recent_self_improve_runs()
+    assert len(rows) == 1 and rows[0]["request"] == "add a tool"
+    assert rows[0]["status"] == "failed" and "everything is broken" in rows[0]["detail"]
+    await j.http.aclose()
+
+
+async def test_failure_outside_the_inner_try_is_still_recorded_and_notified(settings, monkeypatch):
+    """Committing / opening the PR sat outside run()'s try/except: a failure there left no trace at all."""
+    j = make(settings)
+    gh = FakeGitHub(finding_files())
+
+    async def bad_commit(*a, **k):
+        raise RuntimeError("push rejected")
+
+    gh.commit_files = bad_commit
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append((title, body))
+
+    async def fake_engineer(request, ws):
+        from jarvis.services.self_improve import SubmitInput
+
+        ws.create("/repo/jarvis/new_tool.py", "# new tool\n")
+        return {"kind": "submit", "fix": SubmitInput(pr_title="t", summary="s", test_notes="n", risk="low")}
+
+    j.notifier.notify = fake_notify
+    monkeypatch.setattr(si, "_engineer", fake_engineer)
+    result = await si.run("add a tool")
+    assert "push rejected" in result["error"]
+    assert any("Self-improvement attempt failed" in t and "push rejected" in b for t, b in notified)
+    assert j.db.recent_self_improve_runs()[0]["status"] == "failed"
+    await j.http.aclose()
+
+
+async def test_cancelled_run_is_recorded_as_interrupted_and_still_cancelled(settings, monkeypatch):
+    j = make(settings)
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub({}))
+
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append(title)
+
+    async def cancelled(request):
+        raise asyncio.CancelledError()
+
+    j.notifier.notify = fake_notify
+    monkeypatch.setattr(si, "_run", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await si.run("add a tool")
+    assert notified == ["Self-improvement run interrupted"]
+    row = j.db.recent_self_improve_runs()[0]
+    assert row["status"] == "interrupted" and row["finished_at"]
+    await j.http.aclose()
+
+
+async def test_run_started_but_never_closed_is_marked_interrupted_after_a_restart(settings):
+    j = make(settings)
+    run_id = j.db.start_self_improve_run("add a tool")  # the process died before the run could close it
+    assert j.db.recent_self_improve_runs()[0]["status"] == "running"
+    SelfImprove(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub({}))  # the next start-up
+    row = next(r for r in j.db.recent_self_improve_runs() if r["id"] == run_id)
+    assert row["status"] == "interrupted" and "stopped before" in row["detail"]
+    await j.http.aclose()
+
+
 async def test_watch_ci_only_notifies_never_acts(settings, monkeypatch):
     j = make(settings)
     gh = FakeGitHub({})
