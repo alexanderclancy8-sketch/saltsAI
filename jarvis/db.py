@@ -274,6 +274,18 @@ CREATE TABLE IF NOT EXISTS false_alarm_log (
     reviewed_by TEXT DEFAULT '',
     review_date TEXT DEFAULT ''
 );
+-- One row per background engineering-agent run (self_improve / fixer / security_watch): progress, not results.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    request TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    steps INTEGER NOT NULL DEFAULT 0,
+    trail TEXT NOT NULL DEFAULT '[]',
+    outcome TEXT NOT NULL DEFAULT ''
+);
 """
 
 # Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).

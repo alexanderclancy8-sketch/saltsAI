@@ -108,6 +108,16 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
 
+**Progress visibility for engineer loops (`services/agent_runs.py`, the `agent_runs` tool).** `self_improve.run()`,
+`Fixer.attempt()` (built-in mode) and `SecurityWatch.run()` each wrap their run in `AgentRuns.track(...)`, which
+keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`) and a
+trail of one-line tool-call summaries (`editor view <path>`, `grep '<pattern>'`, ...) added after every tool call
+in the loop - never file contents or edit text; the newest 60 steps are kept. The read-only `agent_runs` tool lists
+recent runs; a run still `running` with no activity for 30 minutes (`STALL_AFTER`) is reported as `stalled` (worked
+out when read, not stored). Recording is observability only: it swallows its own errors and never alters what an
+agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
+(Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
+
 **The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
 `tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
 `fsm_engineer_enabled`, both env-only): it reads the latest routine test results, open issues, failed approved writes and two live
