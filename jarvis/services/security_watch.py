@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from ..brain import llm
 from .digest import security_kind
+from . import ci_logs
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ REVIEW_TOOLS = [
     _tool("grep", "Regex search across the repository's text files. `glob` filters file names, e.g. '*.cs' or "
                   "'src/*'. Returns path:line: text.", GrepInput),
     _tool("find_files", "List files whose name or path matches a glob, e.g. '*Auth*' or '*.razor'.", FindInput),
+    _tool(ci_logs.TOOL_NAME, ci_logs.TOOL_DESCRIPTION, ci_logs.CiLogInput),
     _tool("submit_findings", "Call once you've finished the review, with everything you found (or an empty "
                              "list - that's a good outcome).", SubmitFindings),
 ]
@@ -209,7 +211,10 @@ class SecurityWatch:
                                     "content": "Your tool input was cut off (max_tokens). Ask for less at once."})
                     continue
                 try:
-                    content = self._tool_call(block.name, block.input, ws)
+                    if block.name == ci_logs.TOOL_NAME:  # read-only GitHub call, so it is async, unlike the rest
+                        content = await ci_logs.run_ci_log_tool(self.gh, block.input)
+                    else:
+                        content = self._tool_call(block.name, block.input, ws)
                     if block.name == "submit_findings":
                         finished = SubmitFindings.model_validate(block.input)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
@@ -239,8 +244,13 @@ class SecurityWatch:
         from ..brain.max_backend import parse_structured, run_once
 
         system = SECURITY_SYSTEM.format(company=self.s.company_name).replace("/repo", "the current directory")
+        extra: dict[str, Any] = {}
+        if self.gh is not None:  # read-only CI failure logs, as an in-process MCP tool
+            extra = {"mcp_servers": {ci_logs.MCP_SERVER_NAME: ci_logs.sdk_ci_log_server(self.gh)},
+                     "extra_allowed": [ci_logs.MCP_ALLOWED_TOOL]}
         result = await run_once(self.s, system=system,
                                 prompt="Review the whole repository for security vulnerabilities.",
                                 effort=self.s.engineer_effort, tools=["Read", "Glob", "Grep"],
-                                output_schema=SubmitFindings.model_json_schema(), max_turns=80, cwd=str(ws.root))
+                                output_schema=SubmitFindings.model_json_schema(), max_turns=80, cwd=str(ws.root),
+                                **extra)
         return parse_structured(result, SubmitFindings)
