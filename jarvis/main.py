@@ -293,7 +293,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         who = access.clean_name(name)
         if not who:
             return RedirectResponse("/login?team=1&error=name", status_code=303)
-        if not j.team_access.verify(code):
+        if not await asyncio.to_thread(j.team_access.verify, code):  # scrypt is slow on purpose: not on the event loop
             window.append(now)
             await asyncio.sleep(LOGIN_DELAY_S)  # slow down guessing
             return RedirectResponse("/login?team=1&error=1", status_code=303)
@@ -1060,7 +1060,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def team_access_set(body: TeamCodeIn, request: Request):
         j = J(request)
         try:
-            j.team_access.set_code(body.code, by="the owner")
+            await asyncio.to_thread(j.team_access.set_code, body.code, "the owner")
         except CodeRejected as e:
             raise HTTPException(400, str(e)) from None
         j.db.add_notification("info", "Team access code set", "Engineers and office staff can sign in at /login with the new "

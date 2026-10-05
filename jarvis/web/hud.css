@@ -489,7 +489,8 @@ input.mem-input { min-height: 0; }
   .role-chip { order: 2; }
   .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   /* Voice, Speaks up, Connections, Settings: one row of four equal, labelled buttons - nothing wraps to a third line. */
-  .actions { order: 3; flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 6px; }
+  .actions { order: 3; flex: 1 1 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  body[data-role="team"] .actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }  /* Voice and Settings only */
   .tb-btn { padding-inline: 4px; font-size: 13px; text-align: center; overflow: hidden; text-overflow: ellipsis; }
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); padding: 6px max(16px, env(safe-area-inset-right)) 6px max(16px, env(safe-area-inset-left)); overflow-x: auto; overflow-y: hidden; gap: 4px; scrollbar-width: none;
