@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from ..integrations.ramtracking import RamError
 from .oncall import OnCallRoster, name_matches
 
 OOH_MODES = ("off", "on_call", "always")
@@ -158,11 +159,21 @@ class Tracker:
             if mode == "off" or (mode == "on_call" and not on_call):
                 return self._blocked(mode)
         if self.ram is not None and not getattr(self.ram, "demo", True):
+            try:
+                ram_positions = await self.ram.positions()
+            except RamError as e:
+                if e.rate_limited:  # RAM is busy (3 requests a minute), not broken: no vans this moment, and no alarm
+                    return {"working_hours": True, "demo": False, "engineers": [], "sites": [], "rate_limited": True,
+                            "note": str(e)}
+                # RAM is set up but isn't answering (wrong address, refused sign-in...): say so, and show no vans. The
+                # console turns this into "not connected" with the reason; it must never be a blank, working-looking map.
+                return {"working_hours": True, "demo": False, "engineers": [], "sites": [], "ram_error": str(e),
+                        "note": f"Vehicle tracking isn't working: {e}"}
             positions = [{"engineer": p.get("driver") or await self._driver_for(p), "vehicle": p.get("registration"),
                           "lat": p.get("lat"), "lng": p.get("lng"), "timestamp": p.get("timestamp"),
                           "speed_mph": p.get("speed_mph"), "address_label": p.get("address_label"),
                           "status": "driving" if (p.get("speed_mph") or 0) > 3 else "parked"}
-                         for p in await self.ram.positions()]
+                         for p in ram_positions]
         else:
             positions = await self.fsm.locations()
         sites = await self._sites()

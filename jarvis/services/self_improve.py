@@ -24,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..brain import llm, plugins
 from . import ci_logs
+from .agent_runs import AgentRuns
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ class SelfImprove:
         self.client = client
         self.gh = github
         self._tasks: set[asyncio.Task] = set()
+        self.runs = AgentRuns(db)
 
     @property
     def enabled(self) -> bool:
@@ -123,11 +125,26 @@ class SelfImprove:
         task = asyncio.create_task(self.run(request))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return ("On it, sir - I'll open a pull request for you to review. I won't merge or deploy it myself, "
-                "whatever happens.")
+        from ..brain.prompts import address_for  # how he addresses the owner follows the "How Jarvis talks" setting
+
+        return (f"On it, {address_for(self.s)} - I'll open a pull request for you to review. I won't merge or deploy it "
+                "myself, whatever happens.")
 
     # ------------------------------------------------------------------ entry point
     async def run(self, request: str) -> dict[str, Any]:
+        if not self.enabled:
+            return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
+        with self.runs.track("self_improve", request):  # progress record for the agent_runs tool; changes nothing
+            result = await self._run(request)
+            if "error" in result:
+                self.runs.finish("failed", result["error"])
+            elif "pr_url" in result:
+                self.runs.finish("submitted", result["pr_url"])
+            else:
+                self.runs.finish("gave_up", result.get("analysis", ""))
+        return result
+
+    async def _run(self, request: str) -> dict[str, Any]:
         if not self.enabled:
             return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
         try:
@@ -169,7 +186,7 @@ class SelfImprove:
     async def _engineer(self, request: str, ws: Workspace) -> dict[str, Any]:
         if self.s.effective_llm_backend == "max":
             return await self._engineer_max(request, ws)
-        params = llm.request_params(self.s, self.s.engineer_effort)
+        params = llm.request_params(self.s, self.s.engineer_effort, model=self.s.engineer_model_or_default())
         system = plugins.with_methodology(
             SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request), self.s)
         messages: list[dict[str, Any]] = [
@@ -211,7 +228,9 @@ class SelfImprove:
                         out, finished_now = self._tool_call(block.name, block.input, ws)
                     finished = finished or finished_now
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+                    self.runs.step(block.name, block.input)
                 except (WorkspaceError, ValidationError, ValueError, OSError) as e:
+                    self.runs.step(block.name, block.input, ok=False)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                     "content": json.dumps({"error": str(e)[:2000]})})
             if finished:
@@ -233,6 +252,7 @@ class SelfImprove:
             analysis: str = ""
 
         ws.snapshot()
+        self.runs.note("handed to Claude Code (subscription backend) - no per-step trail on this backend")
         system = SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request) \
             .replace("/repo", "the current directory").replace(
                 "Finish by calling `submit_change`. If what's being asked isn't safe, isn't a good idea, or "
@@ -247,7 +267,8 @@ class SelfImprove:
             mcp_servers[ci_logs.MCP_SERVER_NAME] = ci_logs.sdk_ci_log_server(self.gh)
             allowed.append(ci_logs.MCP_ALLOWED_TOOL)
         result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
-                                effort=self.s.engineer_effort, tools=["Read", "Edit", "Write", "Glob", "Grep"],
+                                effort=self.s.engineer_effort, model=self.s.engineer_model_or_default(),
+                                tools=["Read", "Edit", "Write", "Glob", "Grep"],
                                 disallowed_tools=ENGINEER_BLOCKED,
                                 output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
                                 mcp_servers=mcp_servers, extra_allowed=allowed)

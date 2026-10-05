@@ -20,6 +20,24 @@ def _guard(name: str, fn):
     return run
 
 
+def _check(j, key: str, name: str, fn):
+    """A scheduled *check*: like ``_guard``, and every run goes in the activity log (services/activity.py). It posts
+    nothing itself - a check that finds something already tells the owner through its own notification - so a run that
+    finds nothing leaves no trace in the chat except the one collapsed line. ``fn`` returns how many new things it found
+    (None = it does not say, and the run is not logged as a no-change)."""
+    async def run():
+        try:
+            found = await fn()
+        except Exception as e:  # noqa: BLE001
+            log.exception("Scheduled job %s failed", name)
+            j.activity.record(key, name, "failed", f"Failed: {type(e).__name__}")
+            return
+        if isinstance(found, int) and not isinstance(found, bool):
+            j.activity.record(key, name, "changed" if found else "no_change",
+                              f"{found} new." if found else "Nothing new.")
+    return run
+
+
 def build_scheduler(j) -> AsyncIOScheduler:
     s = j.settings
     sched = AsyncIOScheduler(timezone=s.timezone)
@@ -87,16 +105,16 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("weekly digest", j.weekly_digest.scheduled),
                   cron_trigger(s.weekly_digest_cron, timezone=s.timezone), id="weekly_digest",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("lone-worker check", j.lone_worker_sweep), "interval",
+    sched.add_job(_check(j, "lone_worker", "Lone-worker check", j.lone_worker_sweep), "interval",
                   minutes=s.lone_worker_check_min, id="lone_worker", max_instances=1, coalesce=True)
     if s.proactive_chat_enabled and j.self_github is not None:  # read-only; says what changed, only when it changed
         sched.add_job(_guard("pull request watch", j.proactive.pr_watch), "interval",
                       minutes=max(1, s.proactive_pr_watch_min), id="pr_watch", max_instances=1, coalesce=True)
     if not getattr(j.mail, "demo", True):
-        sched.add_job(_guard("inbox scan", j.issues.scan_inbox), "interval", minutes=s.inbox_check_interval_min,
-                      id="inbox_scan", max_instances=1, coalesce=True)
-        sched.add_job(_guard("PO intake scan", j.po_intake.scan_inbox), "interval",
+        sched.add_job(_check(j, "inbox_scan", "Issue email scan", j.issues.scan_inbox), "interval",
+                      minutes=s.inbox_check_interval_min, id="inbox_scan", max_instances=1, coalesce=True)
+        sched.add_job(_check(j, "po_intake_scan", "Purchase order scan", j.po_intake.scan_inbox), "interval",
                       minutes=s.inbox_check_interval_min, id="po_intake_scan", max_instances=1, coalesce=True)
-        sched.add_job(_guard("voicemail job intake", j.job_intake.scan_inbox), "interval",
+        sched.add_job(_check(j, "job_intake_scan", "Voicemail job intake", j.job_intake.scan_inbox), "interval",
                       minutes=s.inbox_check_interval_min, id="job_intake_scan", max_instances=1, coalesce=True)
     return sched

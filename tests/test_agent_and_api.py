@@ -17,6 +17,9 @@ def make(settings, script=None):
 async def test_tool_loop_and_history(settings):
     j = make(settings, [message([tool_block("finance_snapshot", {})], "tool_use"),
                         message([text_block("Cash is healthy, sir.")])])
+    # The tool loop itself is what this tests, so the accounts here are a CONNECTED source (the sample ledger standing in
+    # for Sage): a tool built on sample data is withheld from the model instead - see tests/test_demo_guard.py.
+    j.finance.demo = False
     reply = await j.brain.ask("How's cash?", "voice")
     assert reply == "Cash is healthy, sir."
     roles = [m["role"] for m in j.brain.messages]
