@@ -79,9 +79,9 @@ def test_comms_shows_the_service_inbox_labelled_and_fits(browser, svc_server, wi
         assert page.inner_text("#rc-comms") == str(OWN_UNREAD + 2)
         _open_comms(page)
         assert page.is_visible("#svc-inbox-sec")
-        assert page.inner_text("#svc-inbox-label") == "service@"
+        assert page.text_content("#svc-inbox-label") == "service@"  # (the heading is upper-cased by CSS)
         assert page.inner_text("#svc-inbox-count") == "2 unread"
-        assert page.inner_text("#inbox-title") == "Unread in your inbox"  # the two inboxes are told apart
+        assert page.text_content("#inbox-title") == "Unread in your inbox"  # the two inboxes are told apart
         items = page.locator("#svc-inbox li")
         assert items.count() == 2
         first = items.nth(0).inner_text()
@@ -118,7 +118,7 @@ def test_comms_is_exactly_as_before_without_a_service_inbox(browser, off_server)
     try:
         _open_comms(page)
         assert not page.is_visible("#svc-inbox-sec")
-        assert page.inner_text("#inbox-title") == "Unread messages"
+        assert page.text_content("#inbox-title") == "Unread messages"
         assert page.inner_text("#rc-comms") == str(OWN_UNREAD)
         assert "service@" not in page.get_attribute('.rail-item[data-pop="comms"]', "aria-label")
         assert not page.errors, page.errors

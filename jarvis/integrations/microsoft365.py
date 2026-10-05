@@ -4,6 +4,10 @@ Graph uses app-only auth (client credentials). Required application permissions:
 Mail.ReadWrite and Mail.Send (Mail.ReadWrite also covers listing folders and moving Jarvis's own emails to the
 owner into the "salts jarvis" folder - no extra permission needed). Restrict the app to the owner's mailbox with an
 Exchange Online application access policy (see README).
+
+Other mailboxes (the out-of-hours reports mailbox, the service@ shared inbox) are read through the same app: pass
+``mailbox=`` to the read methods, which only ever takes an address the owner saved in Settings (``mailbox_for``). Sending,
+reply drafts, folder filing and mark-as-read stay on the owner's own mailbox.
 """
 
 from __future__ import annotations
