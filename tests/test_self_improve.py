@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from jarvis.brain.tools import SelfImproveIn, TOOLS_BY_NAME
 from jarvis.core import Jarvis
+from jarvis.services.agent_runs import INTERRUPTED_AFTER, AgentRuns
 from jarvis.services.self_improve import SelfImprove
 from jarvis.services.workspace import Workspace, WorkspaceError
 from tests.fakes import FakeClient, message, text_block, tool_block
@@ -239,6 +241,209 @@ async def test_run_with_nothing_to_change_reports_and_opens_no_pr(settings, monk
     await j.http.aclose()
 
 
+# --------------------------------------------------------------------------- turn budget exhaustion
+async def test_engineer_turn_budget_exhaustion_is_an_explicit_give_up(settings, tmp_path, monkeypatch):
+    """The agent keeps calling tools and never calls submit_change/give_up: the loop must end in a clear give_up
+    that says so, not fall out with nothing."""
+    monkeypatch.setattr("jarvis.services.self_improve.MAX_TURNS", 3)
+    j = make(settings, [message([tool_block("find_files", {"glob": "*.py"}, f"t{n}")], "tool_use")
+                        for n in range(3)])
+    result = await j.self_improve._engineer("Do something", Workspace(tmp_path))  # noqa: SLF001
+    assert result["kind"] == "give_up"
+    assert "Stopped after 3 turns" in result["analysis"] and "submit_change or give_up" in result["analysis"]
+    assert not j.client.beta.messages.script  # it really did use every turn
+    await j.http.aclose()
+
+
+async def test_engineer_max_turn_limit_is_an_explicit_give_up(settings, tmp_path, monkeypatch):
+    from jarvis.brain.max_backend import MaxTurnsExceeded
+
+    j = make(settings)
+
+    async def fake_run_once(s, **kw):
+        raise MaxTurnsExceeded("hit the limit")
+
+    monkeypatch.setattr("jarvis.brain.max_backend.run_once", fake_run_once)
+    result = await j.self_improve._engineer_max("Do something", Workspace(tmp_path))  # noqa: SLF001
+    assert result["kind"] == "give_up" and "without finishing" in result["analysis"]
+    await j.http.aclose()
+
+
+async def test_run_reports_turn_budget_exhaustion_to_the_owner(settings, monkeypatch):
+    j = make(settings)
+    gh = FakeGitHub({})
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append((title, body))
+
+    async def exhausted(request, ws):
+        return {"kind": "give_up", "analysis": "Stopped after 60 turns without finishing."}
+
+    j.notifier.notify = fake_notify
+    monkeypatch.setattr(si, "_engineer", exhausted)
+    result = await si.run("something big")
+    assert result["outcome"] == "give_up"
+    assert any(t == "Nothing to propose" and "Stopped after 60 turns" in b for t, b in notified)
+    assert si.runs.recent()[0]["status"] == "gave_up"
+    await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- every run leaves a trace
+async def test_run_start_is_recorded_before_any_work_begins(settings, monkeypatch):
+    j = make(settings)
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub({}))
+    seen = {}
+
+    async def fake_inner(request):
+        seen["rows"] = si.runs.recent()
+        return {"outcome": "give_up", "analysis": "nothing"}
+
+    monkeypatch.setattr(si, "_run", fake_inner)
+    await si.run("add a tool")
+    assert [(r["status"], r["request"]) for r in seen["rows"]] == [("running", "add a tool")]
+    assert si.runs.recent()[0]["status"] == "gave_up"
+    await j.http.aclose()
+
+
+async def test_run_start_is_recorded_even_if_everything_after_it_raises(settings, monkeypatch):
+    j = make(settings)
+    gh = FakeGitHub({})
+
+    async def boom(*a, **k):
+        raise RuntimeError("everything is broken")
+
+    gh.branch_sha = boom
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+    j.notifier.notify = boom  # even the failure notification can't be sent
+    result = await si.run("add a tool")
+
+    assert "error" in result
+    rows = si.runs.recent()
+    assert len(rows) == 1 and rows[0]["request"] == "add a tool"
+    assert rows[0]["status"] == "failed" and "everything is broken" in rows[0]["outcome"]
+    await j.http.aclose()
+
+
+async def test_failure_outside_the_inner_try_is_still_recorded_and_notified(settings, monkeypatch):
+    """Committing / opening the PR sat outside run()'s try/except: a failure there left no trace at all."""
+    j = make(settings)
+    gh = FakeGitHub(finding_files())
+
+    async def bad_commit(*a, **k):
+        raise RuntimeError("push rejected")
+
+    gh.commit_files = bad_commit
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, gh)
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append((title, body))
+
+    async def fake_engineer(request, ws):
+        from jarvis.services.self_improve import SubmitInput
+
+        ws.create("/repo/jarvis/new_tool.py", "# new tool\n")
+        return {"kind": "submit", "fix": SubmitInput(pr_title="t", summary="s", test_notes="n", risk="low")}
+
+    j.notifier.notify = fake_notify
+    monkeypatch.setattr(si, "_engineer", fake_engineer)
+    result = await si.run("add a tool")
+    assert "push rejected" in result["error"]
+    assert any("Self-improvement attempt failed" in t and "push rejected" in b for t, b in notified)
+    assert si.runs.recent()[0]["status"] == "failed"
+    await j.http.aclose()
+
+
+async def test_cancelled_run_is_recorded_as_interrupted_and_still_cancelled(settings, monkeypatch):
+    j = make(settings)
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub({}))
+
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append(title)
+
+    async def cancelled(request):
+        raise asyncio.CancelledError()
+
+    j.notifier.notify = fake_notify
+    monkeypatch.setattr(si, "_run", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await si.run("add a tool")
+    assert notified == ["Self-improvement run interrupted"]
+    row = si.runs.recent()[0]
+    assert row["status"] == "interrupted" and "Cancelled" in row["outcome"]
+    await j.http.aclose()
+
+
+def _age_run(db, run_id: int, started_minutes_ago: int, last_step_minutes_ago: int) -> None:
+    now = datetime.now(timezone.utc)
+    db.execute("UPDATE agent_runs SET started_at = ?, updated_at = ? WHERE id = ?",
+               ((now - timedelta(minutes=started_minutes_ago)).isoformat(timespec="seconds"),
+                (now - timedelta(minutes=last_step_minutes_ago)).isoformat(timespec="seconds"), run_id))
+
+
+async def test_run_started_but_never_closed_is_marked_interrupted_after_a_restart(settings):
+    """A crash leaves the row 'running'. The next start-up closes it - but only once it is too old to belong to a
+    live process."""
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    run_id = runs.start("self_improve", "add a tool")  # the process died before the run could close it
+    _age_run(j.db, run_id, started_minutes_ago=INTERRUPTED_AFTER.total_seconds() // 60 + 5,
+             last_step_minutes_ago=INTERRUPTED_AFTER.total_seconds() // 60 + 5)
+    assert runs.recent()[0]["status"] == "stalled"  # until something sweeps it, it only looks stalled
+    j2 = make(settings)  # the next start-up (same database)
+    row = next(r for r in AgentRuns(j2.db).recent() if r["id"] == run_id)
+    assert row["status"] == "interrupted" and "stopped before" in row["outcome"]
+    await j.http.aclose()
+    await j2.http.aclose()
+
+
+async def test_start_up_leaves_a_live_peers_run_alone_during_a_rolling_deploy(settings):
+    """Two processes share the database while a deploy rolls: the new one starting must not mark the other's
+    in-flight run interrupted."""
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    fresh = runs.start("self_improve", "other process, running now")
+    old_but_beating = runs.start("fixer", "long run, still stepping")
+    _age_run(j.db, old_but_beating, started_minutes_ago=INTERRUPTED_AFTER.total_seconds() // 60 + 5,
+             last_step_minutes_ago=2)  # started long ago but its last step was 2 minutes ago: alive
+    young_silent = runs.start("security_watch", "young, silent (Claude Code backend)")
+    _age_run(j.db, young_silent, started_minutes_ago=45, last_step_minutes_ago=45)  # silent but well inside 2h
+    j2 = make(settings)
+    status = {r["id"]: r["status"] for r in AgentRuns(j2.db).recent(10)}
+    assert status[fresh] == "running" and status[old_but_beating] == "running"
+    assert status[young_silent] == "stalled"  # reported stalled when read - but NOT stored as interrupted
+    stored = {r["id"]: r["status"] for r in j2.db.query("SELECT id, status FROM agent_runs")}
+    assert set(stored.values()) == {"running"}
+    await j.http.aclose()
+    await j2.http.aclose()
+
+
+async def test_a_run_that_was_swept_can_still_record_its_real_outcome(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    run_id = runs.start("self_improve", "very slow run")
+    _age_run(j.db, run_id, started_minutes_ago=INTERRUPTED_AFTER.total_seconds() // 60 + 5,
+             last_step_minutes_ago=INTERRUPTED_AFTER.total_seconds() // 60 + 5)
+    assert [r["id"] for r in runs.interrupt_stale()] == [run_id]
+    assert runs.interrupt_stale() == []  # idempotent
+    runs.finish("submitted", "https://github.com/o/r/pull/3", run_id)
+    assert runs.recent(1, run_id)[0]["status"] == "submitted"
+    await j.http.aclose()
+
+
+async def test_starting_a_new_run_also_sweeps_dead_ones(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    dead = runs.start("fixer", "died last week")
+    _age_run(j.db, dead, started_minutes_ago=10_000, last_step_minutes_ago=10_000)
+    runs.start("fixer", "new")
+    assert runs.recent(1, dead)[0]["status"] == "interrupted"
+    await j.http.aclose()
+
 async def test_watch_ci_only_notifies_never_acts(settings, monkeypatch):
     j = make(settings)
     gh = FakeGitHub({})
@@ -271,4 +476,64 @@ async def test_self_improve_tool_is_not_gated_behind_approval(settings, monkeypa
     j.self_improve.start = lambda request: started.append(request) or "On it."
     result = await tool.handler(j, SelfImproveIn(request="add a tool for X"))
     assert result == "On it." and started == ["add a tool for X"]
+    await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- the fixer on the subscription backend
+async def test_fixer_max_turn_limit_is_a_gave_up_run_with_a_clear_message(settings, tmp_path, monkeypatch):
+    """error_max_turns from Claude Code must reach the owner as a plain "used its turn budget" analysis and be
+    recorded as gave_up - not as a parse error or a failure."""
+    from jarvis.brain.max_backend import MaxTurnsExceeded
+
+    j = make(settings)
+    j.fixer.gh = FakeGitHub(finding_files())
+
+    async def hit_the_limit(s, **kw):
+        raise MaxTurnsExceeded("hit the limit")
+
+    notified = []
+
+    async def fake_notify(title, body="", **kw):
+        notified.append((title, body, kw.get("kind")))
+
+    async def via_max(issue, ws):
+        return await j.fixer._run_engineer_max(issue, ws)  # noqa: SLF001
+
+    monkeypatch.setattr("jarvis.brain.max_backend.run_once", hit_the_limit)
+    monkeypatch.setattr(j.fixer, "run_engineer", via_max)
+    j.notifier.notify = fake_notify
+    issue_id = j.db.create_issue(reporter="Sam", title="Login is slow", description="Takes ages", source="web")
+    await j.fixer.attempt(issue_id)
+
+    run = j.fixer.runs.recent()[0]
+    assert run["kind"] == "fixer" and run["status"] == "gave_up" and "turn budget" in run["outcome"]
+    assert "No JSON" not in run["outcome"] and "parse" not in run["outcome"].lower()
+    issue = j.db.get_issue(issue_id)
+    assert issue["status"] == "needs_human" and "turn budget" in issue["notes"]
+    assert [k for _, _, k in notified] == ["fix_needs_you"]
+    await j.http.aclose()
+
+
+async def test_run_with_the_subscription_backend_hitting_max_turns_is_gave_up_not_failed(settings, monkeypatch):
+    from jarvis.brain.max_backend import MaxTurnsExceeded
+
+    j = make(settings)
+    si = SelfImprove(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub(finding_files()))
+
+    async def hit_the_limit(s, **kw):
+        raise MaxTurnsExceeded("hit the limit")
+
+    async def quiet(*a, **k):
+        pass
+
+    async def via_max(request, ws):
+        return await si._engineer_max(request, ws)  # noqa: SLF001
+
+    monkeypatch.setattr("jarvis.brain.max_backend.run_once", hit_the_limit)
+    monkeypatch.setattr(si, "_engineer", via_max)
+    j.notifier.notify = quiet
+    result = await si.run("something big")
+    assert result["outcome"] == "give_up" and "turn budget" in result["analysis"]
+    row = si.runs.recent()[0]
+    assert row["status"] == "gave_up" and "turn budget" in row["outcome"]
     await j.http.aclose()

@@ -272,7 +272,7 @@ class Fixer:
     async def _run_engineer_max(self, issue: dict[str, Any], ws: Workspace) -> dict[str, Any]:
         """Same job on the Claude subscription: Claude Code's own Read/Edit/Glob/Grep tools, confined to the
         checkout (no shell, no web). Changes are found by comparing with a pristine copy."""
-        from ..brain.max_backend import ENGINEER_BLOCKED, parse_structured, run_once
+        from ..brain.max_backend import ENGINEER_BLOCKED, MaxTurnsExceeded, parse_structured, run_once
 
         class Outcome(BaseModel):
             outcome: Literal["submit", "give_up"]
@@ -301,11 +301,15 @@ class Fixer:
         if self.gh is not None:  # read-only CI failure logs, as an in-process MCP tool
             mcp_servers[ci_logs.MCP_SERVER_NAME] = ci_logs.sdk_ci_log_server(self.gh)
             allowed.append(ci_logs.MCP_ALLOWED_TOOL)
-        result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort,
-                                model=self.s.engineer_model_or_default(), tools=tools,
-                                disallowed_tools=ENGINEER_BLOCKED,
-                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
-                                mcp_servers=mcp_servers, extra_allowed=allowed)
+        try:
+            result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort,
+                                    model=self.s.engineer_model_or_default(), tools=tools,
+                                    disallowed_tools=ENGINEER_BLOCKED,
+                                    output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
+                                    mcp_servers=mcp_servers, extra_allowed=allowed)
+        except MaxTurnsExceeded:
+            return {"kind": "give_up", "analysis": "Stopped after 80 turns without finishing: the engineering agent "
+                                                   "used its whole turn budget without submitting a fix or giving up."}
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():
             return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or f"Fix issue #{issue['id']}",

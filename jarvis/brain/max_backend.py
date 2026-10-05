@@ -422,9 +422,19 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
-    if result is None or result.is_error:
+    if result is not None and getattr(result, "subtype", None) == "error_max_turns":
+        # Claude Code ends a run that hit max_turns with this result subtype - which may or may not set is_error,
+        # and never carries structured output - so name it explicitly instead of letting it surface as a parse error.
+        raise MaxTurnsExceeded(f"Claude run stopped after hitting its turn limit ({max_turns}) without finishing.")
+    if result is None:
+        raise RuntimeError("Claude run failed: the stream ended without a final result message")
+    if result.is_error:
         raise RuntimeError(f"Claude run failed: {getattr(result, 'errors', None) or getattr(result, 'result', None)}")
     return result
+
+
+class MaxTurnsExceeded(RuntimeError):
+    """A one-shot Claude Agent SDK run used up its turn budget before producing a final answer."""
 
 
 async def run_agent(settings, j, *, system: str, prompt: str, tool_names: list[str], effort: str = "medium",
