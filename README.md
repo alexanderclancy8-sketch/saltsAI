@@ -217,8 +217,11 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   FSM), with **Approve**, **Edit** and **Don't send**. Nothing goes without a click. **Edit** (emails, Salts FSM changes
   and the details of most other actions) saves your changed version as a *new* waiting request - the old one can no
   longer be approved and the new one still needs your Approve. If an approved action fails, its card shows the error and
-  **Retry**, which puts a fresh copy back in your queue (it never re-runs by itself). Secrets are masked on every card.
-  Edit/Retry/Approve/Don't send only work from your signed-in console (and Approve/Deny from Teams).
+  **Retry**, which puts a fresh copy back in your queue (it never re-runs by itself), and **Dismiss** for a failure that
+  needs nothing more (say, removing something that was never on the register): it hides the card and the red count, runs
+  nothing, and keeps the action in the history under "Dismissed failures", marked with who dismissed it and when.
+  **Dismiss all failed** does the same for the whole list, after asking. Secrets are masked on every card.
+  Edit/Retry/Dismiss/Approve/Don't send only work from your signed-in console (and Approve/Deny from Teams).
 - **The Memory pop-up (Settings → Memory).** Lists what Jarvis has learned - "Things Jarvis should know", things he
   remembered himself, and the short replies he has learned - each one editable and deletable. A change is used from his very
   next message, and deleting a note also removes it from Settings so it can't come back on a restart.

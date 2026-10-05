@@ -80,6 +80,10 @@ class EditActionIn(BaseModel):
     changes: dict[str, Any]
 
 
+class DismissFailedIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+
+
 class MemoryTextIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
 
@@ -721,7 +725,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     # ------------------------------------------------------------------ approvals
     # Every route below that DECIDES or CHANGES something needs the owner's session (401 otherwise) and a same-origin
-    # browser click (403 otherwise). Approve / Don't send / Edit / Retry are reachable only from here and from the Teams
+    # browser click (403 otherwise). Approve / Don't send / Edit / Retry / Dismiss are reachable only from here and from the Teams
     # webhook (Approve / Deny only): no brain tool, standing approval or scheduled job can call them.
     @app.get("/api/approvals", dependencies=[Depends(owner)])
     async def approvals(request: Request):
@@ -753,6 +757,27 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         except ActionRefused as e:
             raise HTTPException(e.status, str(e)) from None
         return {"id": new_id, "result": message}
+
+    @app.post("/api/approvals/{action_id}/dismiss", dependencies=[Depends(owner), Depends(human_click)])
+    async def dismiss_action(action_id: int, request: Request):
+        """Dismiss a FAILED action: hides it from the failed list and the counts, keeps it in the history. Runs, queues and
+        retries nothing and leaves its payload and failed status as they were. Repeating it is harmless (200, `already`)."""
+        try:
+            newly, message = J(request).actions.dismiss(action_id, by=speaker(request))
+        except ActionRefused as e:
+            raise HTTPException(e.status, str(e)) from None
+        return {"id": action_id, "dismissed": True, "already": not newly, "result": message}
+
+    @app.post("/api/approvals/dismiss-failed", dependencies=[Depends(owner), Depends(human_click)])
+    async def dismiss_failed(body: DismissFailedIn, request: Request):
+        """"Dismiss all failed": dismisses exactly the failed actions the person saw listed and confirmed (their ids).
+        Anything not failed, or already dismissed, is skipped untouched and reported."""
+        return J(request).actions.dismiss_many(body.ids, by=speaker(request))
+
+    @app.get("/api/approvals/history", dependencies=[Depends(owner)])
+    async def approvals_history(request: Request, limit: int = 100, dismissed: bool = False):
+        """Every action in every state, newest first - dismissed failures included and flagged "dismissed by NAME at TIME"."""
+        return approval_inbox.history(J(request).db, max(1, min(limit, 500)), dismissed)
 
     @app.post("/api/approvals/{action_id}/{decision}", dependencies=[Depends(owner), Depends(human_click)])
     async def decide(action_id: int, decision: str, request: Request):

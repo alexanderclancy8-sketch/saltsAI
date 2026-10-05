@@ -343,7 +343,10 @@ class Database:
         # Edit / Retry (services/actions.py) never change a stored payload: they queue a NEW pending action and link the
         # two. superseded_by is set on the old row (denied-by-edit, or a failed action that has been retried);
         # supersedes / supersede_kind ('edit' | 'retry') on the new one.
-        for col, ddl in (("superseded_by", "INTEGER"), ("supersedes", "INTEGER"), ("supersede_kind", "TEXT DEFAULT ''")):
+        # dismissed_at / dismissed_by: a person hid a FAILED action from the inbox (ActionExecutor.dismiss). Only these two
+        # columns are ever written by a dismissal - never the status, result, payload or superseded_by.
+        for col, ddl in (("superseded_by", "INTEGER"), ("supersedes", "INTEGER"), ("supersede_kind", "TEXT DEFAULT ''"),
+                         ("dismissed_at", "TEXT"), ("dismissed_by", "TEXT")):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE pending_actions ADD COLUMN {col} {ddl}")
         # Team mode: who asked for a background call and in what role, so a team session only ever reads its own results.
@@ -604,20 +607,46 @@ class Database:
 
     def failed_actions(self, since_iso: str = "", limit: int = 20) -> list[dict[str, Any]]:
         """Approved actions that then failed (newest first), optionally only those decided at/after `since_iso`.
-        A failure the owner has already retried (a new pending action carries it forward) is not listed again."""
+        A failure the owner has already retried (a new pending action carries it forward), or dismissed, is not listed again."""
         rows = self.query("SELECT * FROM pending_actions WHERE status = 'failed' AND superseded_by IS NULL"
-                          " AND decided_at >= ? ORDER BY id DESC LIMIT ?", (since_iso, limit))
+                          " AND dismissed_at IS NULL AND decided_at >= ? ORDER BY id DESC LIMIT ?", (since_iso, limit))
         for row in rows:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
 
     def recent_decided_actions(self, since_iso: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Actions that left the queue (done / denied / failed / approved-and-running) at or after `since_iso`, newest first."""
-        rows = self.query("SELECT * FROM pending_actions WHERE status != 'pending' AND decided_at >= ?"
-                          " ORDER BY id DESC LIMIT ?", (since_iso, limit))
+        """Actions that left the queue (done / denied / failed / approved-and-running) at or after `since_iso`, newest first.
+        Dismissed failures are left out (they have been put away); `action_history` lists everything."""
+        rows = self.query("SELECT * FROM pending_actions WHERE status != 'pending' AND dismissed_at IS NULL"
+                          " AND decided_at >= ? ORDER BY id DESC LIMIT ?", (since_iso, limit))
         for row in rows:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
+
+    def dismissed_action_ids(self, since_iso: str = "", limit: int = 200) -> list[int]:
+        """The ids of failed actions a person dismissed (newest first), failed at/after `since_iso`."""
+        return [int(r["id"]) for r in self.query(
+            "SELECT id FROM pending_actions WHERE dismissed_at IS NOT NULL AND decided_at >= ? ORDER BY id DESC LIMIT ?",
+            (since_iso, limit))]
+
+    def action_history(self, limit: int = 100, dismissed_only: bool = False) -> list[dict[str, Any]]:
+        """The full record, newest first: every action in every state, dismissed failures included (flagged)."""
+        rows = self.query("SELECT * FROM pending_actions" + (" WHERE dismissed_at IS NOT NULL" if dismissed_only else "")
+                          + " ORDER BY id DESC LIMIT ?", (limit,))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        return rows
+
+    def dismiss_failed_action(self, action_id: int, by: str) -> bool:
+        """Dismiss, atomically and once: mark a FAILED action as put away by `by`. Touches only dismissed_at and
+        dismissed_by - the status stays 'failed', and the payload, result, decided_at and any retry link are unchanged.
+        False if the row is not failed or is already dismissed (the first dismissal is never overwritten)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE pending_actions SET dismissed_at = ?, dismissed_by = ?"
+                " WHERE id = ? AND status = 'failed' AND dismissed_at IS NULL", (now_iso(), by, action_id))
+            self._conn.commit()
+            return cur.rowcount == 1
 
     def supersede_pending_action(self, old_id: int, kind: str, summary: str, payload: dict[str, Any],
                                  by: str) -> int | None:
@@ -643,11 +672,11 @@ class Database:
 
     def retry_failed_action(self, old_id: int, summary: str) -> int | None:
         """Retry, atomically and once: queue a copy of a FAILED action's own stored kind and payload as a new pending
-        action. None if the row is not a failed action or has already been retried. The old row stays `failed` as
+        action. None if the row is not a failed action, has already been retried, or was dismissed. The old row stays `failed` as
         history, marked superseded so it drops out of the failed list; the copy is a plain `pending` row."""
         with self._lock:
             row = self._conn.execute("SELECT kind, payload_json FROM pending_actions WHERE id = ? AND status = 'failed'"
-                                     " AND superseded_by IS NULL", (old_id,)).fetchone()
+                                     " AND superseded_by IS NULL AND dismissed_at IS NULL", (old_id,)).fetchone()
             if row is None:
                 return None
             new_id = self._conn.execute(

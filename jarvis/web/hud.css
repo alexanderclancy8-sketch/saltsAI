@@ -449,6 +449,20 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
 .appr-row.block { grid-template-columns: minmax(0, 1fr); }
 .appr-row.block dd { background: var(--navy); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 11em; overflow: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
 .appr-card .btn[data-act="edit"], .appr-card .btn[data-act="retry"], .mem-item .btn[data-mem="edit"] { color: var(--core); border-color: var(--core-dim); }
+.appr-bulk { margin: 0 0 12px; }
+.appr-bulk .btn { color: var(--muted); }
+.appr-bulk .appr-confirm .btn.stop { color: var(--warn); }
+.appr-confirm { margin-top: 8px; border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: var(--r); background: var(--panel); padding: 10px 14px; font-size: 14px; }
+.appr-confirm[hidden], .appr-bulk .btn[hidden] { display: none; }
+.appr-confirm p { margin: 0; overflow-wrap: anywhere; }
+.appr-confirm .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.appr-history { margin-top: 18px; }
+.appr-history[hidden] { display: none; }
+.appr-history summary { cursor: pointer; font-family: var(--f-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; }
+.appr-history .count { letter-spacing: inherit; text-transform: none; }
+.appr-hist-item { border-top: 1px solid var(--line); padding: 9px 0; font-size: 13.5px; overflow-wrap: anywhere; }
+.appr-hist-item .appr-summary { margin: 0 0 3px; }
+.appr-hist-item .appr-flag { margin: 0; color: var(--muted); font-family: var(--f-mono); font-size: 12px; }
 .appr-fail { margin: 0 0 6px; color: var(--warn); overflow-wrap: anywhere; }
 .appr-fail b { font-weight: 600; }
 .appr-note, .appr-hint { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
@@ -550,6 +564,8 @@ input.mem-input { min-height: 0; }
   .appr-msg .appr-row.block dd { max-height: 4.6em; }   /* in the conversation: a few lines, scroll for the rest */
   .appr-msg .appr-safe { display: none; }
   .appr-card .row .btn, .mem-item .row .btn { flex: 1 1 auto; }
+  .appr-bulk > .btn { width: 100%; }
+  .appr-confirm .row .btn { flex: 1 1 auto; }
 }
 /* Narrow phones: the field takes its own row above the buttons so nothing is squeezed, and SEND fills the rest of the row. */
 @media (max-width: 480px) {
@@ -571,7 +587,7 @@ input.mem-input { min-height: 0; }
   .icon-btn { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .btn, .btn.small { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .pill, .need, .rail-item { display: inline-flex; align-items: center; }
-  .cron-day, .linkish, .set-advanced-toggle, details.diff summary, .back-link, .conn-row, .chip { min-height: 44px; }
+  .cron-day, .linkish, .set-advanced-toggle, details.diff summary, .appr-history summary, .back-link, .conn-row, .chip { min-height: 44px; }
   .chip { display: inline-flex; align-items: center; }
   .linkish { min-width: 44px; }
   details.diff summary { display: flex; align-items: center; }

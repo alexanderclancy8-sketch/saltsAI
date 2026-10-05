@@ -89,7 +89,17 @@ NEW plain `pending` action (`db.supersede_pending_action`), so what is approved 
 card can no longer be approved. *Retry* of a `failed` action inserts a copy of its stored kind and payload as a NEW pending
 action once (`db.retry_failed_action`; the failed row stays as history, marked `superseded_by`); it re-enters the normal
 approval path and needs its own Approve click. `tests/test_approvals_inbox.py` pins all of this, including that no tool,
-service or standing path can call them. When you add an action kind, decide deliberately whether it belongs in
+service or standing path can call them. *Dismiss* (`ActionExecutor.dismiss()` / `.dismiss_many()`, called only from
+`main.py`'s `POST /api/approvals/{id}/dismiss` and `/api/approvals/dismiss-failed` - owner session + same-origin, routes
+classified `MANAGER_OK`, so a team session gets 403) is a human putting a FAILED action away: it runs, queues and retries
+nothing and consults no standing approval. `db.dismiss_failed_action` writes only `dismissed_at` / `dismissed_by` (the row
+stays `failed`, payload, error and `superseded_by` untouched), once, and only for a failed row (anything else is 409;
+repeating it is a harmless 200 `already`; an already-retried failure can be dismissed; a dismissed one can no longer be
+retried). Dismissed rows drop out of `db.failed_actions`, `recent_decided_actions`, the rail count, "Needs you" and the chat
+cards (the inbox returns their ids as `dismissed_ids` so a chat card is removed), and stay in `GET /api/approvals/history`
+(`dismissed_label`: "dismissed by NAME at TIME") and the "Dismissed failures" list in the pop-up. "Dismiss all failed"
+sends exactly the ids on screen after a confirm that says how many. Failed actions are not offered on Teams cards, so Teams
+is unchanged. `tests/test_dismiss_failed.py` and `tests/test_console_browser_dismiss.py` pin it. When you add an action kind, decide deliberately whether it belongs in
 `approval_inbox.editable_fields` (default: no).
 
 *Memory pop-up.* `services/memory_book.py` + `/api/memory...` (owner + same-origin, console only - deliberately not a brain

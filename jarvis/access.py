@@ -189,10 +189,13 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/documents/{doc_id}/{fmt}": MANAGER_OK,
     "GET /api/images/{image_name}": MANAGER_OK,
     "POST /api/brand/logo": MANAGER_OK,
-    "GET /api/approvals": MANAGER_OK,                       # approvals: list / inbox / edit / retry / approve / deny
+    "GET /api/approvals": MANAGER_OK,                       # approvals: list / inbox / history / edit / retry / dismiss / approve / deny
     "GET /api/approvals/inbox": MANAGER_OK,
     "POST /api/approvals/{action_id}/edit": MANAGER_OK,
     "POST /api/approvals/{action_id}/retry": MANAGER_OK,
+    "POST /api/approvals/{action_id}/dismiss": MANAGER_OK,   # hide a failed action (runs nothing)
+    "POST /api/approvals/dismiss-failed": MANAGER_OK,
+    "GET /api/approvals/history": MANAGER_OK,
     "POST /api/approvals/{action_id}/{decision}": MANAGER_OK,
     "GET /api/memory": MANAGER_OK,                          # memory: read and edit
     "POST /api/memory/facts/{fact_id}": MANAGER_OK,

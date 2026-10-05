@@ -145,6 +145,13 @@
       </div>
       <div class="sec" id="failed-panel" hidden>
         <h3>Failed - needs a look <span class="count" id="failed-count"></span></h3>
+        <div class="appr-bulk">
+          <button type="button" class="btn" id="dismiss-all">Dismiss all failed</button>
+          <div class="appr-confirm" id="dismiss-confirm" role="group" aria-labelledby="dismiss-confirm-text" hidden>
+            <p id="dismiss-confirm-text"></p>
+            <div class="row"><button type="button" class="btn stop" id="dismiss-all-yes">Dismiss</button><button type="button" class="btn" id="dismiss-all-no">Cancel</button></div>
+          </div>
+        </div>
         <div id="failed-actions"></div>
       </div>
       <div class="sec" id="suggestions-panel">
@@ -152,6 +159,10 @@
         <div id="suggestions"></div>
       </div>
       <p class="empty" id="approvals-empty" hidden>Nothing is waiting for you.</p>
+      <details class="sec appr-history" id="history-panel" hidden>
+        <summary>Dismissed failures <span class="count" id="history-count"></span></summary>
+        <div id="history-list"><p class="empty">Loading…</p></div>
+      </details>
     </section><!--/role:manager-->
 
     <!--role:manager--><section class="pop" id="pop-comms" data-title="Comms" hidden>
