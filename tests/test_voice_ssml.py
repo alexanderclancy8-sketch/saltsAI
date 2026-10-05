@@ -118,7 +118,10 @@ async def test_azure_request_carries_the_built_ssml_and_the_chosen_voice(setting
     assert seen["ctype"] == "application/ssml+xml"
     assert f"<voice name='{OLLIE}'>" in seen["ssml"] and "express-as" not in seen["ssml"]
     assert "<prosody rate='-10%'>2:30pm</prosody>" in seen["ssml"] and "<break time='300ms'/>" in seen["ssml"]
-    assert "**" not in seen["ssml"] and "https" not in seen["ssml"]
+    # Every SSML document legitimately carries the xmlns:mstts='https://www.w3.org/2001/mstts' namespace, so check
+    # the URL the user's text contained is never sent as a URL (it is spoken as the bare domain), not "https" itself.
+    assert "**" not in seen["ssml"] and "https://x.co" not in seen["ssml"] and "x.co/a" not in seen["ssml"]
+    assert "x dot co" in seen["ssml"]
 
 
 async def test_azure_sample_needs_the_key_and_speaks_the_requested_voice(settings):
