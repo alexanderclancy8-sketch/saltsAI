@@ -97,7 +97,7 @@ def clients(world):
 
 
 @pytest.fixture(scope="module")
-def shared(tmp_path_factory):
+def shared(tmp_path_factory, restore_process_timezone):
     """One running app + owner and team clients for the many read-only per-route checks (building an app per route is slow)."""
     from jarvis.config import Settings
 

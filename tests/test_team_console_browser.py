@@ -57,7 +57,7 @@ def _seed_owner_data(j):
 
 
 @pytest.fixture(scope="module")
-def serve_team(tmp_path_factory):
+def serve_team(tmp_path_factory, restore_process_timezone):
     """A real server with an owner password and team sign-in already on."""
     settings = _settings(tmp_path_factory, jarvis_owner_password=OWNER_PW)
     j = Jarvis(settings, client=FakeClient(default_text="Two jobs are on today, and one is running late."))

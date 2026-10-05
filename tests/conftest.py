@@ -27,3 +27,21 @@ def _isolate_process_timezone():
         os.environ.pop("TZ", None)
     if hasattr(time, "tzset"):
         time.tzset()
+
+
+@pytest.fixture(scope="module")
+def restore_process_timezone():
+    """For MODULE-scoped fixtures that build a Jarvis (which moves the whole process's timezone through apply_timezone): the
+    autouse fixture above restores TZ per test to whatever it was when that test started - inside such a module that is already
+    the moved value. Request this FIRST from the module fixture so TZ goes back to its pre-module value on teardown."""
+    import os
+    import time
+    had = "TZ" in os.environ
+    old = os.environ.get("TZ")
+    yield
+    if had:
+        os.environ["TZ"] = old
+    else:
+        os.environ.pop("TZ", None)
+    if hasattr(time, "tzset"):
+        time.tzset()
