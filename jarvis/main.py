@@ -213,11 +213,24 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         task = asyncio.create_task(j.brain.ask(body.text, mode, body.attachments, speaker=speaker(request)))
 
         async def events():
+            # The bus carries every turn. This stream is for THIS one, which starts with its own user_message: what comes
+            # before it belongs to an older turn that is still winding down (the owner sent a new message mid-reply), and
+            # that turn's reply used to end this stream before its own answer began.
+            started = False
             try:
                 while True:
-                    msg = await q.get()
+                    try:
+                        msg = await asyncio.wait_for(q.get(), 0.5)
+                    except asyncio.TimeoutError:
+                        if task.done() and q.empty():
+                            break  # the turn is over and said nothing more
+                        continue
                     if msg["type"] not in CHAT_STREAM_EVENTS:
                         continue
+                    if not started:
+                        if msg["type"] != "user_message" or (msg["data"] or {}).get("text") != body.text:
+                            continue
+                        started = True
                     yield f"data: {json.dumps(msg, default=str)}\n\n"
                     if msg["type"] in CHAT_STREAM_TERMINAL:
                         break
