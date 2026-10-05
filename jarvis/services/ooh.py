@@ -6,9 +6,12 @@ anything that still needs a job in Salts FSM (suggested, never created without a
 Each event gets a ``follow_up_kind``: ``engineer_visit`` (a genuine fault or other work for an engineer - sets
 ``needs_job`` when there is no job yet), ``keyholder_notice`` (the call/signal was handled but no keyholder was
 reached, the site/keyholders didn't answer, or the keyholder list is out of date or missing - that is a customer
-conversation, NOT an engineer job, so ``needs_job`` stays False) or ``none``. For each keyholder notice
+conversation, NOT an engineer job, so ``needs_job`` stays False) or ``none``. A real activation or an emergency
+(intruder / fire / break-in wording, or urgency "emergency") is never demoted to a notice even when no keyholder was
+reached: a possibly unsecured site stays an engineer matter. For each keyholder notice
 ``draft_keyholder_notices`` queues a draft customer email for the owner's approval (``email_send``); nothing here ever
-sends mail. Everything in a report is untrusted data: it can pick a category, never an address or an instruction."""
+sends mail. Everything in a report is untrusted data: it can pick a category and name a site (matched against the
+contract sites on record), never an address or an instruction."""
 
 from __future__ import annotations
 
@@ -67,6 +70,9 @@ ENGINEER_VISIT, KEYHOLDER_NOTICE, NO_FOLLOW_UP = "engineer_visit", "keyholder_no
 # rule is that keyholder trouble is not a job, but a comms failure / panel fault / tamper / CCTV fault still is.
 _FAULT = re.compile(r"fault|fail|comms|communicat|signall?ing|\bpath\b|tamper|batter|mains|\bpanel\b|cctv|camera|"
                     r"\bdvr\b|\bnvr\b|offline|not working", re.I)
+# A real activation or emergency: matched on the event itself (``problem``), not on what was done about it overnight.
+_ACTIVATION = re.compile(r"activat|intruder|burglar|break[- ]?in|forced entry|\bfire\b|\bsmoke\b|\bpanic\b|hold[- ]?up|"
+                         r"alarm (?:is |was )?(?:sounding|going off|triggered)|\bsounding\b|\bemergency\b", re.I)
 _LIST_MISSING = re.compile(r"no keyholders? (?:list|on file|held|details|information)|"
                            r"keyholders?(?: list| details)? (?:is |was |are |were )?(?:missing|not (?:held|on file|provided))",
                            re.I)
@@ -91,22 +97,43 @@ def keyholder_issue(call: Call) -> str:
     return "none"
 
 
+def is_unsecured_risk(call: Call) -> bool:
+    """An emergency, or a real activation (intruder / fire / break-in wording): the site may be unsecured or on fire, so
+    it is never just a customer conversation about the keyholder list."""
+    return call.urgency == "emergency" or bool(_ACTIVATION.search(call.problem))
+
+
 def follow_up_kind(call: Call) -> str:
-    """engineer_visit for work an engineer must do (genuine faults), keyholder_notice for keyholder trouble that is a
-    customer conversation instead, else none."""
+    """engineer_visit for work an engineer must do (genuine faults, and any activation or emergency - even with no
+    keyholder reached), keyholder_notice for keyholder trouble that is a customer conversation instead, else none."""
     fault = call.genuine_fault or bool(_FAULT.search(call.problem))
-    if keyholder_issue(call) != "none" and not fault:
-        return KEYHOLDER_NOTICE
+    if keyholder_issue(call) != "none":
+        if is_unsecured_risk(call):
+            return ENGINEER_VISIT  # nobody reached at a possibly unsecured site: an engineer matter, needs a job
+        if not fault:
+            return KEYHOLDER_NOTICE
     return ENGINEER_VISIT if call.follow_up_needed else NO_FOLLOW_UP
 
 
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
 _EMAIL = re.compile(r"\S+@\S+")
+# Phone-number-like runs (7+ digits, with the usual spaces/dashes/brackets/+) and National Insurance numbers are personal
+# data that has no place in an email body; dates and times are kept.
+_PHONE = re.compile(r"(?<![\w:/-])\+?\(?\d[\d\s().-]{5,}\d(?![\w:/])")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}[-.]\d{1,2}[-.]\d{2,4}")
+_NI = re.compile(r"\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b", re.I)
+
+
+def _drop_phone(m: re.Match) -> str:
+    run = m.group(0)
+    if sum(ch.isdigit() for ch in run) < 7 or _DATE.fullmatch(run.strip()):
+        return run
+    return " "
 
 
 def _clean(text: Any, limit: int) -> str:
-    """Report text is untrusted: single line, no links, addresses, markup or control characters, and short."""
-    s = _EMAIL.sub("", _URL.sub("", str(text or "")))
+    """Report text is untrusted: single line, no links, addresses, phone numbers, markup or control characters, and short."""
+    s = _NI.sub(" ", _PHONE.sub(_drop_phone, _EMAIL.sub("", _URL.sub("", str(text or "")))))
     s = "".join(" " if ch.isspace() or ord(ch) < 32 or ch in "<>{}[]`" else ch for ch in s)
     return " ".join(s.split())[:limit].strip()
 
@@ -183,7 +210,7 @@ class OutOfHours:
                             "fsm_job": (job or {}).get("ref"),
                             "follow_up_kind": kind, "keyholder_issue": keyholder_issue(call),
                             # keyholder trouble is a customer conversation, not engineer work
-                            "follow_up_needed": call.follow_up_needed and kind != KEYHOLDER_NOTICE,
+                            "follow_up_needed": kind == ENGINEER_VISIT,
                             "needs_job": kind == ENGINEER_VISIT and job is None})
         return {"demo": getattr(j.mail, "demo", False), "calls": out,
                 "needing_a_job": [c for c in out if c["needs_job"]],
@@ -192,14 +219,14 @@ class OutOfHours:
     # ------------------------------------------------------------------ keyholder notices
     @staticmethod
     def _contact(contracts: list[dict[str, Any]], customer: str, site: str) -> dict[str, Any] | None:
-        """The contract contact on record for this site (else for the customer). Never guessed from the report."""
-        with_email = [c for c in contracts if c.get("contact_email")]
+        """The contract contact on record for this site. A site match is required: there is no fall-back to "any contact
+        for that customer", which would let the customer name in the report choose the recipient. Never guessed."""
         site_n, cust_n = _norm(site), _norm(customer)
-        for c in with_email:
-            if site_n and _norm(c.get("site")) == site_n and (not cust_n or _norm(c.get("customer")) == cust_n):
-                return c
-        for c in with_email:
-            if cust_n and _norm(c.get("customer")) == cust_n:
+        if not site_n:
+            return None
+        for c in contracts:
+            if c.get("contact_email") and _norm(c.get("site")) == site_n \
+                    and (not cust_n or _norm(c.get("customer")) == cust_n):
                 return c
         return None
 
