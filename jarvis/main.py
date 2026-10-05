@@ -474,7 +474,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(404, "No such document")
         render, mime = renderers[fmt]
         try:
-            data = await asyncio.to_thread(render, doc, settings.company_name)
+            data = await asyncio.to_thread(render, doc, settings.company_name, settings.company_address,
+                                           documents.header_logo(settings.company_logo_path))
         except ImportError:
             raise HTTPException(503, "Document rendering isn't installed on this server.") from None
         filename = documents.download_filename(doc, fmt)
