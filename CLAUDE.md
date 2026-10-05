@@ -100,6 +100,14 @@ prompt) until the model calls a terminal tool (`submit_fix`/`submit_findings`/`s
 rejects every command but `view`). `self_improve.py` is deliberately narrower than `fixer.py`: no merge step, no
 deploy step, ever, not even behind an approval click - a human always merges it. Copy the shape of whichever of
 these three is closest to a new engineer/review-style feature rather than starting from scratch.
+*Model and effort for these three.* They use `Settings.engineer_model_or_default()` (`ENGINEER_MODEL`; blank = same as
+`JARVIS_MODEL`; never hard-code an ID - the owner supplies it) and `Settings.engineer_effort` (`ENGINEER_EFFORT`), on both
+backends: `llm.request_params(..., model=...)` for the API loop and `max_backend.run_once(..., model=...)` for the `_max`
+variants. `engineer_effort` is one of `low|medium|high|xhigh|max` (what the Agent SDK's `EffortLevel` and the API's
+`output_config.effort` accept); it is lower-cased/trimmed, blank means `high`, and anything else raises a clear validation
+error at startup (`Settings._check_engineer_effort`) instead of being ignored. Both appear (advanced) in the Settings page's
+Claude section and are in `settings_store.OWNER_ONLY_KEYS`, so only the owner can change them. A new engineer-style service
+must pass both too. Tests: `tests/test_engineer_model.py`.
 `services/recruiter.py` (the `recruit_agent` tool) generalises the same shape beyond code: a fresh agent, a
 fixed turn budget, a final answer - but against Jarvis's own tool set via `dispatch()` (so a write it proposes
 queues for approval exactly like anything else) rather than a code checkout, for research/drafting/analysis
@@ -107,6 +115,16 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 `AsyncAnthropic` tool loop for the API backend, `max_backend.run_agent` - a filtered MCP tool server - for the
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
+
+**Progress visibility for engineer loops (`services/agent_runs.py`, the `agent_runs` tool).** `self_improve.run()`,
+`Fixer.attempt()` (built-in mode) and `SecurityWatch.run()` each wrap their run in `AgentRuns.track(...)`, which
+keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`) and a
+trail of one-line tool-call summaries (`editor view <path>`, `grep '<pattern>'`, ...) added after every tool call
+in the loop - never file contents or edit text; the newest 60 steps are kept. The read-only `agent_runs` tool lists
+recent runs; a run still `running` with no activity for 30 minutes (`STALL_AFTER`) is reported as `stalled` (worked
+out when read, not stored). Recording is observability only: it swallows its own errors and never alters what an
+agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
+(Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
 
 **The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
 `tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
