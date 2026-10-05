@@ -19,40 +19,57 @@ import anthropic
 from pydantic import ValidationError
 
 from . import llm
+from .. import access
 from ..events import quiet_turn
 from ..redact import redact_text
+from ..services.conversation_quality import TurnRecord
 from ..services.tracking import requester_label
-from .prompts import build_system
+from .prompts import build_system, build_team_system
 from .repeats import RepeatDetector, repeat_note
-from .tools import SERVER_TOOLS, TOOLS, TOOLS_BY_NAME, dispatch, serialise
+from .tools import SERVER_TOOLS, TOOLS, dispatch, serialise
 
 log = logging.getLogger(__name__)
 MAX_STEPS = 25
 
 
 class JarvisBrain:
-    def __init__(self, j):
+    """``caller``/``bus`` are only given for a Team-mode session (services/team_sessions.py): that brain has its own
+    conversation, its own event bus (so nothing it says reaches the owner's console and nothing of the owner's reaches
+    it), only the tools ``access.tool_allowed`` lets a team caller use, no web tools, a prompt that says who it is talking
+    to, and it never writes the owner's transcript or metrics. With neither given it is the owner's brain exactly as before."""
+
+    def __init__(self, j, caller: access.Caller | None = None, bus=None):
         self.j = j
         self.s = j.settings
+        self.caller = caller
+        self.team = caller is not None and caller.is_team
+        self.bus = bus or j.bus
         self.client: anthropic.AsyncAnthropic = j.client
         self.messages: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._active: set[asyncio.Task] = set()
         self._repeats = RepeatDetector()
-        self.tools = [t.definition() for t in TOOLS] + (SERVER_TOOLS if self.s.web_search_enabled else [])
+        self.tools_by_name = {t.name: t for t in TOOLS if access.tool_allowed(t.name, caller)}
+        self.tools = [t.definition() for t in self.tools_by_name.values()] + (
+            SERVER_TOOLS if self.s.web_search_enabled and not self.team else [])
         self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
+        self.trace = None  # a team session describes its own turns (set by TeamSessions); the owner's is j.trace
         self.refresh_system()
 
     # ------------------------------------------------------------------ setup
     def refresh_system(self) -> None:
+        if self.team:
+            self.system = build_team_system(self.s, self.j.kb, self.caller)
+            return
         self.system = build_system(self.s, self.j.kb, self.j.db, self.j.connections(),
                                    self.j.register.prompt_summary(), history_before_id=self._history_before)
 
     def reset(self) -> None:
         self.messages = []
-        self._history_before = self.j.db.last_transcript_id()
+        if not self.team:
+            self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
-        self.j.bus.publish("conversation_reset", None)
+        self.bus.publish("conversation_reset", None)
 
     @staticmethod
     def _attachment_blocks(attachments: list[dict[str, str]] | None) -> list[dict[str, Any]]:
@@ -75,8 +92,8 @@ class JarvisBrain:
 
     # ------------------------------------------------------------------ tools
     async def _run_tool(self, block) -> dict[str, Any]:
-        tool = TOOLS_BY_NAME.get(block.name)
-        bus = self.j.bus
+        tool = self.tools_by_name.get(block.name)  # only what this brain's caller may use (all of them for the owner)
+        bus = self.bus
         if tool is None:
             return {"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                     "content": f"Unknown tool {block.name}"}
@@ -89,7 +106,7 @@ class JarvisBrain:
                     "content": json.dumps({"INVALID_INPUT": json.dumps(block.input, default=str),
                                            "errors": e.errors(include_url=False)}, default=str)}
         try:
-            result = await dispatch(self.j, tool, args)
+            result = await dispatch(self.j, tool, args, caller=self.caller)
             bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "done"})
             return {"type": "tool_result", "tool_use_id": block.id, "content": serialise(result)}
         except Exception as e:  # noqa: BLE001 - report tool failures back to Claude so it can adapt
@@ -106,6 +123,14 @@ class JarvisBrain:
             self._active.add(task)
         try:
             async with self._lock:
+                if self.team:
+                    # A team turn never touches the owner's global "who is asking": the caller travels in a context
+                    # variable (tools read it through tools._asker), so a team turn and an owner turn can overlap.
+                    token = access.current_caller.set(self.caller)
+                    try:
+                        return await self._turn(text, mode, None, speaker)  # no attachments for a team session
+                    finally:
+                        access.current_caller.reset(token)
                 # who is asking, for the out-of-hours van look-up log (read by the tracking tools)
                 self.j.asked_by = requester_label(self.s, speaker, quiet_turn.get())
                 try:
@@ -127,7 +152,7 @@ class JarvisBrain:
 
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
                     speaker: str | None = None) -> str:
-        bus, db = self.j.bus, self.j.db
+        bus, db = self.bus, self.j.db
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
@@ -135,8 +160,10 @@ class JarvisBrain:
         content = self._attachment_blocks(attachments) + [{"type": "text", "text": f"{tag}\n{note}{text}"}]
         rollback_to = len(self.messages)
         self.messages.append({"role": "user", "content": content})
-        db.add_transcript("user", text)
-        qt = self.j.quality.begin(text, mode)  # conversation-quality metrics; never raises (see conversation_quality.py)
+        if not self.team:  # a team session is never written to the owner's transcript or metrics
+            db.add_transcript("user", text)
+        qt = (TurnRecord(self.j.quality, None, mode) if self.team  # a record with no id measures nothing
+              else self.j.quality.begin(text, mode))  # conversation-quality metrics; never raises (see conversation_quality.py)
         bus.publish("user_message", {"text": text, "mode": mode,
                                      "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode, "turn_id": qt.turn_id})
@@ -174,8 +201,9 @@ class JarvisBrain:
                     del self.messages[rollback_to:]
                     msg = "I'm afraid I can't help with that one."
                     bus.publish("reply", {"text": msg, "mode": mode, "replace": True, "turn_id": qt.turn_id,
-                                          **self.j.trace.finish()})
-                    db.add_transcript("assistant", msg)
+                                          **self._trace_extras()})
+                    if not self.team:
+                        db.add_transcript("assistant", msg)
                     qt.finish(msg)
                     return msg
 
@@ -224,7 +252,13 @@ class JarvisBrain:
             return "Sorry, something went wrong on my side."
 
         reply = "".join(reply_parts).strip()
-        db.add_transcript("assistant", reply)
+        if not self.team:
+            db.add_transcript("assistant", reply)
         qt.finish(reply)
-        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **self.j.trace.finish()})
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **self._trace_extras()})
         return reply
+
+    def _trace_extras(self) -> dict[str, Any]:
+        """Source line / pop-up button / follow-ups for the reply: the owner's trace, or the team session's own."""
+        trace = self.trace if self.team else self.j.trace
+        return trace.finish() if trace is not None else {}

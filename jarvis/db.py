@@ -295,7 +295,9 @@ CREATE TABLE IF NOT EXISTS background_calls (
     policy TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'running',
     result TEXT DEFAULT '',
-    delivery TEXT DEFAULT ''
+    delivery TEXT DEFAULT '',
+    requester TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT ''
 );
 -- One row per background engineering-agent run (self_improve / fixer / security_watch): progress, not results.
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -344,6 +346,11 @@ class Database:
         for col, ddl in (("superseded_by", "INTEGER"), ("supersedes", "INTEGER"), ("supersede_kind", "TEXT DEFAULT ''")):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE pending_actions ADD COLUMN {col} {ddl}")
+        # Team mode: who asked for a background call and in what role, so a team session only ever reads its own results.
+        bg_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(background_calls)").fetchall()}
+        for col in ("requester", "role"):
+            if col not in bg_cols:
+                self._conn.execute(f"ALTER TABLE background_calls ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
         issue_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(issues)").fetchall()}
         for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
             if col not in issue_cols:
@@ -684,9 +691,9 @@ class Database:
                      (key, value))
 
     # -- tools run in the background (services/async_tools.py) ---------------------------------
-    def add_background_call(self, tool: str, args_json: str, policy: str) -> int:
-        return self.execute("INSERT INTO background_calls (created_at, tool, args_json, policy) VALUES (?,?,?,?)",
-                            (now_iso(), tool, args_json, policy))
+    def add_background_call(self, tool: str, args_json: str, policy: str, requester: str = "", role: str = "") -> int:
+        return self.execute("INSERT INTO background_calls (created_at, tool, args_json, policy, requester, role) "
+                            "VALUES (?,?,?,?,?,?)", (now_iso(), tool, args_json, policy, requester, role))
 
     def finish_background_call(self, call_id: int, status: str, result: str) -> None:
         self.execute("UPDATE background_calls SET status = ?, result = ?, finished_at = ? WHERE id = ?",
@@ -695,9 +702,17 @@ class Database:
     def set_background_delivery(self, call_id: int, delivery: str) -> None:
         self.execute("UPDATE background_calls SET delivery = ? WHERE id = ?", (delivery, call_id))
 
-    def background_calls(self, limit: int = 10, call_id: int | None = None) -> list[dict[str, Any]]:
+    def background_calls(self, limit: int = 10, call_id: int | None = None,
+                         requester: str | None = None) -> list[dict[str, Any]]:
+        """Newest first. ``requester`` (a team session's label) restricts the rows to that requester's own calls; None means
+        everyone's (the owner and managers, who can see what anyone asked for)."""
         if call_id is not None:
+            if requester is not None:
+                return self.query("SELECT * FROM background_calls WHERE id = ? AND requester = ?", (call_id, requester))
             return self.query("SELECT * FROM background_calls WHERE id = ?", (call_id,))
+        if requester is not None:
+            return self.query("SELECT * FROM background_calls WHERE requester = ? ORDER BY id DESC LIMIT ?",
+                              (requester, limit))
         return self.query("SELECT * FROM background_calls ORDER BY id DESC LIMIT ?", (limit,))
 
     def interrupt_stale_background_calls(self) -> None:

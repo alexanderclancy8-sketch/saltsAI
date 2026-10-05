@@ -87,8 +87,11 @@ def clean_follow_ups(items: Any) -> list[str]:
 
 
 class TurnTrace:
-    def __init__(self, j) -> None:
+    def __init__(self, j, panels: Any = None) -> None:
+        """``panels``: the pop-ups this trace may ever point at (a team session's trace is limited to the ones its console
+        has); None means all of them, as for the owner."""
         self.j = j
+        self.allowed = frozenset(PANELS if panels is None else panels)
         self.active = False
         self._reset()
 
@@ -125,14 +128,14 @@ class TurnTrace:
         for s in sources:
             if s not in self.sources:
                 self.sources.append(s)
-        if panel:
+        if panel and panel in self.allowed:
             self.panels.append(panel)
 
     def offer(self, panel: str | None, follow_ups: list[str]) -> None:
         """The offer_next_steps tool: what the model chose to suggest. Ignored outside a turn."""
         if not self.active:
             return
-        if panel in PANELS:
+        if panel in PANELS and panel in self.allowed:
             self.offered_panel = panel
         self.follow_ups = clean_follow_ups(follow_ups)
 
@@ -157,7 +160,7 @@ class TurnTrace:
             sources.append(f"{s} (demo data)" if demo else s)
         # Something waiting for the owner's click beats everything else; then what the model asked for; then the
         # pop-up of the tool used most (the last one on a tie, i.e. what he looked at most recently).
-        if self._queued_something():
+        if "approvals" in self.allowed and self._queued_something():
             panel = "approvals"
         elif self.offered_panel:
             panel = self.offered_panel

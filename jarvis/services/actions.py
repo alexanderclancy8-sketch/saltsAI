@@ -20,6 +20,7 @@ import re
 import time
 from typing import Any
 
+from .. import access
 from ..db import Database
 from ..events import EventBus
 from ..integrations.microsoft365 import text_to_html
@@ -93,7 +94,16 @@ class ActionExecutor:
         record it as approved by that standing approval and run it. Everything else waits for a human."""
         # The payload that is judged is the payload that is stored and run: the canonical JSON form of it.
         payload = json.loads(json.dumps(payload))
-        decision = self._standing_decision(kind, payload)
+        caller = access.current_caller.get()
+        if caller is not None and caller.is_team:
+            # Asked for by a team member (Team mode). It always waits for a human: the owner's standing approvals were
+            # given for the owner's own requests, never for someone else's, so they are not even consulted. The requester is
+            # recorded in the payload and named on the card, so whoever approves knows who asked.
+            payload["requested_by"] = caller.label
+            summary = f"{summary} (asked for by {caller.label})"
+            decision = None
+        else:
+            decision = self._standing_decision(kind, payload)
         if decision is not None and decision.category:
             action_id = self.db.create_action(kind, summary, payload, status="approved",
                                               approved_by=sa.APPROVER_PREFIX + decision.category)

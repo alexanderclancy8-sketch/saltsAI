@@ -1,25 +1,36 @@
-"""Owner authentication for the HUD/API and the staff reporting key.
+"""Authentication for the HUD/API and the staff reporting key.
 
 The HUD exposes email, finances and staff data, so it is always protected:
 with JARVIS_OWNER_PASSWORD set, a signed session cookie is required; without
 one, Jarvis only answers requests from the local machine. On Azure, managers
 listed in MANAGER_EMAILS can also get in through App Service's Microsoft sign-in.
+
+Team mode adds a third kind of session for engineers and office staff: a team access code the owner sets (never stored
+in the clear, see services/team_access.py) is exchanged at /login/team for a SEPARATE cookie (``TEAM_COOKIE``) signed with a
+key of its own, so a team cookie can never satisfy ``is_owner`` / ``is_principal_owner`` and an owner cookie is not a team
+one. ``role_of`` is the one place a connection is turned into a role (jarvis/access.py); ``is_owner`` and
+``is_principal_owner`` are unchanged and still mean owner-or-manager / the owner themself.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import time
 
 from fastapi import HTTPException, Request, WebSocket
 
+from . import access
 from .config import Settings
 
 COOKIE = "jarvis_session"
 SESSION_DAYS = 30
+TEAM_COOKIE = "jarvis_team_session"
+TEAM_SESSION_DAYS = 7
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
 
@@ -131,3 +142,53 @@ def staff_key_ok(settings: Settings, key: str | None, conn: Request) -> bool:
 
 def new_state() -> str:
     return secrets.token_urlsafe(24)
+
+
+# ---------------------------------------------------------------------------------------------------- team sessions
+def _team_key(settings: Settings, code_digest: str) -> bytes:
+    """The signing key for team cookies. It includes the stored digest of the team access code, so changing or switching
+    off the code signs every team session out at once, and it is not derivable from JARVIS_SECRET_KEY alone (whose default
+    is a known string)."""
+    return hashlib.sha256(f"jarvis-team-session|{settings.jarvis_secret_key}|{code_digest}".encode()).digest()
+
+
+def make_team_session(settings: Settings, code_digest: str, name: str) -> str:
+    """A signed cookie value for a team member: name, a random session id and an expiry. Returns "" if team access is off."""
+    if not code_digest:
+        return ""
+    body = base64.urlsafe_b64encode(json.dumps(
+        {"n": access.clean_name(name), "s": secrets.token_hex(8), "e": int(time.time()) + TEAM_SESSION_DAYS * 86400},
+        separators=(",", ":")).encode()).decode().rstrip("=")
+    return f"{body}.{hmac.new(_team_key(settings, code_digest), body.encode(), hashlib.sha256).hexdigest()}"
+
+
+def read_team_session(settings: Settings, code_digest: str, token: str | None) -> access.Caller | None:
+    """The team member a cookie value stands for, or None (no team access set, bad signature, expired, malformed)."""
+    if not code_digest or not token or "." not in token:
+        return None
+    body, sig = token.rsplit(".", 1)
+    if not hmac.compare_digest(sig, hmac.new(_team_key(settings, code_digest), body.encode(), hashlib.sha256).hexdigest()):
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("e"), int) or data["e"] <= time.time():
+        return None
+    name, sid = access.clean_name(str(data.get("n") or "")), str(data.get("s") or "")
+    if not name or not sid.isalnum():
+        return None
+    return access.Caller(access.TEAM, name, sid)
+
+
+def role_of(settings: Settings, conn: Request | WebSocket, owner_email: str, team_digest: str = "") -> access.Caller | None:
+    """What the signed-in person on this connection is: the owner, a manager, a team member, or None (not signed in).
+
+    Owner and manager come from exactly the same checks as before (``is_principal_owner`` / ``is_owner``); a team session
+    only counts when neither of those holds, so there is no way for a team cookie to be mistaken for more."""
+    if is_principal_owner(settings, conn, owner_email):
+        return access.Caller(access.OWNER)
+    if is_owner(settings, conn):
+        manager = signed_in_manager(settings, conn)
+        return access.Caller(access.MANAGER, settings.person(manager) if manager else "")
+    return read_team_session(settings, team_digest, conn.cookies.get(TEAM_COOKIE))

@@ -14,13 +14,16 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import html as html_lib
+
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from starlette.requests import HTTPConnection
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Any
 
-from . import auth
+from . import access, auth
 from .brain.prompts import address_for
 from .config import Settings, get_settings
 from .core import Jarvis
@@ -32,6 +35,7 @@ from .redact import install_log_redaction, redact_text
 from .services import approval_inbox, connection_tests, documents, images
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
+from .services.team_access import CodeRejected
 from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
 from .settings_store import AZURE_VOICES, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
@@ -92,6 +96,20 @@ class SettingsIn(BaseModel):
     clear: list[str] = []
 
 
+class TeamCodeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=200)
+
+
+class _NoQuality:
+    """Stands in for the conversation-quality recorder where a team member's activity must not be recorded."""
+
+    def record_event(self, *a, **k) -> bool:
+        return False
+
+    def note_stt(self, *a, **k) -> None:
+        return None
+
+
 def carry_conversation(old: Jarvis, new: Jarvis) -> None:
     """Keep the conversation going when Jarvis is rebuilt with new settings."""
     if type(old.brain) is type(new.brain):
@@ -140,7 +158,39 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             await old.stop()
             log.info("Settings applied; Jarvis reloaded.")
 
-    app = FastAPI(title="Salts Jarvis", lifespan=lifespan, docs_url=None, redoc_url=None)
+    def caller_of(conn: HTTPConnection) -> access.Caller | None:
+        """Who is signed in on this connection: owner, manager, team member, or None. One answer per request, cached."""
+        cached = conn.scope.setdefault("state", {})
+        if "caller" not in cached:
+            j = getattr(conn.app.state, "j", None)
+            digest = j.team_access.digest() if j is not None else ""
+            cached["caller"] = auth.role_of(settings, conn, trusted_owner_email, digest)
+        return cached["caller"]
+
+    async def guard(conn: HTTPConnection) -> None:
+        """Team mode, enforced on the backend for EVERY route: the matched route is looked up in access.ROUTE_POLICY and the
+        request is refused (401 not signed in, 403 not for this role) before any handler runs. A route that is not in the
+        table is refused to everyone - default deny - and tests/test_team_mode.py fails if one exists. WebSocket routes check
+        the same table in their own handler (they close with 4401 rather than raise)."""
+        if conn.scope["type"] != "http":
+            return
+        route = conn.scope.get("route")
+        key = access.route_key("http", conn.scope.get("method"), getattr(route, "path", conn.scope.get("path", "")))
+        level = access.ROUTE_POLICY.get(key)
+        if level is None:
+            raise HTTPException(status_code=403, detail="That isn't available.")
+        if level in (access.PUBLIC, access.PAGE):
+            return
+        caller = caller_of(conn)
+        if caller is None:
+            raise HTTPException(status_code=401, detail="Not signed in")
+        if not access.role_meets(caller.role, level):
+            raise HTTPException(status_code=403, detail="That isn't available in the team version of Jarvis."
+                                if caller.is_team else "Only the owner can do that.")
+
+    # openapi.json would publish the whole route list to anyone; the interactive docs are already switched off.
+    app = FastAPI(title="Salts Jarvis", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None,
+                  dependencies=[Depends(guard)])
     app.mount("/static", StaticFiles(directory=WEB), name="static")
 
     def J(request: Request) -> Jarvis:  # noqa: N802
@@ -149,13 +199,39 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     def owner(request: Request) -> None:
         auth.require_owner(settings, request)
 
+    def member(request: Request) -> None:
+        """Any signed-in role, team included (routes classified TEAM_OK)."""
+        if caller_of(request) is None:
+            raise HTTPException(status_code=401, detail="Not signed in")
+
+    def principal(request: Request) -> None:
+        """The principal owner only (routes classified OWNER_ONLY)."""
+        caller = caller_of(request)
+        if caller is None:
+            raise HTTPException(status_code=401, detail="Not signed in")
+        if caller.role != access.OWNER:
+            raise HTTPException(status_code=403, detail="Only the owner can do that.")
+
+    def brain_of(request: Request):
+        """(brain, bus) for whoever is asking: the owner's shared ones, or the team session's own private pair."""
+        caller = caller_of(request)
+        if caller is not None and caller.is_team:
+            session = J(request).team_sessions.get(caller)
+            return session.brain, session.bus
+        return J(request).brain, J(request).bus
+
     def human_click(request: Request) -> None:
         """CSRF guard (auth.require_same_origin) for every endpoint that changes what Jarvis does or knows."""
         auth.require_same_origin(settings, request)
 
     def speaker(conn: Request | WebSocket) -> str | None:
+        caller = caller_of(conn)
+        if caller is not None and caller.is_team:
+            return caller.label  # "Sam (team)": named on the turn, in the van look-up log and on any queued request
         email = auth.signed_in_manager(settings, conn)
         return settings.person(email) if email else None
+
+    login_failures: dict[str, deque] = defaultdict(deque)  # client address -> times of recent wrong team codes
 
     # ------------------------------------------------------------------ pages
     @app.get("/healthz")
@@ -164,9 +240,20 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        if not auth.is_owner(settings, request):
+        caller = caller_of(request)
+        if caller is None:
             return RedirectResponse("/login")
-        return FileResponse(WEB / "index.html")
+        # The role goes into the page itself (hud.js reads it to build the right console, and it also hides what a role
+        # must not see before the first paint). It is only a presentation hint: every route enforces the role itself.
+        page = (WEB / "index.html").read_text(encoding="utf-8").replace(
+            '<body class="app"', f'<body class="app" data-role="{caller.role}" data-who="{html_lib.escape(caller.name)}"', 1)
+        return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/me", dependencies=[Depends(member)])
+    async def me(request: Request):
+        caller = caller_of(request)
+        return {"role": caller.role, "name": caller.name, "label": access.ROLE_LABEL[caller.role],
+                "features": access.FEATURES[caller.role]}
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page():
@@ -182,12 +269,37 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                         samesite="lax", secure=settings.public_base_url.startswith("https"))
         return resp
 
+    @app.post("/login/team")
+    async def login_team(request: Request, name: str = Form(""), code: str = Form(...)):
+        """Team sign-in: a name and the team access code the owner set in Settings. The cookie it gives is a team session
+        and nothing more (auth.read_team_session / access.ROUTE_POLICY). Wrong codes are slowed down and rate-limited."""
+        ip = request.client.host if request.client else "?"
+        window, now = login_failures[ip], time.time()
+        while window and now - window[0] > 900:
+            window.popleft()
+        if len(window) >= 8:
+            return RedirectResponse("/login?team=1&error=wait", status_code=303)
+        j = J(request)
+        who = access.clean_name(name)
+        if not who:
+            return RedirectResponse("/login?team=1&error=name", status_code=303)
+        if not j.team_access.verify(code):
+            window.append(now)
+            await asyncio.sleep(1.5)  # slow down guessing
+            return RedirectResponse("/login?team=1&error=1", status_code=303)
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(auth.TEAM_COOKIE, auth.make_team_session(settings, j.team_access.digest(), who),
+                        max_age=auth.TEAM_SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                        secure=settings.public_base_url.startswith("https"))
+        return resp
+
     @app.post("/logout")
     async def logout(request: Request):
         # Microsoft sign-in users are signed out of App Service too, or they'd walk straight back in.
         target = "/.auth/logout" if auth.signed_in_manager(settings, request) else "/login"
         resp = RedirectResponse(target, status_code=303)
         resp.delete_cookie(auth.COOKIE)
+        resp.delete_cookie(auth.TEAM_COOKIE)
         return resp
 
     @app.get("/report", response_class=HTMLResponse)
@@ -206,11 +318,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         except Exception as e:  # noqa: BLE001
             log.warning("reply learning skipped: %s", e)
 
-    @app.post("/api/chat", dependencies=[Depends(owner)])
+    @app.post("/api/chat", dependencies=[Depends(member)])
     async def chat(body: ChatIn, request: Request):
-        learn_reply(J(request), body.text, body.mode, body.compose, body.attachments)
-        reply = await J(request).brain.ask(body.text, "voice" if body.mode == "voice" else "typed", body.attachments,
-                                           speaker=speaker(request))
+        brain, _ = brain_of(request)
+        team = caller_of(request).is_team
+        if not team:  # a team member's typing is never learned as the owner's usual replies
+            learn_reply(J(request), body.text, body.mode, body.compose, body.attachments)
+        reply = await brain.ask(body.text, "voice" if body.mode == "voice" else "typed", None if team else body.attachments,
+                                speaker=speaker(request))
         return {"reply": reply}
 
     # Same conversation, but for when the live WebSocket isn't available (e.g. it dropped and hasn't
@@ -219,13 +334,16 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     CHAT_STREAM_EVENTS = {"user_message", "thinking", "delta", "tool", "reply", "error", "stopped", "ask"}
     CHAT_STREAM_TERMINAL = {"reply", "error", "stopped"}
 
-    @app.post("/api/chat/stream", dependencies=[Depends(owner)])
+    @app.post("/api/chat/stream", dependencies=[Depends(member)])
     async def chat_stream(body: ChatIn, request: Request):
         j = J(request)
+        brain, bus = brain_of(request)  # a team member streams their own session's bus, never the owner's
+        team = caller_of(request).is_team
         mode = "voice" if body.mode == "voice" else "typed"
-        learn_reply(j, body.text, mode, body.compose, body.attachments)
-        q = j.bus.subscribe()
-        task = asyncio.create_task(j.brain.ask(body.text, mode, body.attachments, speaker=speaker(request)))
+        if not team:
+            learn_reply(j, body.text, mode, body.compose, body.attachments)
+        q = bus.subscribe()
+        task = asyncio.create_task(brain.ask(body.text, mode, None if team else body.attachments, speaker=speaker(request)))
 
         async def events():
             # The bus carries every turn. This stream is for THIS one, which starts with its own user_message: what comes
@@ -250,7 +368,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     if msg["type"] in CHAT_STREAM_TERMINAL:
                         break
             finally:
-                j.bus.unsubscribe(q)
+                bus.unsubscribe(q)
                 if not task.done():
                     task.cancel()
                 with contextlib.suppress(BaseException):
@@ -259,16 +377,16 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    @app.post("/api/conversation/reset", dependencies=[Depends(owner)])
+    @app.post("/api/conversation/reset", dependencies=[Depends(member)])
     async def reset(request: Request):
-        J(request).brain.reset()
+        brain_of(request)[0].reset()  # a team member resets only their own conversation
         return {"ok": True}
 
-    @app.post("/api/interrupt", dependencies=[Depends(owner)])
+    @app.post("/api/interrupt", dependencies=[Depends(member)])
     async def interrupt(request: Request):
-        j = J(request)
-        stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
-        j.bus.publish("stopped", {"stopped": stopped})
+        brain, bus = brain_of(request)
+        stopped = await brain.interrupt() if hasattr(brain, "interrupt") else False
+        bus.publish("stopped", {"stopped": stopped})
         return {"stopped": stopped}
 
     # Learned replies for the chat box. A suggestion is only text the HUD may put in the input; nothing here sends
@@ -340,9 +458,26 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             log.warning("status %s failed: %s", label, e)
             return {"error": redact_text(f"{type(e).__name__}: {e}")[:200]}
 
-    @app.get("/api/status", dependencies=[Depends(owner)])
+    async def team_status(j: Jarvis, caller: access.Caller) -> dict[str, Any]:
+        """The team console's status: only what a team member may see, and ONLY those sources are read - nothing about
+        finance, approvals, mail, issues, tests, connections or settings is fetched, then dropped."""
+        board, overdue, presence = await asyncio.gather(
+            _safe(j.staff.board(), "staff"), _safe(j.staff.overdue_jobs(), "overdue"),
+            _safe(j.marketing.overview(30), "marketing"))
+        coming = [{"what": t["what"], "date": t["date"], "days_left": t["days_left"]}
+                  for t in j.accreditations.status()["timeline"]
+                  if t["days_left"] <= 60 and "insurance" not in str(t["what"]).lower()][:6]
+        data = {"generated_at": datetime.now().isoformat(timespec="seconds"), "staff": board, "overdue_jobs": overdue,
+                "presence": presence, "voice": j.voice.client_config(), "company": settings.company_name,
+                "role": caller.role, "who": caller.name, "accreditations": coming}
+        return {k: v for k, v in data.items() if k in access.TEAM_STATUS_KEYS}
+
+    @app.get("/api/status", dependencies=[Depends(member)])
     async def status(request: Request):
         j = J(request)
+        caller = caller_of(request)
+        if caller.is_team:
+            return await team_status(j, caller)
         if not j.ram.demo:  # RAM is set up: find out (at most every few minutes) whether it actually answers
             await _safe(j.ram.probe(), "RAM Tracking")
         data, presence, customers = await asyncio.gather(
@@ -358,14 +493,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                           "connected": isinstance(j.finance, SageFinance) and j.finance.connected})
         return data
 
-    @app.get("/api/tracking", dependencies=[Depends(owner)])
+    @app.get("/api/tracking", dependencies=[Depends(member)])
     async def tracking(request: Request):
         # The Fleet panel. Outside working hours this only shows vans if the owner's setting allows it, and then the
         # look-up is logged against whoever is signed in (the manager's name, or the owner's own display session).
         return await J(request).tracker.live(requester_label(settings, speaker(request)), tool="fleet_panel")
 
     # ------------------------------------------------------------------ voice
-    @app.post("/api/tts", dependencies=[Depends(owner)])
+    @app.post("/api/tts", dependencies=[Depends(member)])
     async def tts(body: TTSIn, request: Request):
         try:
             stream, mime = await J(request).voice.tts_stream(body.text, body.voice_id)
@@ -394,15 +529,16 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return JSONResponse({"detail": f"Couldn't reach Azure Speech ({type(e).__name__})."}, status_code=503)
         return StreamingResponse(stream, media_type=mime)
 
-    @app.post("/api/stt", dependencies=[Depends(owner)])
+    @app.post("/api/stt", dependencies=[Depends(member)])
     async def stt(request: Request, audio: UploadFile = File(...), engine: str | None = None):
         """engine (optional): try exactly this engine once - the browser drives retry and fallback across
         voice.stt_chain (see web/hud.js). Without it, the configured engine is used with one server-side retry."""
         data = await audio.read()
         j = J(request)
+        quality = _NoQuality() if caller_of(request).is_team else j.quality  # never the owner's metrics
         if not data:
             log.warning("STT upload was empty (filename=%s)", audio.filename)
-            j.quality.record_event("stt_empty", "no audio received")
+            quality.record_event("stt_empty", "no audio received")
             return JSONResponse({"detail": "No audio was received"}, status_code=400)
         if engine is not None and engine not in SERVER_ENGINES:
             return JSONResponse({"detail": f"Unknown speech-to-text engine '{engine[:20]}'"}, status_code=400)
@@ -415,31 +551,31 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 text = await j.voice.transcribe(data, audio.content_type or "audio/webm")
         except STTError as e:  # the provider failed - already logged in detail; say what went wrong and what to check
             # STTError subclasses VoiceError, so this branch must stay ahead of the VoiceError one.
-            j.quality.record_event("stt_failure", str(e))
+            quality.record_event("stt_failure", str(e))
             return JSONResponse({"detail": str(e), "provider": e.provider, "upstream_status": e.status,
                                  "transient": e.transient}, status_code=502)
         except VoiceError as e:
-            j.quality.record_event("stt_failure", str(e))
+            quality.record_event("stt_failure", str(e))
             return JSONResponse({"fallback": "browser", "detail": str(e)}, status_code=503)
         except Exception as e:  # noqa: BLE001 - anything unexpected: log it in full, never a bare 500
             log.exception("STT failed unexpectedly (%d bytes, %s)", len(data), audio.content_type)
-            j.quality.record_event("stt_failure", f"{type(e).__name__}: {e}")
+            quality.record_event("stt_failure", f"{type(e).__name__}: {e}")
             return JSONResponse({"detail": f"Unexpected speech-to-text error ({type(e).__name__}) - "
                                            "see the Jarvis server log."}, status_code=502)
         log.info("STT ok: %d bytes, %s, %d chars", len(data), audio.content_type, len(text or ""))
         if (text or "").strip():
-            j.quality.note_stt((time.monotonic() - started) * 1000, text)
+            quality.note_stt((time.monotonic() - started) * 1000, text)
         else:
-            j.quality.record_event("stt_empty")
+            quality.record_event("stt_empty")
         return {"text": text or "", "engine": engine or settings.effective_stt}
 
-    @app.get("/api/voices", dependencies=[Depends(owner)])
+    @app.get("/api/voices", dependencies=[Depends(member)])
     async def voices(request: Request):
         return await J(request).voice.list_voices()
 
     @app.websocket("/ws/stt")
     async def ws_stt(ws: WebSocket):
-        if not auth.is_owner(settings, ws):
+        if caller_of(ws) is None:  # any signed-in role (access.ROUTE_POLICY: WS /ws/stt)
             await ws.close(code=4401)
             return
         await ws.accept()
@@ -462,19 +598,32 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     # ------------------------------------------------------------------ live events
     @app.websocket("/ws")
     async def ws_events(ws: WebSocket):
-        if not auth.is_owner(settings, ws):
+        caller = caller_of(ws)
+        if caller is None:
             await ws.close(code=4401)
             return
         await ws.accept()
         j: Jarvis = ws.app.state.j
         who = speaker(ws)
-        q = j.bus.subscribe()
+        team = caller.is_team
+        # The owner's console shares the global bus. A team member's connection reads ONLY its own session's bus (their own
+        # turns) plus the global "reload" signal - never approvals, notifications, proactive posts, display or finance events
+        # - and the allowlist below is applied on top, so a stray event type could not get through either.
+        if team:
+            session = j.team_sessions.get(caller)
+            brain, bus = session.brain, session.bus
+            feeds = [(bus.subscribe(), bus, access.TEAM_EVENTS), (j.bus.subscribe(), j.bus, frozenset({"reload"}))]
+        else:
+            brain, bus = j.brain, j.bus
+            feeds = [(bus.subscribe(), bus, None)]
         running: set[asyncio.Task] = set()
         muted = False  # this session's mute button: Jarvis-initiated messages (see services/proactive.py) are not sent
 
-        async def pump():
+        async def pump(q, allow):
             while True:
                 msg = await q.get()
+                if allow is not None and msg["type"] not in allow:
+                    continue
                 if muted and msg["type"] == "proactive":
                     continue
                 await ws.send_json(msg)
@@ -484,11 +633,12 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             while True:
                 msg = await ws.receive_json()
                 if msg.get("type") == "chat" and msg.get("text"):
-                    learn_reply(j, str(msg["text"])[:20000], "voice" if msg.get("mode") == "voice" else "typed",
-                                msg.get("compose") is True, msg.get("attachments"))
-                    task =asyncio.create_task(j.brain.ask(msg["text"][:20000],
-                                                           "voice" if msg.get("mode") == "voice" else "typed",
-                                                           msg.get("attachments") or [], speaker=who))
+                    if not team:
+                        learn_reply(j, str(msg["text"])[:20000], "voice" if msg.get("mode") == "voice" else "typed",
+                                    msg.get("compose") is True, msg.get("attachments"))
+                    task = asyncio.create_task(brain.ask(msg["text"][:20000],
+                                                         "voice" if msg.get("mode") == "voice" else "typed",
+                                                         None if team else (msg.get("attachments") or []), speaker=who))
                     running.add(task)
                     task.add_done_callback(running.discard)
                 elif msg.get("type") == "ping":
@@ -496,16 +646,17 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 elif msg.get("type") == "proactive_mute":
                     muted = msg.get("muted") is True
                 elif msg.get("type") == "stop":
-                    stopped = await j.brain.interrupt() if hasattr(j.brain, "interrupt") else False
-                    j.bus.publish("stopped", {"stopped": stopped})
+                    stopped = await brain.interrupt() if hasattr(brain, "interrupt") else False
+                    bus.publish("stopped", {"stopped": stopped})
 
-        tasks = [asyncio.create_task(pump()), asyncio.create_task(listen())]
+        tasks = [asyncio.create_task(pump(q, allow)) for q, _bus, allow in feeds] + [asyncio.create_task(listen())]
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for t in tasks:
                 t.cancel()
-            j.bus.unsubscribe(q)
+            for q, source, _allow in feeds:
+                source.unsubscribe(q)
 
     # ------------------------------------------------------------------ drafted documents (PDF / Word)
     @app.get("/api/documents/{doc_id}/{fmt}", dependencies=[Depends(owner)])
@@ -854,7 +1005,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return {}
 
     # ------------------------------------------------------------------ settings page
-    def settings_view(j: Jarvis) -> dict[str, Any]:
+    def settings_view(j: Jarvis, request: Request | None = None) -> dict[str, Any]:
         base = settings.public_base_url.rstrip("/")
         context = {"base_url": base, "app_name": os.environ.get("WEBSITE_SITE_NAME", "salts-jarvis")}
         data = store.view(j.db, context)
@@ -869,6 +1020,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             "managers": sorted(settings.managers),
             "microsoft_signin": os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() == "true",
         }
+        # Team access (who may sign in to the cut-down console) is the principal owner's to see and change.
+        caller = caller_of(request) if request is not None else None
+        if caller is not None and caller.role == access.OWNER:
+            data["context"]["team_access"] = {**j.team_access.info(), "sessions": len(j.team_sessions)}
         return data
 
     @app.get("/api/staff-report-address", dependencies=[Depends(owner)])
@@ -881,7 +1036,36 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/settings", dependencies=[Depends(owner)])
     async def get_settings_page(request: Request):
-        return settings_view(J(request))
+        return settings_view(J(request), request)
+
+    # ---- team access: the code engineers and office staff sign in with. Principal owner only (access.ROUTE_POLICY), a
+    # same-origin click for the changes, and the code itself is never stored, returned or logged - only a salted hash.
+    @app.get("/api/team-access", dependencies=[Depends(principal)])
+    async def team_access_info(request: Request):
+        j = J(request)
+        return {**j.team_access.info(), "sessions": len(j.team_sessions)}
+
+    @app.post("/api/team-access", dependencies=[Depends(principal), Depends(human_click)])
+    async def team_access_set(body: TeamCodeIn, request: Request):
+        j = J(request)
+        try:
+            j.team_access.set_code(body.code, by="the owner")
+        except CodeRejected as e:
+            raise HTTPException(400, str(e)) from None
+        j.db.add_notification("info", "Team access code set", "Engineers and office staff can sign in at /login with the new "
+                              "code. Anyone signed in with the old one has been signed out.")
+        log.info("Team access code changed by the owner (previous team sessions are signed out).")
+        await j.team_sessions.close()  # the old code's sessions can't sign in again; drop their conversations too
+        return {**j.team_access.info(), "sessions": len(j.team_sessions)}
+
+    @app.delete("/api/team-access", dependencies=[Depends(principal), Depends(human_click)])
+    async def team_access_clear(request: Request):
+        j = J(request)
+        j.team_access.clear()
+        j.db.add_notification("info", "Team access switched off", "Nobody can sign in as team now, and anyone who was has been signed out.")
+        log.info("Team access switched off by the owner.")
+        await j.team_sessions.close()
+        return {**j.team_access.info(), "sessions": len(j.team_sessions)}
 
     @app.post("/api/settings", dependencies=[Depends(owner)])
     async def save_settings(body: SettingsIn, request: Request):
@@ -897,7 +1081,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
         await reload_jarvis(request.app)
-        data = settings_view(J(request))
+        data = settings_view(J(request), request)
         data["signed_out"] = "jarvis_owner_password" in body.values and bool(body.values["jarvis_owner_password"])
         return data
 
