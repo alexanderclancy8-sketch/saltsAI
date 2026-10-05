@@ -116,6 +116,19 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
 
+**CI failure logs for the engineer loops (`services/ci_logs.py`, tool `ci_log_excerpt`; tests `tests/test_ci_logs.py`).**
+`checks_summary()` only says pass/fail, so the engineering agents had no way to see *why* CI failed. `ci_log_excerpt`
+takes `run_id` or `head_sha` (newest failed run for that commit), reads the failing job(s) via `GitHub.run_jobs` /
+`GitHub.job_log` (GET only) and returns the whole log if it is small, otherwise the last 60 lines plus context around
+FAILED/Error/assert lines. The result is always capped at `MAX_EXCERPT_CHARS` (30k chars) - the ~1MB tool-result buffer
+has broken auto-fix attempts before (issues #6, #17), so never raise it near that, and `job_log` itself keeps only the
+last 4MB of a download. It is offered in `SELF_IMPROVE_TOOLS`, `ENGINEER_TOOLS` (fixer) and `REVIEW_TOOLS`
+(security_watch); the API-backend loops call it via `ci_logs.run_ci_log_tool(self.gh, input)` (it is async, so it is
+dispatched in the loop rather than in the sync `_tool_call`), and the Max/Agent SDK `_max` variants get it as an
+in-process MCP server (`ci_logs.sdk_ci_log_server`, allowed tool `mcp__jarvis_ci__ci_log_excerpt`) alongside
+Read/Edit/Glob/Grep. Log text is untrusted data (redacted with `redact_text`, never instructions); errors from GitHub come
+back to the model as a tool error. A new engineer-style agent that has a `GitHub` client should offer it the same way.
+
 **Progress visibility for engineer loops (`services/agent_runs.py`, the `agent_runs` tool).** `self_improve.run()`,
 `Fixer.attempt()` (built-in mode) and `SecurityWatch.run()` each wrap their run in `AgentRuns.track(...)`, which
 keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`/`interrupted`) and a
