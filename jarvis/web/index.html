@@ -199,6 +199,10 @@
       <div class="sec">
         <h3>Vehicle tracking <span class="count" id="map-note"></span></h3>
         <div class="fleet-note" id="fleet-status"></div>
+        <div class="map-toggle" id="map-toggle" role="group" aria-label="Map style" hidden>
+          <button type="button" data-basemap="satellite" aria-pressed="true">Satellite</button>
+          <button type="button" data-basemap="street" aria-pressed="false">Map</button>
+        </div>
         <div id="map"></div>
         <ul class="list" id="fleet-list"></ul>
       </div>

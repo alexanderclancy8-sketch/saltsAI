@@ -28,6 +28,9 @@ RETENTION_DAYS = 7
 MAX_RUNS_SHOWN = 40       # runs listed per check when its line is opened
 DETAIL_CHARS = 200
 PRUNE_EVERY = 50          # old rows are deleted once in this many recorded runs
+# Jobs whose lines only the principal owner may see (summary(owner=True)): a manager or team member's console never lists them.
+# "engineer_homes" is the audit of who had a home point set or cleared - the existence of a home is personal data.
+OWNER_ONLY_JOBS = frozenset({"engineer_homes"})
 
 
 def _clean(text: Any) -> str:
@@ -60,14 +63,17 @@ class ActivityLog:
         except Exception:  # noqa: BLE001
             log.exception("Could not record the activity of %s", key)
 
-    def summary(self, now: datetime | None = None) -> dict[str, Any]:
-        """Today's runs (since local midnight) grouped per check, most recently run first."""
+    def summary(self, now: datetime | None = None, owner: bool = False) -> dict[str, Any]:
+        """Today's runs (since local midnight) grouped per check, most recently run first. The owner-only jobs
+        (OWNER_ONLY_JOBS) are left out unless ``owner`` is True, which only the principal owner's request passes."""
         tz = self._tz()
         local_now = (now or datetime.now(timezone.utc)).astimezone(tz)
         midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
         rows = self.j.db.check_runs_since(midnight.astimezone(timezone.utc).isoformat(timespec="seconds"))
         jobs: dict[str, dict[str, Any]] = {}
         for r in rows:
+            if r["job_key"] in OWNER_ONLY_JOBS and not owner:
+                continue
             try:
                 at = datetime.fromisoformat(r["ran_at"]).astimezone(tz)
             except ValueError:

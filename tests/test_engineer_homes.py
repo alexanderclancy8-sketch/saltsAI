@@ -720,7 +720,7 @@ def test_removing_an_engineer_from_the_list_prunes_the_point_through_the_schedul
 # ==================================================================================== not a tool, and never exported
 BRAIN_AND_SERVICE_FILES = [p for p in list((ROOT / "jarvis" / "brain").glob("*.py")) + list((ROOT / "jarvis" / "services").glob("*.py"))
                            + list((ROOT / "jarvis" / "integrations").glob("*.py")) + [ROOT / "jarvis" / "access.py"]]
-ALLOWED_HOME_USERS = {"engineer_homes.py", "tracking.py", "scheduler.py", "access.py"}  # access.py: the route policy
+ALLOWED_HOME_USERS = {"engineer_homes.py", "tracking.py", "scheduler.py", "access.py", "activity.py"}  # access.py: the route policy; activity.py: the audit job key
 
 
 def test_no_brain_code_service_or_integration_can_reach_the_home_points():
@@ -758,7 +758,7 @@ def test_nothing_that_dumps_tables_or_settings_exists_so_the_table_cannot_be_exp
     src = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "jarvis").rglob("*.py")}
     users = sorted(n for n, t in src.items() if "engineer_homes" in t)
     assert users == ["access.py", "core.py", "db.py", "engineer_homes.py", "main.py", "scheduler.py", "tracking.py"] or \
-        set(users) <= {"access.py", "core.py", "db.py", "engineer_homes.py", "main.py", "scheduler.py", "tracking.py"}, users
+        set(users) <= {"access.py", "activity.py", "core.py", "db.py", "engineer_homes.py", "main.py", "scheduler.py", "tracking.py"}, users
 
 
 def test_the_staff_report_the_memory_book_the_status_and_the_archive_carry_none_of_it(app):
@@ -777,3 +777,32 @@ def test_claude_md_documents_the_data_and_how_to_purge_it():
     text = " ".join((ROOT / "CLAUDE.md").read_text(encoding="utf-8").split())
     assert "Engineer home points" in text and "DELETE FROM engineer_homes" in text and "engineer_homes_retention" in text
     assert "never a postcode" in text and "NOT a tool" in text
+
+
+def test_the_audit_lines_are_shown_only_to_the_principal_owner_never_to_a_manager_or_team(app, monkeypatch):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    app.settings.manager_emails = MANAGER
+    manager = {"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": MANAGER}
+    owner = app.owner()
+    owner.post("/api/engineer-homes", json={"engineer": "Dan Harper", "postcode": POSTCODE})
+    app.j.activity.record("pr_watch", "Pull request watch", "no_change", "No change.")   # an ordinary check still shows to all
+
+    def lines(client, **kw):
+        r = client.get("/api/status", **kw)
+        assert r.status_code == 200
+        activity = r.json().get("activity", {})          # (the rest of the status names staff on the board, as it always did)
+        return json.dumps(activity), [j["key"] for j in activity.get("jobs", [])]
+
+    text, keys = lines(owner)
+    assert "engineer_homes" in keys and "pr_watch" in keys
+    assert "Home point set for Dan Harper by the owner" in text
+    text, keys = lines(app.anon(), headers=manager)                                     # a real manager, same endpoint
+    assert keys == ["pr_watch"] and "engineer_homes" not in text and "Dan Harper" not in text and "Engineer homes" not in text
+    text, keys = lines(app.team())                                                        # team never gets the activity at all
+    assert keys == [] and text == "{}"
+
+
+def test_activity_summary_hides_owner_only_jobs_by_default(app):
+    app.j.homes.audit("set", "Home point set for Dan Harper by the owner")
+    assert [j["key"] for j in app.j.activity.summary()["jobs"]] == []
+    assert [j["key"] for j in app.j.activity.summary(owner=True)["jobs"]] == ["engineer_homes"]

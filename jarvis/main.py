@@ -496,7 +496,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     approvals=approval_inbox.pending_for_display(j.db),
-                    activity=j.activity.summary(),
+                    activity=j.activity.summary(owner=caller.role == access.OWNER),
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
                     resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
