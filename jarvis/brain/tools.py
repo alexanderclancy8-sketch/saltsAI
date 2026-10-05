@@ -1612,8 +1612,10 @@ def _asker(j) -> str:
 
 async def engineer_locations(j, a: NoInput):
     data = await j.tracker.live(_asker(j))
-    j.bus.publish("map", data)
-    return data
+    j.bus.publish("map", data)  # the display's map needs the positions
+    # What the MODEL is given never pins down an engineer's home: a van that is at home (the owner's home point, or RAM's
+    # label) is reported as "home" without its coordinates - the van's position would otherwise BE the home address.
+    return {**data, "engineers": [({**e, "lat": None, "lng": None} if e.get("at_home") else e) for e in data.get("engineers", [])]}
 
 
 async def who_is_home(j, a: NoInput):
@@ -2295,16 +2297,18 @@ TOOLS: list[Tool] = [
     Tool("stock_job_materials", "Materials issued to a job and their cost (for job costing).", JobRefIn,
          stock_job_materials, "Costing job materials"),
     Tool("engineer_locations", "Live engineer/van locations from Salts FSM tracking: where everyone is, on site or "
-                               "not, ETA to next job, and RAM's address label for each van (a home label is shown "
-                               "only as 'home'; address_label is null when RAM supplies none). Also puts the map "
+                               "not, ETA to next job, and whether each van is at home (at_home: true is shown as "
+                               "'home' with no position - never say where; null means no home is set for that "
+                               "engineer and RAM sent no label). Also puts the map "
                                "on the display. Outside working hours (Mon-Fri 07:00-18:30) it shows nothing unless "
                                "the owner has allowed it in Settings (on-call engineers only, or everyone); the "
                                "result's note says which, and such look-ups are logged.", NoInput,
          engineer_locations, "Locating the team"),
-    Tool("who_is_home", "Which engineers are at home (RAM's van address label says home), which are out, which "
-                        "vans have no address label, and who has no recent position. Working hours, or outside "
-                        "them only where the owner's setting allows it (logged). Say "
-                        "'home' only - never read out or guess a home address.", NoInput, who_is_home,
+    Tool("who_is_home", "Which engineers are at home (their van is at the home point the owner set for them, or RAM's "
+                        "label says home), which are away, which have no home set and no RAM label (so can't be told), "
+                        "and who has no recent position. Working hours, or outside them only where the owner's setting "
+                        "allows it (logged). Say 'home' only - never read out or guess where anyone lives.",
+         NoInput, who_is_home,
          "Checking who's home"),
     Tool("oncall_roster", "Who is on call and when (the on-call roster), plus the owner's current setting for van "
                           "locations outside working hours. Read-only.", NoInput, oncall_roster,

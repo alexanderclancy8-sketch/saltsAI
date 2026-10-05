@@ -121,6 +121,9 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("conversation quality retention", j.quality.prune_job),
                   cron_trigger("20 3 * * *", timezone=s.timezone), id="conversation_quality_retention",
                   max_instances=1, coalesce=True)
+    sched.add_job(_guard("engineer homes retention", j.homes.maintain),  # forgets the home of anyone off the staff list
+                  cron_trigger("25 3 * * *", timezone=s.timezone), id="engineer_homes_retention",
+                  max_instances=1, coalesce=True)
     sched.add_job(_guard("weekly digest", j.weekly_digest.scheduled),
                   cron_trigger(s.weekly_digest_cron, timezone=s.timezone), id="weekly_digest",
                   max_instances=1, coalesce=True)

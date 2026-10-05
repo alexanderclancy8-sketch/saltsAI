@@ -9,10 +9,17 @@ Outside working hours van locations stay hidden ("private use") unless the OWNER
 caller must say who is asking (`asked_by` - an unattributed background caller is treated as "off"), the look-up is
 logged per engineer (db.location_lookup_log) BEFORE anything is returned, and if the log can't be written nothing is
 shown. A missing setting, missing database or unknown value all mean "off".
+
+"At home": RAM's public API supplies no address labels, so `at_home` comes from the owner's engineer home points
+(services/engineer_homes.py - a rounded map point per engineer, set by the owner in Settings, never a postcode): a van
+within the owner's radius of its driver's point is "home". A RAM label containing the word home still counts, but only as a
+fallback when RAM supplies one. Whatever the signal, a van at home is shown as just "home" - never a street, a point or a
+distance - and the point itself never leaves `EngineerHomes` (nothing here returns it).
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from datetime import date, datetime, time, timedelta
@@ -22,6 +29,8 @@ import httpx
 
 from ..integrations.ramtracking import RamError
 from .oncall import OnCallRoster, name_matches
+
+log = logging.getLogger(__name__)
 
 OOH_MODES = ("off", "on_call", "always")
 PANEL_LOG_MINUTES = 10  # the Fleet panel refreshes every minute: log it once per engineer per this many minutes
@@ -54,6 +63,21 @@ def label_status(label: Any, site_names: Any = ()) -> tuple[str | None, bool | N
     return text[:MAX_LABEL_CHARS], False
 
 
+def combine_home(shown: tuple[str | None, bool | None], state: bool | None) -> tuple[str | None, bool | None]:
+    """(label to show, at_home) from the RAM label result (`label_status`) and the home-point result (`state`: True within the
+    radius of the driver's stored home, False elsewhere, None no home point for them). At home by either signal is shown as
+    just "home" when it came from the point (RAM's label for a van parked at home could be the street); a home point makes
+    "not at home" a definite answer, no home point and no label leaves it unknown (None)."""
+    label, at_home = shown
+    if state is True:
+        return "home", True
+    if at_home is True:
+        return label, True            # RAM's own label says home (fallback; only exists when RAM supplies labels)
+    if state is False:
+        return label, False
+    return label, at_home             # no home point: whatever the label said (False) or unknown (None)
+
+
 def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     lat1, lng1, lat2, lng2 = map(math.radians, (a[0], a[1], b[0], b[1]))
     h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
@@ -82,7 +106,7 @@ def requester_label(settings: Any, speaker: str | None, quiet: bool = False) -> 
 
 class Tracker:
     def __init__(self, fsm, http: httpx.AsyncClient, ram=None, register=None, tolerance_min: int = 30,
-                 settings=None, db=None):
+                 settings=None, db=None, homes=None):
         self.fsm = fsm
         self.http = http
         self.ram = ram  # RAM Tracking (or demo stand-in) - journeys and positions from the vans
@@ -91,6 +115,7 @@ class Tracker:
         self.settings = settings  # for van_locations_out_of_hours; None = always "off"
         self.db = db  # for the out-of-hours look-up log and the on-call roster; None = always "off"
         self.roster = OnCallRoster(db) if db is not None else None
+        self.homes = homes  # EngineerHomes: the owner's home points; None = only RAM's label can say "home"
 
     @property
     def demo(self) -> bool:
@@ -138,6 +163,16 @@ class Tracker:
         else:
             why = "Outside working hours - locations are not shown (private use)."
         return {"working_hours": False, "visible": False, "engineers": [], "sites": [], "note": why}
+
+    def _home_state(self, engineer: Any, here: tuple[float, float] | None) -> bool | None:
+        """Within the radius of this engineer's home point? (True / False, or None with no point.) Never raises."""
+        if self.homes is None:
+            return None
+        try:
+            return self.homes.state(engineer, here)
+        except Exception as e:  # noqa: BLE001 - a broken home table must not take the Fleet panel down
+            log.warning("Home check failed (%s)", type(e).__name__)
+            return None
 
     async def _sites(self) -> dict[str, tuple[float, float]]:
         out = {}
@@ -190,7 +225,8 @@ class Tracker:
             nxt = next((j for j in sorted(jobs, key=lambda j: str(j.get("scheduled_start")))
                         if j.get("engineer") == p.get("engineer")
                         and str(j.get("status")).lower() in ("scheduled", "assigned", "booked")), None)
-            label, at_home = label_status(p.get("address_label"), sites)
+            label, at_home = combine_home(label_status(p.get("address_label"), sites),
+                                          self._home_state(p.get("engineer"), here))
             row = {"engineer": p.get("engineer"), "vehicle": p.get("vehicle"), "lat": here[0], "lng": here[1],
                    "address_label": label, "at_home": at_home,
                    "status": p.get("status"), "speed_mph": p.get("speed_mph"),
@@ -229,10 +265,10 @@ class Tracker:
                     for name, vans in vans_by_engineer.items() if len(vans) > 1]
         if warnings:
             out["warnings"] = warnings
-        unlabelled = [str(r.get("engineer") or r.get("vehicle")) for r in rows if r["address_label"] is None]
-        if unlabelled:
-            out["address_label_note"] = ("RAM Tracking didn't supply an address label for: "
-                                         f"{', '.join(unlabelled)} - can't say whether they're at home.")
+        unknown = [str(r.get("engineer") or r.get("vehicle")) for r in rows if r["at_home"] is None]
+        if unknown:
+            out["address_label_note"] = ("No home set for, and RAM Tracking didn't supply an address label for: "
+                                         f"{', '.join(unknown)} - can't say whether they're at home.")
         return out
 
     async def home_status(self, asked_by: str = "") -> dict[str, Any]:
@@ -275,8 +311,10 @@ class Tracker:
                                                           "reason": "RAM Tracking has no position for this van"})
                         if out_of_hours:  # live() logged the engineers it showed; log these named ones too
                             self._log_lookups(asked_by, "who_is_home", [str(name)], str(live.get("out_of_hours_access")))
-        res["note"] = ("'At home' means RAM's address label for the van contains the word home; a van with no label "
-                       "is listed separately because it can't be told either way. " +
+        res["note"] = ("'At home' means the van is within the owner's set distance of that engineer's home point (or RAM's "
+                       "address label for it says home). 'no_address_label' lists vans for which no home is set and RAM "
+                       "supplies no label, so it can't be told either way - the owner sets homes in Settings. Say only "
+                       "'home', never where. " +
                        ("Outside working hours this is shown only because the owner has allowed it, and the look-up "
                         "was logged." if out_of_hours else "Working hours only."))
         return res
@@ -394,11 +432,20 @@ class Tracker:
         if warnings:
             out["warnings"] = warnings
         if day == date.today() and show_label:
-            label, at_home = label_status(vehicle.get("address_label"), await self._sites())
+            here = None
+            try:
+                fix_age = (now - fix).total_seconds() / 60 if fix else None
+                if fix_age is not None and fix_age <= STALE_POSITION_MINS:  # an old fix isn't where the van is now
+                    here = (float(vehicle["lat"]), float(vehicle["lng"]))
+            except (KeyError, TypeError, ValueError):
+                here = None
+            label, at_home = combine_home(label_status(vehicle.get("address_label"), await self._sites()),
+                                          self._home_state(vehicle.get("engineer"), here))
             out["current_address_label"] = label
             out["at_home"] = at_home
-            if label is None:
-                out["address_label_note"] = "RAM Tracking supplied no address label for this van."
+            if at_home is None:
+                out["address_label_note"] = ("No home is set for this engineer and RAM Tracking supplied no address "
+                                             "label for this van, so it can't be said whether they are at home.")
         return out
 
     async def van_day(self, engineer: str, day: date, asked_by: str = "", tool: str = "van_day") -> dict[str, Any]:
@@ -426,6 +473,8 @@ class Tracker:
             best = min(sites.items(), key=lambda kv: haversine_m(here, kv[1]), default=None)
             if best and haversine_m(here, best[1]) <= ONSITE_METRES:
                 return best[0]
+            if self._home_state(vehicle.get("engineer"), here):
+                return "home"  # never the engineer's coordinates, which would be their home point
             return str(fallback or f"{here[0]:.4f},{here[1]:.4f}")
 
         timeline, driving, stopped, miles = [], 0.0, 0.0, 0.0

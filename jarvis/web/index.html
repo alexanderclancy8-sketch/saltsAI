@@ -327,6 +327,23 @@
           <button class="btn" id="btn-team-off" type="button" hidden>Switch off</button>
         </div>
       </div>
+      <div class="sec" id="homes-sec">
+        <h3>Engineer homes</h3>
+        <p class="empty">Mark where each engineer lives and Fleet will say "home" when their van is there. Only a rounded map point is stored,
+          not the postcode. It is used only to show whether a van is at home. Tell the engineer first.</p>
+        <div class="set-pair" style="margin-top:12px">
+          <label for="homes-radius">Counts as home within (metres)</label>
+          <div class="homes-radius">
+            <input type="number" id="homes-radius" inputmode="numeric" min="50" max="300" step="10" value="100">
+            <button class="btn" id="btn-homes-radius" type="button">Save distance</button>
+          </div>
+        </div>
+        <p class="empty" id="homes-status" role="status" style="margin:0 0 6px">Loading…</p>
+        <ul class="list homes-list" id="homes-list"></ul>
+        <div class="set-actions" style="margin-top:12px">
+          <button class="btn" id="btn-homes-clear-all" type="button" hidden>Remove all</button>
+        </div>
+      </div>
       <!--/role:owner-->
       <div class="sec">
         <!--role:manager--><h3>Connections and account</h3><!--/role:manager--><!--role:team--><h3>Account</h3><!--/role:team-->
