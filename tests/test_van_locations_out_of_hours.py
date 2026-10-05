@@ -65,20 +65,27 @@ def _van(id_, reg, driver, label, lat=53.8, lng=-1.8):
             "moving": False, "address_label": label}
 
 
-VANS = [_van(1, "SA51 LTS", "Ian Frost", "Ian Frost home"), _van(2, "YD72 SFS", "Priya Shah", "Otley Road, Ilkley")]
-NOT_REPORTING = {"id": 5, "registration": "YD75 SFS", "driver": "Mo Khan", "lat": None, "lng": None,
-                 "timestamp": None, "moving": False, "address_label": None}
+def vans():
+    """Fresh vans each call. Built when a test runs, never at import: the timestamps are 'seen 2 minutes ago', and
+    pytest imports every test module (collection) well before the tests run - and Jarvis() moves the process clock to
+    Europe/London - so a module-level list would look over an hour stale on a UTC runner in summer."""
+    return [_van(1, "SA51 LTS", "Ian Frost", "Ian Frost home"), _van(2, "YD72 SFS", "Priya Shah", "Otley Road, Ilkley")]
+
+
+def not_reporting():
+    return {"id": 5, "registration": "YD75 SFS", "driver": "Mo Khan", "lat": None, "lng": None,
+            "timestamp": None, "moving": False, "address_label": None}
 
 
 def hours(monkeypatch, working: bool):
     monkeypatch.setattr(Tracker, "in_working_hours", staticmethod(lambda now=None: working))
 
 
-def make(tmp_path, monkeypatch, mode, vans=VANS, working=False, sites=()):
+def make(tmp_path, monkeypatch, mode, fleet=None, working=False, sites=()):
     hours(monkeypatch, working)
     s = Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None, van_locations_out_of_hours=mode)
     db = Database(tmp_path / "t.sqlite")
-    return Tracker(RealFSM(sites), http=None, ram=FakeRam(list(vans)), settings=s, db=db), db
+    return Tracker(RealFSM(sites), http=None, ram=FakeRam(list(vans() if fleet is None else fleet)), settings=s, db=db), db
 
 
 def on_call(tracker, name, start_h=-1, end_h=1):
@@ -100,7 +107,7 @@ def test_the_default_is_off_and_it_is_an_owner_only_select():
 
 
 async def test_off_hides_every_tool_outside_working_hours_and_logs_nothing(tmp_path, monkeypatch):
-    tracker, db = make(tmp_path, monkeypatch, "off", [*VANS, NOT_REPORTING],
+    tracker, db = make(tmp_path, monkeypatch, "off", [*vans(), not_reporting()],
                        sites=[{"name": "Aire Valley Care Home", "lat": 53.844, "lng": -1.837}])
     live = await tracker.live("Sam")
     assert live["visible"] is False and live["working_hours"] is False and live["engineers"] == []
@@ -123,10 +130,10 @@ async def test_an_unknown_value_is_treated_as_off(tmp_path, monkeypatch, setting
 
 async def test_a_tracker_without_settings_or_a_database_is_always_off(tmp_path, monkeypatch):
     hours(monkeypatch, False)
-    no_settings = Tracker(RealFSM(), http=None, ram=FakeRam(list(VANS)))
+    no_settings = Tracker(RealFSM(), http=None, ram=FakeRam(vans()))
     assert (await no_settings.live("Sam"))["visible"] is False
     s = Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None, van_locations_out_of_hours="always")
-    no_db = Tracker(RealFSM(), http=None, ram=FakeRam(list(VANS)), settings=s)  # nowhere to keep the log
+    no_db = Tracker(RealFSM(), http=None, ram=FakeRam(vans()), settings=s)  # nowhere to keep the log
     assert (await no_db.live("Sam"))["visible"] is False
 
 
@@ -163,7 +170,7 @@ async def test_always_without_saying_who_is_asking_shows_nothing(tmp_path, monke
 
 
 async def test_always_works_for_who_is_home_and_nearest_and_logs_them(tmp_path, monkeypatch):
-    tracker, db = make(tmp_path, monkeypatch, "always", [*VANS, NOT_REPORTING],
+    tracker, db = make(tmp_path, monkeypatch, "always", [*vans(), not_reporting()],
                        sites=[{"name": "Aire Valley Care Home", "lat": 53.844, "lng": -1.837}])
     home = await tracker.home_status("Sam Ward")
     assert [e["engineer"] for e in home["at_home"]] == ["Ian Frost"]
@@ -206,7 +213,7 @@ async def test_on_call_with_nobody_on_call_hides_everything_and_says_why(tmp_pat
 
 
 async def test_on_call_who_is_home_and_nearest_only_name_the_engineer_on_call(tmp_path, monkeypatch):
-    tracker, db = make(tmp_path, monkeypatch, "on_call", [*VANS, NOT_REPORTING],
+    tracker, db = make(tmp_path, monkeypatch, "on_call", [*vans(), not_reporting()],
                        sites=[{"name": "Aire Valley Care Home", "lat": 53.844, "lng": -1.837}])
     on_call(tracker, "Ian")  # a first name is enough
     home = await tracker.home_status("Sam Ward")
@@ -333,7 +340,7 @@ async def test_a_chat_turn_logs_the_named_speaker_and_clears_it_afterwards(tmp_p
     client = FakeClient([message([tool_block("engineer_locations", {})], "tool_use"),
                          message([text_block("Ian and Priya are both out.")])])
     j = Jarvis(s, client=client)
-    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(list(VANS))
+    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(vans())
     await j.brain.ask("Where are the vans?", "typed", speaker="Sam Ward")
     rows = j.db.location_lookups()
     assert sorted(r["engineer"] for r in rows) == ["Ian Frost", "Priya Shah"]
@@ -346,7 +353,7 @@ async def test_a_tool_called_outside_any_turn_cannot_see_out_of_hours_positions(
     s = Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None, anthropic_api_key="test",
                  van_locations_out_of_hours="always")
     j = Jarvis(s, client=FakeClient())
-    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(list(VANS))
+    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(vans())
     out = await TOOLS_BY_NAME["engineer_locations"].handler(j, TOOLS_BY_NAME["engineer_locations"].model())
     assert out["visible"] is False and j.db.location_lookups() == []
     await j.http.aclose()
@@ -388,7 +395,7 @@ def test_only_the_owner_can_change_the_setting(tmp_path, monkeypatch):
 def test_the_fleet_panel_works_out_of_hours_when_allowed_and_logs_the_signed_in_person(tmp_path, monkeypatch):
     hours(monkeypatch, False)
     s, j = _app(tmp_path, monkeypatch, van_locations_out_of_hours="always")
-    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(list(VANS))
+    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(vans())
     sso = {"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": "sam@salts.example.com"}
     with TestClient(create_app(s, j)) as c:
         data = c.get("/api/tracking", headers=sso).json()
@@ -401,7 +408,7 @@ def test_the_fleet_panel_works_out_of_hours_when_allowed_and_logs_the_signed_in_
 def test_the_fleet_panel_stays_empty_out_of_hours_when_off(tmp_path, monkeypatch):
     hours(monkeypatch, False)
     s, j = _app(tmp_path, monkeypatch)
-    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(list(VANS))
+    j.tracker.fsm, j.tracker.ram = RealFSM(), FakeRam(vans())
     with TestClient(create_app(s, j)) as c:
         c.cookies.set(auth.COOKIE, auth.make_session(s))
         data = c.get("/api/tracking").json()

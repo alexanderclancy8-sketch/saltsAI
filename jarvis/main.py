@@ -31,7 +31,7 @@ from .redact import install_log_redaction, redact_text
 from .services import connection_tests, documents, images
 from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
-from .settings_store import OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
+from .settings_store import AZURE_VOICES, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 install_log_redaction()  # no secrets (webhook signatures, tokens, keys) in the log stream - see jarvis/redact.py
@@ -70,6 +70,10 @@ class ForgetIn(BaseModel):
 class TTSIn(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     voice_id: str | None = None
+
+
+class VoiceSampleIn(BaseModel):
+    voice: str = Field(max_length=80)
 
 
 class SettingsIn(BaseModel):
@@ -209,11 +213,24 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         task = asyncio.create_task(j.brain.ask(body.text, mode, body.attachments, speaker=speaker(request)))
 
         async def events():
+            # The bus carries every turn. This stream is for THIS one, which starts with its own user_message: what comes
+            # before it belongs to an older turn that is still winding down (the owner sent a new message mid-reply), and
+            # that turn's reply used to end this stream before its own answer began.
+            started = False
             try:
                 while True:
-                    msg = await q.get()
+                    try:
+                        msg = await asyncio.wait_for(q.get(), 0.5)
+                    except asyncio.TimeoutError:
+                        if task.done() and q.empty():
+                            break  # the turn is over and said nothing more
+                        continue
                     if msg["type"] not in CHAT_STREAM_EVENTS:
                         continue
+                    if not started:
+                        if msg["type"] != "user_message" or (msg["data"] or {}).get("text") != body.text:
+                            continue
+                        started = True
                     yield f"data: {json.dumps(msg, default=str)}\n\n"
                     if msg["type"] in CHAT_STREAM_TERMINAL:
                         break
@@ -346,6 +363,21 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                                 status_code=503)
         return StreamingResponse(stream, media_type=mime)
 
+    @app.post("/api/tts/sample", dependencies=[Depends(owner)])
+    async def tts_sample(body: VoiceSampleIn, request: Request):
+        """The Settings page's 'Play sample' button: a fixed line in one of the listed Azure voices. It only
+        makes audio - it cannot approve, change or send anything."""
+        if body.voice not in {v for v, _ in AZURE_VOICES}:
+            return JSONResponse({"detail": "Pick one of the listed Azure voices."}, status_code=400)
+        try:
+            stream, mime = await J(request).voice.azure_sample(body.voice)
+        except VoiceError as e:
+            return JSONResponse({"detail": redact_text(str(e))[:300]}, status_code=503)
+        except Exception as e:  # noqa: BLE001 - network trouble reaching Azure; the type is enough for the log
+            log.warning("Voice sample failed: %s", type(e).__name__)
+            return JSONResponse({"detail": f"Couldn't reach Azure Speech ({type(e).__name__})."}, status_code=503)
+        return StreamingResponse(stream, media_type=mime)
+
     @app.post("/api/stt", dependencies=[Depends(owner)])
     async def stt(request: Request, audio: UploadFile = File(...), engine: str | None = None):
         """engine (optional): try exactly this engine once - the browser drives retry and fallback across
@@ -474,7 +506,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(404, "No such document")
         render, mime = renderers[fmt]
         try:
-            data = await asyncio.to_thread(render, doc, settings.company_name)
+            data = await asyncio.to_thread(render, doc, settings.company_name, settings.company_address,
+                                           documents.header_logo(settings.company_logo_path))
         except ImportError:
             raise HTTPException(503, "Document rendering isn't installed on this server.") from None
         filename = documents.download_filename(doc, fmt)
@@ -774,7 +807,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
                                      "the display password and staff key, or whether van locations show outside "
-                                     "working hours.")
+                                     "working hours, or whether and where Jarvis may browse the web.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

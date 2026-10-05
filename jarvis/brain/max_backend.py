@@ -372,8 +372,10 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                    tools: list[str] | None = None, disallowed_tools: list[str] | None = None,
                    output_schema: dict[str, Any] | None = None,
                    max_turns: int = 10, cwd: str | None = None,
-                   mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None):
-    """Single headless Claude Code run; returns the ResultMessage. `disallowed_tools` defaults to `BLOCKED`
+                   mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None,
+                   model: str | None = None):
+    """Single headless Claude Code run; returns the ResultMessage. `model` defaults to `settings.jarvis_model` (the
+    engineer loops pass `settings.engineer_model_or_default()`). `disallowed_tools` defaults to `BLOCKED`
     (no shell, no file writes) - pass `ENGINEER_BLOCKED` for a caller that puts Write/Edit in `tools` on
     purpose (an engineer loop confined to a throwaway Workspace checkout), otherwise those get silently
     stripped anyway since disallowed_tools wins over allowed_tools. `mcp_servers` adds external MCP servers
@@ -414,15 +416,25 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
         kw["cwd"] = cwd
     result = None
     try:
-        async for msg in query(prompt=text, options=base_options(settings, **kw)):
+        async for msg in query(prompt=text, options=base_options(settings, model=model, **kw)):
             if isinstance(msg, ResultMessage):
                 result = msg
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
-    if result is None or result.is_error:
+    if result is not None and getattr(result, "subtype", None) == "error_max_turns":
+        # Claude Code ends a run that hit max_turns with this result subtype - which may or may not set is_error,
+        # and never carries structured output - so name it explicitly instead of letting it surface as a parse error.
+        raise MaxTurnsExceeded(f"Claude run stopped after hitting its turn limit ({max_turns}) without finishing.")
+    if result is None:
+        raise RuntimeError("Claude run failed: the stream ended without a final result message")
+    if result.is_error:
         raise RuntimeError(f"Claude run failed: {getattr(result, 'errors', None) or getattr(result, 'result', None)}")
     return result
+
+
+class MaxTurnsExceeded(RuntimeError):
+    """A one-shot Claude Agent SDK run used up its turn budget before producing a final answer."""
 
 
 async def run_agent(settings, j, *, system: str, prompt: str, tool_names: list[str], effort: str = "medium",
