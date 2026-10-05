@@ -100,7 +100,7 @@ FEATURES = {
 # until someone decides it is fine. (`staff`, `overdue_jobs`, `presence`, `voice`, `activity` are not finance, not
 # approvals, not settings; `accreditations` is cut down to what/date/days_left by the handler.)
 TEAM_STATUS_KEYS = frozenset({"generated_at", "staff", "overdue_jobs", "presence", "voice", "company", "role", "who",
-                              "accreditations"})
+                              "accreditations", "fleet"})
 
 # What a team session's live connection ever carries: its own turns, and the signal to reconnect after a reload. Anything
 # else on the owner's bus (approvals, notifications, proactive posts, display panels, finance...) never reaches it.

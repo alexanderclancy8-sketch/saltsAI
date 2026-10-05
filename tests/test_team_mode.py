@@ -912,3 +912,46 @@ def test_the_console_page_carries_the_role_for_the_ui_and_the_team_console_has_n
     assert 'data-role="team"' in page and 'data-who="Sam"' in page
     assert page.count("<body") == 1
     assert team_c.get("/", headers={"cookie": ""}).status_code == 200  # (cookie jar still applies; just a smoke check)
+
+
+# ------------------------------------------------------------------------------- the page itself is cut down for team
+TEAM_POPS = {"ops", "fleet", "presence", "upcoming", "settings"}
+
+
+def test_the_page_a_team_member_is_sent_has_no_markup_for_sections_they_cannot_use(clients):
+    owner_c, team_c, w = clients
+    team = team_c.get("/").text
+    assert re.findall(r'<section class="pop" id="pop-(\w+)"', team) == ["ops", "fleet", "presence", "upcoming", "settings"]
+    assert set(re.findall(r'<section class="pop" id="pop-(\w+)"', team)) == TEAM_POPS  # a new pop-up is not team's by default
+    for needle in ('id="pop-finance"', 'id="pop-approvals"', 'id="pop-connections"', 'id="pop-memory"', 'id="pop-comms"',
+                   'id="pop-issues"', 'id="pop-health"', 'id="pop-demo"', 'data-pop="finance"', 'data-pop="approvals"',
+                   'data-pop="connections"', 'btn-connections', 'btn-proactive-mute', 'team-access-sec', "Connect Sage",
+                   "Staff report problems", "Copy staff report link", "role:manager", "role:owner", "role:team"):
+        assert needle not in team, needle
+    assert [m for m in re.findall(r'data-pop="(\w+)">', team) if m in ("ops", "fleet", "presence", "upcoming")] == ["ops", "fleet", "presence", "upcoming"]
+    assert "Today's jobs" in team and "Give me my briefing" not in team and "cash flow" not in team.lower()
+
+
+def test_owner_and_manager_pages_keep_their_sections_and_only_the_owner_gets_team_access_controls(world, monkeypatch):
+    owner_page = world.owner(world.anon()).get("/").text
+    for needle in ('id="pop-finance"', 'id="pop-approvals"', 'id="pop-connections"', 'id="pop-memory"', "team-access-sec",
+                   "Give me my briefing", "Copy staff report link"):
+        assert needle in owner_page, needle
+    assert "Today's jobs" not in owner_page and "role:team" not in owner_page.replace("<!--role:team-->", "")
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    world.settings.manager_emails = MANAGER
+    page = world.anon().get("/", headers={"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": MANAGER}).text
+    assert 'id="pop-finance"' in page and 'id="pop-approvals"' in page and "team-access-sec" not in page
+    assert 'data-role="manager"' in page and "Today's jobs" not in page
+
+
+def test_every_pop_up_in_the_console_is_either_in_a_manager_region_or_deliberately_a_team_pop_up():
+    html = (Path(__file__).resolve().parent.parent / "jarvis" / "web" / "index.html").read_text(encoding="utf-8")
+    stripped = re.sub(r"<!--role:manager-->.*?<!--/role:manager-->", "", html, flags=re.S)
+    left = set(re.findall(r'<section class="pop" id="pop-(\w+)"', stripped))
+    all_pops = set(re.findall(r'<section class="pop" id="pop-(\w+)"', html))
+    assert left == TEAM_POPS, f"pop-ups left in the team page: {left}"
+    assert all_pops - TEAM_POPS == {"approvals", "comms", "issues", "health", "finance", "demo", "memory", "connections"}
+    assert html.count("<!--role:manager-->") == html.count("<!--/role:manager-->")
+    assert html.count("<!--role:owner-->") == html.count("<!--/role:owner-->")
+    assert html.count("<!--role:team-->") == html.count("<!--/role:team-->")

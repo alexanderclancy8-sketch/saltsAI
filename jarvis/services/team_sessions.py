@@ -29,7 +29,7 @@ from ..events import EventBus
 log = logging.getLogger(__name__)
 
 IDLE_HOURS = 8
-MAX_SESSIONS = 25
+MAX_SESSIONS = 12  # (on the Claude Code backend each one is a Claude Code process, so keep it modest)
 
 
 @dataclass

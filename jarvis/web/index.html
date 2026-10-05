@@ -27,11 +27,12 @@
   </div>
   <span class="spacer"></span>
   <div class="pills" id="pills"></div>
+  <span class="role-chip" id="role-chip" hidden></span>
   <span class="clock" id="clock"></span>
   <nav class="actions" id="actions" aria-label="Console options">
     <button type="button" class="ghost tb-btn" id="btn-voice" aria-pressed="true" title="Speak replies aloud, or keep Jarvis silent">Voice on</button>
-    <button type="button" class="ghost tb-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-label="Mute Jarvis posting into this session by himself" aria-pressed="false">Speaks up</button>
-    <button type="button" class="ghost tb-btn" id="btn-connections" data-pop="connections">Connections</button>
+    <!--role:manager--><button type="button" class="ghost tb-btn" id="btn-proactive-mute" title="Mute Jarvis posting into this session by himself" aria-label="Mute Jarvis posting into this session by himself" aria-pressed="false">Speaks up</button><!--/role:manager-->
+    <!--role:manager--><button type="button" class="ghost tb-btn" id="btn-connections" data-pop="connections">Connections</button><!--/role:manager-->
     <button type="button" class="ghost tb-btn" id="btn-settings" data-pop="settings">Settings</button>
   </nav>
 </header>
@@ -41,13 +42,13 @@
        needs a look and red when something is failing. Presence has no count; Fleet reads "off" when not connected. -->
   <nav class="rail" id="rail" aria-label="Dashboard sections">
     <div class="label">On request</div>
-    <button type="button" class="rail-item" data-pop="approvals">Approvals <span class="rail-count" id="rc-approvals">0</span></button>
-    <button type="button" class="rail-item" data-pop="comms">Comms <span class="rail-count" id="rc-comms">0</span></button>
-    <button type="button" class="rail-item" data-pop="issues">Issues <span class="rail-count" id="rc-issues">0</span></button>
-    <button type="button" class="rail-item" data-pop="health">Health <span class="rail-count" id="rc-health">0</span></button>
+    <!--role:manager--><button type="button" class="rail-item" data-pop="approvals">Approvals <span class="rail-count" id="rc-approvals">0</span></button><!--/role:manager-->
+    <!--role:manager--><button type="button" class="rail-item" data-pop="comms">Comms <span class="rail-count" id="rc-comms">0</span></button><!--/role:manager-->
+    <!--role:manager--><button type="button" class="rail-item" data-pop="issues">Issues <span class="rail-count" id="rc-issues">0</span></button><!--/role:manager-->
+    <!--role:manager--><button type="button" class="rail-item" data-pop="health">Health <span class="rail-count" id="rc-health">0</span></button><!--/role:manager-->
     <button type="button" class="rail-item" data-pop="ops">Ops <span class="rail-count" id="rc-ops">0</span></button>
     <button type="button" class="rail-item" data-pop="fleet">Fleet <span class="rail-count" id="rc-fleet">off</span></button>
-    <button type="button" class="rail-item" data-pop="finance">Finance <span class="rail-count" id="rc-finance">0</span></button>
+    <!--role:manager--><button type="button" class="rail-item" data-pop="finance">Finance <span class="rail-count" id="rc-finance">0</span></button><!--/role:manager-->
     <button type="button" class="rail-item" data-pop="presence">Presence</button>
     <button type="button" class="rail-item" data-pop="upcoming">Coming up <span class="rail-count" id="rc-upcoming">0</span></button>
   </nav>
@@ -59,7 +60,7 @@
           <button type="button" class="core-btn" id="core-btn" aria-label="Jarvis core - click to start or stop listening" title="Click to start or stop listening">
             <canvas id="reactor" width="300" height="300" aria-hidden="true"></canvas>
           </button>
-          <button type="button" class="orb-badge" id="orb-badge" hidden aria-label="Approvals and suggestions waiting - tap to view"></button>
+          <!--role:manager--><button type="button" class="orb-badge" id="orb-badge" hidden aria-label="Approvals and suggestions waiting - tap to view"></button><!--/role:manager-->
         </div>
         <p class="caption" id="caption" role="status">Live. Ask me anything about the business.</p>
         <div class="stt-engine" id="stt-engine" role="status" aria-live="polite" hidden></div>
@@ -80,14 +81,14 @@
       </section>
 
       <div class="attachments" id="attachments"></div>
-      <div class="reply-hint" id="reply-hint" hidden>
+      <!--role:manager--><div class="reply-hint" id="reply-hint" hidden>
         <span class="rh-text" id="reply-hint-text"></span>
         <kbd title="Press the right arrow key (caret at the end) to put this in the box - Enter still sends, Esc dismisses">→</kbd>
         <button type="button" id="reply-hint-forget" title="Forget this learned reply" aria-label="Forget this learned reply">✕</button>
-      </div>
+      </div><!--/role:manager-->
       <form class="composer" id="composer">
         <div class="quick" id="quick" role="menu" aria-label="Shortcuts" hidden>
-          <button type="button" role="menuitem" class="chip-btn" data-q="Give me my briefing">Briefing</button>
+          <!--role:manager--><button type="button" role="menuitem" class="chip-btn" data-q="Give me my briefing">Briefing</button>
           <button type="button" role="menuitem" class="chip-btn" data-q="Give me the end-of-day wrap-up">Wrap-up</button>
           <button type="button" role="menuitem" class="chip-btn" data-q="How is the team performing this week? Is anyone falling short?">Team review</button>
           <button type="button" role="menuitem" class="chip-btn" data-q="Run a business health check and tell me what to improve">Business health</button>
@@ -95,12 +96,18 @@
           <button type="button" role="menuitem" class="chip-btn" data-q="Where is everyone right now?">Where's everyone?</button>
           <button type="button" role="menuitem" class="chip-btn" data-q="What stock do we need to reorder?">Stock</button>
           <button type="button" role="menuitem" class="chip-btn" data-q="Which customers are at risk and what should we do about them?">Customers</button>
-          <button type="button" role="menuitem" class="chip-btn" data-q="How are our socials and Google ranking doing?">Marketing</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="How are our socials and Google ranking doing?">Marketing</button><!--/role:manager--><!--role:team-->
+          <button type="button" role="menuitem" class="chip-btn" data-q="What jobs are on today?">Today's jobs</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Which jobs are overdue?">Overdue jobs</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Which systems are due a service soon?">Systems due</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="Where is everyone right now?">Where's everyone?</button>
+          <button type="button" role="menuitem" class="chip-btn" data-q="How are our social media and Google reviews doing?">Reviews</button>
+          <!--/role:team-->
         </div>
         <button type="button" class="ghost sq" id="btn-shortcuts" aria-haspopup="menu" aria-expanded="false" aria-controls="quick" aria-label="Shortcuts" title="Shortcuts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
         <textarea class="field" id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis"></textarea>
-        <button type="button" class="ghost sq attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
-        <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json">
+        <!--role:manager--><button type="button" class="ghost sq attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
+        <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json"><!--/role:manager-->
         <button type="button" class="ghost sq mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <button type="button" class="btn-send stop" id="btn-stop" title="Stop" aria-label="Stop" hidden>STOP</button>
         <button type="submit" class="btn-send" id="btn-send" title="Send" aria-label="Send">SEND</button>
@@ -131,7 +138,7 @@
   </div>
   <div class="drawer-body" id="drawer-body">
 
-    <section class="pop" id="pop-approvals" data-title="Approvals" hidden>
+    <!--role:manager--><section class="pop" id="pop-approvals" data-title="Approvals" hidden>
       <div class="sec" id="approvals-panel">
         <h3>Awaiting your approval <span class="count" id="approvals-count"></span></h3>
         <div id="approvals"></div>
@@ -145,16 +152,16 @@
         <div id="suggestions"></div>
       </div>
       <p class="empty" id="approvals-empty" hidden>Nothing is waiting for you.</p>
-    </section>
+    </section><!--/role:manager-->
 
-    <section class="pop" id="pop-comms" data-title="Comms" hidden>
+    <!--role:manager--><section class="pop" id="pop-comms" data-title="Comms" hidden>
       <div class="sec">
         <h3>Unread messages <span class="count" id="inbox-count"></span></h3>
         <ul class="list" id="inbox"><li class="empty">Loading…</li></ul>
       </div>
-    </section>
+    </section><!--/role:manager-->
 
-    <section class="pop" id="pop-issues" data-title="Issues and fixes" hidden>
+    <!--role:manager--><section class="pop" id="pop-issues" data-title="Issues and fixes" hidden>
       <div class="sec">
         <h3>Open issues and fixes <span class="count" id="issues-count"></span></h3>
         <ul class="list" id="issues"></ul>
@@ -163,9 +170,9 @@
         <h3>Recently resolved</h3>
         <ul class="list" id="issues-resolved"></ul>
       </div>
-    </section>
+    </section><!--/role:manager-->
 
-    <section class="pop" id="pop-health" data-title="Health" hidden>
+    <!--role:manager--><section class="pop" id="pop-health" data-title="Health" hidden>
       <div class="sec">
         <h3>Routine tests <span class="count" id="tests-count"></span></h3>
         <ul class="list" id="tests"></ul>
@@ -175,7 +182,7 @@
         <h3>Alerts</h3>
         <ul class="list" id="notifications"></ul>
       </div>
-    </section>
+    </section><!--/role:manager-->
 
     <section class="pop" id="pop-ops" data-title="Operations" hidden>
       <div class="sec">
@@ -197,7 +204,7 @@
       </div>
     </section>
 
-    <section class="pop" id="pop-finance" data-title="Finance" hidden>
+    <!--role:manager--><section class="pop" id="pop-finance" data-title="Finance" hidden>
       <div class="sec">
         <h3>Position <span class="count" id="finance-source"></span></h3>
         <div class="kpis" id="finance"></div>
@@ -206,7 +213,7 @@
         <h3>Customer watch <span class="count" id="customers-count"></span></h3>
         <ul class="list" id="customers"></ul>
       </div>
-    </section>
+    </section><!--/role:manager-->
 
     <section class="pop" id="pop-presence" data-title="Presence" hidden>
       <div class="sec">
@@ -222,16 +229,16 @@
       </div>
     </section>
 
-    <section class="pop" id="pop-demo" data-title="Demo data" hidden>
+    <!--role:manager--><section class="pop" id="pop-demo" data-title="Demo data" hidden>
       <div class="sec">
         <h3>Sources still showing samples</h3>
         <p class="empty" id="demo-intro">Figures from these sources are samples until the real systems are connected.</p>
         <div id="demo-list"><p class="empty">Loading…</p></div>
       </div>
       <div class="set-actions"><button class="btn" type="button" data-pop="connections">Open Connections</button></div>
-    </section>
+    </section><!--/role:manager-->
 
-    <section class="pop" id="pop-memory" data-title="Memory" hidden>
+    <!--role:manager--><section class="pop" id="pop-memory" data-title="Memory" hidden>
       <p class="empty" id="memory-intro">What Jarvis has learned about the business. Reword or delete anything that is out of date or wrong;
         he reads the change from his very next message.</p>
       <div class="sec" id="memory-notes-sec">
@@ -247,10 +254,10 @@
         <ul class="mem-list" id="memory-replies"></ul>
       </div>
       <p class="empty" id="memory-error" role="alert" hidden></p>
-    </section>
+    </section><!--/role:manager-->
 
     <section class="pop" id="pop-settings" data-title="Settings" hidden>
-      <div class="sec">
+      <!--role:manager--><div class="sec">
         <h3>Conversation</h3>
         <div class="set-pair">
           <label for="set-talk">How Jarvis talks</label>
@@ -260,7 +267,7 @@
           </select>
         </div>
         <p class="empty" id="set-talk-note">Loading…</p>
-      </div>
+      </div><!--/role:manager-->
       <div class="sec">
         <h3>Display</h3>
         <div class="set-pair">
@@ -302,33 +309,49 @@
         </div>
         <div class="set-actions">
           <button class="btn" id="btn-test-voice" type="button">Test voice</button>
-          <a class="btn" id="btn-sage" href="/auth/sage/start" hidden>Connect Sage</a>
+          <!--role:manager--><a class="btn" id="btn-sage" href="/auth/sage/start" hidden>Connect Sage</a><!--/role:manager-->
         </div>
       </div>
-      <div class="sec">
-        <h3>Connections and account</h3>
+      <!--role:owner-->
+      <div class="sec" id="team-access-sec">
+        <h3>Team access</h3>
+        <p class="empty">Engineers and office staff get a cut-down console: no Finance, Approvals or Connections. They sign in on the
+          login page with Team sign-in, their name and this code. Only you can set it; it is stored scrambled and never shown again.</p>
+        <p class="empty" id="team-access-status" role="status" style="margin:6px 0 14px">Loading…</p>
+        <div class="set-pair">
+          <label for="team-code">Team access code</label>
+          <input type="password" id="team-code" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="At least 8 characters">
+        </div>
         <div class="set-actions">
-          <button class="btn" id="btn-open-connections" type="button" data-pop="connections">Connections</button>
-          <button class="btn" id="btn-open-memory" type="button" data-pop="memory">Memory</button>
-          <button class="btn" id="btn-copy-report" type="button">Copy staff report link</button>
+          <button class="btn" id="btn-team-set" type="button">Turn on with this code</button>
+          <button class="btn" id="btn-team-off" type="button" hidden>Switch off</button>
+        </div>
+      </div>
+      <!--/role:owner-->
+      <div class="sec">
+        <!--role:manager--><h3>Connections and account</h3><!--/role:manager--><!--role:team--><h3>Account</h3><!--/role:team-->
+        <div class="set-actions">
+          <!--role:manager--><button class="btn" id="btn-open-connections" type="button" data-pop="connections">Connections</button><!--/role:manager-->
+          <!--role:manager--><button class="btn" id="btn-open-memory" type="button" data-pop="memory">Memory</button><!--/role:manager-->
+          <!--role:manager--><button class="btn" id="btn-copy-report" type="button">Copy staff report link</button><!--/role:manager-->
           <form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>
         </div>
-        <p class="empty" style="margin-top:16px">Staff report problems at the staff report page (use the button above to copy the link).
+        <!--role:manager--><p class="empty" style="margin-top:16px">Staff report problems at the staff report page (use the button above to copy the link).
           Replies are generated by Claude; figures marked DEMO are sample data until each system is connected under
-          Connections.</p>
+          Connections.</p><!--/role:manager-->
       </div>
     </section>
 
-    <section class="pop" id="pop-connections" data-title="Connections" hidden>
+    <!--role:manager--><section class="pop" id="pop-connections" data-title="Connections" hidden>
       <div id="settings-problem"></div>
       <div id="settings-sections"></div>
-    </section>
+    </section><!--/role:manager-->
   </div>
-  <div class="set-save-bar" id="settings-savebar" hidden>
+  <!--role:manager--><div class="set-save-bar" id="settings-savebar" hidden>
     <span class="status" id="settings-status"></span>
     <button class="btn" id="btn-settings-cancel" type="button">Cancel</button>
     <button class="btn primary" id="btn-settings-save" type="button">Save changes</button>
-  </div>
+  </div><!--/role:manager-->
   <!-- Phones only (shown by hud.css at <= 760px): a second Close at the bottom edge, where the thumb is. -->
   <div class="drawer-foot"><button type="button" class="btn" id="drawer-close-bottom">Close</button></div>
 </aside>

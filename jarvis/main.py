@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
@@ -161,12 +162,12 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     def caller_of(conn: HTTPConnection) -> access.Caller | None:
         """Who is signed in on this connection: owner, manager, team member, or None. One answer per request, cached."""
-        cached = conn.scope.setdefault("state", {})
-        if "caller" not in cached:
+        # Cached on the ASGI scope itself (one per connection), never in scope["state"], which a server may share.
+        if "jarvis.caller" not in conn.scope:
             j = getattr(conn.app.state, "j", None)
             digest = j.team_access.digest() if j is not None else ""
-            cached["caller"] = auth.role_of(settings, conn, trusted_owner_email, digest)
-        return cached["caller"]
+            conn.scope["jarvis.caller"] = auth.role_of(settings, conn, trusted_owner_email, digest)
+        return conn.scope["jarvis.caller"]
 
     async def guard(conn: HTTPConnection) -> None:
         """Team mode, enforced on the backend for EVERY route: the matched route is looked up in access.ROUTE_POLICY and the
@@ -248,6 +249,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         # must not see before the first paint). It is only a presentation hint: every route enforces the role itself.
         page = (WEB / "index.html").read_text(encoding="utf-8").replace(
             '<body class="app"', f'<body class="app" data-role="{caller.role}" data-who="{html_lib.escape(caller.name)}"', 1)
+        # And the markup itself is cut down for a team member: the Finance, Approvals, Comms, Issues, Health, Memory and
+        # Connections sections, the settings that are not theirs and the owner's shortcuts are not in the page they are sent
+        # (index.html marks them with role comments: "owner" = only the owner, "manager" = owner and manager, "team" = only
+        # team). A manager does not get the owner's Team access controls either.
+        cut = {access.OWNER: ("team",), access.MANAGER: ("team", "owner"), access.TEAM: ("manager", "owner")}[caller.role]
+        for region in cut:
+            page = re.sub(rf"<!--role:{region}-->.*?<!--/role:{region}-->", "", page, flags=re.S)
+        page = re.sub(r"<!--/?role:\w+-->", "", page)  # the markers themselves are not part of any page
         return HTMLResponse(page, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/me", dependencies=[Depends(member)])
@@ -470,6 +479,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                   if t["days_left"] <= 60 and "insurance" not in str(t["what"]).lower()][:6]
         data = {"generated_at": datetime.now().isoformat(timespec="seconds"), "staff": board, "overdue_jobs": overdue,
                 "presence": presence, "voice": j.voice.client_config(), "company": settings.company_name,
+                "fleet": {"connected": not j.vehicle_tracking_status().startswith(("DEMO", "NOT CONNECTED")), "why": ""},
                 "role": caller.role, "who": caller.name, "accreditations": coming}
         return {k: v for k, v in data.items() if k in access.TEAM_STATUS_KEYS}
 

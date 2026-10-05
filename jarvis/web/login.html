@@ -42,6 +42,7 @@
     function showTeam(on) {
       teamForm.hidden = !on; ownerForm.hidden = on;
       toggle.textContent = on ? "Owner sign-in" : "Team sign-in"; toggle.setAttribute("aria-expanded", on ? "true" : "false");
+      document.querySelector("h1").textContent = on ? "Identify yourself." : "Identify yourself, sir.";
       document.getElementById(on ? "team-name" : "pw").focus();
     }
     toggle.addEventListener("click", function () { showTeam(teamForm.hidden); });
