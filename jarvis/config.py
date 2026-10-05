@@ -328,7 +328,12 @@ class Settings(BaseSettings):
     voice_silence_ms: int = 1200
 
     # --- Schedules ----------------------------------------------------------
-    briefing_cron: str = "45 7 * * 1-5"
+    # The daily rhythm (services/daily_rhythm.py): the spoken morning briefing and the end-of-day wrap-up, each under a
+    # minute, posted to the console and Teams. UK time (the scheduler runs in `timezone`). Both can be switched off and
+    # re-timed in Settings > Schedules.
+    briefing_enabled: bool = True
+    briefing_cron: str = "0 9 * * 1-5"  # 09:00 Monday to Friday
+    wrapup_enabled: bool = True
     routine_test_interval_min: int = 15
     compliance_check_cron: str = "0 7 * * 1-5"
     staff_review_cron: str = "30 16 * * 5"  # weekly team performance review (Friday 16:30)
@@ -343,7 +348,7 @@ class Settings(BaseSettings):
     fsm_engineer_cron: str = "*/30 * * * *"
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
     lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
-    wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)
+    wrapup_cron: str = "30 17 * * 1-5"  # end-of-day wrap-up, 17:30 Monday to Friday (after the billing and review checks)
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs
     self_learning_cron: str = "0 21 * * *"  # nightly reflection: remember anything durable from the day's chats

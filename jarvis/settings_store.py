@@ -474,7 +474,13 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "schedules", "Schedules", "When Jarvis does its regular jobs. Times are UK time.",
         (
+            Field("briefing_enabled", "Morning briefing on", "bool",
+                  "A spoken briefing of under a minute, posted in the console and to Teams. Off sends nothing "
+                  "(asking for your briefing in the chat still works)."),
             Field("briefing_cron", "Morning briefing", "cron"),
+            Field("wrapup_enabled", "End-of-day wrap-up on", "bool",
+                  "A wrap-up of under a minute, posted in the console and to Teams. Off sends nothing "
+                  "(asking for the wrap-up in the chat still works)."),
             Field("wrapup_cron", "End-of-day wrap-up", "cron"),
             Field("suggestions_cron", "Suggestion sweeps", "cron"),
             Field("billing_check_cron", "Unbilled jobs check", "cron"),
@@ -493,8 +499,8 @@ SECTIONS: tuple[Section, ...] = (
             Field("inbox_check_interval_min", "Check inbox every (minutes)", "number", advanced=True),
             Field("lone_worker_check_min", "Lone-worker sweep every (minutes)", "number", advanced=True),
         ),
-        guide=("Schedules use cron format: minute hour day month weekday. \"45 7 * * 1-5\" means 7:45 on weekdays; "
-               "\"0 17 * * 1-5\" means 5pm on weekdays.",),
+        guide=("Schedules use cron format: minute hour day month weekday. \"0 9 * * 1-5\" means 9am on weekdays; "
+               "\"30 17 * * 1-5\" means 5:30pm on weekdays.",),
     ),
     Section(
         "standing", "Standing approvals", "Things you let Jarvis do without asking each time. Both are OFF. Only "

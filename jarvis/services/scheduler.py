@@ -38,6 +38,23 @@ def _check(j, key: str, name: str, fn):
     return run
 
 
+def _daily(j, key: str, name: str, fn):
+    """A daily-rhythm post (morning briefing, end-of-day wrap-up). Unlike a *check* it always posts something, and does so
+    itself (console + Teams, see services/daily_rhythm.py), so a good run records nothing here. A run that fails is not
+    allowed to be silent: it goes in the activity log as failed and leaves a warning in the Alerts list."""
+    async def run():
+        try:
+            await fn()
+        except Exception as e:  # noqa: BLE001
+            log.exception("Scheduled job %s failed", name)
+            j.activity.record(key, name, "failed", f"Failed: {type(e).__name__}")
+            try:
+                j.db.add_notification("warning", f"{name} didn't run", f"It failed ({type(e).__name__}). Ask me for it and I'll try again.")
+            except Exception:  # noqa: BLE001
+                log.exception("Could not record the %s failure", name)
+    return run
+
+
 def build_scheduler(j) -> AsyncIOScheduler:
     s = j.settings
     sched = AsyncIOScheduler(timezone=s.timezone)
@@ -50,9 +67,10 @@ def build_scheduler(j) -> AsyncIOScheduler:
         sched.add_job(_guard("FSM engineer bot", j.fsm_engineer.run),
                       cron_trigger(s.fsm_engineer_cron, timezone=s.timezone), id="fsm_engineer",
                       max_instances=1, coalesce=True)
-    sched.add_job(_guard("morning briefing", j.briefings.morning_briefing),
-                  cron_trigger(s.briefing_cron, timezone=s.timezone), id="briefing",
-                  max_instances=1, coalesce=True)
+    if s.briefing_enabled:  # the daily rhythm: on by default, switched off / re-timed in Settings > Schedules
+        sched.add_job(_daily(j, "briefing", "Morning briefing", j.briefings.morning_briefing),
+                      cron_trigger(s.briefing_cron, timezone=s.timezone), id="briefing",
+                      max_instances=1, coalesce=True)
     sched.add_job(_guard("staff review", j.reviewer.weekly_review),
                   cron_trigger(s.staff_review_cron, timezone=s.timezone), id="staff_review",
                   max_instances=1, coalesce=True)
@@ -90,9 +108,10 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("suggestions", j.suggestions.sweep),
                   cron_trigger(s.suggestions_cron, timezone=s.timezone), id="suggestions",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("end-of-day wrap-up", j.wrapup.run),
-                  cron_trigger(s.wrapup_cron, timezone=s.timezone), id="wrapup",
-                  max_instances=1, coalesce=True)
+    if s.wrapup_enabled:
+        sched.add_job(_daily(j, "wrapup", "End-of-day wrap-up", j.wrapup.run),
+                      cron_trigger(s.wrapup_cron, timezone=s.timezone), id="wrapup",
+                      max_instances=1, coalesce=True)
     sched.add_job(_guard("self-learning reflection", j.self_learning.reflect),
                   cron_trigger(s.self_learning_cron, timezone=s.timezone), id="self_learning",
                   max_instances=1, coalesce=True)

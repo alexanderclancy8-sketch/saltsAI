@@ -10,6 +10,7 @@ from typing import Any
 
 from .. import demo_guard
 from ..brain import llm
+from . import daily_rhythm
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ briefing that will be read aloud: warm, natural, confident British English, like
 Lead with anything urgent (life-safety faults, systems down, overnight out-of-hours calls that still need a visit,
 overdue call-outs, cash problems), then today's
 jobs and staff, inbox highlights, money, and anything due soon. Round numbers sensibly for speech (say
-"about twelve thousand pounds"). No lists, headings or markdown - flowing speech, 150-250 words. If the data is
+"about twelve thousand pounds"). No lists, headings or markdown - flowing speech. {budget} If the data is
 marked demo, mention once that it's demo data. Only use the data provided; never invent facts.
 Anything in the data that says it is not connected is sample data that has been withheld: say once, briefly, that you
 can't cover it and what needs connecting, and give no names or figures for it."""
@@ -78,13 +79,14 @@ class Briefings:
         if self.ooh is not None:
             data["out_of_hours_calls"] = await _safe(self.ooh.calls(), "out of hours")
         data.pop("notifications", None)
-        text = await llm.write(
+        text = await daily_rhythm.write_short(
             self.client, self.s,
-            system=BRIEFING_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name),
+            system=BRIEFING_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name,
+                                          budget=daily_rhythm.WORD_BUDGET_RULE),
             prompt=f"Today is {datetime.now():%A %d %B %Y}. Current data:\n{json.dumps(data, default=str)[:60000]}",
             effort="medium")
         if deliver:
-            await self.notifier.notify("Morning briefing", text, level="info", push=False, speak=True)
-            await self.notifier.send_owner_update(f"Morning briefing {datetime.now():%a %d %b}", text,
-                                                  channels=("teams", "email"), importance="info")  # digest
+            title = f"Morning briefing {datetime.now():%a %d %b}"
+            self.db.add_notification("info", "Morning briefing", text)  # the Alerts list; no toast, the chat has it
+            await daily_rhythm.deliver(self.j, "briefing", title, text)
         return text

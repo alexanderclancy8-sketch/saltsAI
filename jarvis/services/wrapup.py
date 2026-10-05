@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import demo_guard
-from ..brain import llm
+from . import daily_rhythm
 
 log = logging.getLogger(__name__)
 DONE = {"completed", "complete", "done", "closed", "signed_off"}
@@ -23,7 +23,7 @@ Cover, in this order:
 3. What's waiting on {owner} - approvals and the most useful suggestions.
 4. Tomorrow - how many jobs, the first starts, anything unassigned or risky, deadlines coming up.
 Finish with one "Shall I...?" offer for the single most useful next step (you never act without approval).
-Round numbers for speech. No lists, headings or markdown - flowing speech, 150-250 words. If the data is demo
+Round numbers for speech. No lists, headings or markdown - flowing speech. {budget} If the data is demo
 data, say so once. Only use the data provided; never invent facts."""
 
 
@@ -113,13 +113,13 @@ class WrapUp:
         except Exception as e:  # noqa: BLE001
             log.info("suggestion refresh before wrap-up failed: %s", e)
         data = await self.gather()
-        text = await llm.write(
+        text = await daily_rhythm.write_short(
             j.client, j.settings,
-            system=WRAPUP_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name),
+            system=WRAPUP_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name,
+                                        budget=daily_rhythm.WORD_BUDGET_RULE),
             prompt=f"It is {datetime.now():%A %d %B %Y, %H:%M}. End-of-day data:\n{json.dumps(data, default=str)[:60000]}",
             effort="medium")
         if deliver:
-            await j.notifier.notify("End-of-day wrap-up", text, level="info", push=False, speak=True)
-            await j.notifier.send_owner_update(f"End-of-day wrap-up {datetime.now():%a %d %b}", text,
-                                               channels=("teams", "email"), importance="info")  # digest
+            j.db.add_notification("info", "End-of-day wrap-up", text)  # the Alerts list; no toast, the chat has it
+            await daily_rhythm.deliver(j, "wrapup", f"End-of-day wrap-up {datetime.now():%a %d %b}", text)
         return text

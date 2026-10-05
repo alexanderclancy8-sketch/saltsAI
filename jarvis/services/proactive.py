@@ -173,6 +173,29 @@ class Proactive:
         self._emit(clean, source, speak)
         return {"delivered": True, "reason": ""}
 
+    async def scheduled(self, source: str, title: str, body: str) -> dict[str, Any]:
+        """An intentional, scheduled post that always says something: the morning briefing and the end-of-day wrap-up
+        (services/daily_rhythm.py). Unlike a check that finds no change, it is never suppressed for being unchanged.
+
+        It goes into the conversation record whatever else happens, so it is waiting when the owner opens the console. It is
+        pushed to the open sessions as an ordinary ``proactive`` event - so a session that has muted Jarvis speaking up
+        (the top-bar button) never gets it - except in quiet hours, when it is kept as a quiet "Held back" notification
+        instead. It is read aloud only when "Jarvis speaking up" is switched on (and the console's own voice rules allow).
+        Returns {"delivered": bool, "reason": why not}; it only tells, never acts."""
+        clean = self._clean(body)
+        if not clean:
+            return {"delivered": False, "reason": "nothing to say"}
+        self.j.db.add_transcript("assistant", clean)
+        if self.quiet_now():
+            self._keep(title, clean, "quiet hours")
+            return {"delivered": False, "reason": "quiet hours"}
+        if self.enabled:  # same courtesy as any other message: let the owner finish what he is saying
+            await self._clear_to_speak()
+        if self.j.bus.subscriber_count == 0:
+            return {"delivered": False, "reason": "no chat is open - it is in the conversation for when you open it"}
+        self.j.bus.publish("proactive", {"id": uuid.uuid4().hex, "text": clean, "source": source, "speak": self.enabled})
+        return {"delivered": True, "reason": ""}
+
     # ------------------------------------------------------------------ findings that repeat
     async def announce(self, key: str, title: str, body: str, *, teams: bool = True, speak: bool = True) -> dict[str, Any]:
         """Tell the owner what a recurring check found, but only if it differs from last time: into the open chat and,
