@@ -602,3 +602,30 @@ def test_memory_entries_can_be_reworded_and_deleted_and_jarvis_reads_the_change(
         assert page.errors == []
     finally:
         ctx.close()
+
+
+def test_an_approved_action_that_fails_turns_its_chat_card_into_the_error_with_a_retry(serve, browser):
+    srv, j, _ = serve()
+    ids = _seed(j, history=True)
+    fsm = j.actions.fsm                                                   # refuses (HTTP 422), like the failed actions above
+    ctx, page = _page(browser, srv.url, 1280, 800)
+    try:
+        page.wait_for_selector("#conversation .appr-card", timeout=10000)
+        card = f'#conversation .appr-card[data-id="{ids["fsm"]}"]'
+        page.locator(f"{card} [data-act=approve]").click()
+        page.wait_for_selector(f'{card}[data-status="failed"]', timeout=10000)
+        text = page.inner_text(card)
+        assert "didn't go through" in text and "site name already exists" in text and SECRET not in text
+        assert page.locator(f"{card} [data-act=retry]").is_visible() and page.locator(f"{card} [data-act=approve]").count() == 0
+        assert len(fsm.writes) == 1
+        # Retry from the chat: the failed card says it was retried, and a NEW card waits for an Approve - nothing re-ran
+        page.locator(f"{card} [data-act=retry]").click()
+        page.wait_for_function(f"document.querySelector('{card}').innerText.includes('Retried as #')", timeout=10000)
+        new_id = j.db.get_action(ids["fsm"])["superseded_by"]
+        new_card = f'#conversation .appr-card[data-id="{new_id}"]'
+        page.wait_for_selector(f'{new_card}[data-status="pending"]', timeout=10000)
+        assert len(fsm.writes) == 1 and page.locator(f"{new_card} [data-act=approve]").is_visible()
+        # the rail now counts it (one more waiting) and the old failure is no longer in the failed list
+        assert page.locator(f"#failed-actions .appr-card[data-id='{ids['fsm']}']").count() == 0
+    finally:
+        ctx.close()
