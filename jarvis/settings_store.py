@@ -26,9 +26,26 @@ log = logging.getLogger(__name__)
 OPUS = ("claude-opus-5-5", "Claude Opus 5.5 - most capable")
 SONNET = ("claude-sonnet-5-5", "Claude Sonnet 5.5 - quicker")
 EFFORT = (("low", "Quick"), ("medium", "Balanced"), ("high", "Thorough"))
-AZURE_VOICES = tuple((f"en-GB-{n}Neural", f"{n} ({g})") for n, g in (
-    ("Ryan", "male"), ("Thomas", "male"), ("Oliver", "male"), ("Alfie", "male"), ("Elliot", "male"), ("Ethan", "male"),
-    ("Noah", "male"), ("Sonia", "female"), ("Libby", "female"), ("Olivia", "female")))
+# The engineering agents also accept the two highest levels the Agent SDK and API support (see config.ENGINEER_EFFORT_LEVELS).
+ENGINEER_EFFORT = EFFORT + (("xhigh", "Extra thorough (some models only)"), ("max", "Maximum"))
+# British English Azure neural voices offered under Connections > Voice. The Multilingual ones are Azure's newer,
+# higher-quality generation; Ryan is first because it also supports the conversational style (jarvis/integrations/
+# ssml.py). Add a name here only once it is confirmed in Azure's en-GB voice list - a wrong name makes every spoken
+# reply fail over to the browser voice.
+AZURE_VOICES = (
+    ("en-GB-RyanNeural", "Ryan (male)"),
+    ("en-GB-OllieMultilingualNeural", "Ollie - newer, high quality (male)"),
+    ("en-GB-ThomasNeural", "Thomas (male)"),
+    ("en-GB-OliverNeural", "Oliver (male)"),
+    ("en-GB-AlfieNeural", "Alfie (male)"),
+    ("en-GB-ElliotNeural", "Elliot (male)"),
+    ("en-GB-EthanNeural", "Ethan (male)"),
+    ("en-GB-NoahNeural", "Noah (male)"),
+    ("en-GB-SoniaNeural", "Sonia (female)"),
+    ("en-GB-AdaMultilingualNeural", "Ada - newer, high quality (female)"),
+    ("en-GB-LibbyNeural", "Libby (female)"),
+    ("en-GB-OliviaNeural", "Olivia (female)"),
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +113,13 @@ SECTIONS: tuple[Section, ...] = (
                   options=EFFORT),
             Field("chat_effort", "Thinking for typed chat", "select", "Thorough takes longer but digs deeper.",
                   options=EFFORT),
+            Field("engineer_model", "Model for the engineering agents", "text",
+                  "Used by self-improvement, auto-fix and the security review. Paste the exact model ID. "
+                  "Blank = same as the model above. Only you can change this.",
+                  placeholder="blank = same as above", advanced=True),
+            Field("engineer_effort", "Thinking for the engineering agents", "select",
+                  "How hard they think when writing or reviewing code. Only you can change this.",
+                  options=ENGINEER_EFFORT, advanced=True),
             Field("web_search_enabled", "Let Jarvis search the web", "bool"),
         ),
         test=True,
@@ -236,6 +260,12 @@ SECTIONS: tuple[Section, ...] = (
                   help="Leave as https://api.qaifn.co.uk. Only the address: anything after the host is ignored.",
                   advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
+            Field("van_locations_out_of_hours", "Show van locations outside working hours", "select",
+                  "Off (default): vans are hidden outside Mon-Fri 07:00-18:30. On-call only: just the engineers on "
+                  "the on-call roster (set it by asking Jarvis) are shown. Always: every van, any hour. Only the "
+                  "owner can change this. Every out-of-hours look-up is logged (who asked, when, which engineer). "
+                  "Make sure engineers' contracts and tracking policy cover this.",
+                  options=(("off", "Off"), ("on_call", "On-call only"), ("always", "Always"))),
         ),
         required=("ram_client_id", "ram_api_key", "ram_username", "ram_password"),
         test=True,
@@ -277,6 +307,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True,
                   depends_on=("tts_provider", "azure")),
             Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES,
+                  help="Press Play sample to hear the voice you've picked (needs the Azure Speech key saved).",
                   depends_on=("tts_provider", "azure")),
             Field("azure_tts_style", "Azure speaking style", "select",
                   options=(("chat", "Conversational"), ("", "Standard")), advanced=True,
@@ -324,6 +355,18 @@ SECTIONS: tuple[Section, ...] = (
         test=True,
     ),
     Section(
+        "images", "Image generation", "Draft social media graphics (Facebook, Instagram, LinkedIn, TikTok) with "
+        "your headline, navy branding and logo. Drafts only - Jarvis never posts them anywhere.",
+        (
+            Field("image_provider", "Image provider", "select", "Which service paints the background.",
+                  options=(("openai", "OpenAI"),)),
+            Field("image_api_key", "Image provider API key", "secret",
+                  "Without this Jarvis says image generation isn't connected and makes nothing."),
+            Field("image_model", "Image model", advanced=True, placeholder="gpt-image-1"),
+        ),
+        required=("image_api_key",),
+    ),
+    Section(
         "github", "Auto-fix", "Lets Jarvis prepare Salts FSM bug fixes as pull requests for you to approve.",
         (
             Field("github_token", "GitHub token", "secret",
@@ -367,11 +410,14 @@ SECTIONS: tuple[Section, ...] = (
                   "Makes the engineering agent plan first, write the test first and review its own change "
                   "before opening a pull request. Adds written instructions only - no software is installed."),
             Field("plugin_browser_use_enabled", "Browser Use (read-only browsing)", "bool",
-                  "Off by default. Jarvis may read pages on the domains below; it can never click, log in, "
-                  "submit or buy. Needs a reviewed, pinned install in mcp_plugins.yaml before it does anything."),
+                  "Off by default - this is the one switch that turns it on. Jarvis may read pages on the approved "
+                  "domains (and type a number plate into a dealer's search box); it can never log in, submit, "
+                  "download, run scripts, read cookies or buy. Needs a reviewed, pinned install and a confirmed "
+                  "sandbox in mcp_plugins.yaml before it does anything."),
             Field("plugin_browser_allowed_domains", "Browser Use allowed domains", "textarea",
-                  "Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Finance, Sage and bank "
-                  "sites are always refused, even if listed.", advanced=True),
+                  "Optional. Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Can only narrow "
+                  "the approved list in mcp_plugins.yaml, never widen it; blank means the whole approved list. "
+                  "Finance, Sage and bank sites are always refused, even if listed.", advanced=True),
             Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
                   "Off by default. When on, every action you approve is first checked against the rules in "
                   "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
@@ -491,7 +537,9 @@ FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
 OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
 OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
-    "staff_report_key"})
+    "staff_report_key", "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
+    "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
+    "engineer_model", "engineer_effort"})  # which model / how hard the code-writing agents work: owner's call (cost)
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 

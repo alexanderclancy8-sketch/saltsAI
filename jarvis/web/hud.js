@@ -85,6 +85,7 @@
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(/!\[([^\]]*)\]\((\/api\/images\/[0-9a-f]{32}\.png)\)/g, '<img class="gen-image" src="$2" alt="$1">') // our own generated graphics only
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     const lines = text.split("\n");
     const out = [];
@@ -360,8 +361,19 @@
     // callback either re-speaks it in the browser voice (a play() aborted by pause() rejects, which used to fall
     // through to speakBrowser) or calls next() a second time and overlaps the next reply.
     gen: 0,
-    feed(delta) { this.buffer += delta; const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p)); },
-    flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; },
+    firstOut: false, // the first sentence of this reply has been handed to the voice
+    feed(delta) {
+      this.buffer += delta;
+      const parts = this.buffer.split(/(?<=[.!?…:])\s+(?=[A-Z0-9"'£(])/); this.buffer = parts.pop(); parts.forEach((p) => this.enqueue(p));
+      // Start on the first sentence as soon as it is complete, rather than waiting for the first letter of the
+      // second one to prove it ended. Not after a short run or an abbreviation ("e.g.", "approx.", "Mr."), and a
+      // decimal like 9.30 never matches because it needs whitespace straight after the full stop.
+      if (!this.firstOut) {
+        const m = this.buffer.match(/^([\s\S]{12,}?(?<!\b(?:e\.g|i\.e|etc|vs|approx|Mr|Mrs|Dr|No))[.!?…])\s/);
+        if (m) { this.enqueue(m[1]); this.buffer = this.buffer.slice(m[0].length); }
+      }
+    },
+    flush() { if (this.buffer.trim()) this.enqueue(this.buffer); this.buffer = ""; this.firstOut = false; },
     // `filler` marks the one-off "let me check the accounts" acknowledgment: it goes through exactly the same
     // queue, recent-speech list and echo window as any other speech, but next() treats it differently on the
     // way out (no HUD flip to "speaking", no follow-up window) because it is not a reply.
@@ -372,6 +384,7 @@
       const now = Date.now();
       this.recent = this.recent.filter((r) => now - r.at < RECENT_TTS_MS).slice(-30);
       this.recent.push({ text: clean, at: now });
+      if (!filler) this.firstOut = true;
       const item = { text: clean, filler, audio: S.voice.tts !== "browser" ? this.fetchAudio(clean) : null };
       this.queue.push(item);
       if (!this.active) this.next();
@@ -461,7 +474,7 @@
       // silent speaker, and that must not put the owner's own first words inside an "echo window".
       if (this.active || this.queue.length || this.browserSpeaking) this.lastSpokeAt = Date.now();
       this.gen++;
-      this.queue = []; this.buffer = ""; this.active = false; this.browserSpeaking = false; this.playingFiller = false;
+      this.queue = []; this.buffer = ""; this.firstOut = false; this.active = false; this.browserSpeaking = false; this.playingFiller = false;
       filler.end(); // any stop (new message, push-to-talk, Stop button) also ends the thinking-time filler for that turn
       player.pause(); if ("speechSynthesis" in window) speechSynthesis.cancel(); setHud("idle"); },
   };
@@ -1137,7 +1150,7 @@ function send(text, mode = "typed", opts = {}) {
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
-      case "display": openDisplay(d.title, d.markdown, d.doc_id); break;
+      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id); break;
       case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; renderApprovals(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
@@ -1156,18 +1169,21 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ display overlay
-  function openDisplay(title, markdown, docId) {
+  function openDisplay(title, markdown, docId, imageId) {
     $("#display-title").textContent = title;
-    // Download buttons only for stored, drafted documents (the id is a 32-char hex string from the server).
+    // Download buttons only for stored, drafted documents / graphics (the id is a 32-char hex string from the server).
     const dl = $("#display-downloads");
-    if (docId && /^[0-9a-f]{32}$/.test(docId)) {
+    const isImage = !!imageId && /^[0-9a-f]{32}$/.test(imageId);
+    const isDoc = !isImage && !!docId && /^[0-9a-f]{32}$/.test(docId);
+    for (const id of ["#display-pdf", "#display-docx", "#display-xlsx"]) $(id).style.display = isDoc ? "" : "none";
+    $("#display-png").style.display = isImage ? "" : "none";
+    if (isDoc) {
       $("#display-pdf").href = `/api/documents/${docId}/pdf`;
       $("#display-docx").href = `/api/documents/${docId}/docx`;
       $("#display-xlsx").href = `/api/documents/${docId}/xlsx`;
-      dl.hidden = false;
-    } else {
-      dl.hidden = true;
     }
+    if (isImage) $("#display-png").href = `/api/images/${imageId}.png?download=1`;
+    dl.hidden = !(isDoc || isImage);
     $("#display-body").innerHTML = md(markdown);
     $("#display").classList.add("open");
     $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
@@ -1266,9 +1282,36 @@ function send(text, mode = "typed", opts = {}) {
       const cls = ["critical", "high"].includes(i.severity) ? "bad" : i.status === "fix_ready" ? "ok" : "warn";
       const pr = i.fix_pr_url ? ` · <a href="${esc(i.fix_pr_url)}" target="_blank" rel="noopener">PR</a>` : "";
       // severity is already shown by the row's accent colour - naming it again in text was noise.
-      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span></li>`;
+      const mark = `<button class="btn small" type="button" data-issue-act="resolve" data-id="${i.id}">Mark resolved</button>`;
+      return `<li class="${cls}">#${i.id} ${esc(i.title)}<span class="sub">${esc(i.reporter)} · ${esc(i.status.replace("_", " "))}${pr}</span><span class="sub">${mark}</span></li>`;
     }).join("") : `<li class="empty">No open issues.</li>`;
+    renderResolvedIssues(S.status?.resolved_issues || []);
   }
+
+  // Recently resolved issues, each with a Reopen button. Closing or reopening an issue is not an approval.
+  function renderResolvedIssues(resolved = []) {
+    $("#issues-resolved").innerHTML = resolved.map((i) => {
+      const by = i.resolved_by ? ` · by ${esc(i.resolved_by)}` : "";
+      const note = i.notes ? ` · ${esc(i.notes).slice(0, 140)}` : "";
+      return `<li class="ok">#${i.id} ${esc(i.title)}<span class="sub">resolved${by}${note}</span><span class="sub"><button class="btn small" type="button" data-issue-act="reopen" data-id="${i.id}">Reopen</button></span></li>`;
+    }).join("");
+    $("#issues-resolved-sec").hidden = !resolved.length;
+  }
+
+  async function issueAction(id, act) {
+    let body;
+    if (act === "resolve") {
+      const note = window.prompt(`Mark issue #${id} resolved. Optional note:`, "");
+      if (note === null) return; // cancelled
+      body = JSON.stringify({ note });
+    }
+    const r = await api(`/api/issues/${encodeURIComponent(id)}/${act}`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); toast("Couldn't update the issue", e.detail || "", "warning"); }
+    else toast(act === "resolve" ? `Issue #${id} resolved` : `Issue #${id} reopened`);
+    refresh();
+  }
+  $("#issues").addEventListener("click", (e) => { const b = e.target.closest("[data-issue-act]"); if (b) issueAction(b.dataset.id, b.dataset.issueAct); });
+  $("#issues-resolved").addEventListener("click", (e) => { const b = e.target.closest("[data-issue-act]"); if (b) issueAction(b.dataset.id, b.dataset.issueAct); });
 
   function renderTests(tests = []) {
     S.data.tests = tests; renderRail();
@@ -1377,6 +1420,7 @@ function send(text, mode = "typed", opts = {}) {
 
   // ------------------------------------------------------------------ map
   let map = null, layer = null, tiles = null;
+  const NO_LABEL = "no address label from RAM";
   // Esri's canvas basemaps are free and keyless; pick the one that matches the theme that is showing.
   const tileUrl = () => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${window.JarvisTheme?.effective() === "light" ? "Light" : "Dark"}_Gray_Base/MapServer/tile/{z}/{y}/{x}`;
   window.addEventListener("jarvis-theme", () => { if (tiles) tiles.setUrl(tileUrl()); });
@@ -1413,7 +1457,7 @@ function send(text, mode = "typed", opts = {}) {
     S.tracking = data; renderFleetStatus(); renderRail();
     if (!window.L) {  // map library blocked/offline: show a list instead
       $("#map").innerHTML = `<ul class="list" style="padding:8px">${(data.engineers || []).map((e) =>
-        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""}</span></li>`).join("") ||
+        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(e.address_label || NO_LABEL)}</span></li>`).join("") ||
         `<li class="empty">${esc(data.note || "No vehicles reporting.")}</li>`}</ul>`;
       $("#map").style.height = "auto";
       return;
@@ -1426,15 +1470,24 @@ function send(text, mode = "typed", opts = {}) {
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
-    $("#map-note").textContent = data.working_hours === false ? "outside hours" : data.demo ? "demo" : `${data.engineers.length} vans`;
+    $("#map-note").textContent = data.working_hours === false
+      ? (data.visible ? `outside hours · logged · ${data.engineers.length} vans` : "outside hours")
+      : data.demo ? "demo" : `${data.engineers.length} vans`;
     if (map && !$("#map").hidden) map.invalidateSize();
     const pts = [];
     (data.sites || []).forEach((s) => { L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {
       L.circleMarker([e.lat, e.lng], { radius: 7, color: e.status === "driving" ? "#ffb020" : "#26d9ff", weight: 2, fillOpacity: 0.85 })
-        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}`).addTo(layer);
+        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(e.address_label || NO_LABEL)}`).addTo(layer);
       pts.push([e.lat, e.lng]);
     });
+    const fleetList = $("#fleet-list");
+    if (fleetList) {
+      fleetList.hidden = !fleetState().live;  // sample positions are not vehicles: no list until RAM is really connected
+      const warnings = (data.warnings || []).map((w) => `<li class="warn">${esc(w)}</li>`).join("");
+      fleetList.innerHTML = (data.engineers || []).map((e) =>
+        `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(e.address_label || NO_LABEL)}${e.at_home ? "" : e.status ? " · " + esc(e.status) : ""}</span></li>`).join("") + warnings;
+    }
     if (pts.length) map.fitBounds(pts, { padding: [20, 20], maxZoom: 12 });
   }
   // Leaflet measures its box once; call this whenever the map's container may have changed size or been revealed.
@@ -2195,6 +2248,7 @@ function send(text, mode = "typed", opts = {}) {
       if (f.kind === "select") {
         const current = hasEdit ? this.edited[f.key] : f.value;
         control = `<select id="f-${f.key}" data-field="${f.key}">${f.options.map(([v, l]) => `<option value="${esc(v)}" ${v === current ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+        if (f.key === "azure_tts_voice") control += ` <button class="btn small" data-voice-sample="${f.key}" type="button">Play sample</button>`;
       } else if (f.kind === "secret") {
         if (isCleared) {
           control = `<div class="set-secret-row"><span class="set-hint">will be cleared</span><button class="btn small" data-undo-clear="${f.key}" type="button">Undo</button></div>`;
@@ -2282,6 +2336,24 @@ function send(text, mode = "typed", opts = {}) {
       this.render();
     },
 
+    // Speaks a fixed sample line in the voice currently picked in the box (saved or not). Audio only.
+    async playSample(voice) {
+      speaker.stop(); ensureAudio();
+      try {
+        const r = await api("/api/tts/sample", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+        if (!r.ok) {
+          let detail = `error ${r.status}`;
+          try { detail = (await r.json()).detail || detail; } catch { /* not JSON */ }
+          toast("Couldn't play the sample", detail, "warning");
+          return;
+        }
+        const url = URL.createObjectURL(await r.blob());
+        player.src = url;
+        player.onended = player.onerror = () => URL.revokeObjectURL(url);
+        await player.play();
+      } catch { toast("Couldn't play the sample", "Check the connection and try again.", "warning"); }
+    },
+
     async save() {
       $("#btn-settings-save").disabled = true;
       $("#btn-settings-save").textContent = "Saving…";
@@ -2321,6 +2393,8 @@ function send(text, mode = "typed", opts = {}) {
     if (e.target.closest("[data-back]")) { Settings.backToList(); return; }
     const test = e.target.closest("[data-test]");
     if (test) { Settings.test(test.dataset.test); return; }
+    const sample = e.target.closest("[data-voice-sample]");
+    if (sample) { Settings.playSample(Settings.currentValue(sample.dataset.voiceSample)); return; }
     const showAdv = e.target.closest("[data-show-advanced]");
     if (showAdv) { Settings.advanced.add(showAdv.dataset.showAdvanced); Settings.render(); return; }
     const hideAdv = e.target.closest("[data-hide-advanced]");

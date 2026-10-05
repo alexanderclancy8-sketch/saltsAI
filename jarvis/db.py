@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS issues (
     fix_pr_number INTEGER,
     fix_branch TEXT DEFAULT '',
     image_path TEXT DEFAULT '',
-    notes TEXT DEFAULT ''
+    notes TEXT DEFAULT '',
+    resolved_by TEXT DEFAULT '',
+    resolved_at TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +257,15 @@ CREATE TABLE IF NOT EXISTS documents (
     title TEXT NOT NULL,
     markdown TEXT NOT NULL
 );
+-- One row per engineer whose van position/journey was looked up outside working hours (who asked, when, which tool).
+CREATE TABLE IF NOT EXISTS location_lookup_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    asked_by TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    engineer TEXT NOT NULL,
+    mode TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS false_alarm_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -271,6 +282,18 @@ CREATE TABLE IF NOT EXISTS false_alarm_log (
     investigated_by TEXT DEFAULT '',
     reviewed_by TEXT DEFAULT '',
     review_date TEXT DEFAULT ''
+);
+-- One row per background engineering-agent run (self_improve / fixer / security_watch): progress, not results.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    request TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    steps INTEGER NOT NULL DEFAULT 0,
+    trail TEXT NOT NULL DEFAULT '[]',
+    outcome TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -301,6 +324,10 @@ class Database:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_actions)").fetchall()}
         if "approved_by" not in cols:
             self._conn.execute("ALTER TABLE pending_actions ADD COLUMN approved_by TEXT DEFAULT ''")
+        issue_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(issues)").fetchall()}
+        for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
+            if col not in issue_cols:
+                self._conn.execute(f"ALTER TABLE issues ADD COLUMN {col} TEXT DEFAULT ''")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -345,6 +372,16 @@ class Database:
         if status:
             return self.query("SELECT * FROM issues WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit))
         return self.query("SELECT * FROM issues ORDER BY id DESC LIMIT ?", (limit,))
+
+    def resolve_issue(self, issue_id: int, *, by: str, note: str = "") -> None:
+        """Close an issue by hand: status, note, and who/when. Not an approval - it decides nothing about any action."""
+        ts = now_iso()
+        self.execute("UPDATE issues SET status = 'resolved', notes = ?, resolved_by = ?, resolved_at = ?,"
+                     " updated_at = ? WHERE id = ?", (note, by, ts, ts, issue_id))
+
+    def reopen_issue(self, issue_id: int, *, note: str) -> None:
+        self.execute("UPDATE issues SET status = 'open', notes = ?, resolved_by = '', resolved_at = '',"
+                     " updated_at = ? WHERE id = ?", (note, now_iso(), issue_id))
 
     def find_open_issue_by_title(self, title: str) -> dict[str, Any] | None:
         return self.query_one(
@@ -528,6 +565,14 @@ class Database:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
 
+    def failed_actions(self, since_iso: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """Approved actions that then failed (newest first), optionally only those decided at/after `since_iso`."""
+        rows = self.query("SELECT * FROM pending_actions WHERE status = 'failed' AND decided_at >= ?"
+                          " ORDER BY id DESC LIMIT ?", (since_iso, limit))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        return rows
+
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))
@@ -559,6 +604,21 @@ class Database:
     def set_kv(self, key: str, value: str) -> None:
         self.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                      (key, value))
+
+    # -- out-of-hours van location look-ups ---------------------------------------------------
+    def log_location_lookup(self, asked_by: str, tool: str, engineer: str, mode: str) -> int:
+        return self.execute("INSERT INTO location_lookup_log (created_at, asked_by, tool, engineer, mode) "
+                            "VALUES (?,?,?,?,?)", (now_iso(), asked_by, tool, engineer, mode))
+
+    def recent_location_lookup(self, asked_by: str, tool: str, engineer: str, within_minutes: int) -> bool:
+        since = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat(timespec="seconds")
+        return self.query_one("SELECT 1 FROM location_lookup_log WHERE asked_by = ? AND tool = ? AND engineer = ? "
+                              "AND created_at >= ? LIMIT 1", (asked_by, tool, engineer, since)) is not None
+
+    def location_lookups(self, days: int = 7, limit: int = 200) -> list[dict[str, Any]]:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        return self.query("SELECT created_at, asked_by, tool, engineer, mode FROM location_lookup_log "
+                          "WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:

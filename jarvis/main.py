@@ -28,9 +28,10 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import connection_tests, documents
+from .services import connection_tests, documents, images
+from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
-from .settings_store import OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
+from .settings_store import AZURE_VOICES, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 install_log_redaction()  # no secrets (webhook signatures, tokens, keys) in the log stream - see jarvis/redact.py
@@ -58,6 +59,10 @@ class VoiceEventIn(BaseModel):
     detail: str = Field("", max_length=300)
 
 
+class IssueResolveIn(BaseModel):
+    note: str = Field("", max_length=1000)
+
+
 class ForgetIn(BaseModel):
     text: str = Field(min_length=1, max_length=200)
 
@@ -65,6 +70,10 @@ class ForgetIn(BaseModel):
 class TTSIn(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     voice_id: str | None = None
+
+
+class VoiceSampleIn(BaseModel):
+    voice: str = Field(max_length=80)
 
 
 class SettingsIn(BaseModel):
@@ -327,6 +336,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     activity=j.activity.summary(),
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
+                    resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
                           "connected": isinstance(j.finance, SageFinance) and j.finance.connected})
@@ -334,7 +344,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/tracking", dependencies=[Depends(owner)])
     async def tracking(request: Request):
-        return await J(request).tracker.live()
+        # The Fleet panel. Outside working hours this only shows vans if the owner's setting allows it, and then the
+        # look-up is logged against whoever is signed in (the manager's name, or the owner's own display session).
+        return await J(request).tracker.live(requester_label(settings, speaker(request)), tool="fleet_panel")
 
     # ------------------------------------------------------------------ voice
     @app.post("/api/tts", dependencies=[Depends(owner)])
@@ -349,6 +361,21 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             log.warning("TTS failed, browser voice used instead: %s", e)
             return JSONResponse({"fallback": "browser", "detail": redact_text(f"{type(e).__name__}: {e}")[:300]},
                                 status_code=503)
+        return StreamingResponse(stream, media_type=mime)
+
+    @app.post("/api/tts/sample", dependencies=[Depends(owner)])
+    async def tts_sample(body: VoiceSampleIn, request: Request):
+        """The Settings page's 'Play sample' button: a fixed line in one of the listed Azure voices. It only
+        makes audio - it cannot approve, change or send anything."""
+        if body.voice not in {v for v, _ in AZURE_VOICES}:
+            return JSONResponse({"detail": "Pick one of the listed Azure voices."}, status_code=400)
+        try:
+            stream, mime = await J(request).voice.azure_sample(body.voice)
+        except VoiceError as e:
+            return JSONResponse({"detail": redact_text(str(e))[:300]}, status_code=503)
+        except Exception as e:  # noqa: BLE001 - network trouble reaching Azure; the type is enough for the log
+            log.warning("Voice sample failed: %s", type(e).__name__)
+            return JSONResponse({"detail": f"Couldn't reach Azure Speech ({type(e).__name__})."}, status_code=503)
         return StreamingResponse(stream, media_type=mime)
 
     @app.post("/api/stt", dependencies=[Depends(owner)])
@@ -479,13 +506,40 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(404, "No such document")
         render, mime = renderers[fmt]
         try:
-            data = await asyncio.to_thread(render, doc, settings.company_name)
+            data = await asyncio.to_thread(render, doc, settings.company_name, settings.company_address,
+                                           documents.header_logo(settings.company_logo_path))
         except ImportError:
             raise HTTPException(503, "Document rendering isn't installed on this server.") from None
         filename = documents.download_filename(doc, fmt)
         return Response(data, media_type=mime,
                         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                                  "Cache-Control": "no-store"})
+
+    # ------------------------------------------------------------------ draft social media graphics (PNG)
+    @app.get("/api/images/{image_name}", dependencies=[Depends(owner)])
+    async def get_image(image_name: str, download: int = 0):
+        image_id = image_name[:-4] if image_name.endswith(".png") else ""
+        if not images.IMAGE_ID_RE.match(image_id):
+            raise HTTPException(404, "No such image")
+        path = images.images_dir(settings) / f"{image_id}.png"
+        if not path.is_file():
+            raise HTTPException(404, "No such image")
+        headers = {"Cache-Control": "no-store"}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="salts-draft-post-{image_id[:8]}.png"'
+        return Response(path.read_bytes(), media_type="image/png", headers=headers)
+
+    @app.post("/api/brand/logo", dependencies=[Depends(owner)])
+    async def upload_logo(logo: UploadFile = File(...)):
+        """Supply the company logo once; generated graphics use it from then on (over the bundled Salts logo)."""
+        data = await logo.read(images.MAX_LOGO_BYTES + 1)
+        try:
+            await asyncio.to_thread(images.save_logo, settings, data)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except ImportError:
+            raise HTTPException(503, "Image handling isn't installed on this server.") from None
+        return {"saved": True, "message": "Logo saved - it will be used on every graphic from now on."}
 
     # ------------------------------------------------------------------ approvals
     @app.get("/api/approvals", dependencies=[Depends(owner)])
@@ -550,6 +604,31 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def list_issues(request: Request, status: str = "open"):
         j = J(request)
         return [j.issues.summary(i) for i in j.db.list_issues(None if status == "all" else status, 100)]
+
+    # Closing / reopening an issue is bookkeeping, not an approval: it never touches the actions queue.
+    def _issue_actor(request: Request) -> str:
+        return speaker(request) or settings.owner_name
+
+    @app.post("/api/issues/{issue_id}/resolve", dependencies=[Depends(owner)])
+    async def resolve_issue(issue_id: int, request: Request, body: IssueResolveIn | None = None):
+        try:
+            issue = J(request).issues.mark_resolved(issue_id, by=_issue_actor(request),
+                                                    note=body.note if body else "")
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return J(request).issues.summary(issue)
+
+    @app.post("/api/issues/{issue_id}/reopen", dependencies=[Depends(owner)])
+    async def reopen_issue(issue_id: int, request: Request):
+        try:
+            issue = J(request).issues.reopen(issue_id, by=_issue_actor(request))
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return J(request).issues.summary(issue)
 
     @app.post("/api/issues/{issue_id}/fix", dependencies=[Depends(owner)])
     async def fix_issue(issue_id: int, request: Request):
@@ -727,7 +806,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
-                                     "or the display password and staff key.")
+                                     "the display password and staff key, or whether van locations show outside "
+                                     "working hours, or whether and where Jarvis may browse the web.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

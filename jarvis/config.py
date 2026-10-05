@@ -12,10 +12,17 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+# Effort levels both the Claude Agent SDK (EffortLevel) and the API (output_config.effort) accept, lowest to highest.
+# Keep in step with the Literal on Settings.engineer_effort. "xhigh" only has an effect on some models (the SDK falls
+# back to "high" elsewhere).
+ENGINEER_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def apply_timezone(name: str) -> None:
@@ -50,6 +57,12 @@ class Settings(BaseSettings):
 
     # --- Identity -------------------------------------------------------
     company_name: str = "Salts Fire and Security"
+    # Printed in the footer of PDF / Word documents (COMPANY_ADDRESS). Blank = the footer shows the name only.
+    company_address: str = ""
+    # Path to the company logo image (PNG or JPEG) for the header of PDF / Word documents (COMPANY_LOGO_PATH).
+    # Blank = the Salts logo bundled with the app (web/assets/salts-logo.jpg). A path that is set but missing, not a
+    # PNG/JPEG or over 2 MB = documents are branded with the company name and Salts navy only.
+    company_logo_path: str = ""
     company_domain: str = "saltsfireandsecurity.co.uk"
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
@@ -97,7 +110,12 @@ class Settings(BaseSettings):
     voice_model: str = "claude-sonnet-5-5"  # spoken replies default to the quicker model; blank = same as JARVIS_MODEL
     voice_effort: str = "low"  # spoken conversation: quick, natural replies
     chat_effort: str = "medium"  # typed chat: thorough answers without long waits (raise to high for deep work)
-    engineer_effort: str = "high"  # code fixes
+    # The engineering agents (self-improve, auto-fix, security review) can run on a stronger model than the chat
+    # brain. Blank = same as JARVIS_MODEL. Use engineer_model_or_default(); the owner supplies the exact model ID.
+    engineer_model: str = ""
+    # Thinking depth for those agents: low | medium | high | xhigh | max (what the Agent SDK and API accept).
+    # An unsupported value is rejected at startup rather than silently ignored; see _check_engineer_effort.
+    engineer_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"  # code fixes
     jarvis_fallbacks: bool = True
     jarvis_compaction: bool = True
     web_search_enabled: bool = True  # lets Jarvis search/fetch the web like Claude chat
@@ -242,6 +260,10 @@ class Settings(BaseSettings):
     ram_username: str = ""
     ram_password: str = ""
     timesheet_tolerance_min: int = 30
+    # Van locations outside working hours (Mon-Fri 07:00-18:30): "off" (default - hidden, private use), "on_call"
+    # (only engineers on the on-call roster) or "always". Every out-of-hours look-up is logged. Owner-only on the
+    # Settings page (settings_store.OWNER_ONLY_KEYS); an unknown value is treated as "off" (services/tracking.py).
+    van_locations_out_of_hours: str = "off"
 
     # --- Marketing: socials, Google reviews, search ranking -------------------
     website_url: str = "https://www.saltsfireandsecurity.co.uk"
@@ -264,6 +286,13 @@ class Settings(BaseSettings):
     pagespeed_api_key: str = ""
     social_snapshot_cron: str = "20 6 * * *"
     marketing_report_cron: str = "50 7 * * 1"
+
+    # --- Image generation (draft social media graphics; see services/images.py) --------------------------
+    # The provider paints a plain background; Jarvis adds the headline, navy branding and logo itself. With no
+    # key the generate_image tool says it isn't connected and never fakes an image. Drafts only - never posted.
+    image_provider: str = "openai"  # supported: openai
+    image_api_key: str = ""
+    image_model: str = "gpt-image-1"
 
     # --- Voice --------------------------------------------------------------
     tts_provider: str = "auto"  # auto | elevenlabs | azure | piper | browser
@@ -307,6 +336,11 @@ class Settings(BaseSettings):
     regulatory_watch_cron: str = "40 7 * * 1"  # weekly tax / employment law / fire regulation watch
     technical_watch_cron: str = "30 6 * * 2"  # weekly fire & security technical/standards deep-dive
     security_watch_cron: str = "0 6 * * 1"  # weekly review of the Salts FSM codebase for vulnerabilities
+    # The standing FSM engineer bot: a read-only audit of routine tests, open issues and Salts FSM health that tells the
+    # owner on Teams only when a failure is new or changed, and hands each to the engineering agent via issue_fix
+    # (which still waits for a human's approval). It never writes to FSM, merges, deploys or approves anything.
+    fsm_engineer_enabled: bool = True
+    fsm_engineer_cron: str = "*/30 * * * *"
     suggestions_cron: str = "5 9,13,16 * * 1-5"  # proactive suggestion sweeps
     lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
     wrapup_cron: str = "0 17 * * 1-5"  # end-of-day wrap-up at 5pm (after the billing and review checks)
@@ -379,6 +413,23 @@ class Settings(BaseSettings):
     def model_for(self, mode: str) -> str:
         """The Claude model for a spoken ("voice") or typed turn."""
         return (self.voice_model or self.jarvis_model) if mode == "voice" else self.jarvis_model
+
+    def engineer_model_or_default(self) -> str:
+        """The Claude model for the engineering agents: ENGINEER_MODEL, or JARVIS_MODEL when that is blank."""
+        return (self.engineer_model or "").strip() or self.jarvis_model
+
+    @field_validator("engineer_effort", mode="before")
+    @classmethod
+    def _check_engineer_effort(cls, value):
+        """Normalise (case, spaces; blank = the default 'high') and reject anything the SDK/API wouldn't accept."""
+        if value is None:
+            return "high"
+        level = str(value).strip().lower()
+        if not level:
+            return "high"
+        if level not in ENGINEER_EFFORT_LEVELS:
+            raise ValueError(f"ENGINEER_EFFORT must be one of {', '.join(ENGINEER_EFFORT_LEVELS)} (got {value!r})")
+        return level
 
     @property
     def effective_llm_backend(self) -> str:

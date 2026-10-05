@@ -224,6 +224,7 @@ body[data-hud="speaking"] .state b { animation: status-pulse .7s ease-in-out inf
 .md pre { background: var(--navy); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md table { border-collapse: collapse; margin: 6px 0; font-size: 13.5px; display: block; overflow-x: auto; overflow-wrap: normal; max-width: 100%; }  /* normal: .msg's anywhere-wrapping would otherwise crush cells to one letter per line instead of letting the table scroll */
+.md img.gen-image { display: block; max-width: 100%; max-height: 70vh; height: auto; margin: 6px 0; border-radius: 8px; border: 1px solid var(--line); }
 .md th, .md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
 .md th { color: var(--text); background: none; font-weight: 600; }
 /* Working line above a reply ("Checking jobs in Salts FSM…"), source-and-time line below it, then the extras: a button for

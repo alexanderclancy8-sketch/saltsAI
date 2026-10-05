@@ -115,6 +115,7 @@
       <a class="icon-btn" id="display-pdf" download>Download PDF</a>
       <a class="icon-btn" id="display-docx" download>Download Word</a>
       <a class="icon-btn" id="display-xlsx" download>Download Excel</a>
+      <a class="icon-btn" id="display-png" download style="display:none">Download PNG</a>
     </span>
     <button class="icon-btn" id="display-close" aria-label="Close">✕</button></header>
   <div class="body md" id="display-body"></div>
@@ -154,6 +155,10 @@
         <h3>Open issues and fixes <span class="count" id="issues-count"></span></h3>
         <ul class="list" id="issues"></ul>
       </div>
+      <div class="sec" id="issues-resolved-sec" hidden>
+        <h3>Recently resolved</h3>
+        <ul class="list" id="issues-resolved"></ul>
+      </div>
     </section>
 
     <section class="pop" id="pop-health" data-title="Health" hidden>
@@ -184,6 +189,7 @@
         <h3>Vehicle tracking <span class="count" id="map-note"></span></h3>
         <div class="fleet-note" id="fleet-status"></div>
         <div id="map"></div>
+        <ul class="list" id="fleet-list"></ul>
       </div>
     </section>
 

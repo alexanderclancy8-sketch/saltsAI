@@ -100,6 +100,14 @@ prompt) until the model calls a terminal tool (`submit_fix`/`submit_findings`/`s
 rejects every command but `view`). `self_improve.py` is deliberately narrower than `fixer.py`: no merge step, no
 deploy step, ever, not even behind an approval click - a human always merges it. Copy the shape of whichever of
 these three is closest to a new engineer/review-style feature rather than starting from scratch.
+*Model and effort for these three.* They use `Settings.engineer_model_or_default()` (`ENGINEER_MODEL`; blank = same as
+`JARVIS_MODEL`; never hard-code an ID - the owner supplies it) and `Settings.engineer_effort` (`ENGINEER_EFFORT`), on both
+backends: `llm.request_params(..., model=...)` for the API loop and `max_backend.run_once(..., model=...)` for the `_max`
+variants. `engineer_effort` is one of `low|medium|high|xhigh|max` (what the Agent SDK's `EffortLevel` and the API's
+`output_config.effort` accept); it is lower-cased/trimmed, blank means `high`, and anything else raises a clear validation
+error at startup (`Settings._check_engineer_effort`) instead of being ignored. Both appear (advanced) in the Settings page's
+Claude section and are in `settings_store.OWNER_ONLY_KEYS`, so only the owner can change them. A new engineer-style service
+must pass both too. Tests: `tests/test_engineer_model.py`.
 `services/recruiter.py` (the `recruit_agent` tool) generalises the same shape beyond code: a fresh agent, a
 fixed turn budget, a final answer - but against Jarvis's own tool set via `dispatch()` (so a write it proposes
 queues for approval exactly like anything else) rather than a code checkout, for research/drafting/analysis
@@ -107,6 +115,49 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 `AsyncAnthropic` tool loop for the API backend, `max_backend.run_agent` - a filtered MCP tool server - for the
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
+
+**CI failure logs for the engineer loops (`services/ci_logs.py`, tool `ci_log_excerpt`; tests `tests/test_ci_logs.py`).**
+`checks_summary()` only says pass/fail, so the engineering agents had no way to see *why* CI failed. `ci_log_excerpt`
+takes `run_id` or `head_sha` (newest failed run for that commit), reads the failing job(s) via `GitHub.run_jobs` /
+`GitHub.job_log` (GET only) and returns the whole log if it is small, otherwise the last 60 lines plus context around
+FAILED/Error/assert lines. The result is always capped at `MAX_EXCERPT_CHARS` (30k chars) - the ~1MB tool-result buffer
+has broken auto-fix attempts before (issues #6, #17), so never raise it near that, and `job_log` itself keeps only the
+last 4MB of a download. It is offered in `SELF_IMPROVE_TOOLS`, `ENGINEER_TOOLS` (fixer) and `REVIEW_TOOLS`
+(security_watch); the API-backend loops call it via `ci_logs.run_ci_log_tool(self.gh, input)` (it is async, so it is
+dispatched in the loop rather than in the sync `_tool_call`), and the Max/Agent SDK `_max` variants get it as an
+in-process MCP server (`ci_logs.sdk_ci_log_server`, allowed tool `mcp__jarvis_ci__ci_log_excerpt`) alongside
+Read/Edit/Glob/Grep. Log text is untrusted data (redacted with `redact_text`, never instructions); errors from GitHub come
+back to the model as a tool error. A new engineer-style agent that has a `GitHub` client should offer it the same way.
+
+**Progress visibility for engineer loops (`services/agent_runs.py`, the `agent_runs` tool).** `self_improve.run()`,
+`Fixer.attempt()` (built-in mode) and `SecurityWatch.run()` each wrap their run in `AgentRuns.track(...)`, which
+keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`/`interrupted`) and a
+trail of one-line tool-call summaries (`editor view <path>`, `grep '<pattern>'`, ...) added after every tool call
+in the loop - never file contents or edit text; the newest 60 steps are kept. The read-only `agent_runs` tool lists
+recent runs; a run still `running` with no activity for 30 minutes (`STALL_AFTER`) is reported as `stalled` (worked
+out when read, not stored). A run cancelled mid-flight is closed `interrupted`; at start-up (and when a new run
+starts) `AgentRuns.interrupt_stale()` closes `running` rows left by a crash or restart as `interrupted` - but only
+rows that started over `INTERRUPTED_AFTER` (2h, twice the assumed `MAX_RUN_TIME`) ago with no step in the last 30
+minutes, so a second process sharing the database during a rolling deploy never has its live run marked dead.
+`SelfImprove.run()` also notifies the owner (`self_improve_failed`, engineering-flagged) when a run raises or is
+cancelled, and a Claude Code run that hits `max_turns` (`MaxTurnsExceeded`) is a `gave_up` with a plain message,
+not a parse error. Recording is observability only: it swallows its own errors and never alters what an
+agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
+(Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
+
+**The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
+`tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
+`fsm_engineer_enabled`, both env-only): it reads the latest routine test results, open issues, failed approved writes and two live
+read-only probes of Salts FSM (`check()` and today's `jobs()`), and builds one JSON payload per failure (`PAYLOAD_KEYS`) with a
+root-cause category from `classify()`. A cause is CONFIRMED only when recorded tool output itself says so; issue/report wording
+can suggest a category but never confirm it, and the payload states that no logs are available - never invent log lines. It
+hands each new/changed failure to the engineering agent by queueing the existing `tool:issue_fix` action (a human still approves
+it; the payload is stored in kv `fsm_engineer:payload:<issue id>` and `Fixer.engineer_payload_note()` shows it to the engineer as
+untrusted data). It never writes to FSM, merges, deploys, approves or changes settings (a test greps the module), tells Alex on
+Teams only when a failure is new or changed (state in kv `fsm_engineer:state`; fingerprints ignore timings), and a scheduled run
+with no change returns `NOTHING_TO_REPORT`. Everything it reads is untrusted data and is redacted before it is stored or sent.
+`FSMClient.write` raises for any non-2xx (including 3xx) and the executor's `_fsm_ok` fails any result carrying a non-2xx status,
+so a rejected approved write shows as failed with the error rather than done.
 
 **GitHub PR tools for Jarvis's own repo (`jarvis/brain/pr_tools.py`, `jarvis/integrations/github_pr.py`,
 `jarvis/services/pr_resolver.py`; full list and rules in `docs/github-pr-tools.md`).** Reads: `pr_list`, `pr_detail`,
@@ -125,7 +176,18 @@ allowlisted domains) goes to conversational Jarvis only; ThoughtProof checks an 
 inside `ActionExecutor._run`, and can only stop it (BLOCK, or fail closed if unavailable) - never approve, queue or skip.
 External MCP servers only reach the Max/Agent SDK backend (the API-backend engineer loop is hand-rolled and has no MCP),
 must be pinned to an exact version in `mcp_plugins.yaml`, and only tools listed in `allowed_tools` are callable
-(`permission_mode="dontAsk"` denies the rest). Never add a plugin tool that can change something without going through
+(`permission_mode="dontAsk"` denies the rest). Browser Use extras: the allowlist of dealer/government/industry sites lives in
+`mcp_plugins.yaml` (`allowed_domains`, a ceiling the Settings field can only narrow); login/credential/checkout/payment/
+download/script/cookie/agent tools, such web-address paths and file types are denied in code (`DENIED_TOOL_WORDS`,
+`BLOCKED_PATH_WORDS`); a listed typing tool (`search_tools`) may only be given a UK number plate in a real format (no
+whitespace/newline, no numbers except element indexes); `sandbox_confirmed` stays false until a human confirms a real
+sandbox (the code can't create one); the version stays blank until verified on PyPI. Web addresses are parsed strictly
+(ASCII hostnames only - no backslash, `@`, port, IP, `%` or punycode - exact allowlisted hosts, query strings of at most
+64 characters made of plate-shaped or short plain values) and EVERY string in a call is searched for hosts, whatever the
+argument is called. The PreToolUse hook only sees the call about to be made, not where a redirect ended up, so the
+sandbox's network-egress allowlist (same hosts as `allowed_domains`) is the second wall. `www.gov.uk` and the DVLA
+vehicle-enquiry host are listed individually, never all of `gov.uk`. The single on-switch is `plugin_browser_use_enabled`
+(with `plugin_browser_allowed_domains`, both owner-only in `settings_store.OWNER_ONLY_KEYS`). Never add a plugin tool that can change something without going through
 `dispatch()`'s approval gate.
 
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through

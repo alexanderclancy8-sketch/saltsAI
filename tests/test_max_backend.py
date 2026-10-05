@@ -15,6 +15,38 @@ def _fake_query(claude_agent_sdk, captured):
     return fake_query
 
 
+async def test_run_once_names_a_turn_limit_stop_explicitly(settings, monkeypatch):
+    """Hitting max_turns ends the SDK run with an error_max_turns result (no structured output). That must not
+    surface as an anonymous parse failure or an empty outcome - it raises MaxTurnsExceeded."""
+    import claude_agent_sdk
+    import pytest
+
+    from jarvis.brain.max_backend import MaxTurnsExceeded
+
+    async def fake_query(*, prompt, options=None, transport=None):
+        yield claude_agent_sdk.ResultMessage(subtype="error_max_turns", duration_ms=1, duration_api_ms=1,
+                                             is_error=False, num_turns=3, session_id="s1")
+
+    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
+    settings.claude_code_oauth_token = "sk-ant-oat-test"
+    with pytest.raises(MaxTurnsExceeded, match="turn limit"):
+        await run_once(settings, system="sys", prompt="hi", max_turns=3)
+
+
+async def test_run_once_raises_when_the_stream_ends_without_a_result(settings, monkeypatch):
+    import claude_agent_sdk
+    import pytest
+
+    async def fake_query(*, prompt, options=None, transport=None):
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
+    settings.claude_code_oauth_token = "sk-ant-oat-test"
+    with pytest.raises(RuntimeError, match="without a final result"):
+        await run_once(settings, system="sys", prompt="hi")
+
+
 async def test_run_once_blocks_write_and_edit_by_default(settings, monkeypatch):
     import claude_agent_sdk
 

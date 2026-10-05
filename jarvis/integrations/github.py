@@ -114,6 +114,27 @@ class GitHub:
         return [{"id": r["id"], "name": r["name"], "status": r["status"], "conclusion": r["conclusion"],
                  "url": r["html_url"], "created_at": r["created_at"]} for r in data.get("workflow_runs", [])]
 
+    async def run_jobs(self, run_id: int) -> list[dict[str, Any]]:
+        """The jobs of one GitHub Actions run (read-only): id, name, status, conclusion and the first failed step."""
+        data = await self._req("GET", f"/repos/{self.repo}/actions/runs/{int(run_id)}/jobs", params={"per_page": 100})
+        jobs = []
+        for j in data.get("jobs", []):
+            failed = next((s["name"] for s in j.get("steps") or []
+                           if s.get("status") == "completed" and s.get("conclusion") not in (
+                               "success", "neutral", "skipped", None)), "")
+            jobs.append({"id": j["id"], "name": j["name"], "status": j["status"], "conclusion": j["conclusion"],
+                         "failed_step": failed})
+        return jobs
+
+    async def job_log(self, job_id: int, max_bytes: int = 4_000_000) -> str:
+        """Plain-text log of one job (read-only). GitHub answers with a redirect to the log file; only the last
+        `max_bytes` are kept, since the failure is at the end and full logs can be huge."""
+        r = await self.http.get(f"{API}/repos/{self.repo}/actions/jobs/{int(job_id)}/logs", headers=self.headers,
+                                follow_redirects=True, timeout=120)
+        if r.status_code >= 400:
+            raise RuntimeError(f"GitHub GET job log {job_id} -> {r.status_code}: {r.text[:200]}")
+        return r.content[-max_bytes:].decode("utf-8", errors="replace")
+
     async def create_issue(self, title: str, body: str, labels: list[str] | None = None) -> dict[str, Any]:
         issue = await self._req("POST", f"/repos/{self.repo}/issues",
                                 json={"title": title, "body": body, "labels": labels or []})

@@ -39,6 +39,7 @@ from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.false_alarms import FalseAlarmLog
+from .services.images import ImageGenerator
 from .services.job_intake import JobIntake
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
@@ -58,6 +59,7 @@ from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
 from .services.routine_tests import RoutineTester
+from .services.fsm_engineer import FsmEngineer
 from .services.security_watch import SecurityWatch
 from .services.conversation_quality import ConversationQuality
 from .services.self_improve import SelfImprove
@@ -114,6 +116,9 @@ class Jarvis:
         self.fixer.issues, self.fixer.tester = self.issues, self.tester
         self.security_watch = SecurityWatch(s, self.db, self.bus, self.notifier, self.client, self.github, self.issues)
         self.self_improve = SelfImprove(s, self.db, self.bus, self.notifier, self.client, self.self_github)
+        # Engineering runs a restart/crash cut off stay 'running' forever; close the ones no live process can own
+        # (age-gated, so a second process during a rolling deploy keeps its own run). Never raises.
+        self.self_improve.runs.interrupt_stale()
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
@@ -125,6 +130,7 @@ class Jarvis:
         self.job_intake = JobIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
+        self.fsm_engineer = FsmEngineer(self)  # read-only FSM audit; hands failures to issue_fix (still needs approval)
         self.briefings = Briefings(s, self.db, self.mail, self.staff, self.accountant, self.notifier, self.client)
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
         self.advisor = Advisor(s, self.db, self.accountant, self.reviewer, self.staff, self.marketing, self.notifier,
@@ -133,7 +139,11 @@ class Jarvis:
         self.stores = Stores(self.db, demo_seed=self.fsm.demo, fsm=self.fsm)
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
-        self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min)
+        # settings + db: the owner's out-of-hours van-location setting, its look-up log and the on-call roster
+        self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min,
+                               settings=s, db=self.db)
+        self.oncall = self.tracker.roster
+        self.asked_by = ""  # who is asking in the current chat turn (set by the brains); "" outside a turn
         self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
         self.route_advisor = RouteAdvisor(self.fsm, self.tracker, self.register)  # read-only route advice
         self.customers = CustomerHealth(self)
@@ -147,6 +157,7 @@ class Jarvis:
         self.po_book = PurchaseOrderBook(self.db)  # purchase orders raised via log_purchase_order
         self.supplier_bills = SupplierBills(self)
         self.documents = Documents(self)
+        self.images = ImageGenerator(self)  # draft social media graphics; never posted anywhere
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
@@ -243,6 +254,7 @@ class Jarvis:
             "Azure deploy": s.azure_deploy_mode if self.github or self.kudu.enabled else "not set up",
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",
+            "Image generation": self.images.status(),
             "Socials / Google": ", ".join(k for k, v in presence.items() if v) or
                                 "DEMO data - connect Facebook, Instagram, LinkedIn, TikTok or Google reviews",
             "Stores / stock": (self.stores.source if not self.stores.demo else

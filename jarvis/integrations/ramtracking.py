@@ -60,6 +60,22 @@ RATE_LIMITED = ("RAM Tracking is rate limited just now (RAM allows 3 requests a 
                 "this is not a connection fault. Retry in a minute.")
 
 
+def _address_label(status: Any, loc: Any) -> str | None:
+    """RAM's own text label for where the van is (for most vans parked at home it reads "<name> home").
+
+    History events carry it as `formattedAddress`; the vehicle status is expected to carry the same on its
+    location. The Swagger isn't reachable from here, so a few likely spellings are tried - if RAM uses none of
+    them this stays None and callers say plainly that no label was supplied. Never stored, only passed through.
+    """
+    for source, keys in ((_obj(loc), ("formattedAddress", "formatted_address", "address", "label")),
+                         (_obj(status), ("formattedAddress", "formatted_address", "address", "current_address"))):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def missing_credentials(settings: Settings) -> list[str]:
     """What the owner still has to enter for RAM Tracking to connect, by the labels on the Connections form."""
     return [label for key, label in CREDENTIALS if not (getattr(settings, key, "") or "").strip()]
@@ -121,6 +137,7 @@ def _vehicle_row(v: Any) -> dict[str, Any] | None:
         "driver": driver.get("name"),
         "lat": loc.get("latitude"),
         "lng": loc.get("longitude"),
+        "address_label": _address_label(status, loc),
         "timestamp": status.get("event_date"),
         # RAM's vehicle status doesn't include a live speed figure - the last ignition/transit
         # event is the closest signal available for a driving-vs-parked guess.
@@ -398,7 +415,8 @@ class RamTracking:
         for row in self._rows(await self._vehicles_raw()):
             if row["lat"] is None or row["lng"] is None:
                 continue
-            rows.append({**row, "vehicle_id": row["id"], "speed_mph": 15 if row["moving"] else 0, "address": None})
+            rows.append({**row, "vehicle_id": row["id"], "speed_mph": 15 if row["moving"] else 0,
+                         "address": row["address_label"]})
         return rows
 
     async def journeys(self, vehicle_id: str, day: date) -> list[dict[str, Any]]:
