@@ -907,8 +907,10 @@ class RunInBackgroundIn(BaseModel):
     policy: Literal["SILENT", "WHEN_IDLE", "INTERRUPT"] = Field(
         "WHEN_IDLE", description="Where the result goes. SILENT: kept, never spoken unprompted (ask for it with "
         "background_results). WHEN_IDLE: said at the next quiet moment, when no conversation is in progress. INTERRUPT: "
-        "said at once even mid-conversation - only for urgent results such as a life-safety fault or a lone-worker "
-        "alert. Quiet hours, the hourly limit and the mute still apply to every policy.")
+        "does not wait for the owner to stop talking before it is posted to the chat - only for urgent results such "
+        "as a life-safety fault or a lone-worker alert. It cannot speak over audio that is already playing, and if it "
+        "is held back it leaves a warning notification. Quiet hours, the hourly limit and the mute still apply to "
+        "every policy. A scheduled check can only use SILENT.")
     timeout_s: int = Field(DEFAULT_TIMEOUT_S, ge=5, le=MAX_TIMEOUT_S, description="Give up after this many seconds")
 
     @field_validator("policy", mode="before")

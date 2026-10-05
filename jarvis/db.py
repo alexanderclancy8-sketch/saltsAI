@@ -643,6 +643,11 @@ class Database:
                             " result = 'Jarvis restarted before this finished, so there is no result.'"
                             " WHERE status = 'running'", (now_iso(),))
 
+    def prune_background_calls(self, keep_days: int = 30) -> int:
+        """Delete finished background_calls rows older than ``keep_days`` (a row still running is never deleted)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat(timespec="seconds")
+        return self.execute("DELETE FROM background_calls WHERE status != 'running' AND created_at < ?", (cutoff,))
+
     # -- out-of-hours van location look-ups ---------------------------------------------------
     def log_location_lookup(self, asked_by: str, tool: str, engineer: str, mode: str) -> int:
         return self.execute("INSERT INTO location_lookup_log (created_at, asked_by, tool, engineer, mode) "

@@ -325,7 +325,8 @@ wrapper `run_in_background(tool, args, policy, timeout_s)`, which returns at onc
 - **Policies** (default `WHEN_IDLE`, case-insensitive): `SILENT` = stored only, never spoken unprompted (read with
   `background_results`; works even with proactive chat off). `WHEN_IDLE` = `Proactive.post()` as it is: waits up to two minutes for
   no turn in progress, else kept as a quiet "Held back" notification. `INTERRUPT` = `Proactive.post(interrupt=True)`: skips only
-  that wait, so it can land mid-conversation. Every policy goes through the existing gate: `proactive_chat_enabled` (WHEN_IDLE /
+  that wait (it cannot speak over audio already playing). A held INTERRUPT also leaves a "warning" notification. A scheduled check
+  (`quiet_turn`) can only start `SILENT` work - `start()` forces it. Every policy goes through the existing gate: `proactive_chat_enabled` (WHEN_IDLE /
   INTERRUPT are refused at start when it is off), quiet hours, `proactive_max_per_hour`, a chat being open, the HUD's session mute
   and its rule about not speaking while listening/speaking. INTERRUPT never bypasses quiet hours or the hourly limit - a held
   urgent result is kept as a notification and in the store. A held result is not re-announced when quiet hours end.
@@ -340,4 +341,11 @@ wrapper `run_in_background(tool, args, policy, timeout_s)`, which returns at onc
   (`recruit_agent`, `watch_ci`, `ask_user`, ...), the two new tools, and the van-location tools that read `j.asked_by` (it is
   empty or someone else's once the turn is over). Caps: at most `MAX_CONCURRENT` (3) at once, timeout 300s default, 900s
   maximum; `Jarvis.stop()` cancels them and marks them `cancelled`.
+- **Untrusted output**: for tools that read outside content (`is_untrusted_output`: `email_*`, `repo_*`, `fsm_*`, `knowledge_*`, `web_*`,
+  `pr_*` and a named list) the chat/transcript line is only "<tool> finished (status) - see background_results #N"; the raw (redacted)
+  output stays in the row and `background_results` wraps it in UNTRUSTED TOOL OUTPUT markers. Tools that publish to the display,
+  notify or message as a side effect (`show_on_display`, `send_update_to_owner`, drafts, briefings, reports...) are in
+  `NOT_BACKGROUND` (a test scans handlers for `.publish(`/`notifier.`/`send_mail(`). Also capped at `MAX_STARTED_PER_HOUR` (30) starts,
+  and finished rows older than 30 days are pruned at start-up. TODO for Team mode: tool lookup in `start()` must use the caller's
+  allowed-tool set.
 - Add a tool to `NOT_BACKGROUND` if it depends on the live turn; don't add a path from a result into approvals or settings.
