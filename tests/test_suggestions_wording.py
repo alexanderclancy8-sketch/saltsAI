@@ -64,7 +64,10 @@ async def test_fallback_when_llm_call_raises_or_times_out(settings, monkeypatch)
     j2 = make(settings)  # fresh state (no retry cool-down) - now a hang that hits the timeout
 
     async def hang(*a, **k):
-        await asyncio.sleep(30)
+        # Much longer than WORDING_TIMEOUT (0.05 s), so the wording call is cut off by the timeout. The out-of-hours call source
+        # also hits this patched llm.structured and has no timeout, so it waits the whole hang out: 30 s here made this the
+        # slowest test in the suite for no extra coverage.
+        await asyncio.sleep(2)
 
     monkeypatch.setattr(llm, "structured", hang)
     monkeypatch.setattr(sug, "WORDING_TIMEOUT", 0.05)

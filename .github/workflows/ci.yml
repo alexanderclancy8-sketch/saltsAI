@@ -17,4 +17,4 @@ jobs:
       - run: pip install -r requirements-dev.txt
       # Parallel: one worker per CPU. --dist loadfile keeps every test file on one worker, in file order (tests/test_timezone.py's
       # leak/restore guard pair and module-scoped fixtures rely on that). -p no:cacheprovider: workers must not fight over .pytest_cache.
-      - run: python -m pytest -v -n auto --dist loadfile -p no:cacheprovider --durations=25
+      - run: python -m pytest -q -n auto --dist loadfile -p no:cacheprovider --durations=10
