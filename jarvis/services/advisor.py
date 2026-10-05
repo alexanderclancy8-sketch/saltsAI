@@ -9,6 +9,7 @@ import logging
 from datetime import date
 from typing import Any
 
+from .. import demo_guard
 from ..brain import llm
 
 log = logging.getLogger(__name__)
@@ -68,15 +69,16 @@ class Advisor:
 
     async def gather(self) -> dict[str, Any]:
         health, team, prod, snapshot, cashflow, credit, socials = await asyncio.gather(
-            _safe(self.accountant.health_check(90), "health"),
-            _safe(self.reviewer.review(30), "team"),
+            _safe(demo_guard.section(self.accountant.health_check(90)), "health"),
+            _safe(demo_guard.section(self.reviewer.review(30)), "team"),
             _safe(self.staff.productivity(30), "productivity"),
-            _safe(self.accountant.snapshot(), "snapshot"),
-            _safe(self.accountant.cashflow(13), "cashflow"),
-            _safe(self.accountant.credit_control(), "credit"),
-            _safe(self.marketing.overview(30), "marketing"),
+            _safe(demo_guard.section(self.accountant.snapshot()), "snapshot"),
+            _safe(demo_guard.section(self.accountant.cashflow(13)), "cashflow"),
+            _safe(demo_guard.section(self.accountant.credit_control()), "credit"),
+            _safe(demo_guard.section(self.marketing.overview(30)), "marketing"),
         )
-        customers = await _safe(self.j_customers.scores(), "customers") if self.j_customers else None
+        customers = (await _safe(demo_guard.section(self.j_customers.scores()), "customers")
+                     if self.j_customers else None)
         if isinstance(customers, dict) and "customers" in customers:
             customers = {"at_risk": customers["at_risk"], "watch": customers["watch"][:8],
                          "concentration": customers["concentration"]}

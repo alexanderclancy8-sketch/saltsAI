@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from . import auth
+from .brain.prompts import address_for
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
@@ -310,11 +311,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.get("/api/status", dependencies=[Depends(owner)])
     async def status(request: Request):
         j = J(request)
+        if not j.ram.demo:  # RAM is set up: find out (at most every few minutes) whether it actually answers
+            await _safe(j.ram.probe(), "RAM Tracking")
         data, presence, customers = await asyncio.gather(
             j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
+                    activity=j.activity.summary(),
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
-                    owner=settings.owner_name, company=settings.company_name,
+                    owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
                     resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
@@ -739,7 +743,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data = store.view(j.db, context)
         data["context"] = {
             **context,
-            "staff_report_link": f"{base}/report?key={settings.staff_report_key}" if settings.staff_report_key else "",
+            # The staff report link carries the staff key, so it is NOT part of this payload (or of any page): the
+            # "Copy staff report link" button fetches it from /api/staff-report-address only when it is pressed.
+            "staff_report_link_set": bool(settings.staff_report_key),
             "sage": {"configured": isinstance(j.finance, SageFinance),
                      "connected": isinstance(j.finance, SageFinance) and j.finance.connected},
             "backend": settings.effective_llm_backend,
@@ -747,6 +753,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             "microsoft_signin": os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() == "true",
         }
         return data
+
+    @app.get("/api/staff-report-address", dependencies=[Depends(owner)])
+    async def staff_report_address():
+        """The one place the staff report address (which includes the staff key) leaves the server: handed to the
+        "Copy staff report link" button, which puts it on the clipboard and never on the page. Not cached."""
+        base = settings.public_base_url.rstrip("/")
+        link = f"{base}/report?key={settings.staff_report_key}" if settings.staff_report_key else ""
+        return JSONResponse({"link": link}, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/settings", dependencies=[Depends(owner)])
     async def get_settings_page(request: Request):

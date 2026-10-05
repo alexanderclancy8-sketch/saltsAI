@@ -16,6 +16,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Any
 
+from .. import demo_guard
 from ..db import Database, now_iso
 
 log = logging.getLogger(__name__)
@@ -213,7 +214,13 @@ class Stores:
                 "net_variance_value": round(sum(v["variance_value"] for v in variances), 2)}
 
     # ------------------------------------------------------------------ reports
+    def _sample(self) -> None:
+        """Serving the seeded sample stock: tells a tool call (jarvis/demo_guard.py) not to hand it to the model."""
+        if self.demo:
+            demo_guard.touch(demo_guard.STOCK)
+
     def levels(self, location: str | None = None, search: str | None = None) -> dict[str, Any]:
+        self._sample()
         rows = self.db.query("SELECT i.sku, i.name, i.category, i.unit, i.unit_cost, i.reorder_level, "
                              "l.location, l.qty FROM stock_items i LEFT JOIN stock_levels l ON l.sku = i.sku "
                              "ORDER BY i.category, i.name")
@@ -241,6 +248,7 @@ class Stores:
                 "total_value": round(sum(i["value"] for i in out), 2)}
 
     def locations(self) -> list[dict[str, Any]]:
+        self._sample()
         return self.db.query("SELECT l.location, SUM(l.qty) AS units, ROUND(SUM(l.qty * i.unit_cost), 2) AS value "
                              "FROM stock_levels l JOIN stock_items i ON i.sku = l.sku WHERE l.qty != 0 "
                              "GROUP BY l.location ORDER BY l.location")
@@ -277,6 +285,7 @@ class Stores:
                 "dead_stock_value": round(sum(r["value_on_hand"] for r in slow), 2)}
 
     def job_materials(self, job_ref: str) -> dict[str, Any]:
+        self._sample()
         rows = self.db.query("SELECT m.sku, i.name, m.kind, m.qty, i.unit_cost FROM stock_moves m JOIN stock_items i "
                              "ON i.sku = m.sku WHERE m.job_ref = ? ORDER BY m.id", (job_ref,))
         net = defaultdict(float)

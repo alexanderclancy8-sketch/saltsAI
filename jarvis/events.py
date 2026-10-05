@@ -6,7 +6,7 @@ import asyncio
 import contextvars
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
@@ -21,11 +21,17 @@ QUIET_EVENTS = frozenset({"user_message", "thinking", "delta", "tool", "reply", 
 class EventBus:
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue] = set()
+        # In-process listeners that see every published event (after the quiet-turn filter), synchronously. Used by
+        # brain/trace.py to describe a chat turn from the tool events. A tap must be quick and must never raise.
+        self._taps: list[Callable[[str, Any], None]] = []
         self.last_event: dict[str, float] = {}  # event type -> time.monotonic() when it was last published
 
     @property
     def subscriber_count(self) -> int:
         return len(self._subscribers)
+
+    def add_tap(self, fn: Callable[[str, Any], None]) -> None:
+        self._taps.append(fn)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=500)
@@ -39,6 +45,11 @@ class EventBus:
         if event_type in QUIET_EVENTS and quiet_turn.get():
             return
         self.last_event[event_type] = time.monotonic()
+        for tap in self._taps:
+            try:
+                tap(event_type, data)
+            except Exception:  # noqa: BLE001 - an observer can never break the thing it observes
+                log.exception("Event tap failed for %s", event_type)
         message = {"type": event_type, "data": data}
         for q in list(self._subscribers):
             try:
