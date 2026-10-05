@@ -1179,7 +1179,7 @@ function send(text, mode = "typed", opts = {}) {
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
-      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id); break;
+      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id); break;
       case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; loadInboxSoon(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
@@ -1198,7 +1198,7 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ display overlay
-  function openDisplay(title, markdown, docId, imageId) {
+  function openDisplay(title, markdown, docId, imageId, advertId) {
     $("#display-title").textContent = title;
     // Download buttons only for stored, drafted documents / graphics (the id is a 32-char hex string from the server).
     const dl = $("#display-downloads");
@@ -1214,10 +1214,120 @@ function send(text, mode = "typed", opts = {}) {
     if (isImage) $("#display-png").href = `/api/images/${imageId}.png?download=1`;
     dl.hidden = !(isDoc || isImage);
     $("#display-body").innerHTML = md(markdown);
+    if (advertId && /^[0-9a-f]{32}$/.test(advertId)) showAdvert(advertId);
     $("#display").classList.add("open");
     $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
   }
   $("#display-close").addEventListener("click", () => $("#display").classList.remove("open"));
+
+  // ------------------------------------------------------------------ Claude-designed adverts (generate_image)
+  // The server stores each design as sanitised HTML + CSS + inline SVG (jarvis/services/adverts.py) and sends two forms of
+  // it. `document` is a full page that carries a Content-Security-Policy meta; it is shown in an iframe with sandbox="" - no
+  // scripts, no same-origin, no forms, no popups, no navigation - so even a design that got past the server's filter can
+  // do nothing. `fragment` (well-formed XHTML) is what Download PNG draws: it is put in an SVG <foreignObject>, loaded as
+  // an image (which the browser itself runs without scripts or network access) and painted onto a canvas of exactly the
+  // platform's size. Nothing is rendered on the server and nothing is ever posted anywhere.
+  const ADVERT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:";
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+  async function advertToPng(d) {
+    const w = d.width, h = d.height;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><foreignObject x="0" y="0" width="${w}" height="${h}">${d.fragment}</foreignObject></svg>`;
+    const img = new Image();
+    await new Promise((ok, no) => {
+      img.onload = ok; img.onerror = () => no(new Error("the browser could not draw this design"));
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+    });
+    if (img.decode) { try { await img.decode(); } catch { /* drawn below anyway */ } }
+    const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+    return await new Promise((ok, no) => {
+      try { canvas.toBlob((b) => (b ? ok(b) : no(new Error("the picture came out empty"))), "image/png"); } catch (e) { no(e); }
+    });
+  }
+  async function showAdvert(advertId) {
+    const host = document.createElement("div");
+    host.className = "advert"; host.dataset.advertId = advertId;
+    host.innerHTML = '<p class="advert-status" role="status">Loading the design…</p>';
+    $("#display-body").appendChild(host);
+    const load = async () => {
+      const r = await api(`/api/adverts/${advertId}`);
+      if (!r.ok) throw new Error("The design could not be loaded.");
+      return r.json();
+    };
+    const fail = (e) => { host.innerHTML = ""; const p = document.createElement("p"); p.className = "advert-status bad"; p.setAttribute("role", "status"); p.textContent = (e && e.message) || "The design could not be loaded."; host.appendChild(p); };
+    let data;
+    try { data = await load(); } catch (e) { if (!(e && e.message === "signed out")) fail(e); return; }
+    renderAdvert(host, data, load);
+  }
+  function renderAdvert(host, d, reload) {
+    host.innerHTML = "";
+    if (!d || typeof d.document !== "string" || !d.document.includes(ADVERT_CSP)) {
+      const p = document.createElement("p"); p.className = "advert-status bad"; p.textContent = "This design didn't come with its safety policy, so it isn't shown."; host.appendChild(p); return;
+    }
+    const frame = document.createElement("div"); frame.className = "advert-frame";
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("sandbox", ""); // every restriction on: no scripts, no same-origin, no forms, no popups
+    iframe.setAttribute("referrerpolicy", "no-referrer");
+    iframe.setAttribute("title", `Draft graphic preview, ${d.width} by ${d.height} pixels`);
+    iframe.setAttribute("scrolling", "no");
+    iframe.width = d.width; iframe.height = d.height;
+    iframe.srcdoc = d.document;
+    frame.appendChild(iframe); host.appendChild(frame);
+    const fit = () => {
+      const room = Math.max(160, (host.clientWidth || 600));
+      const scale = Math.min(1, room / d.width, (window.innerHeight * 0.6) / d.height);
+      frame.style.width = `${Math.floor(d.width * scale)}px`; frame.style.height = `${Math.floor(d.height * scale)}px`;
+      iframe.style.transform = `scale(${scale})`;
+    };
+    fit(); window.addEventListener("resize", fit);
+    const facts = document.createElement("p"); facts.className = "advert-facts";
+    facts.textContent = `${d.width} × ${d.height} px · version ${d.revision} · designed graphic (shapes, text and logo), not an AI photograph`;
+    host.appendChild(facts);
+
+    const actions = document.createElement("div"); actions.className = "advert-actions";
+    const status = document.createElement("p"); status.className = "advert-status"; status.setAttribute("role", "status");
+    const button = (label, id) => { const b = document.createElement("button"); b.type = "button"; b.className = "icon-btn"; b.id = id; b.textContent = label; actions.appendChild(b); return b; };
+    const png = button("Download PNG", "advert-png"), htmlBtn = button("Download HTML", "advert-html");
+    png.addEventListener("click", async () => {
+      png.disabled = true; status.className = "advert-status"; status.textContent = "Preparing the PNG…";
+      try {
+        downloadBlob(await advertToPng(d), `${d.filename}.png`);
+        status.textContent = `Saved ${d.width} × ${d.height} px PNG.`;
+      } catch (e) {
+        console.warn("[advert] PNG export failed", e);
+        status.className = "advert-status bad";
+        status.textContent = `Couldn't make the PNG in this browser (${(e && e.message) || "blocked"}). Use Download HTML and open it in Chrome or Edge, or ask Jarvis for changes and try again.`;
+      } finally { png.disabled = false; }
+    });
+    htmlBtn.addEventListener("click", () => downloadBlob(new Blob([d.document], { type: "text/html" }), `${d.filename}.html`));
+    host.appendChild(actions);
+
+    const form = document.createElement("form"); form.className = "advert-revise";
+    form.innerHTML = '<label for="advert-changes">Ask for changes</label><div class="advert-revise-row"><input id="advert-changes" type="text" maxlength="500" autocomplete="off" placeholder="e.g. bigger headline, add 10% off"><button class="icon-btn" id="advert-revise" type="submit">Revise</button></div>';
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const input = form.querySelector("input"), go = form.querySelector("button"), text = input.value.trim();
+      if (!text) { status.className = "advert-status bad"; status.textContent = "Say what to change first."; return; }
+      go.disabled = input.disabled = true; status.className = "advert-status"; status.textContent = "Jarvis is revising the design - this can take a minute…";
+      try {
+        const r = await api(`/api/adverts/${d.id}/revise`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instructions: text }) });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(out.error || out.detail || `The revision failed (HTTP ${r.status}).`);
+        window.removeEventListener("resize", fit);
+        renderAdvert(host, await reload(), reload);
+        const again = host.querySelector(".advert-status"); if (again) again.textContent = "Revised - the previous version was replaced.";
+      } catch (e) {
+        if (e && e.message === "signed out") return;
+        status.className = "advert-status bad"; status.textContent = (e && e.message) || "The revision failed.";
+        go.disabled = input.disabled = false;
+      }
+    });
+    host.appendChild(form); host.appendChild(status);
+  }
   // Escape closes the topmost thing first: the shortcuts menu, then the display overlay, then the drawer.
   // preventDefault marks the key as used, so the Stop handler further down does not also stop a running reply.
   document.addEventListener("keydown", (e) => {

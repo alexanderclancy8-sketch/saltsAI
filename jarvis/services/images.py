@@ -1,11 +1,18 @@
-"""Draft social-media graphics: an image provider paints a plain background, then Jarvis itself lays the headline,
-Salts navy blue branding and the company logo on top (so the wording is always exact, never garbled by the model).
+"""Draft social-media graphics.
+
+Default ("claude", needs no extra account or key): Jarvis's own Claude designs the advert as HTML + CSS + inline SVG
+(services/adverts.py), which the console shows in a sandboxed frame and exports to PNG in the browser. These are designed
+graphics - shapes, gradients, text and the company logo - not AI photographs.
+
+Optional, only when an image API key was already set: the "openai" provider paints a plain PICTURE background, then Jarvis
+itself lays the headline, Salts navy blue branding and the company logo on top (so the wording is always exact, never
+garbled by the model) and saves a PNG. Kept for anyone who already uses it; nothing depends on it.
 
 Safety rules, all enforced here rather than left to the model:
-  * DRAFT ONLY - the PNG is saved and shown on the display for review. Nothing here posts, emails or uploads it.
-  * No provider key = not connected: the tool says so plainly and what to add. It never fakes or substitutes an image.
-  * The provider only ever receives a fixed, safe prompt built from an optional visual description - never the headline,
-    customer names or anything else - and that prompt always forbids people, faces, text and logos.
+  * DRAFT ONLY - the design is saved and shown on the display for review. Nothing here posts, emails or uploads it.
+  * An unsupported provider name (with a key set) is explained, never faked or substituted.
+  * The OpenAI provider only ever receives a fixed, safe prompt built from an optional visual description - never the
+    headline, customer names or anything else - and that prompt always forbids people, faces, text and logos.
   * Headline / sub-text / visual that contain emails, phone numbers or postcodes (customer or site details), or that
     ask for people or faces, are refused.
   * The API key is only ever sent in the provider request's Authorization header. It is never logged or returned.
@@ -43,6 +50,8 @@ MAX_LOGO_SIDE = 4000
 IMAGE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 OPENAI_URL = "https://api.openai.com/v1/images/generations"
+DEFAULT_PROVIDER = "claude"
+SUPPORTED_PROVIDERS = (DEFAULT_PROVIDER, "openai")
 
 _EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 _POSTCODE = re.compile(r"\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}\b")
@@ -276,34 +285,39 @@ class ImageGenerator:
     def __init__(self, j):
         self.j = j
 
+    def provider(self) -> str:
+        """Which maker is used: "claude" (the default, always available) or "openai" (only when an image key is set).
+        An old "openai" choice with no key quietly means the Claude designer - nothing needs a key."""
+        s = self.j.settings
+        chosen = (s.image_provider or DEFAULT_PROVIDER).strip().lower()
+        if chosen == "openai":
+            return "openai" if s.image_api_key else DEFAULT_PROVIDER
+        if chosen == DEFAULT_PROVIDER or not s.image_api_key:
+            return DEFAULT_PROVIDER
+        return chosen  # unsupported name with a key set: reported by not_connected()
+
     @property
     def configured(self) -> bool:
-        s = self.j.settings
-        return bool(s.image_api_key) and (s.image_provider or "").lower() in PROVIDERS
+        return self.provider() in SUPPORTED_PROVIDERS
 
     def status(self) -> str:
-        s = self.j.settings
-        if self.configured:
-            return f"connected ({s.image_provider.lower()}) - drafts only, never posted"
-        return "not connected - add an image provider API key on Settings"
+        if not self.configured:
+            return "not connected - the image provider isn't supported (choose Claude-designed graphics on Settings)"
+        if self.provider() == "openai":
+            return "connected (openai backgrounds) - drafts only, never posted"
+        return ("ready - Claude-designed graphics (no extra account); designed shapes, text and logo, not AI photographs. "
+                "Drafts only, never posted")
 
     def not_connected(self) -> dict[str, Any]:
         s = self.j.settings
-        provider = (s.image_provider or "").lower()
-        if s.image_api_key and provider not in PROVIDERS:
-            why = (f"The image provider '{s.image_provider}' isn't supported. Set IMAGE_PROVIDER (or the Image "
-                   f"generation provider on the Settings page) to one of: {', '.join(sorted(PROVIDERS))}.")
-        else:
-            why = ("Image generation isn't connected, so I haven't made anything. To connect it, add an image "
-                   "provider API key under Settings > Image generation, or set IMAGE_API_KEY (and IMAGE_PROVIDER, "
-                   f"currently '{s.image_provider or 'not set'}', supported: {', '.join(sorted(PROVIDERS))}) in the "
-                   "environment.")
-        return {"connected": False, "error": why}
+        return {"connected": False,
+                "error": (f"The image provider '{s.image_provider}' isn't supported. Set IMAGE_PROVIDER (or the Image "
+                          f"generation provider on the Settings page) to one of: {', '.join(sorted(SUPPORTED_PROVIDERS))}.")}
 
     async def generate(self, headline: str, platform: str = "facebook", subtext: str = "",
                        visual: str = "") -> dict[str, Any]:
         """Make a draft graphic. Returns an {"error": ...} dict (never an image) when it can't be done honestly."""
-        j, s = self.j, self.j.settings
+        j = self.j
         if not self.configured:
             return self.not_connected()
         platform = (platform or "").strip().lower()
@@ -322,6 +336,13 @@ class ImageGenerator:
             return {"error": refused}
 
         size = PLATFORM_SIZES[platform]
+        if self.provider() == DEFAULT_PROVIDER:
+            return await j.adverts.create(headline, subtext, visual, platform, size, PLATFORM_LABELS[platform])
+        return await self._generate_openai(headline, platform, subtext, visual, size)
+
+    async def _generate_openai(self, headline: str, platform: str, subtext: str, visual: str,
+                               size: tuple[int, int]) -> dict[str, Any]:
+        j, s = self.j, self.j.settings
         try:
             background = await PROVIDERS[s.image_provider.lower()](j.http, s.image_api_key, s.image_model,
                                                                    build_prompt(visual), size)

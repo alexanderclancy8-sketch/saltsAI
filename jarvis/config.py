@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     # PNG/JPEG or over 2 MB = documents are branded with the company name and Salts navy only.
     company_logo_path: str = ""
     company_domain: str = "saltsfireandsecurity.co.uk"
+    # Shown on drafted social-media adverts (COMPANY_PHONE). Blank = adverts carry no phone number (Jarvis never invents one).
+    company_phone: str = ""
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
     # "How Jarvis talks": "natural" (uses the owner's first name) or "formal" (uses owner_salutation, the "what Jarvis
@@ -301,9 +303,9 @@ class Settings(BaseSettings):
     social_snapshot_cron: str = "20 6 * * *"
     marketing_report_cron: str = "50 7 * * 1"
 
-    # --- Image generation (draft social media graphics; see services/images.py) --------------------------
-    # The provider paints a plain background; Jarvis adds the headline, navy branding and logo itself. With no
-    # key the generate_image tool says it isn't connected and never fakes an image. Drafts only - never posted.
+    # --- Image generation (draft social media graphics; see services/images.py and services/adverts.py) ------
+    # Default: Jarvis's own Claude designs each advert as HTML/CSS/SVG (headline, navy branding, logo) - no extra account.
+    # An OpenAI image key, if one is already set, can paint a picture background instead. Drafts only - never posted.
     image_provider: str = "claude"  # claude (default, no extra account) | openai (only if image_api_key is set)
     image_api_key: str = ""  # optional: only for the OpenAI background option; Claude-designed graphics need no key
     image_model: str = "gpt-image-1"

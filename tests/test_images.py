@@ -1,5 +1,6 @@
-"""Draft social media graphics (generate_image): the no-key path, branding and sizes, safety refusals, the logo,
-the owner-only download route, and that nothing is ever posted or logged with a key in it."""
+"""Draft social media graphics (generate_image): the OpenAI-background path that is kept for anyone who already has an image
+key (the default, key-free Claude-designed HTML adverts are covered in tests/test_adverts.py), branding and sizes, safety
+refusals, the logo, the owner-only download route, and that nothing is ever posted or logged with a key in it."""
 
 import base64
 import io
@@ -41,6 +42,8 @@ def _provider_ok(calls: list):
 
 
 def _jarvis(tmp_path, key="", handler=None, **over) -> Jarvis:
+    if key:  # these tests exercise the optional OpenAI path: a key was set and OpenAI chosen
+        over.setdefault("image_provider", "openai")
     settings = Settings(data_dir=tmp_path, scheduler_enabled=False, _env_file=None, image_api_key=key, **over)
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler)) if handler else None
     return Jarvis(settings, http=http, client=FakeClient())
@@ -58,21 +61,19 @@ def _stored(j) -> list[Path]:
     return sorted(folder.glob("*.png")) if folder.exists() else []
 
 
-# --------------------------------------------------------------------------- no key: say so, never fake
-async def test_no_key_says_not_connected_and_makes_nothing(tmp_path):
+# --------------------------------------------------------------------------- no key: nothing is needed any more
+async def test_an_old_openai_choice_with_no_key_never_calls_openai_and_uses_the_claude_designer(tmp_path):
+    """Was: 'no key = not connected'. The default is now Claude-designed graphics, which need no key; an old 'openai'
+    choice with no key quietly means that, and OpenAI is never contacted."""
     def boom(request):
-        raise AssertionError("the provider must not be called without a key")
+        raise AssertionError("OpenAI must not be called without a key")
 
-    j = _jarvis(tmp_path, key="", handler=boom)
-    q = j.bus.subscribe()
+    j = _jarvis(tmp_path, key="", handler=boom, image_provider="openai")
+    assert j.images.provider() == "claude" and j.images.configured is True
+    assert "not connected" not in j.connections()["Image generation"]
     out = await generate_image(j, ImageIn(headline="Is your fire alarm serviced?", platform="facebook"))
-    assert out["connected"] is False
-    err = out["error"]
-    assert "isn't connected" in err and "IMAGE_API_KEY" in err and "Settings" in err
-    assert "image_id" not in out and "download_url" not in out and "shown_on_display" not in out
-    assert _stored(j) == []
-    assert _events(q) == []  # nothing put on the display
-    assert j.images.configured is False and "not connected" in j.connections()["Image generation"]
+    assert "error" not in out and out["shown_on_display"] is True and out["designer"] in ("claude", "standard")
+    assert "not an AI photograph" in out["note"]
     await j.http.aclose()
 
 
@@ -254,7 +255,7 @@ def test_provider_and_key_are_settings_not_hard_coded(tmp_path):
     section = next(s for s in SECTIONS if s.id == "images")
     assert {f.key for f in section.fields} == {"image_provider", "image_api_key", "image_model"}
     assert FIELDS["image_api_key"].kind == "secret"  # encrypted at rest, never sent back to the browser
-    assert "image_api_key" in section.required
+    assert section.required == ()  # no key is required any more (was: ("image_api_key",)); Claude-designed graphics need none
     assert Settings(_env_file=None, data_dir=tmp_path).image_api_key == ""  # no default key
 
 

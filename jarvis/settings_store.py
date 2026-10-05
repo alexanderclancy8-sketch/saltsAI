@@ -91,6 +91,8 @@ SECTIONS: tuple[Section, ...] = (
             Field("partner_email", "Business partner's email", "email",
                   "Gets the weekly tax and employment-law watch too."),
             Field("company_name", "Company name"),
+            Field("company_phone", "Company phone number", "text",
+                  "Shown on drafted social media graphics. Leave blank and no number is printed.", advanced=True),
             Field("reply_suggestions_enabled", "Suggest my usual replies in the chat box", "bool",
                   "Jarvis learns the short replies you type often and shows the likeliest as grey text; press the "
                   "right arrow to accept it, Enter to send. Learned on this server only. Off stops learning and suggesting."),
@@ -400,15 +402,19 @@ SECTIONS: tuple[Section, ...] = (
     ),
     Section(
         "images", "Image generation", "Draft social media graphics (Facebook, Instagram, LinkedIn, TikTok) with "
-        "your headline, navy branding and logo. Drafts only - Jarvis never posts them anywhere.",
+        "your headline, navy branding and logo, designed by Jarvis's own Claude - no extra account or key needed. "
+        "These are designed graphics (shapes, gradients, text and your logo), not AI photographs. Drafts only - "
+        "Jarvis never posts them anywhere.",
         (
-            Field("image_provider", "Image provider", "select", "Which service paints the background.",
-                  options=(("openai", "OpenAI"),)),
-            Field("image_api_key", "Image provider API key", "secret",
-                  "Without this Jarvis says image generation isn't connected and makes nothing."),
-            Field("image_model", "Image model", advanced=True, placeholder="gpt-image-1"),
+            Field("image_provider", "Graphics maker", "select",
+                  "Claude-designed graphics need nothing extra. The OpenAI choice only works if an image key is "
+                  "also saved below; it paints a picture background instead.",
+                  options=(("claude", "Claude-designed graphics (no extra account)"),
+                           ("openai", "OpenAI picture backgrounds (only with an image key)")), advanced=True),
+            Field("image_api_key", "OpenAI image key (optional)", "secret",
+                  "Not needed. Only if you want OpenAI-painted picture backgrounds.", advanced=True),
+            Field("image_model", "OpenAI image model", advanced=True, placeholder="gpt-image-1"),
         ),
-        required=("image_api_key",),
     ),
     Section(
         "github", "Auto-fix", "Lets Jarvis prepare Salts FSM bug fixes as pull requests for you to approve.",
