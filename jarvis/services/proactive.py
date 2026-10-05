@@ -5,7 +5,8 @@ Three things use it, all through ``Proactive``:
   sent (waiting on CI, polling an approval's result, a long rewrite) and post a follow-up when they finish or change.
 - ``announce``: findings from automations and the pull request watch (``pr_watch``). Posted only when they differ from
   what was said last time, and also sent to Teams.
-- ``post``: a single message.
+- ``post``: a single message (``interrupt=True`` for urgent ones: skips only the wait for the owner to stop talking).
+  ``services/async_tools.py`` uses it to deliver the results of tools run in the background.
 
 It can only TELL the owner something. Nothing here approves, sends, merges or changes anything, and the text it posts
 is never fed back to a model as an instruction. Every message goes through the same redaction as the stored
@@ -152,14 +153,18 @@ class Proactive:
         self.j.bus.publish("proactive", {"id": uuid.uuid4().hex, "text": text, "source": source, "speak": speak})
 
     # ------------------------------------------------------------------ one message
-    async def post(self, text: str, *, source: str = "", speak: bool = True) -> dict[str, Any]:
-        """Say ``text`` in the open chat. Returns {"delivered": bool, "reason": why not}."""
+    async def post(self, text: str, *, source: str = "", speak: bool = True,
+                   interrupt: bool = False) -> dict[str, Any]:
+        """Say ``text`` in the open chat. Returns {"delivered": bool, "reason": why not}.
+
+        ``interrupt`` (urgent items only) skips waiting for the owner to finish talking, so it can land mid-conversation.
+        It changes nothing else: the setting, quiet hours, the hourly limit and "a chat must be open" all still apply."""
         if not self.enabled:
             return {"delivered": False, "reason": self.held_reason()}
         clean = self._clean(text)
         if not clean:
             return {"delivered": False, "reason": "nothing to say"}
-        reason = await self._clear_to_speak()
+        reason = self.held_reason() if interrupt else await self._clear_to_speak()
         if not reason and self.j.bus.subscriber_count == 0:
             reason = "no chat is open"
         if reason:

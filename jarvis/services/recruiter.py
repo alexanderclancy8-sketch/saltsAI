@@ -21,7 +21,7 @@ from pydantic import ValidationError
 log = logging.getLogger(__name__)
 
 NO_RECURSE = {"recruit_agent", "self_improve", "run_security_review", "create_automation",
-              "watch_ci", "watch_action",  # background jobs that post into the chat
+              "watch_ci", "watch_action", "run_in_background",  # background jobs that post into the chat
               "ask_user",  # ask_user: a background sub-agent has no turn to hand back to the owner mid-question
               "offer_next_steps"}  # buttons under the owner's own reply; a sub-agent has no reply to attach them to
 MAX_TURNS_CAP = 20
