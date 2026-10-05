@@ -231,6 +231,37 @@ through `email_send` and approval as usual). Report text is untrusted: the draft
 addresses, phone-number-like digit runs, National Insurance numbers, markup, short) and the report can choose a category and name a site (which
 must match a contract site on record), never a recipient or an instruction.
 
+**Second shared mailbox, service@ (`services/service_inbox.py`, `services/council_intake.py`, `integrations/microsoft365.mailbox_for`).**
+Bradford Council portal job requests arrive in `service@`; Jarvis reads it through the SAME Graph app registration as `MS_MAILBOX`
+(app-only `Mail.Read`/`Mail.ReadWrite` on that mailbox too, and `service@` added to any Exchange Application Access Policy). The address is
+the setting `service_inbox` (blank = off; nothing reads it). It and the four council settings (`council_intake_enabled`,
+`council_sender_patterns`, `council_subject_patterns`, `council_customer_name`) are one Settings section ("Service inbox (service@)") and ALL
+in `OWNER_ONLY_KEYS`, so only the principal owner can change them, never a manager, a tool or a Teams message. No tool takes a mailbox
+ADDRESS: the five read tools (`email_inbox`/`email_search`/`email_read`/`email_attachment_read`/`email_pdf_read`) take `mailbox:
+Literal["owner","service"]` (default "owner" = the exact old code path and call shape) and `mailbox_for()` turns "service" into the saved
+address; `GraphMail._base()` additionally refuses anything that is not one plain address before it goes in a URL. Sending, drafting replies and
+`mark_read` still only ever use the owner's mailbox. The team role gets none of it: no email tool is in `access.TEAM_TOOLS`, `inbox` is not in
+`TEAM_STATUS_KEYS`, and no new route exists (the Test button is the existing `POST /api/settings/test/serviceinbox`, the Comms list rides
+`/api/status` -> `inbox.service`). The Test button (`ServiceInbox.test`) reads ONE message header and turns a Graph failure into a sentence with
+the likely fix (`explain_graph_error`: 403 -> "the Azure app registration has no permission on this mailbox ... Application Access Policy ...",
+401, 404 `ErrorInvalidUser`, `MailboxNotEnabledForRESTAPI`, throttling); Graph's own message text is only shown for an unrecognised code, after
+every configured secret value has been scrubbed. The Comms drawer shows the unread list under its own "service@" heading (`ServiceInbox.unread`,
+cached 30 s, errors shown as the sentence and not cached) and the rail count/label say how many are in it.
+`CouncilIntake.scan_inbox` (scheduler job `council_intake_scan`, every `inbox_check_interval_min`, a no-op while `service_inbox` is blank) lists
+the last 72 h of the service inbox (read or not), keeps the emails whose SENDER matches a sender pattern (a domain also matches its sub-domains,
+never a look-alike) or whose SUBJECT contains a subject phrase, and has the brain classify each with the fixed `CouncilExtraction` schema
+(fenced `<email>` text, redacted, control characters stripped, the email's own `<email>` tags neutralised). Fields are cleaned and capped, and
+the reference, phone and email must appear in the email itself or they are dropped. A request becomes ONE approval-gated `fsm_write` `POST /jobs`
+(exactly the `log_job` shape; description starts "BRADFORD COUNCIL PORTAL REQUEST - council ref: ...", with site contact, council priority, target date and the
+attachment NAMES from Graph; `customer` from `council_customer_name`; `priority` only if the email states a response time that is a real SLA).
+The council reference is in the description because the FSM's customer-PO field is a separate `PUT /jobs/{id}/customer-po` that needs the new job's
+id, so it can't be part of a single proposal. A sender that is not a recognised council address, or no reference, puts a "check before approving" row
+on the card (`needs_human_review`). It is NOT covered by any standing approval (`POST /jobs` is not in `standing_approvals.SHAPES`) and uses
+none of the PO-receipt machinery. De-duplication: `processed_emails` row `council:<mailbox>:<message id>` (written once the email was read) and kv
+`council_ref:<council|other>:<REF>` (the "other" namespace keeps a look-alike sender from using up a real reference). A failed read is retried on
+the next scans (kv `council_try:`), and after 3 tries the owner is told to check the email, so a request is never silently lost. It only ever
+reads: no reply, no send, no mark-read/flag/move/delete (the seen-markers are rows in Jarvis's own database, like the other intakes).
+
 **GitHub PR tools for Jarvis's own repo (`jarvis/brain/pr_tools.py`, `jarvis/integrations/github_pr.py`,
 `jarvis/services/pr_resolver.py`; full list and rules in `docs/github-pr-tools.md`).** Reads: `pr_list`, `pr_detail`,
 `repo_read`, `repo_search`, `run_tests`. Writes, all `approval=True`: `pr_comment`, `pr_resolve_conflicts`, `pr_merge`,

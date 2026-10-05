@@ -33,7 +33,7 @@ from ..config import Settings
 from ..db import Database
 from ..events import EventBus
 from ..integrations.redact import redact
-from .job_intake import clean
+from .job_intake import _CONTROL, clean
 
 log = logging.getLogger(__name__)
 
@@ -143,7 +143,8 @@ class CouncilIntake:
 
     # ------------------------------------------------------------------ the model call
     async def _extract(self, msg: dict[str, Any]) -> CouncilExtraction:
-        body = _FENCE_TAG.sub("[email-tag", redact(msg.get("body") or msg.get("preview") or ""))[:MAX_EMAIL_CHARS]
+        body = _CONTROL.sub(" ", _FENCE_TAG.sub("[email-tag", redact(msg.get("body") or msg.get("preview") or "")))
+        body = body[:MAX_EMAIL_CHARS]
         text = (f"<email>\nFrom: {clean(msg.get('from_name'), 100)} <{clean(msg.get('from_email'), 120)}>\n"
                 f"Subject: {clean(msg.get('subject'), 200)}\n\n{body}\n</email>")
         return await llm.structured(self.client, self.s, CouncilExtraction,

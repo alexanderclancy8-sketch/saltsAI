@@ -95,6 +95,16 @@ Do these in any order; each one replaces demo data as soon as it's set.
      info@) in Exchange Online PowerShell:
      `New-ApplicationAccessPolicy -AppId <id> -PolicyScopeGroupId <mail-enabled group> -AccessRight RestrictAccess`.
      `deploy.sh m365` prints this command with your own values filled in.
+   - **Second shared mailbox (service@, Bradford Council portal requests).** Settings → Service inbox (service@): enter the
+     address (only the owner can change it) and press **Test**, which reads one message header and tells you plainly what to
+     fix if Microsoft refuses. Jarvis reads it through the *same* app registration, so you need no new app or secret - only
+     (1) a Graph **application** permission of `Mail.Read` or `Mail.ReadWrite` with admin consent (the `Mail.ReadWrite` above
+     already covers it), and (2) if you restricted the app with an Application Access Policy as above, add `service@` to the
+     mail-enabled group that policy points at (`Add-DistributionGroupMember -Identity <group> -Member service@...`), then wait
+     up to 30 minutes and Test again. A 403 `ErrorAccessDenied` on Test means one of those two is missing. Once readable, its
+     unread mail shows in **Comms** under a "service@" heading, and every few minutes Jarvis reads new Bradford Council portal
+     emails there and *proposes* a job for each in your Approvals (nothing is created, sent, replied to or deleted without
+     your click). What counts as a council email (sender domain, subject phrases) is configurable on the same card.
    - To see names in activity reports, turn off *"Display concealed user, group, and site names"* in the M365
      admin centre (Settings → Org settings → Reports).
    - For Teams updates (one-way, posted to a channel), create a Teams **Workflows** "post to a channel when a
@@ -212,6 +222,10 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   document or web page. The only things it does without asking are sending *you* the updates and reports you
   asked for, saving email *drafts* for you to review, and keeping its own notes - plus whatever *you* have
   switched on under standing approvals (next point).
+- **The service@ inbox is read-only.** Jarvis only ever reads it (Comms, the email tools' `mailbox` choice, the council-request
+  scan); it never sends from it, replies, marks, moves or deletes anything in it. Which address it reads is a setting only you can
+  change - no tool, email or Teams message can point Jarvis at another mailbox - and engineers/office staff on the team console
+  can't read it at all. Council requests only ever become *proposed* jobs for your approval, and no standing approval covers them.
 - **The Approvals inbox.** Everything Jarvis wants to send or change waits in the Approvals pop-up and shows up as a card
   in the chat, spelling out exactly what will happen (the real recipient, subject and message; the real change in Salts
   FSM), with **Approve**, **Edit** and **Don't send**. Nothing goes without a click. **Edit** (emails, Salts FSM changes
