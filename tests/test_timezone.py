@@ -57,3 +57,26 @@ def test_blank_name_is_ignored(restore_tz):
     before = os.environ.get("TZ")
     apply_timezone("")
     assert os.environ.get("TZ") == before
+
+
+# --- the suite must not inherit another test's timezone -------------------------------------------------------------
+# Jarvis() applies the business timezone to the whole process. These two tests run in this order (pytest keeps file
+# order): the first leaks it the way any test building a Jarvis() does, the second proves conftest's autouse
+# `_isolate_process_timezone` put it back. Without that, every later test on a UTC runner in summer ran an hour ahead.
+_TZ_AT_IMPORT = os.environ.get("TZ")
+_SUMMER_NOON_UTC = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc).timestamp()
+_LOCAL_HOUR_AT_IMPORT = time.localtime(_SUMMER_NOON_UTC).tm_hour
+
+
+def test_zz_1_building_jarvis_moves_the_process_timezone(settings):
+    from jarvis.core import Jarvis
+    Jarvis(settings)  # default timezone Europe/London -> sets os.environ["TZ"] where tzset exists
+    if hasattr(time, "tzset") and os.path.exists("/usr/share/zoneinfo/Europe/London"):
+        assert os.environ.get("TZ") == "Europe/London"
+    else:
+        os.environ["TZ"] = "Europe/London"  # Windows: apply_timezone is a no-op, so leak by hand to exercise the reset
+
+
+def test_zz_2_the_timezone_is_back_to_what_it_was_before_the_previous_test():
+    assert os.environ.get("TZ") == _TZ_AT_IMPORT
+    assert time.localtime(_SUMMER_NOON_UTC).tm_hour == _LOCAL_HOUR_AT_IMPORT  # and the C-level zone too
