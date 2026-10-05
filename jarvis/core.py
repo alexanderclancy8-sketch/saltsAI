@@ -23,6 +23,7 @@ from .integrations.marketing import PresenceSources
 from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
 from .integrations.teamsbot import TeamsBot
 from .integrations.ramtracking import DemoRamTracking, RamTracking, missing_credentials
+from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.voice import SpeechToTextCheck, Voice
 from .knowledge import KnowledgeBase
 from .services.accountant import Accountant
@@ -39,6 +40,7 @@ from .services.customers import CustomerHealth
 from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.false_alarms import FalseAlarmLog
+from .services.adverts import AdvertDesigner
 from .services.images import ImageGenerator
 from .services.council_intake import CouncilIntake
 from .services.job_intake import JobIntake
@@ -171,6 +173,7 @@ class Jarvis:
         self.po_book = PurchaseOrderBook(self.db)  # purchase orders raised via log_purchase_order
         self.supplier_bills = SupplierBills(self)
         self.documents = Documents(self)
+        self.adverts = AdvertDesigner(self)  # Claude-designed HTML adverts; the default image maker
         self.images = ImageGenerator(self)  # draft social media graphics; never posted anywhere
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
@@ -223,7 +226,7 @@ class Jarvis:
             out["GitHub (FSM source)"] = self.github
         if not self.ram.demo:
             out["RAM Tracking"] = self.ram
-        if self.settings.effective_stt in ("deepgram", "whisper"):  # browser STT has no server path to test
+        if self.settings.effective_stt in SERVER_ENGINES:  # browser STT has no server path to test
             out["Speech-to-text"] = SpeechToTextCheck(self.voice)
         return out
 

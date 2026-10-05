@@ -398,7 +398,7 @@ owns the Auto/Light/Dark choice; `core.js` draws the core canvas on the console 
 `handle(ev)` in hud.js is the single place both paths render into, so a new bus event type needs a case there
 once, not per-transport. Voice wake-word listening for cost-free "always listening" runs the browser's own free
 `SpeechRecognition` (`sentry` in hud.js) until it hears the wake word, then hands off to the configured paid STT
-(Deepgram/Whisper) for the actual command, sleeping back to the free listener after a period of silence
+(Azure Speech/Deepgram/Whisper) for the actual command, sleeping back to the free listener after a period of silence
 (`extendFollowUp`/`checkSleep`) - don't reintroduce a fully continuous paid stream for "always listening" mode.
 Conversation quality (`services/conversation_quality.py`, `j.quality`): both brains call `begin()` at the top of `_turn`
 and poke the returned record (`first_delta`/`tools`/`finish`) - keep that in any new brain path. It logs per-turn metrics,
@@ -513,3 +513,36 @@ wrapper `run_in_background(tool, args, policy, timeout_s)`, which returns at onc
   and finished rows older than 30 days are pruned at start-up. TODO for Team mode: tool lookup in `start()` must use the caller's
   allowed-tool set.
 - Add a tool to `NOT_BACKGROUND` if it depends on the live turn; don't add a path from a result into approvals or settings.
+
+## No OpenAI dependency: Azure Speech listening and Claude-designed graphics
+
+Nothing in Jarvis needs an OpenAI key. Claude models cannot transcribe audio or generate images, so these are NOT Claude
+equivalents - they are the accounts the company already has, and the docs/UI must say so honestly.
+
+- **Speech-to-text** (`integrations/stt_chain.py`, `voice.py`): engines `azure` -> `deepgram` -> `whisper` -> browser
+  (`DEFAULT_ORDER`; the chosen engine goes first). Azure Speech reuses `azure_speech_key` / `azure_speech_region` (the voice's
+  own settings) and the short-audio REST endpoint `https://<region>.stt.speech.microsoft.com/...?language=en-GB`; it takes
+  16 kHz mono PCM WAV or Ogg/Opus, NOT the WebM/MP4 a browser records, so hud.js `toWav16k()` converts in the browser
+  before upload (decodeAudioData + OfflineAudioContext), `voice.prepare_azure_audio()` passes WAV/Ogg through and converts
+  anything else with `ffmpeg` only if the server has one (else a plain non-transient error and the chain moves on), and clips
+  over 60 s are refused. That endpoint has no phrase-list support, so `VOCAB` hints are not sent to Azure. `Settings.effective_stt`:
+  `auto` -> Deepgram (live streaming exists only there) -> Azure -> Whisper -> browser; a chosen Whisper/Deepgram with no key
+  falls through to Azure when Azure is configured (an old "Whisper" choice no longer breaks voice input). Whisper is optional
+  and never required: `stt_problem` / the routine test / the voice connection test only mention a missing OpenAI key when
+  Whisper is chosen and nothing else is configured. Keys and audio are never logged.
+- **Graphics** (`services/images.py`, `services/adverts.py`): `image_provider` defaults to `claude`: `AdvertDesigner` asks the
+  brain (`llm.structured`, tool-less) for ONE complete HTML document using a Salts brand brief (palette, size, margins, minimum
+  text sizes, logo rules, company details from settings, accreditations from the register), with the headline / sub-text /
+  visual / change requests quoted as untrusted data. The reply is rebuilt by `adverts.sanitise()` from an allowlist
+  (elements, attributes, CSS; no script/link/form/frame/foreignObject/external reference of any kind; size, node and depth
+  caps) and only the sanitised form is stored (table `adverts`, last version per design id, newest 40 kept, 20 revisions
+  each). The model writes `SALTS_LOGO` for the logo; the server substitutes the downscaled data: URI after checking. The
+  headline must survive verbatim or the design is retried, then replaced by a standard layout built in code (and the result
+  says so). Nothing renders server-side: hud.js shows `document` in an iframe with `sandbox=""` and a CSP meta
+  (`adverts.CSP`) and `advertToPng()` draws the XHTML `fragment` through an SVG foreignObject onto a canvas of the exact
+  platform size (no library, nothing from a CDN). Routes: `GET /api/adverts/{id}` (JSON), `/{id}.html[?download=1]`,
+  `POST /api/adverts/{id}/revise` (owner, same-origin). The `generate_image` tool is unchanged (no approval; drafts only;
+  nothing posted) and its result says "designed graphic (HTML), not an AI photograph". The OpenAI path (`image_provider=openai`
+  AND `image_api_key` set) is kept for backward compatibility; without a key an `openai` choice quietly uses Claude.
+  Tests: `tests/test_adverts.py` (sanitiser, service), `tests/test_advert_browser.py` (Playwright: iframe sandbox/CSP, PNG
+  export size and pixels per preset, revise), `tests/test_images.py` (OpenAI path), `tests/test_stt_azure.py`.

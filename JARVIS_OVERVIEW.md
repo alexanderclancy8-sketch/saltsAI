@@ -98,7 +98,7 @@ without being told to), routine health tests, regulatory watch (tax/employment l
 with sources), issue triage from the `/report` page or tagged emails.
 
 **Interfaces today** - the browser HUD (chat + voice, live dashboard), voice in/out (wake-word "Jarvis" or
-push-to-talk, browser or Deepgram/Whisper STT, browser/Azure/ElevenLabs TTS), and a Microsoft Teams bot
+push-to-talk, browser, Azure Speech or Deepgram STT, browser/Azure/ElevenLabs TTS), and a Microsoft Teams bot
 (message Jarvis from Teams, get a real reply). Not yet connected: WhatsApp, SMS, Slack, or any other channel
 - Teams is the only channel beyond the HUD right now.
 

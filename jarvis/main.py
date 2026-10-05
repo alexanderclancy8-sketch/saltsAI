@@ -33,7 +33,7 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import approval_inbox, connection_tests, documents, images
+from .services import adverts, approval_inbox, connection_tests, documents, images
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
 from .services.engineer_homes import DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, HomeError
@@ -96,6 +96,10 @@ class TTSIn(BaseModel):
 
 class VoiceSampleIn(BaseModel):
     voice: str = Field(max_length=80)
+
+
+class AdvertReviseIn(BaseModel):
+    instructions: str = Field(min_length=1, max_length=500)
 
 
 class SettingsIn(BaseModel):
@@ -712,6 +716,30 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if download:
             headers["Content-Disposition"] = f'attachment; filename="salts-draft-post-{image_id[:8]}.png"'
         return Response(path.read_bytes(), media_type="image/png", headers=headers)
+
+    # ------------------------------------------------------------------ Claude-designed adverts (HTML)
+    # The stored design is already sanitised (services/adverts.py). The console shows `document` in a sandboxed iframe
+    # (sandbox="" + the design's own safety policy) and turns `fragment` into a PNG in the browser. Nothing is rendered here.
+    @app.get("/api/adverts/{advert_name}", dependencies=[Depends(owner)])
+    async def get_advert(request: Request, advert_name: str, download: int = 0):
+        as_html = advert_name.endswith(".html")
+        advert_id = advert_name[:-5] if as_html else advert_name
+        payload = J(request).adverts.payload(advert_id) if images.IMAGE_ID_RE.match(advert_id) else None
+        if payload is None:
+            raise HTTPException(404, "No such design")
+        if not as_html:
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+        return Response(payload["document"], media_type="text/html; charset=utf-8",
+                        headers=adverts.document_headers(download=bool(download), filename=payload["filename"]))
+
+    @app.post("/api/adverts/{advert_id}/revise", dependencies=[Depends(owner), Depends(human_click)])
+    async def revise_advert(request: Request, advert_id: str, body: AdvertReviseIn):
+        if not images.IMAGE_ID_RE.match(advert_id):
+            raise HTTPException(404, "No such design")
+        out = await J(request).adverts.revise(advert_id, body.instructions)
+        if out.get("error"):
+            return JSONResponse(out, status_code=422)
+        return out
 
     @app.post("/api/brand/logo", dependencies=[Depends(owner)])
     async def upload_logo(logo: UploadFile = File(...)):

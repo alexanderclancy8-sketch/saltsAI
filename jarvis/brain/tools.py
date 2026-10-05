@@ -2090,8 +2090,9 @@ TOOLS: list[Tool] = [
     Tool("generate_image", "Make a DRAFT social media post graphic (headline text, Salts navy blue branding, company "
                            "logo) sized for Facebook, Instagram, LinkedIn or TikTok. Shown on the display with a "
                            "PNG download for the owner to review; it is never posted or sent anywhere by this tool. "
-                           "If no image provider key is set it says so and makes nothing - tell the owner what it "
-                           "says, never pretend an image exists. Never put customer or site details in the "
+                           "It is a DESIGNED graphic (layout, shapes, gradients, text and the logo, designed by Claude), "
+                           "not an AI photograph - say so if the owner expects a photo. If it returns an error, tell the "
+                           "owner what it says, never pretend an image exists. Never put customer or site details in the "
                            "headline or visual, and never ask for people or faces.",
          ImageIn, generate_image, "Making the graphic"),
     Tool("email_draft_reply", "Save a reply to an email as a draft in Outlook for the owner to review and send.",

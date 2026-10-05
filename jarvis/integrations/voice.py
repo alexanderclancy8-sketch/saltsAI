@@ -2,9 +2,10 @@
 
 Speech output (TTS): ElevenLabs or Azure Neural TTS if a key is configured, otherwise Piper - a free,
 local neural TTS engine (runs on the server itself, no external API, no cost) - which is why it, not the
-browser's own robotic voice, is the default whenever nothing paid is set up. Speech input (STT): Deepgram
-Nova-3 live streaming (proxied so the API key never reaches the browser), Deepgram pre-recorded, or OpenAI
-Whisper for push-to-talk. If nothing is configured the browser's built-in speech engines are used.
+browser's own robotic voice, is the default whenever nothing paid is set up. Speech input (STT): Azure Speech
+(push-to-talk; the same key and region as the Azure voice, so no extra account), Deepgram Nova-3 live streaming
+(proxied so the API key never reaches the browser) or Deepgram pre-recorded, or OpenAI Whisper if an OpenAI key
+happens to be set (never required). If nothing is configured the browser's built-in speech engines are used.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import io
 import json
 import logging
 import re
+import shutil
+import subprocess
 import time
 import wave
 from collections.abc import AsyncIterator
@@ -26,7 +29,7 @@ import httpx
 
 from ..config import Settings
 from .ssml import build_ssml
-from .stt_chain import ENGINE_LABELS, KEY_NAMES, engine_configured, stt_chain, stt_problem
+from .stt_chain import ENGINE_LABELS, KEY_NAMES, SERVER_ENGINES, engine_configured, stt_chain, stt_problem
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +49,13 @@ AZURE_SAMPLE_TEXT = "Good morning, sir. Your next visit is at 14:30, and the quo
 
 
 WHISPER_API = "https://api.openai.com/v1/audio/transcriptions"
+# Azure Speech-to-text REST API for short audio (up to 60 s) - the push-to-talk case. It takes 16 kHz mono PCM WAV or
+# Ogg/Opus, NOT the WebM/Opus or MP4 a browser's MediaRecorder produces, so the console converts to WAV before it
+# uploads (hud.js toWav16k) and anything else is converted here with ffmpeg if the server has one.
+AZURE_STT_URL = "https://{region}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
+AZURE_STT_MAX_SECONDS = 60
+AZURE_REGION_RE = re.compile(r"^[a-z0-9]{3,40}$")
+FFMPEG_TIMEOUT_S = 15
 # Push-to-talk STT limits. A short clip normally comes back in 1-3 s, so 20 s is generous without leaving the
 # owner staring at "Transcribing…" for a minute; OpenAI rejects uploads over 25 MB.
 STT_TIMEOUT_S = 20.0
@@ -231,6 +241,74 @@ def audio_extension(mime: str) -> str:
     return "webm"
 
 
+def _pcm_to_wav(pcm: bytes, rate: int = 16000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def _wav_info(audio: bytes) -> tuple[int, int, int, float] | None:
+    """(sample rate, channels, bytes per sample, seconds) when `audio` is an uncompressed PCM WAV, else None. Looks at
+    the bytes rather than the MIME type, which browsers get wrong."""
+    if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return None
+    try:
+        with wave.open(io.BytesIO(audio)) as w:
+            rate = w.getframerate()
+            return rate, w.getnchannels(), w.getsampwidth(), w.getnframes() / max(rate, 1)
+    except (wave.Error, EOFError):
+        return None
+
+
+def _ffmpeg_to_wav16k(audio: bytes) -> bytes | None:
+    """Convert any recording ffmpeg understands (WebM/Opus, MP4/AAC, MP3...) to 16 kHz mono 16-bit WAV. None when the
+    server has no ffmpeg or it couldn't read the audio. Fixed arguments, no shell, audio only via stdin/stdout - nothing
+    is written to disk or logged."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "-hide_banner", "-loglevel", "error", "-nostdin", "-i", "pipe:0", "-vn", "-ac", "1",
+                            "-ar", "16000", "-f", "s16le", "pipe:1"],
+                           input=audio, capture_output=True, timeout=FFMPEG_TIMEOUT_S, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _pcm_to_wav(r.stdout) if r.returncode == 0 and r.stdout else None
+
+
+def _azure_too_long(seconds: float) -> STTError:
+    return STTError(f"The recording is {seconds:.0f} seconds long; Azure Speech's push-to-talk limit is "
+                    f"{AZURE_STT_MAX_SECONDS} seconds - record a shorter message.", "azure", 413)
+
+
+async def prepare_azure_audio(audio: bytes, mime: str) -> tuple[bytes, str]:
+    """(audio, Content-Type) in a format Azure's short-audio endpoint accepts. 16 kHz (or 8 kHz) mono PCM WAV - what the
+    console sends - and Ogg/Opus go straight through; anything else is converted with ffmpeg when available. Raises
+    STTError (not transient) when the format can't be read or the clip is over Azure's 60-second limit."""
+    info = _wav_info(audio)
+    if info:
+        rate, channels, width, seconds = info
+        if seconds > AZURE_STT_MAX_SECONDS:
+            raise _azure_too_long(seconds)
+        if channels == 1 and width == 2 and rate in (8000, 16000):
+            return audio, f"audio/wav; codecs=audio/pcm; samplerate={rate}"
+    elif audio[:4] == b"OggS":
+        return audio, "audio/ogg; codecs=opus"
+    wav = await asyncio.to_thread(_ffmpeg_to_wav16k, audio)
+    if wav is None:
+        shown = (mime.split(";")[0].strip() or "unknown")[:40]
+        raise STTError(f"Azure Speech can't read this kind of recording ({shown}). The console normally converts it to WAV "
+                       "first - reload the page and try again.", "azure", 415)
+    seconds = (len(wav) - 44) / 32000
+    if seconds > AZURE_STT_MAX_SECONDS:
+        raise _azure_too_long(seconds)
+    return wav, "audio/wav; codecs=audio/pcm; samplerate=16000"
+
+
 class Voice:
     def __init__(self, settings: Settings, http: httpx.AsyncClient):
         self.s = settings
@@ -399,7 +477,7 @@ class Voice:
 
     # ------------------------------------------------------------------ STT (push-to-talk)
     def _secrets(self) -> tuple[str, ...]:
-        return (self.s.deepgram_api_key, self.s.openai_api_key)
+        return (self.s.deepgram_api_key, self.s.openai_api_key, self.s.azure_speech_key)
 
     async def transcribe(self, audio: bytes, mime: str, provider: str | None = None, *, retry: bool = True,
                          timeout_s: float | None = None) -> str:
@@ -410,10 +488,10 @@ class Voice:
         retry=False / timeout_s: a single bounded attempt - the browser does its own retry and fallback."""
         provider = provider or self.s.effective_stt
         log.info("STT request: provider=%s bytes=%d mime=%s", provider, len(audio), mime)
-        if provider not in ("deepgram", "whisper"):
+        if provider not in SERVER_ENGINES:
             raise VoiceError("No server speech-to-text configured - use the browser microphone")
         if not engine_configured(self.s, provider):
-            key_env = "OPENAI_API_KEY" if provider == "whisper" else "DEEPGRAM_API_KEY"
+            key_env = KEY_NAMES[provider]
             log.warning("STT engine %s selected but no API key is configured (%s is empty)", provider, key_env)
             raise STTError(f"{ENGINE_LABELS[provider]} has no API key - set {key_env}.", provider, None)
         if len(audio) > STT_MAX_BYTES:
@@ -432,7 +510,20 @@ class Voice:
     async def _transcribe_once(self, provider: str, audio: bytes, mime: str,
                                timeout_s: float = STT_TIMEOUT_S) -> str:
         label = ENGINE_LABELS[provider]
-        if provider == "deepgram":
+        if provider == "azure":
+            region = (self.s.azure_speech_region or "").strip().lower()
+            if not AZURE_REGION_RE.match(region):
+                raise STTError("The Azure Speech region isn't valid - check AZURE_SPEECH_REGION (for example uksouth).",
+                               provider, None)
+            body, content_type = await prepare_azure_audio(audio, mime)
+            language = self.s.stt_language if "-" in self.s.stt_language else "en-GB"  # Azure wants a locale
+            request = dict(
+                url=AZURE_STT_URL.format(region=region),
+                params={"language": language, "format": "simple", "profanity": "raw"},
+                headers={"Ocp-Apim-Subscription-Key": self.s.azure_speech_key, "Content-Type": content_type,
+                         "Accept": "application/json"},
+                content=body)
+        elif provider == "deepgram":
             request = dict(
                 url=DEEPGRAM_API,
                 params={"model": self.s.deepgram_model, "language": self.s.stt_language, "smart_format": "true"},
@@ -466,6 +557,14 @@ class Voice:
             raise self._stt_error(provider, label, r)
         try:
             data = r.json()
+            if provider == "azure":
+                status = data.get("RecognitionStatus")
+                if status == "Success":
+                    return data.get("DisplayText") or ""
+                if status in ("NoMatch", "InitialSilenceTimeout", "BabbleTimeout"):
+                    return ""  # nothing intelligible in the clip: an empty transcript, not a fault
+                raise STTError(f"Azure Speech couldn't process the recording (status: {str(status)[:40]}).", provider,
+                               r.status_code)
             if provider == "deepgram":
                 return data["results"]["channels"][0]["alternatives"][0]["transcript"]
             return data.get("text", "")
@@ -479,21 +578,24 @@ class Voice:
         API key; for 401/403 the upstream text is withheld altogether because providers echo part of the key."""
         status = r.status_code
         upstream = _upstream_message(r, self._secrets())
-        log.warning("STT upstream error: provider=%s status=%s model=%s body=%s", provider, status,
-                    self.s.whisper_model if provider == "whisper" else self.s.deepgram_model,
+        model = {"whisper": self.s.whisper_model, "deepgram": self.s.deepgram_model}.get(provider, "-")
+        log.warning("STT upstream error: provider=%s status=%s model=%s body=%s", provider, status, model,
                     _redact(r.text[:500], self._secrets()).replace("\n", " "))
-        key_env = "OPENAI_API_KEY" if provider == "whisper" else "DEEPGRAM_API_KEY"
-        model_env = "WHISPER_MODEL" if provider == "whisper" else "DEEPGRAM_MODEL"
+        key_env = KEY_NAMES[provider]
+        model_env = {"whisper": "WHISPER_MODEL", "deepgram": "DEEPGRAM_MODEL", "azure": "AZURE_SPEECH_REGION"}[provider]
+        text = (r.text or "").lower()
         quota = status == 402 or (status == 429 and any(
-            w in (r.text or "").lower() for w in ("insufficient_quota", "quota", "billing")))
-        if status in (401, 403):
-            hint, upstream = f"the API key was rejected - check {key_env} (expired, revoked or wrong project).", ""
-        elif quota:
+            w in text for w in ("insufficient_quota", "quota", "billing"))) or (
+            provider == "azure" and status == 403 and "quota" in text)  # Azure's free tier says "out of call volume quota" as a 403
+        if quota:
             hint = f"quota or billing problem - check the {label} account's credit / billing limits."
+        elif status in (401, 403):
+            where = " and AZURE_SPEECH_REGION (the key only works in its own region)" if provider == "azure" else ""
+            hint, upstream = f"the API key was rejected - check {key_env}{where} (expired, revoked or wrong project).", ""
         elif status == 429:
             hint = "rate limited - try again in a moment."
         elif status == 404:
-            hint = f"endpoint or model not found - check {model_env}."
+            hint = f"endpoint or {'region' if provider == 'azure' else 'model'} not found - check {model_env}."
         elif status == 413:
             hint = "the recording is too large."
         elif status in (400, 415, 422):
@@ -602,4 +704,4 @@ class SpeechToTextCheck:
                              "key under Connections > Voice, or choose the browser engine there.")
         t0 = time.perf_counter()
         await self.voice.transcribe(silent_wav(), "audio/wav")
-        return f"{provider} accepted a test clip in {int((time.perf_counter() - t0) * 1000)} ms"
+        return f"{ENGINE_LABELS.get(provider, provider)} accepted a test clip in {int((time.perf_counter() - t0) * 1000)} ms"

@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from ..integrations.voice import silent_wav
 from ..redact import redact_text
 
 log = logging.getLogger(__name__)
@@ -156,7 +157,11 @@ async def _voice(j) -> tuple[bool, str]:
         parts.append(f"Speaking: {'ElevenLabs' if tts == 'elevenlabs' else 'Azure'} ({name}) works")
         ok = size > 0
     stt = s.effective_stt
-    if stt == "deepgram":
+    if stt == "azure":
+        # The real push-to-talk path with half a second of silence: checks the key, the region and the endpoint at once.
+        await j.voice.transcribe(silent_wav(), "audio/wav", "azure", retry=False)
+        parts.append(f"Listening: Azure Speech works (key and region {s.azure_speech_region} accepted)")
+    elif stt == "deepgram":
         r = await j.http.get("https://api.deepgram.com/v1/projects",
                              headers={"Authorization": f"Token {s.deepgram_api_key}"}, timeout=20)
         r.raise_for_status()

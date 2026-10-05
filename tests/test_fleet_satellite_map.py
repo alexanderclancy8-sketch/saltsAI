@@ -105,10 +105,16 @@ def test_no_content_security_policy_could_block_the_esri_tile_host():
     """The console sets no CSP (header or meta tag), so img-src / connect-src are not restricted; if one is ever added it must
     name server.arcgisonline.com (the tiles are <img> requests) - this fails loudly the day a policy appears without it."""
     sources = [INDEX, (WEB / "login.html").read_text(encoding="utf-8")]
-    sources += [p.read_text(encoding="utf-8") for p in ROOT.rglob("*.py")]
+    # The ONE exemption: services/adverts.py defines the policy of the sandboxed advert document (default-src 'none'), which is a
+    # different page from the console and never carries a map; it is held to its own stricter check just below.
+    advert_module = ROOT / "services" / "adverts.py"
+    sources += [p.read_text(encoding="utf-8") for p in ROOT.rglob("*.py") if p != advert_module]
     policy = [s for s in sources if re.search(r"content-security-policy", s, re.I)]
     for text in policy:
         assert "server.arcgisonline.com" in text, "a Content-Security-Policy exists but does not allow server.arcgisonline.com"
+    advert = advert_module.read_text(encoding="utf-8")
+    assert advert.count('CSP = "default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; font-src data:"') == 1
+    assert "arcgisonline" not in advert and "connect-src" not in advert  # sealed: it can reach nothing at all
     assert "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" in INDEX      # Leaflet itself comes from the other host already in use
 
 

@@ -250,6 +250,22 @@ CREATE TABLE IF NOT EXISTS check_runs (
     detail TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_check_runs_job ON check_runs (job_key, id);
+-- Claude-designed adverts (services/adverts.py): the LAST version of each design only, newest few kept. html is the
+-- sanitised design (still holding the logo placeholder); it is never executed by the server.
+CREATE TABLE IF NOT EXISTS adverts (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    headline TEXT NOT NULL DEFAULT '',
+    subtext TEXT NOT NULL DEFAULT '',
+    visual TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1,
+    designer TEXT NOT NULL DEFAULT 'claude',
+    html TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,

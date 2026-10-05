@@ -191,6 +191,8 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/tts/sample": MANAGER_OK,
     "GET /api/documents/{doc_id}/{fmt}": MANAGER_OK,
     "GET /api/images/{image_name}": MANAGER_OK,
+    "GET /api/adverts/{advert_name}": MANAGER_OK,
+    "POST /api/adverts/{advert_id}/revise": MANAGER_OK,
     "POST /api/brand/logo": MANAGER_OK,
     "GET /api/approvals": MANAGER_OK,                       # approvals: list / inbox / history / edit / retry / dismiss / approve / deny
     "GET /api/approvals/inbox": MANAGER_OK,

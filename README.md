@@ -7,7 +7,7 @@ brain is Claude, so it is also a fully capable general AI you can ask anything.
 
 ```
          ┌──────────────── HUD (browser / wall screen / phone) ────────────────┐
-voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Deepgram / Whisper mic · live panels · map │
+voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Azure / Deepgram mic · live panels · map │
          └───────────────────────────────┬──────────────────────────────────────┘
                                          │ WebSocket + REST (FastAPI)
       ┌──────────────────────────────────┴───────────────────────────────────┐
@@ -169,8 +169,12 @@ Do these in any order; each one replaces demo data as soon as it's set.
    neural voice with no API key and no cost, downloaded once and run on the server itself - so it never falls
    back to the browser's robotic voice even with nothing configured. On the Settings page's Voice card: pick
    from a few free Piper voices, or add an ElevenLabs key for the most natural voice (or run
-   `bash infra/deploy.sh voice` for a free Azure one) if you'd rather pay for something better, and a Deepgram key for always-listening speech-to-text
-   (OpenAI/Whisper also works for push-to-talk). "Always listening" doesn't mean always streaming to Deepgram/
+   `bash infra/deploy.sh voice` for a free Azure one) if you'd rather pay for something better, and a Deepgram key for always-listening speech-to-text.
+   **Listening needs no OpenAI key**: with an Azure Speech key set (the one that powers the Azure voice) Jarvis uses
+   Azure Speech for push-to-talk - same key and region, nothing extra to sign up for - and the order it tries is Azure
+   Speech, then Deepgram, then OpenAI Whisper only if an OpenAI key happens to be set, then the browser's own speech
+   recognition. (The console converts the recording to 16 kHz WAV in the browser, which is what Azure's short-audio
+   endpoint accepts.) "Always listening" doesn't mean always streaming to Azure/Deepgram/
    Whisper: Jarvis only wakes the paid microphone once it hears "Jarvis" (using the browser's own free wake-word
    spotting the rest of the time), and puts it back to sleep after a few seconds of silence. Wispr Flow and other dictation apps work straight into the chat
    box too.
@@ -314,3 +318,13 @@ infra/            Azure Bicep     templates/   workflow for the Salts FSM repo  
 ```
 
 Run the tests with `pip install -r requirements-dev.txt && python -m pytest`.
+
+### Draft social media graphics (no image key needed)
+
+Ask Jarvis for a Facebook, Instagram, LinkedIn or TikTok graphic and his own Claude designs the advert as a complete
+HTML + CSS + inline-SVG page (Salts navy branding, your logo, your exact headline - he never rewords it). It appears on the
+display in a sandboxed frame with **Download PNG** (made in your browser at the platform's exact size), **Download HTML**
+and **Ask for changes** ("bigger headline, add 10% off" revises the same design). These are *designed graphics* - layout,
+shapes, gradients, text and the logo - **not AI photographs**: Claude cannot generate photographs, and nothing here pretends
+otherwise. Drafts only: nothing is ever posted. If an `IMAGE_API_KEY` for OpenAI is already set you can still choose OpenAI
+picture backgrounds under Settings > Image generation (advanced); nothing needs it.

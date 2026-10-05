@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     # PNG/JPEG or over 2 MB = documents are branded with the company name and Salts navy only.
     company_logo_path: str = ""
     company_domain: str = "saltsfireandsecurity.co.uk"
+    # Shown on drafted social-media adverts (COMPANY_PHONE). Blank = adverts carry no phone number (Jarvis never invents one).
+    company_phone: str = ""
     owner_name: str = "Alex"
     owner_salutation: str = "sir"
     # "How Jarvis talks": "natural" (uses the owner's first name) or "formal" (uses owner_salutation, the "what Jarvis
@@ -301,11 +303,11 @@ class Settings(BaseSettings):
     social_snapshot_cron: str = "20 6 * * *"
     marketing_report_cron: str = "50 7 * * 1"
 
-    # --- Image generation (draft social media graphics; see services/images.py) --------------------------
-    # The provider paints a plain background; Jarvis adds the headline, navy branding and logo itself. With no
-    # key the generate_image tool says it isn't connected and never fakes an image. Drafts only - never posted.
-    image_provider: str = "openai"  # supported: openai
-    image_api_key: str = ""
+    # --- Image generation (draft social media graphics; see services/images.py and services/adverts.py) ------
+    # Default: Jarvis's own Claude designs each advert as HTML/CSS/SVG (headline, navy branding, logo) - no extra account.
+    # An OpenAI image key, if one is already set, can paint a picture background instead. Drafts only - never posted.
+    image_provider: str = "claude"  # claude (default, no extra account) | openai (only if image_api_key is set)
+    image_api_key: str = ""  # optional: only for the OpenAI background option; Claude-designed graphics need no key
     image_model: str = "gpt-image-1"
 
     # --- Voice --------------------------------------------------------------
@@ -327,11 +329,13 @@ class Settings(BaseSettings):
     azure_tts_voice: str = "en-GB-RyanNeural"
     azure_tts_style: str = "chat"  # relaxed, conversational delivery; voices without it just ignore it
 
-    stt_provider: str = "auto"  # auto | deepgram | whisper | browser
+    # Speech-to-text. Azure Speech reuses azure_speech_key / azure_speech_region above (the same account that speaks),
+    # so listening needs no extra secret. Whisper is kept for anyone who already has an OpenAI key; it is never required.
+    stt_provider: str = "auto"  # auto | azure | deepgram | whisper | browser
     deepgram_api_key: str = ""
     deepgram_model: str = "nova-3"
     stt_language: str = "en-GB"
-    openai_api_key: str = ""  # only for Whisper speech-to-text
+    openai_api_key: str = ""  # optional: only used if Whisper is chosen on purpose. Nothing needs it.
     whisper_model: str = "whisper-1"
     wake_word: str = "jarvis"
     # Voice mode only: if a spoken question hasn't started being answered after ~1.8s, say ONE short
@@ -492,13 +496,23 @@ class Settings(BaseSettings):
 
     @property
     def effective_stt(self) -> str:
-        if self.stt_provider != "auto":
-            return self.stt_provider
-        if self.deepgram_api_key:
-            return "deepgram"
-        if self.openai_api_key:
-            return "whisper"
-        return "browser"
+        """The speech-to-text engine in use. "auto" prefers a Deepgram key the owner already set up (it is the only engine
+        with live streaming), then Azure Speech (the key that already powers the voice), then Whisper if an OpenAI key
+        happens to be set, then the browser. A chosen server engine that has no key falls through to Azure Speech when
+        that is configured, so an old "Whisper" choice made before Azure listening existed doesn't leave voice input broken."""
+        chosen = self.stt_provider
+        if chosen == "auto":
+            if self.deepgram_api_key:
+                return "deepgram"
+            if self.azure_speech_key:
+                return "azure"
+            if self.openai_api_key:
+                return "whisper"
+            return "browser"
+        keyless = {"deepgram": not self.deepgram_api_key, "whisper": not self.openai_api_key}
+        if keyless.get(chosen) and self.azure_speech_key:
+            return "azure"
+        return chosen
 
     @property
     def effective_finance(self) -> str:
