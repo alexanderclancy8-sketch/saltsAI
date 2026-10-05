@@ -100,6 +100,29 @@ def require_owner(settings: Settings, request: Request) -> None:
         raise HTTPException(status_code=401, detail="Not signed in")
 
 
+def require_same_origin(settings: Settings, request: Request) -> None:
+    """CSRF guard for the buttons that change what Jarvis does (Approve, Don't send, Edit, Retry, memory edits).
+
+    The session cookie is SameSite=Lax, which already stops browsers attaching it to a cross-site POST; this is the
+    second line (and covers the Microsoft sign-in cookie, which Jarvis does not control): a browser that says the
+    request came from another site (Sec-Fetch-Site) or from another origin (Origin) is refused with 403. Requests
+    carrying neither header (curl, the test client, server-to-server) are not browser clicks and pass - they still need
+    the owner's session."""
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site.lower() not in ("same-origin", "none"):
+        raise HTTPException(status_code=403, detail="That request didn't come from the console.")
+    origin = request.headers.get("origin")
+    if origin is not None:
+        from urllib.parse import urlsplit
+
+        host = urlsplit(origin).netloc.lower() if origin != "null" else ""
+        ours = {h.strip().lower() for h in (request.headers.get("host", "") + "," + request.headers.get("x-forwarded-host", ""))
+                .split(",") if h.strip()}
+        ours.add(urlsplit(settings.public_base_url or "").netloc.lower())
+        if not host or host not in ours:
+            raise HTTPException(status_code=403, detail="That request didn't come from the console.")
+
+
 def staff_key_ok(settings: Settings, key: str | None, conn: Request) -> bool:
     if is_owner(settings, conn):
         return True

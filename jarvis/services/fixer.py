@@ -30,7 +30,7 @@ from ..config import Settings
 from ..db import Database
 from ..events import EventBus
 from ..integrations.azure import strip_top_folder
-from . import ci_logs
+from . import approval_inbox, ci_logs
 from .agent_runs import AgentRuns
 from .workspace import Workspace, WorkspaceError
 
@@ -190,7 +190,7 @@ class Fixer:
             "deploy_fix", f"Merge PR #{pr['number']} and deploy the fix for issue #{issue_id} "
                           f"(\"{issue['title']}\") to Azure, then tell {issue['reporter']} it's fixed. Risk: {fix.risk}.",
             {"issue_id": issue_id, "pr_number": pr["number"], "diff": diff[:20000]})
-        self.bus.publish("approvals", self.db.pending_actions())
+        self.bus.publish("approvals", approval_inbox.pending_for_display(self.db))
         await self.notifier.notify(
             f"Fix ready for issue #{issue_id}: {fix.pr_title}",
             f"{fix.change_summary}\nPR: {pr['url']}\nCI is running. Approve action #{action_id} on the display to deploy.",

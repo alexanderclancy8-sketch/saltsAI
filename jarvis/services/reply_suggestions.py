@@ -190,6 +190,48 @@ class ReplySuggestions:
         self.j.db.execute("DELETE FROM reply_habits")
         return n
 
+    # -- the Memory pop-up: list, reword, delete one learned reply by id ---------------------------------
+    def rows(self) -> list[dict[str, Any]]:
+        """Every learned (reply, context) row with its id, strongest first - what the Memory pop-up lists."""
+        now = datetime.now(timezone.utc)
+        rows = self.j.db.query("SELECT id, display, context, uses, score, last_used FROM reply_habits")
+        for r in rows:
+            r["_s"] = _decayed(r["score"], r["last_used"], now)
+        rows.sort(key=lambda r: -r["_s"])
+        for r in rows:
+            r.pop("_s"), r.pop("score")
+        return rows
+
+    def edit(self, row_id: int, text: str) -> dict[str, Any]:
+        """Reword one learned reply. It keeps its use count, so it is offered as readily as before. The same rules as
+        learning apply (short, one line, nothing that looks like a secret). If the new wording is a reply already
+        learned in the same context the two are merged. ValueError (plain English) if it can't be done."""
+        db = self.j.db
+        row = db.query_one("SELECT * FROM reply_habits WHERE id = ?", (row_id,))
+        if not row:
+            raise ValueError("That learned reply no longer exists.")
+        text = (text or "").strip()
+        if not learnable(text):
+            raise ValueError("A learned reply must be short (up to %d words), on one line, and must not look like a "
+                             "password, code, address or number." % MAX_WORDS)
+        norm = normalise(text)
+        twin = db.query_one("SELECT * FROM reply_habits WHERE norm = ? AND context = ? AND id != ?",
+                            (norm, row["context"], row_id))
+        uses, score = row["uses"], row["score"]
+        if twin:
+            uses, score = uses + twin["uses"], score + twin["score"]
+            db.execute("DELETE FROM reply_habits WHERE id = ?", (twin["id"],))
+        db.execute("UPDATE reply_habits SET norm = ?, display = ?, uses = ?, score = ? WHERE id = ?",
+                   (norm, text, uses, score, row_id))
+        return {"id": row_id, "text": text}
+
+    def delete(self, row_id: int) -> bool:
+        """Forget one learned reply (one row). False if it was already gone."""
+        n = self.j.db.query_one("SELECT COUNT(*) AS n FROM reply_habits WHERE id = ?", (row_id,))["n"]
+        if n:
+            self.j.db.execute("DELETE FROM reply_habits WHERE id = ?", (row_id,))
+        return bool(n)
+
     def summary(self) -> list[dict[str, Any]]:
         """What has been learned so far (for inspection): strongest first."""
         now = datetime.now(timezone.utc)
