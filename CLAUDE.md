@@ -100,6 +100,14 @@ prompt) until the model calls a terminal tool (`submit_fix`/`submit_findings`/`s
 rejects every command but `view`). `self_improve.py` is deliberately narrower than `fixer.py`: no merge step, no
 deploy step, ever, not even behind an approval click - a human always merges it. Copy the shape of whichever of
 these three is closest to a new engineer/review-style feature rather than starting from scratch.
+*Model and effort for these three.* They use `Settings.engineer_model_or_default()` (`ENGINEER_MODEL`; blank = same as
+`JARVIS_MODEL`; never hard-code an ID - the owner supplies it) and `Settings.engineer_effort` (`ENGINEER_EFFORT`), on both
+backends: `llm.request_params(..., model=...)` for the API loop and `max_backend.run_once(..., model=...)` for the `_max`
+variants. `engineer_effort` is one of `low|medium|high|xhigh|max` (what the Agent SDK's `EffortLevel` and the API's
+`output_config.effort` accept); it is lower-cased/trimmed, blank means `high`, and anything else raises a clear validation
+error at startup (`Settings._check_engineer_effort`) instead of being ignored. Both appear (advanced) in the Settings page's
+Claude section and are in `settings_store.OWNER_ONLY_KEYS`, so only the owner can change them. A new engineer-style service
+must pass both too. Tests: `tests/test_engineer_model.py`.
 `services/recruiter.py` (the `recruit_agent` tool) generalises the same shape beyond code: a fresh agent, a
 fixed turn budget, a final answer - but against Jarvis's own tool set via `dispatch()` (so a write it proposes
 queues for approval exactly like anything else) rather than a code checkout, for research/drafting/analysis
@@ -107,6 +115,35 @@ tasks worth delegating rather than doing inline. Like the other three it runs bo
 `AsyncAnthropic` tool loop for the API backend, `max_backend.run_agent` - a filtered MCP tool server - for the
 Max/Claude Code backend); `NO_RECURSE` in that file is what stops a recruited agent recruiting further agents
 or starting another background job itself.
+
+**CI failure logs for the engineer loops (`services/ci_logs.py`, tool `ci_log_excerpt`; tests `tests/test_ci_logs.py`).**
+`checks_summary()` only says pass/fail, so the engineering agents had no way to see *why* CI failed. `ci_log_excerpt`
+takes `run_id` or `head_sha` (newest failed run for that commit), reads the failing job(s) via `GitHub.run_jobs` /
+`GitHub.job_log` (GET only) and returns the whole log if it is small, otherwise the last 60 lines plus context around
+FAILED/Error/assert lines. The result is always capped at `MAX_EXCERPT_CHARS` (30k chars) - the ~1MB tool-result buffer
+has broken auto-fix attempts before (issues #6, #17), so never raise it near that, and `job_log` itself keeps only the
+last 4MB of a download. It is offered in `SELF_IMPROVE_TOOLS`, `ENGINEER_TOOLS` (fixer) and `REVIEW_TOOLS`
+(security_watch); the API-backend loops call it via `ci_logs.run_ci_log_tool(self.gh, input)` (it is async, so it is
+dispatched in the loop rather than in the sync `_tool_call`), and the Max/Agent SDK `_max` variants get it as an
+in-process MCP server (`ci_logs.sdk_ci_log_server`, allowed tool `mcp__jarvis_ci__ci_log_excerpt`) alongside
+Read/Edit/Glob/Grep. Log text is untrusted data (redacted with `redact_text`, never instructions); errors from GitHub come
+back to the model as a tool error. A new engineer-style agent that has a `GitHub` client should offer it the same way.
+
+**Progress visibility for engineer loops (`services/agent_runs.py`, the `agent_runs` tool).** `self_improve.run()`,
+`Fixer.attempt()` (built-in mode) and `SecurityWatch.run()` each wrap their run in `AgentRuns.track(...)`, which
+keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`/`interrupted`) and a
+trail of one-line tool-call summaries (`editor view <path>`, `grep '<pattern>'`, ...) added after every tool call
+in the loop - never file contents or edit text; the newest 60 steps are kept. The read-only `agent_runs` tool lists
+recent runs; a run still `running` with no activity for 30 minutes (`STALL_AFTER`) is reported as `stalled` (worked
+out when read, not stored). A run cancelled mid-flight is closed `interrupted`; at start-up (and when a new run
+starts) `AgentRuns.interrupt_stale()` closes `running` rows left by a crash or restart as `interrupted` - but only
+rows that started over `INTERRUPTED_AFTER` (2h, twice the assumed `MAX_RUN_TIME`) ago with no step in the last 30
+minutes, so a second process sharing the database during a rolling deploy never has its live run marked dead.
+`SelfImprove.run()` also notifies the owner (`self_improve_failed`, engineering-flagged) when a run raises or is
+cancelled, and a Claude Code run that hits `max_turns` (`MaxTurnsExceeded`) is a `gave_up` with a plain message,
+not a parse error. Recording is observability only: it swallows its own errors and never alters what an
+agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
+(Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
 
 **The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
 `tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
@@ -139,7 +176,18 @@ allowlisted domains) goes to conversational Jarvis only; ThoughtProof checks an 
 inside `ActionExecutor._run`, and can only stop it (BLOCK, or fail closed if unavailable) - never approve, queue or skip.
 External MCP servers only reach the Max/Agent SDK backend (the API-backend engineer loop is hand-rolled and has no MCP),
 must be pinned to an exact version in `mcp_plugins.yaml`, and only tools listed in `allowed_tools` are callable
-(`permission_mode="dontAsk"` denies the rest). Never add a plugin tool that can change something without going through
+(`permission_mode="dontAsk"` denies the rest). Browser Use extras: the allowlist of dealer/government/industry sites lives in
+`mcp_plugins.yaml` (`allowed_domains`, a ceiling the Settings field can only narrow); login/credential/checkout/payment/
+download/script/cookie/agent tools, such web-address paths and file types are denied in code (`DENIED_TOOL_WORDS`,
+`BLOCKED_PATH_WORDS`); a listed typing tool (`search_tools`) may only be given a UK number plate in a real format (no
+whitespace/newline, no numbers except element indexes); `sandbox_confirmed` stays false until a human confirms a real
+sandbox (the code can't create one); the version stays blank until verified on PyPI. Web addresses are parsed strictly
+(ASCII hostnames only - no backslash, `@`, port, IP, `%` or punycode - exact allowlisted hosts, query strings of at most
+64 characters made of plate-shaped or short plain values) and EVERY string in a call is searched for hosts, whatever the
+argument is called. The PreToolUse hook only sees the call about to be made, not where a redirect ended up, so the
+sandbox's network-egress allowlist (same hosts as `allowed_domains`) is the second wall. `www.gov.uk` and the DVLA
+vehicle-enquiry host are listed individually, never all of `gov.uk`. The single on-switch is `plugin_browser_use_enabled`
+(with `plugin_browser_allowed_domains`, both owner-only in `settings_store.OWNER_ONLY_KEYS`). Never add a plugin tool that can change something without going through
 `dispatch()`'s approval gate.
 
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through
@@ -169,6 +217,16 @@ never leaks into a test run). For engineer-loop services, build a small `FakeGit
 `test_security_watch.py`/`test_self_improve.py`) rather than hitting real GitHub. Any code path with a real
 `asyncio.sleep()` polling loop (CI-watching, deploy-waiting) needs that patched out in tests
 (`monkeypatch.setattr("jarvis.services.x.asyncio.sleep", instant_sleep)`) or it will actually wait.
+
+**The console's shape (`jarvis/web/`).** `index.html` is a top bar, a left rail (a chip strip on phones), and one centre column
+(core, one-line hint, "Needs you" strip, conversation, message box). Every dashboard section is a `.pop` inside the ONE
+`#drawer` (`Drawer.show(name)` in hud.js, opened by any element with `data-pop`; closed by Close, Escape or the scrim), so a
+new section is a new `<section class="pop" id="pop-x">` plus its name in `POPS` - never a second drawer. The rail counts and
+the "Needs you" strip are computed in `renderRail()` from the same `/api/status` data the pop-ups render. All colours, fonts and
+spacing are custom properties on `:root` in `hud.css`; the light theme block exists twice (media query for Auto, `[data-theme]`
+for an explicit choice) and `tests/test_hud_layout.py` keeps them identical and checks contrast. `theme.js` (loaded in `<head>`)
+owns the Auto/Light/Dark choice; `core.js` draws the core canvas on the console and the sign-in page. Real-browser checks:
+`tests/test_console_browser.py` (Playwright; skipped when it is not installed).
 
 **The HUD (`jarvis/web/hud.js`) talks to the backend over both a WebSocket (`/ws`, live/streaming - `thinking`/
 `delta`/`tool`/`reply` events pushed through `jarvis/events.py`'s `EventBus`) and plain REST fallbacks
@@ -200,6 +258,27 @@ Decisions use the `ask_user` tool (`brain/tools.py`) and the small question pop-
 only publishes an `ask` bus event and returns at once (no blocking); the chosen/typed/spoken answer comes back as an ordinary
 chat message. It is separate from, and must never call or imitate, the approval path (`decide()`, `/api/approvals`,
 `ActionExecutor`). Tests: `tests/test_ask_user.py`.
+Phase 3 of the console redesign ("fixes found on 2 Oct"):
+(1) **Sample data is never reasoned from** (`jarvis/demo_guard.py`). A demo source (`DemoFinance`, the seeded stock, sample social figures, the
+example staff register, `DemoRamTracking`) calls `demo_guard.touch(source)` where it serves sample figures; inside `tools.dispatch()` that raises
+`DemoDataBlocked` (a BaseException, so no `except Exception` fallback can swallow it), the tool's result is replaced by `demo_guard.refusal()`
+(`demo_data_withheld`, which source, what to connect) and the persona's "Sample data is never an answer" rule tells him to say so. Composite answers
+(briefing, wrap-up, business advice) wrap each source in `demo_guard.section()` so only the sample part is dropped; stored suggestions that rest on
+sample data are filtered (`visible_suggestions`). `StaffRegister.prompt_summary()` returns a neutral line while the register is the example. Nothing
+outside a tool call changes: the console's pop-ups keep their sample data and "demo" labels. When adding a demo source, add a `touch()` there and a
+`Source` in `demo_guard.SOURCES`. Salts FSM and Outlook demo are NOT gated (every test uses them as its stand-in; the prompt rule still covers them).
+(3) Speech-to-text: `stt_chain.stt_problem()` says why the chosen engine can't be used; `voice.client_config()` carries it as `stt_problem`;
+the top bar's `#stt-status` shows "Voice input: browser fallback - <why>" (hud.js `sttStatus`, also fed by a failure while listening).
+(4) RAM Tracking: a `RamError` per failure with plain-English text (no secrets), `RamTracking.health`/`probe()`, one cache and one request budget for
+RAM's 3-requests-a-minute-per-endpoint limit (429 = "rate limited", never "not connected"), the API address reduced to its host (`origin_of`), all
+parsing defensive against RAM's published schema (`last_event` is a STRING). `Jarvis.vehicle_tracking_status()` feeds the Connections line and the Fleet
+pop-up ("DEMO ... still missing: ...", "NOT CONNECTED - ... <reason>", or live). Tests mock RAM; none has been run against the real API.
+(5) The staff report key is never in any payload or page: the "Copy staff report link" button fetches `/api/staff-report-address` when pressed
+(`NO_TAIL_HINT` also stops the key's and the display password's last four characters showing). Tests: `tests/test_demo_guard.py`,
+`tests/test_activity_log.py`, `tests/test_stt_status.py`, `tests/test_ramtracking_connection.py`, `tests/test_ramtracking_schema.py`,
+`tests/test_staff_report_link.py`, `tests/test_console_browser_phase3.py`.
+Phase 2 of the console redesign ("how Jarvis talks"): the question pop-up is a centred dialog over a real backdrop element (`.ask-scrim`) whose answers, and "Type my own answer", are real `<button>`s; Escape (anywhere on the page), Dismiss or a click on the backdrop closes it without sending, and the reply keeps an "Answer" button to bring it back. Tests: `tests/test_question_popup.py` (plus the node harness `tests/ask_dom_harness.js`).
+What surrounds a reply is built from what really happened, not from text the model wrote: `jarvis/brain/trace.py`'s `TurnTrace` (`j.trace`) listens to the event bus (`EventBus.add_tap`) from the `thinking` event, notes each `tool` start, and each brain merges `j.trace.finish()` into its final `reply` event: `sources` (named from the tools used, with "(demo data)" where that source is still demo), `elapsed_ms`, `panel` (the pop-up with the detail: approvals if the turn queued something, else what the model asked for via `offer_next_steps`, else the pop-up of the tools used - the mapping is `_TOOL_INFO` there, so a new read tool should be added to it) and up to two `follow_ups` (only from the `offer_next_steps` tool, which changes nothing, is not an approval and is in `NO_RECURSE`). hud.js shows a working line above the reply from the live `tool` events (`.step`), then the source-and-time line, the pop-up button and follow-up chips under it. Stop (`stopEverything()`, or sending a new message) abandons the reply being written and sets `S.stopped` so late events of that turn are ignored until the next `user_message`; server-side it cancels the API-brain task (the whole turn is rolled back so the history stays valid) or interrupts Claude Code (`MaxBrain._stop_requested` - no half-answer is published or stored). "How Jarvis talks" is the `talk_style` setting (`natural` default = `owner_name`, `formal` = `owner_salutation`), shown in Settings (`#set-talk`, saved through the same Save changes bar) and under Connections > You and the business; `prompts.address_for()` picks the name and `TALK_NATURAL`/`TALK_FORMAL` are appended to the persona. It is a display preference like `owner_salutation`, not an owner-only setting. Tests: `tests/test_talk_style.py`, `tests/test_reply_extras.py`, `tests/test_streaming_stop.py`, `tests/test_console_browser_phase2.py`.
 
 **Jarvis speaking up unprompted (`jarvis/services/proactive.py`, `j.proactive`; tests `tests/test_proactive.py`).** There is no
 new transport: a Jarvis-initiated message is a `proactive` event on the same `EventBus`/`/ws` the chat already uses, handled by
@@ -222,6 +301,15 @@ approval path), and every message is run through `history.redact_history` (the s
   `Jarvis.stop()`) and posts the result or the failure; `poller(...)` builds a `work` that polls a `check()` and posts status
   changes; the tools `watch_ci` (GitHub Actions on a branch of Jarvis's repo) and `watch_action` (a queued action's outcome - it
   only reads its status) use it. Both are read-only, are in `recruiter.NO_RECURSE`, and say so if proactive messages are off.
+- **Quiet scheduled checks and the activity log** (`services/activity.py`, `j.activity`; console redesign phase 3): a scheduled
+  check that finds nothing new posts NOTHING into the conversation. Every run is a row in `check_runs` (`ActivityLog.record(key, name,
+  outcome, detail)`; outcomes `no_change`/`changed`/`failed`/`baseline`, kept 7 days) and `/api/status` -> `activity` (read every minute and after
+  each reply; recording a run publishes nothing on the bus) gives today's runs per check; hud.js `renderActivity()` draws ONE collapsed `details.auto` line per check
+  ("Pull request watch · 7 checks since 09:30, no change", opening to list each run with its time), above the conversation and never a
+  chat message. Recorded by `pr_watch()`, by `AutomationService.run()` and by the scheduler's `_check()` wrapper (lone-worker and inbox
+  sweeps). Automations now ALWAYS run as a `quiet_turn` and are always told to start with `NOTHING_TO_REPORT` when there is nothing new;
+  a finding goes through `Proactive.tell()` (= `announce()` when speaking up is on; otherwise one message in the open chat, once, or a
+  quiet notification if no chat is open). A check that DOES find a change still posts normally and is logged as `changed`.
 - **Pull request watch**: `pr_watch()` (scheduled every `proactive_pr_watch_min` only when proactive is on and the Jarvis repo is
   connected) lists the open PRs read-only, compares with the last snapshot (kv `proactive:pr_watch`) and announces new PRs, CI
   passing/failing, conflicts and closed PRs. The first look only records a baseline.

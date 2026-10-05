@@ -21,12 +21,12 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
-from xml.sax.saxutils import escape
 
 import httpx
 
 from ..config import Settings
-from .stt_chain import ENGINE_LABELS, engine_configured, stt_chain
+from .ssml import build_ssml
+from .stt_chain import ENGINE_LABELS, KEY_NAMES, engine_configured, stt_chain, stt_problem
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,9 @@ VOCAB = ["Jarvis", "Salts", "Salts FSM", "Vigilon", "Gent", "Kentec", "Apollo", 
 # as of writing; add more here (checking the quality folder actually exists first) rather than guessing one.
 PIPER_VOICES = {"alan": "medium", "northern_english_male": "medium", "jenny_dioco": "medium", "alba": "medium"}
 PIPER_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB"
+# The line the Settings page's "Play sample" button speaks - it has a time and a sum of money in it so the
+# owner hears how the voice handles figures, not just a greeting.
+AZURE_SAMPLE_TEXT = "Good morning, sir. Your next visit is at 14:30, and the quote comes to £1,250.50. This is how I sound."
 
 
 WHISPER_API = "https://api.openai.com/v1/audio/transcriptions"
@@ -100,6 +103,15 @@ def _upstream_message(r: httpx.Response, secrets: tuple[str, ...] = ()) -> str:
     return _redact(" ".join(str(msg).split()), secrets)[:200]
 
 
+# Machine identifiers nobody could say aloud: a UUID, or a long run of hex digits (a document or record ID). Job,
+# quote and PO numbers are deliberately NOT matched - those are things the owner expects to hear.
+_MACHINE_ID = re.compile(
+    r"[ \t]*\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,})\b", re.I)
+# Characters that only mean something on screen (markdown, brackets, code and diff marks).
+_STRAY_SYMBOLS = re.compile(r"[\[\]{}<>\\^~|`*_]")
+
+
 def speakable(text: str) -> str:
     """Turn chat-formatted text into something that sounds natural when read aloud."""
     text = re.sub(r"```.*?```", " (code shown on screen) ", text, flags=re.S)
@@ -111,9 +123,12 @@ def speakable(text: str) -> str:
     text = re.sub(r"^\s*[-*•]\s+", "", text, flags=re.M)
     text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
     text = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", text)
+    text = _MACHINE_ID.sub("", text)
     text = _expand_for_speech(text)
+    text = text.replace("=>", " to ").replace("->", " to ")
+    text = _STRAY_SYMBOLS.sub(" ", text)
     text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+([,.;:!?])", r"\1", text).strip()  # no gap left before punctuation where an ID was removed
 
 
 _MONEY = re.compile(
@@ -230,6 +245,7 @@ class Voice:
             "tts": self.s.effective_tts,
             "stt": self.s.effective_stt,
             "stt_chain": stt_chain(self.s),  # fallback order the browser walks if an engine fails (stt_chain.py)
+            "stt_problem": stt_problem(self.s),  # "" or why the chosen engine can't be used (shown in the top bar)
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
             "voice": voice,
@@ -303,18 +319,18 @@ class Voice:
         )
         return await self._open_stream(req)
 
-    async def _azure_tts(self, text: str) -> AsyncIterator[bytes]:
-        def attr(value: str) -> str:
-            return escape(value, {"'": "&apos;"})
+    async def azure_sample(self, voice: str) -> tuple[AsyncIterator[bytes], str]:
+        """A fixed sample line in the given Azure voice, for the Settings page's 'Play sample' button. The caller
+        has already checked `voice` is one of the listed voices; the text is never taken from the request."""
+        if not self.s.azure_speech_key:
+            raise VoiceError("Save the Azure Speech key first, then play the sample.")
+        try:
+            return await self._azure_tts(speakable(AZURE_SAMPLE_TEXT), voice), "audio/mpeg"
+        except VoiceError as e:  # the provider's error body can echo the key back - never pass that on
+            raise VoiceError(_redact(str(e), (self.s.azure_speech_key,))) from None
 
-        spoken = f"<prosody rate='+4%'>{escape(text)}</prosody>"
-        if self.s.azure_tts_style:
-            spoken = f"<mstts:express-as style='{attr(self.s.azure_tts_style)}'>{spoken}</mstts:express-as>"
-        ssml = (
-            "<speak version='1.0' xml:lang='en-GB' xmlns='http://www.w3.org/2001/10/synthesis' "
-            "xmlns:mstts='https://www.w3.org/2001/mstts'>"
-            f"<voice name='{attr(self.s.azure_tts_voice)}'>{spoken}</voice></speak>"
-        )
+    async def _azure_tts(self, text: str, voice: str | None = None) -> AsyncIterator[bytes]:
+        ssml = build_ssml(text, voice or self.s.azure_tts_voice, self.s.azure_tts_style)
         req = self.http.build_request(
             "POST", f"https://{self.s.azure_speech_region}.tts.speech.microsoft.com/cognitiveservices/v1",
             headers={"Ocp-Apim-Subscription-Key": self.s.azure_speech_key,
@@ -579,6 +595,11 @@ class SpeechToTextCheck:
 
     async def check(self) -> str:
         provider = self.voice.s.effective_stt
+        problem = stt_problem(self.voice.s)
+        if problem:  # chosen but not usable: fails (so it stays visible) and says what voice input does instead
+            key = KEY_NAMES.get(self.voice.s.effective_stt, "the key")
+            raise VoiceError(f"{problem} ({key}). Voice input is using the browser's speech recognition instead - add the "
+                             "key under Connections > Voice, or choose the browser engine there.")
         t0 = time.perf_counter()
         await self.voice.transcribe(silent_wav(), "audio/wav")
         return f"{provider} accepted a test clip in {int((time.perf_counter() - t0) * 1000)} ms"

@@ -26,9 +26,26 @@ log = logging.getLogger(__name__)
 OPUS = ("claude-opus-5-5", "Claude Opus 5.5 - most capable")
 SONNET = ("claude-sonnet-5-5", "Claude Sonnet 5.5 - quicker")
 EFFORT = (("low", "Quick"), ("medium", "Balanced"), ("high", "Thorough"))
-AZURE_VOICES = tuple((f"en-GB-{n}Neural", f"{n} ({g})") for n, g in (
-    ("Ryan", "male"), ("Thomas", "male"), ("Oliver", "male"), ("Alfie", "male"), ("Elliot", "male"), ("Ethan", "male"),
-    ("Noah", "male"), ("Sonia", "female"), ("Libby", "female"), ("Olivia", "female")))
+# The engineering agents also accept the two highest levels the Agent SDK and API support (see config.ENGINEER_EFFORT_LEVELS).
+ENGINEER_EFFORT = EFFORT + (("xhigh", "Extra thorough (some models only)"), ("max", "Maximum"))
+# British English Azure neural voices offered under Connections > Voice. The Multilingual ones are Azure's newer,
+# higher-quality generation; Ryan is first because it also supports the conversational style (jarvis/integrations/
+# ssml.py). Add a name here only once it is confirmed in Azure's en-GB voice list - a wrong name makes every spoken
+# reply fail over to the browser voice.
+AZURE_VOICES = (
+    ("en-GB-RyanNeural", "Ryan (male)"),
+    ("en-GB-OllieMultilingualNeural", "Ollie - newer, high quality (male)"),
+    ("en-GB-ThomasNeural", "Thomas (male)"),
+    ("en-GB-OliverNeural", "Oliver (male)"),
+    ("en-GB-AlfieNeural", "Alfie (male)"),
+    ("en-GB-ElliotNeural", "Elliot (male)"),
+    ("en-GB-EthanNeural", "Ethan (male)"),
+    ("en-GB-NoahNeural", "Noah (male)"),
+    ("en-GB-SoniaNeural", "Sonia (female)"),
+    ("en-GB-AdaMultilingualNeural", "Ada - newer, high quality (female)"),
+    ("en-GB-LibbyNeural", "Libby (female)"),
+    ("en-GB-OliviaNeural", "Olivia (female)"),
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +81,11 @@ SECTIONS: tuple[Section, ...] = (
         (
             Field("owner_name", "Your first name", placeholder="Alex"),
             Field("owner_salutation", "What Jarvis calls you", placeholder="sir, boss, or your first name"),
+            Field("talk_style", "How Jarvis talks", "select",
+                  "Natural uses your first name and plain, friendly wording. Formal uses \"What Jarvis calls you\" "
+                  "(above) and a more formal tone.",
+                  options=(("natural", "Natural - uses your first name"),
+                           ("formal", "Formal - uses what Jarvis calls you"))),
             Field("owner_email", "Your email", "email", "Where your updates, briefings and approvals go."),
             Field("partner_name", "Business partner's name", placeholder="First name"),
             Field("partner_email", "Business partner's email", "email",
@@ -91,6 +113,13 @@ SECTIONS: tuple[Section, ...] = (
                   options=EFFORT),
             Field("chat_effort", "Thinking for typed chat", "select", "Thorough takes longer but digs deeper.",
                   options=EFFORT),
+            Field("engineer_model", "Model for the engineering agents", "text",
+                  "Used by self-improvement, auto-fix and the security review. Paste the exact model ID. "
+                  "Blank = same as the model above. Only you can change this.",
+                  placeholder="blank = same as above", advanced=True),
+            Field("engineer_effort", "Thinking for the engineering agents", "select",
+                  "How hard they think when writing or reviewing code. Only you can change this.",
+                  options=ENGINEER_EFFORT, advanced=True),
             Field("web_search_enabled", "Let Jarvis search the web", "bool"),
         ),
         test=True,
@@ -222,11 +251,14 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "ram", "RAM Tracking", "Van locations, set-off and home times, journeys and timesheet checks.",
         (
-            Field("ram_client_id", "Client ID"),
+            Field("ram_client_id", "Client ID", help="Shown on RAM's API Keys page. It can be a name, e.g. the account holder's."),
             Field("ram_api_key", "Client secret", "secret"),
-            Field("ram_username", "API username"),
+            Field("ram_username", "API username",
+                  help="The RAM username of the dedicated API user, exactly as RAM issued it."),
             Field("ram_password", "API password", "secret"),
-            Field("ram_api_base_url", "API address", "url", advanced=True),
+            Field("ram_api_base_url", "API address", "url",
+                  help="Leave as https://api.qaifn.co.uk. Only the address: anything after the host is ignored.",
+                  advanced=True),
             Field("timesheet_tolerance_min", "Timesheet tolerance (minutes)", "number", advanced=True),
             Field("van_locations_out_of_hours", "Show van locations outside working hours", "select",
                   "Off (default): vans are hidden outside Mon-Fri 07:00-18:30. On-call only: just the engineers on "
@@ -241,6 +273,8 @@ SECTIONS: tuple[Section, ...] = (
             "In the RAM Tracking portal: profile - integrations - API Keys shows the Client ID and Client secret.",
             "That page also says you need a dedicated account's username and password for the API - "
             "RAM recommend a separate login just for this, not your own.",
+            "Give the API user no two-step verification (MFA): RAM's API sign-in is a plain username and password, so an "
+            "account that asks for a code can't be used.",
         ),
     ),
     Section(
@@ -273,6 +307,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True,
                   depends_on=("tts_provider", "azure")),
             Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES,
+                  help="Press Play sample to hear the voice you've picked (needs the Azure Speech key saved).",
                   depends_on=("tts_provider", "azure")),
             Field("azure_tts_style", "Azure speaking style", "select",
                   options=(("chat", "Conversational"), ("", "Standard")), advanced=True,
@@ -375,11 +410,14 @@ SECTIONS: tuple[Section, ...] = (
                   "Makes the engineering agent plan first, write the test first and review its own change "
                   "before opening a pull request. Adds written instructions only - no software is installed."),
             Field("plugin_browser_use_enabled", "Browser Use (read-only browsing)", "bool",
-                  "Off by default. Jarvis may read pages on the domains below; it can never click, log in, "
-                  "submit or buy. Needs a reviewed, pinned install in mcp_plugins.yaml before it does anything."),
+                  "Off by default - this is the one switch that turns it on. Jarvis may read pages on the approved "
+                  "domains (and type a number plate into a dealer's search box); it can never log in, submit, "
+                  "download, run scripts, read cookies or buy. Needs a reviewed, pinned install and a confirmed "
+                  "sandbox in mcp_plugins.yaml before it does anything."),
             Field("plugin_browser_allowed_domains", "Browser Use allowed domains", "textarea",
-                  "Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Finance, Sage and bank "
-                  "sites are always refused, even if listed.", advanced=True),
+                  "Optional. Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Can only narrow "
+                  "the approved list in mcp_plugins.yaml, never widen it; blank means the whole approved list. "
+                  "Finance, Sage and bank sites are always refused, even if listed.", advanced=True),
             Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
                   "Off by default. When on, every action you approve is first checked against the rules in "
                   "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
@@ -499,9 +537,16 @@ FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
 OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
 OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
-    "staff_report_key", "van_locations_out_of_hours"})  # the last widens who can see where staff are out of hours
+    "staff_report_key", "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
+    "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
+    "engineer_model", "engineer_effort"})  # which model / how hard the code-writing agents work: owner's call (cost)
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+# Secrets that are credentials for getting INTO Jarvis (or part of a link that does): not even their last four characters
+# are shown on the page. Everything else shows "•••• abcd" so you can tell which key is saved.
+NO_TAIL_HINT = frozenset({"staff_report_key", "jarvis_owner_password"})
 
 
 def _hint(value: str) -> str:
@@ -588,6 +633,10 @@ class SettingsStore:
                 value = f"https://{value}"
             if not re.match(r"^https?://[^\s/]+", value):
                 return None, "Start with https://"
+        if key == "ram_api_base_url" and value:
+            from .integrations.ramtracking import origin_of
+
+            value = origin_of(value)  # RAM's calls are all absolute paths; a pasted endpoint or Swagger link would 404
         if f.kind == "select" and value not in {v for v, _ in f.options}:
             return None, "Pick one of the options."
         if f.kind == "cron" and value:
@@ -680,7 +729,8 @@ class SettingsStore:
                         "options": [list(o) for o in f.options], "advanced": f.advanced, "source": self._source(f.key),
                         "depends_on": list(f.depends_on) if f.depends_on else None}
                 if f.kind == "secret":
-                    item.update(is_set=bool(value), hint=_hint(str(value)) if value else "")
+                    item.update(is_set=bool(value),
+                                hint=("••••" if f.key in NO_TAIL_HINT else _hint(str(value))) if value else "")
                 else:
                     shown = str(value).replace(" | ", "\n").replace("|", "\n") if f.kind == "notes" else value
                     item.update(value=shown, is_set=value not in ("", None))

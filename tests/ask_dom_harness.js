@@ -51,6 +51,7 @@ class Node {
     return this.tag === sel.toLowerCase();
   }
   matches(sel) {
+    if (sel.includes(",")) return sel.split(",").some((x) => this.matches(x.trim()));
     const parts = sel.trim().split(/\s+/);
     if (!this.matchesOne(parts[parts.length - 1])) return false;
     let i = parts.length - 2;
@@ -180,5 +181,45 @@ open();
 key(opts()[0], "Escape");
 out.escapeClosed = !sandbox.JarvisAsk.isOpen() && ask().hidden;
 out.dismissSent = sent.slice(n);
+
+// 6. Phase 2: Escape works from anywhere on the page (focus on the page itself, not in the pop-up), the dimmed backdrop
+// is a real element that dismisses, and none of it sends anything - not even a half-typed "own answer".
+const scrim = () => body.children.find((c) => c.id === "ask-scrim");
+open();
+document.activeElement = body;
+n = snap();
+fire("keydown", body, { key: "Escape" });
+out.pageEscapeClosed = !sandbox.JarvisAsk.isOpen() && ask().hidden && scrim().hidden;
+open();
+out.scrimShownWithPopup = !scrim().hidden;
+click(scrim());
+out.scrimClickClosed = !sandbox.JarvisAsk.isOpen() && ask().hidden && scrim().hidden;
+open();
+click(ask().querySelector(".ask-other"));
+ask().querySelector(".ask-otherbox textarea").value = "half typed";
+key(ask().querySelector(".ask-otherbox textarea"), "Escape");
+out.escapeInOwnAnswerClosed = !sandbox.JarvisAsk.isOpen();
+out.noneOfThatSent = sent.slice(n);
+
+// 7. A dismissed question can be brought back by the reply's "Answer" button, and an answered one cannot.
+open();
+sandbox.JarvisAsk.dismiss();
+out.canReopenAfterDismiss = sandbox.JarvisAsk.canReopen();
+sandbox.JarvisAsk.reopen();
+out.reopened = sandbox.JarvisAsk.isOpen() && !ask().hidden;
+click(opts()[0]);
+out.cannotReopenAfterAnswer = !sandbox.JarvisAsk.canReopen();
+open();
+sandbox.JarvisAsk.close();
+sandbox.JarvisAsk.forget();
+out.forgotten = !sandbox.JarvisAsk.canReopen();
+
+// 8. Tab stays inside the pop-up (it is modal): from the last button it wraps to the first.
+open();
+const btns = ask().querySelectorAll("button");
+btns[btns.length - 1].focus();
+key(btns[btns.length - 1], "Tab");
+out.tabWraps = document.activeElement === btns[0];
+sandbox.JarvisAsk.close();
 
 process.stdout.write(JSON.stringify(out));

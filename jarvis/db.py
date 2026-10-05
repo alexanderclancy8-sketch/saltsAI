@@ -241,6 +241,15 @@ CREATE TABLE IF NOT EXISTS reply_habits (
     last_used TEXT NOT NULL,
     UNIQUE(norm, context)
 );
+CREATE TABLE IF NOT EXISTS check_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_check_runs_job ON check_runs (job_key, id);
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -287,6 +296,18 @@ CREATE TABLE IF NOT EXISTS background_calls (
     status TEXT NOT NULL DEFAULT 'running',
     result TEXT DEFAULT '',
     delivery TEXT DEFAULT ''
+);
+-- One row per background engineering-agent run (self_improve / fixer / security_watch): progress, not results.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    request TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    steps INTEGER NOT NULL DEFAULT 0,
+    trail TEXT NOT NULL DEFAULT '[]',
+    outcome TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -488,6 +509,17 @@ class Database:
 
     def delete_automation(self, automation_id: int) -> None:
         self.execute("DELETE FROM automations WHERE id = ?", (automation_id,))
+
+    # -- scheduled-check activity log (services/activity.py) ---------------------------------
+    def add_check_run(self, job_key: str, job_name: str, outcome: str, detail: str = "") -> int:
+        return self.execute("INSERT INTO check_runs (ran_at, job_key, job_name, outcome, detail) VALUES (?,?,?,?,?)",
+                            (now_iso(), job_key, job_name, outcome, detail))
+
+    def check_runs_since(self, since_iso: str) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM check_runs WHERE ran_at >= ? ORDER BY id", (since_iso,))
+
+    def prune_check_runs(self, before_iso: str) -> None:
+        self.execute("DELETE FROM check_runs WHERE ran_at < ?", (before_iso,))
 
     # -- approvals ------------------------------------------------------------------
     def create_action(self, kind: str, summary: str, payload: dict[str, Any], status: str = "pending",

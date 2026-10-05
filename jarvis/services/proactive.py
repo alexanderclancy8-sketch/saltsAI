@@ -46,6 +46,8 @@ OFF_MESSAGE = ("Proactive messages are switched off, so I couldn't promise to fo
                "They can be switched on under Settings > Jarvis speaking up.")
 SEEN_KEY = "proactive:seen:"
 PR_SNAPSHOT_KEY = "proactive:pr_watch"
+PR_WATCH_KEY = "pr_watch"
+PR_WATCH_NAME = "Pull request watch"
 
 
 def _minutes(value: str, default: int) -> int:
@@ -198,6 +200,28 @@ class Proactive:
                 await self.j.notifier.send_owner_update(_line(title, 120), clean, channels=("teams",))
             except Exception:  # noqa: BLE001 - Teams being down never breaks a check
                 log.exception("Teams delivery of %s failed", key)
+        self.j.db.set_kv(SEEN_KEY + key, fingerprint)
+        return {"delivered": True, "reason": ""}
+
+    async def tell(self, key: str, title: str, body: str) -> dict[str, Any]:
+        """What a scheduled check found, for a check the owner asked for. With "Jarvis speaking up" on this is exactly
+        ``announce`` (change-only, quiet hours, hourly limit, Teams). With it off the owner still wanted to hear about
+        a change, so it is posted to the open chat as one message - once: the same finding as last time is not news -
+        and, when no chat is open, kept as a quiet notification. Never speaks aloud when speaking up is off."""
+        if self.enabled:
+            return await self.announce(key, title, body)
+        clean = self._clean(body)
+        if not clean or clean.upper().startswith(NOTHING):
+            self.j.db.set_kv(SEEN_KEY + key, "")
+            return {"delivered": False, "reason": "nothing to report"}
+        fingerprint = _fingerprint(clean)
+        if self.j.db.get_kv(SEEN_KEY + key) == fingerprint:
+            return {"delivered": False, "reason": "unchanged"}
+        text = f"**{_line(title, 120)}**\n\n{clean}"
+        if self.j.bus.subscriber_count:
+            self._emit(text, key, False)
+        else:
+            self._keep(title, clean, "no chat is open")
         self.j.db.set_kv(SEEN_KEY + key, fingerprint)
         return {"delivered": True, "reason": ""}
 
@@ -361,10 +385,12 @@ class Proactive:
 
         if not self.enabled or getattr(self.j, "self_github", None) is None:
             return {"skipped": True}
+        activity = self.j.activity
         try:
             data = await PRClient(self.j.self_github).list_open_prs(30)
         except Exception as e:  # noqa: BLE001
             log.warning("Pull request watch couldn't read GitHub: %s", e)
+            activity.record(PR_WATCH_KEY, PR_WATCH_NAME, "failed", f"Couldn't read GitHub ({type(e).__name__}).")
             return {"error": type(e).__name__}
         after = {str(p["number"]): self._pr_state(p) for p in data["pull_requests"]}
         try:
@@ -373,13 +399,17 @@ class Proactive:
             before = None
         if not isinstance(before, dict):
             self.j.db.set_kv(PR_SNAPSHOT_KEY, json.dumps(after))
+            activity.record(PR_WATCH_KEY, PR_WATCH_NAME, "baseline", f"First look: {len(after)} open.")
             return {"baseline": len(after)}
         changes = self._pr_changes(before, after)
         if not changes:
             self.j.db.set_kv(PR_SNAPSHOT_KEY, json.dumps(after))
+            activity.record(PR_WATCH_KEY, PR_WATCH_NAME, "no_change", "No change.")  # logged, never posted
             return {"changed": False}
         result = await self.announce("pr_watch", "Pull requests", "\n".join(f"- {c}" for c in changes) +
                                      "\n\n(Titles come from GitHub. Nothing has been merged or changed.)")
         if result["delivered"] or result["reason"] == "unchanged":
             self.j.db.set_kv(PR_SNAPSHOT_KEY, json.dumps(after))
+        held = "" if result["delivered"] else f" (held back: {result['reason']})"
+        activity.record(PR_WATCH_KEY, PR_WATCH_NAME, "changed", changes[0] + held)
         return {"changed": True, **result}

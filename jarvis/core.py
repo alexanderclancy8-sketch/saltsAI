@@ -10,6 +10,7 @@ import httpx
 
 from .brain import llm, plugins
 from .brain.agent import JarvisBrain
+from .brain.trace import TurnTrace
 from .config import Settings, apply_timezone
 from .db import Database
 from .events import EventBus
@@ -21,7 +22,7 @@ from .integrations.github import GitHub
 from .integrations.marketing import PresenceSources
 from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
 from .integrations.teamsbot import TeamsBot
-from .integrations.ramtracking import DemoRamTracking, RamTracking
+from .integrations.ramtracking import DemoRamTracking, RamTracking, missing_credentials
 from .integrations.voice import SpeechToTextCheck, Voice
 from .knowledge import KnowledgeBase
 from .services.accountant import Accountant
@@ -30,6 +31,7 @@ from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.standing_approvals import StandingApprovals
 from .services.teams_approvals import TeamsApprovals
+from .services.activity import ActivityLog
 from .services.automations import AutomationService
 from .services.billing import Billing
 from .services.customer_comms import CustomerComms
@@ -115,6 +117,9 @@ class Jarvis:
         self.fixer.issues, self.fixer.tester = self.issues, self.tester
         self.security_watch = SecurityWatch(s, self.db, self.bus, self.notifier, self.client, self.github, self.issues)
         self.self_improve = SelfImprove(s, self.db, self.bus, self.notifier, self.client, self.self_github)
+        # Engineering runs a restart/crash cut off stay 'running' forever; close the ones no live process can own
+        # (age-gated, so a second process during a rolling deploy keeps its own run). Never raises.
+        self.self_improve.runs.interrupt_stale()
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing
@@ -149,6 +154,7 @@ class Jarvis:
         self.meetings = Meetings(self)
         self.ooh = OutOfHours(self)
         self.briefings.ooh = self.ooh
+        self.briefings.j = self
         self.po_book = PurchaseOrderBook(self.db)  # purchase orders raised via log_purchase_order
         self.supplier_bills = SupplierBills(self)
         self.documents = Documents(self)
@@ -156,6 +162,7 @@ class Jarvis:
         self.suggestions = Suggestions(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
+        self.activity = ActivityLog(self)  # every scheduled check's runs; the chat shows one quiet line per check
         self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
         self.async_tools = AsyncTools(self)  # slow tools run in the background; results delivered via self.proactive
         self.automations = AutomationService(self)
@@ -167,6 +174,9 @@ class Jarvis:
         self.site_access = SiteAccessCodes(self)
         self.false_alarms = FalseAlarmLog(self)  # BS 5839-1 false alarm log; writes to FSM never happen from here
         self.recruiter = Recruiter(self)
+        # Describes each chat turn from the tool events (source line, pop-up button, follow-ups) - see brain/trace.py.
+        self.trace = TurnTrace(self)
+        self.bus.add_tap(self.trace.on_event)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
@@ -198,6 +208,21 @@ class Jarvis:
         if self.settings.effective_stt in ("deepgram", "whisper"):  # browser STT has no server path to test
             out["Speech-to-text"] = SpeechToTextCheck(self.voice)
         return out
+
+    def vehicle_tracking_status(self) -> str:
+        """One honest line for the Connections list and the Fleet pop-up: sample data (and exactly which RAM detail is
+        still missing), RAM entered but not working (with the reason), or live. "NOT CONNECTED" never contains the word
+        DEMO, so the console counts it as a failing connection, not as sample data."""
+        if self.ram.demo:
+            missing = missing_credentials(self.settings)
+            return ("DEMO journeys - still missing: " + ", ".join(missing) + " (Connections > RAM Tracking)"
+                    if missing else "DEMO journeys - RAM Tracking is not connected")
+        health = getattr(self.ram, "health", None) or {}
+        if health.get("rate_limited"):  # RAM is busy, not broken: never reported as "not connected"
+            return "RAM Tracking (rate limited just now, retry shortly)"
+        if health.get("ok") is False:
+            return f"NOT CONNECTED - RAM Tracking is failing: {health.get('detail') or 'it is not answering'}"
+        return "RAM Tracking"
 
     def connections(self) -> dict[str, str]:
         s = self.settings
@@ -232,10 +257,13 @@ class Jarvis:
             "Azure archive": "connected" if self.blob.enabled else "not set up",
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",
             "Image generation": self.images.status(),
-            "Socials / Google": ", ".join(k for k, v in presence.items() if v) or "DEMO data - not connected",
-            "Stores / stock": self.stores.source + (" (DEMO stock)" if self.stores.demo else ""),
-            "Vehicle tracking": ("RAM Tracking" if not self.ram.demo else
-                                 "DEMO journeys - set RAM_CLIENT_ID / RAM_API_KEY / RAM_USERNAME / RAM_PASSWORD"),
+            "Socials / Google": ", ".join(k for k, v in presence.items() if v) or
+                                "DEMO data - connect Facebook, Instagram, LinkedIn, TikTok or Google reviews",
+            "Stores / stock": (self.stores.source if not self.stores.demo else
+                               "DEMO stock - connect Salts FSM, or clear the sample items and enter your own"),
+            "Staff register": ("connected" if not self.register.demo else
+                               "DEMO data - tell me each person's role, duties and targets (you approve each one)"),
+            "Vehicle tracking": self.vehicle_tracking_status(),
             "Web search": "on" if s.web_search_enabled else "off",
             "Plugins": plugins.status_line(s, self.verifier),
             "Claude": ("your Claude Max subscription (Agent SDK)" if s.effective_llm_backend == "max"
@@ -298,14 +326,18 @@ class Jarvis:
                                        "Approve or cancel them on the display - nothing has been sent.",
                                        importance="normal")
 
-    async def lone_worker_sweep(self) -> None:
+    async def lone_worker_sweep(self) -> int:
+        """Alerts for engineers still on a job well past its end; returns how many new ones were raised."""
+        raised = 0
         for c in await self.tracker.lone_worker_check(self.settings.lone_worker_overrun_min):
             key = f"lone:{c['job']}:{date.today().isoformat()}"
             if self.db.get_kv(key):
                 continue
             self.db.set_kv(key, "alerted")
+            raised += 1
             await self.notifier.notify(
                 f"Safety check: {c['engineer']} is still on job {c['job']}",
                 f"{c['site']} - booked to finish {c['booked_end']}, now {c['overrun_minutes']} minutes over. "
                 "Might be worth a quick call to check they're OK.", level="warning", push=True, speak=True,
                 importance="urgent")  # lone-worker safety: never held back
+        return raised
