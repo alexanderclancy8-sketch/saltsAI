@@ -142,9 +142,15 @@ must be pinned to an exact version in `mcp_plugins.yaml`, and only tools listed 
 (`permission_mode="dontAsk"` denies the rest). Browser Use extras: the allowlist of dealer/government/industry sites lives in
 `mcp_plugins.yaml` (`allowed_domains`, a ceiling the Settings field can only narrow); login/credential/checkout/payment/
 download/script/cookie/agent tools, such web-address paths and file types are denied in code (`DENIED_TOOL_WORDS`,
-`BLOCKED_PATH_WORDS`); a listed typing tool (`search_tools`) may only be given a number plate; `sandbox_confirmed` stays
-false until a human confirms a real sandbox (the code can't create one); the version stays blank until verified on PyPI.
-The single on-switch is `plugin_browser_use_enabled`. Never add a plugin tool that can change something without going through
+`BLOCKED_PATH_WORDS`); a listed typing tool (`search_tools`) may only be given a UK number plate in a real format (no
+whitespace/newline, no numbers except element indexes); `sandbox_confirmed` stays false until a human confirms a real
+sandbox (the code can't create one); the version stays blank until verified on PyPI. Web addresses are parsed strictly
+(ASCII hostnames only - no backslash, `@`, port, IP, `%` or punycode - exact allowlisted hosts, query strings of at most
+64 characters made of plate-shaped or short plain values) and EVERY string in a call is searched for hosts, whatever the
+argument is called. The PreToolUse hook only sees the call about to be made, not where a redirect ended up, so the
+sandbox's network-egress allowlist (same hosts as `allowed_domains`) is the second wall. `www.gov.uk` and the DVLA
+vehicle-enquiry host are listed individually, never all of `gov.uk`. The single on-switch is `plugin_browser_use_enabled`
+(with `plugin_browser_allowed_domains`, both owner-only in `settings_store.OWNER_ONLY_KEYS`). Never add a plugin tool that can change something without going through
 `dispatch()`'s approval gate.
 
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through

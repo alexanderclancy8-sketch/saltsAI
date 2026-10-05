@@ -760,7 +760,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
                                      "the display password and staff key, or whether van locations show outside "
-                                     "working hours.")
+                                     "working hours, or whether and where Jarvis may browse the web.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

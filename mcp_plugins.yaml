@@ -54,8 +54,9 @@ browser_use:
   # Tool names depend on the pinned release, so they are left blank until verified. Blank = inert.
   readonly_tools: []
   # Typing tools (to type a number plate such as SA60 LTS into a dealer's search box). Same rules, plus the code only
-  # lets them be given a number plate (letters/digits, one space or hyphen, 8 characters at most) - any other text,
-  # such as a password or card number, is refused. Left blank until verified against the pinned release. Note that no
+  # lets them be given a UK number plate in one of its real formats (AB12 CDE, A123 BCD, ABC 123D, ABC 1234, 1234 ABC;
+  # one optional space or hyphen) - any other text, such as a password or card number, any number or true/false, and any
+  # whitespace or newline (which would act as Enter) is refused. Only element numbers (index) may be numeric. Left blank until verified against the pinned release. Note that no
   # click tool is allowed, so results must come from the page being loaded after typing (Enter) or by opening the
   # dealer's own search address with the plate in it (navigation is checked against the allowlist like any other).
   search_tools: []
@@ -66,24 +67,37 @@ browser_use:
                          exec, javascript, agent, submit, click]
   # Web addresses with one of these as a whole path segment are refused even on an allowed domain, as are file
   # addresses (.exe .zip .pdf .csv .xls(x) .doc(x) and similar - downloads are denied).
-  blocked_path_keywords: [login, signin, signon, signup, register, auth, oauth, account, checkout, cart, basket,
-                          payment, pay, order, download]
+  # The code also refuses cart/basket/checkout/login/payment fragments inside any path segment (cart.php, shopping-cart,
+  # add-to-cart), /buy, /reserve, /myaccount, any % escape, any .. path, any # part, and the executable/macro file types.
+  # Queries are capped at 64 characters and 3 name=value pairs whose values are a plate or a short plain word.
+  blocked_path_keywords: [login, signin, signon, signup, register, auth, oauth, account, myaccount, checkout, cart,
+                          basket, payment, pay, order, download, buy, buynow, addtocart, reserve]
+  # OPTIONAL, filled in when the version is pinned: the only argument names each listed tool may be given, e.g.
+  #   tool_arguments: {open_url: [url]}
+  # Any other argument name is refused. Without it, EVERY string in a call (any argument name, any depth) is searched for
+  # anything that looks like a host, domain, IP or URL, and has to pass the allowlist.
   # The ONLY sites the browser may open (and their subdomains); everything else is blocked. The Settings page field
   # "Browser Use allowed domains" can narrow this list but never widen it. UK private plate dealers first, then
-  # government and security-industry bodies.
+  # government and security-industry bodies. Government entries are SPECIFIC HOSTS, never the whole of gov.uk (that
+  # would include signin.account.gov.uk, tax.service.gov.uk and council payment portals): www.gov.uk for guidance
+  # and the DVLA Vehicle Enquiry Service for plate look-ups (the host names are unverified - confirm both before
+  # relying on them). An entry also covers its subdomains, so keep entries as narrow as the use allows. Host names
+  # must be plain ASCII: no ports, IP addresses or punycode are ever opened.
   allowed_domains: [plates4less.co.uk, nationalnumbers.co.uk, swiftreg.co.uk, regplates.com, platehunter.com,
-                    yellowhite.co.uk, plates.vip, gov.uk, vehicle.service.gov.uk, bsigroup.com, fia.uk.com,
-                    bafe.org.uk, nsi.org.uk, ssaib.org]
+                    yellowhite.co.uk, plates.vip, www.gov.uk, vehicleenquiry.service.gov.uk, bsigroup.com,
+                    fia.uk.com, bafe.org.uk, nsi.org.uk, ssaib.org]
   # Sandbox requirements (documented, NOT enforced by code, which is why this stays false): the browser must run in a
   # throwaway, credential-free container/profile - no saved logins, cookies, extensions or company SSO, no access to
   # Jarvis's files or network, a fresh profile per run, and its own network egress allowlist matching allowed_domains
-  # as a second wall. The code only checks tool names, typed text and web addresses; it cannot create that sandbox.
+  # as a second wall. The code only checks tool names, typed text and the web address a call asks for, BEFORE it runs;
+  # it never sees where a page redirected to afterwards (the hook gets no post-navigation address), so a redirect to
+  # another host is stopped only by that sandbox network egress allowlist. The code cannot create that sandbox.
   # Set to true only once a human has confirmed the above; do not set it on the strength of this file alone.
   sandbox_confirmed: false
   # Hostnames containing any of these words are refused even if someone adds them to the allowed domains.
   blocked_host_keywords: [sage, bank, barclays, lloyds, hsbc, natwest, santander, monzo, starling, xero, quickbooks,
                           paypal, stripe, gocardless, payroll, salts-fsm, sharepoint, onedrive, outlook, office365]
-  max_url_length: 2048
+  max_url_length: 256              # a ceiling in code too (256): this file can only lower it
 
 thoughtproof:
   # A local MCP server that judges a proposed action against the written mandates in mandates.yaml and answers
