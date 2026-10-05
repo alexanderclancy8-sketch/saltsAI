@@ -26,9 +26,11 @@ _TOKEN_SHAPES = re.compile(
 _AUTH_HEADER = re.compile(r"(?i)\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=\-]{12,}")
 _CONN_STRING = re.compile(r"(?i)\b(AccountKey|SharedAccessSignature|Password|Pwd)=[^;\s\"']+")
 _URL_USERINFO = re.compile(r"(://[^/\s:@]+:)[^@\s/]+@")
-# name = "long-literal" / name: 'long-literal' where the name smells like a credential
+# name = "long-literal" / name: 'long-literal' where the name smells like a credential. The lookbehind makes the name start
+# at the beginning of a run of name characters: without it a long run of them (a minified file, a base64 blob) was rescanned
+# from every position - cubic time, over a minute for 50 KB. The leftmost match always started at the run start anyway.
 _QUOTED_ASSIGN = re.compile(
-    r"(?i)([A-Za-z0-9_.\-]*(?:password|passwd|secret|token|api[_\-]?key|private[_\-]?key|credential)"
+    r"(?i)(?<![A-Za-z0-9_.\-])([A-Za-z0-9_.\-]*(?:password|passwd|secret|token|api[_\-]?key|private[_\-]?key|credential)"
     r"[A-Za-z0-9_.\-]*\s*[:=]\s*)([\"'])[^\"'\s]{8,}\2")
 # env-file style lines: SOME_SECRET=value (optionally a diff line, with a leading +/-)
 _ENV_LINE = re.compile(r"(?m)^([+\- ]?\s*[A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)[A-Z0-9_]*\s*=\s*)[^\s#]{6,}")

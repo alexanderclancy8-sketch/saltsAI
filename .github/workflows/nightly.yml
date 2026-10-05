@@ -77,9 +77,9 @@ jobs:
           set +e
           if [ -n "$SCENARIO_TZ" ]; then export TZ="$SCENARIO_TZ"; fi
           if [ -n "$FAKETIME_OFFSET" ]; then
-            faketime -f "$FAKETIME_OFFSET" python -m pytest -q -rfE --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
+            faketime -f "$FAKETIME_OFFSET" python -m pytest -q -n auto --dist loadfile -rfE --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
           else
-            python -m pytest -q -rfE --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
+            python -m pytest -q -n auto --dist loadfile -rfE --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
           fi
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
