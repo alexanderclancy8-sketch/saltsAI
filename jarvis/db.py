@@ -274,6 +274,20 @@ CREATE TABLE IF NOT EXISTS false_alarm_log (
     reviewed_by TEXT DEFAULT '',
     review_date TEXT DEFAULT ''
 );
+-- Tools run in the background (services/async_tools.py): what was run, how it ended and what happened to the result.
+-- args_json and result are stored redacted. status: running, done, awaiting_approval, failed, timed_out, cancelled,
+-- interrupted. delivery: silent, delivered, or "held: <why>".
+CREATE TABLE IF NOT EXISTS background_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT DEFAULT '',
+    tool TEXT NOT NULL,
+    args_json TEXT NOT NULL DEFAULT '{}',
+    policy TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    result TEXT DEFAULT '',
+    delivery TEXT DEFAULT ''
+);
 """
 
 # Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).
@@ -572,6 +586,30 @@ class Database:
     def set_kv(self, key: str, value: str) -> None:
         self.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                      (key, value))
+
+    # -- tools run in the background (services/async_tools.py) ---------------------------------
+    def add_background_call(self, tool: str, args_json: str, policy: str) -> int:
+        return self.execute("INSERT INTO background_calls (created_at, tool, args_json, policy) VALUES (?,?,?,?)",
+                            (now_iso(), tool, args_json, policy))
+
+    def finish_background_call(self, call_id: int, status: str, result: str) -> None:
+        self.execute("UPDATE background_calls SET status = ?, result = ?, finished_at = ? WHERE id = ?",
+                     (status, result, now_iso(), call_id))
+
+    def set_background_delivery(self, call_id: int, delivery: str) -> None:
+        self.execute("UPDATE background_calls SET delivery = ? WHERE id = ?", (delivery, call_id))
+
+    def background_calls(self, limit: int = 10, call_id: int | None = None) -> list[dict[str, Any]]:
+        if call_id is not None:
+            return self.query("SELECT * FROM background_calls WHERE id = ?", (call_id,))
+        return self.query("SELECT * FROM background_calls ORDER BY id DESC LIMIT ?", (limit,))
+
+    def interrupt_stale_background_calls(self) -> None:
+        """At start-up: a call still 'running' belongs to a process that has gone, so say so rather than leave it looking
+        alive."""
+        self.execute("UPDATE background_calls SET status = 'interrupted', finished_at = ?,"
+                            " result = 'Jarvis restarted before this finished, so there is no result.'"
+                            " WHERE status = 'running'", (now_iso(),))
 
     # -- out-of-hours van location look-ups ---------------------------------------------------
     def log_location_lookup(self, asked_by: str, tool: str, engineer: str, mode: str) -> int:

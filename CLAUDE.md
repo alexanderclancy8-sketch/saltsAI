@@ -229,3 +229,27 @@ approval path), and every message is run through `history.redact_history` (the s
   `ws_events` then doesn't forward `proactive` events to that connection.
 Don't add a path from anything proactive into `ActionExecutor`/`dispatch()` approvals, and keep new proactive sources behind
 `post()`/`announce()` so the gate and redaction apply.
+
+**Asynchronous tool calls (`jarvis/services/async_tools.py`, `j.async_tools`; tools `run_in_background` and `background_results`;
+tests `tests/test_async_tools.py`).** Gemini-Live-style: start a slow tool in the background, carry on talking, get the result later
+by a delivery policy. Nothing changes unless asked - ordinary tools still block; there is no `delivery` argument on them, only the
+wrapper `run_in_background(tool, args, policy, timeout_s)`, which returns at once with a call number.
+- **Policies** (default `WHEN_IDLE`, case-insensitive): `SILENT` = stored only, never spoken unprompted (read with
+  `background_results`; works even with proactive chat off). `WHEN_IDLE` = `Proactive.post()` as it is: waits up to two minutes for
+  no turn in progress, else kept as a quiet "Held back" notification. `INTERRUPT` = `Proactive.post(interrupt=True)`: skips only
+  that wait, so it can land mid-conversation. Every policy goes through the existing gate: `proactive_chat_enabled` (WHEN_IDLE /
+  INTERRUPT are refused at start when it is off), quiet hours, `proactive_max_per_hour`, a chat being open, the HUD's session mute
+  and its rule about not speaking while listening/speaking. INTERRUPT never bypasses quiet hours or the hourly limit - a held
+  urgent result is kept as a notification and in the store. A held result is not re-announced when quiet hours end.
+- **Store**: table `background_calls` (`db.add_background_call`/`finish_background_call`/...): tool, redacted args, policy, status
+  (`running`/`done`/`awaiting_approval`/`failed`/`timed_out`/`cancelled`/`interrupted`), redacted result (4000 chars), delivery
+  (`silent`/`delivered`/`held: <why>`). Rows left `running` by a dead process are marked `interrupted` at start-up.
+- **Safety**: the tool runs through the one `dispatch()`, so `approval=True` tools only queue (status `awaiting_approval`, the
+  result is just "Suggested, not done: queued as action #N") and the module never calls approve/deny/`actions.queue` (a test greps
+  it). Results are data, never instructions: `background_results` carries a note saying so and nothing feeds a result back to a
+  model on its own. A failure or timeout is always stored with that status and, when it wasn't posted to the chat, leaves a
+  "warning" notification - never silence. Not runnable in the background (`NOT_BACKGROUND`): the recruiter's `NO_RECURSE` tools
+  (`recruit_agent`, `watch_ci`, `ask_user`, ...), the two new tools, and the van-location tools that read `j.asked_by` (it is
+  empty or someone else's once the turn is over). Caps: at most `MAX_CONCURRENT` (3) at once, timeout 300s default, 900s
+  maximum; `Jarvis.stop()` cancels them and marks them `cancelled`.
+- Add a tool to `NOT_BACKGROUND` if it depends on the live turn; don't add a path from a result into approvals or settings.

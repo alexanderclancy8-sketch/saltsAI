@@ -49,6 +49,7 @@ from .services.notifier import Notifier
 from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
 from .services.supplier_bills import PurchaseOrderBook, SupplierBills
+from .services.async_tools import AsyncTools
 from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
@@ -156,6 +157,7 @@ class Jarvis:
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
+        self.async_tools = AsyncTools(self)  # slow tools run in the background; results delivered via self.proactive
         self.automations = AutomationService(self)
         self.quality = ConversationQuality(self)  # per-turn metrics + feedback; must exist before the brain below
         self.quality.prune()  # retention for its tables (default 90 days); also run daily by the scheduler
@@ -269,6 +271,7 @@ class Jarvis:
 
     async def stop(self) -> None:
         await self.proactive.stop()
+        await self.async_tools.stop()
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
         if hasattr(self.brain, "close"):
