@@ -5,7 +5,9 @@ fallback (it owns the microphone and the 10 s timeout) using the order published
 voice.stt_chain; the server only says which engines are usable and in what order.
 
 Order: the engine chosen in Settings > Voice > Listening first, then the remaining configured server engines in
-DEFAULT_ORDER (Deepgram, then Whisper), then browser speech recognition, which needs no key and is always last.
+DEFAULT_ORDER (Azure Speech, then Deepgram, then Whisper), then browser speech recognition, which needs no key and is
+always last. Azure Speech uses the same key and region as the Azure voice, so it needs nothing extra; Whisper needs an
+OpenAI key and is only ever tried when one happens to be set - nothing depends on it.
 An explicit "browser" choice stays browser-only: it never sends audio to a paid third party the owner did not pick.
 """
 
@@ -13,13 +15,16 @@ from __future__ import annotations
 
 from ..config import Settings
 
-SERVER_ENGINES = ("deepgram", "whisper")
-DEFAULT_ORDER = ("deepgram", "whisper")
-ENGINE_LABELS = {"deepgram": "Deepgram", "whisper": "OpenAI Whisper", "browser": "Browser speech recognition"}
+SERVER_ENGINES = ("azure", "deepgram", "whisper")
+DEFAULT_ORDER = ("azure", "deepgram", "whisper")
+ENGINE_LABELS = {"azure": "Azure Speech", "deepgram": "Deepgram", "whisper": "OpenAI Whisper",
+                 "browser": "Browser speech recognition"}
 
 
 def engine_configured(settings: Settings, engine: str) -> bool:
     """True when the engine has what it needs to be tried (a key for the server engines; browser always)."""
+    if engine == "azure":
+        return bool(settings.azure_speech_key)
     if engine == "deepgram":
         return bool(settings.deepgram_api_key)
     if engine == "whisper":
@@ -37,7 +42,7 @@ def stt_chain(settings: Settings) -> list[str]:
     return chain + ["browser"]
 
 
-KEY_NAMES = {"deepgram": "DEEPGRAM_API_KEY", "whisper": "OPENAI_API_KEY"}  # the setting that holds each key
+KEY_NAMES = {"azure": "AZURE_SPEECH_KEY", "deepgram": "DEEPGRAM_API_KEY", "whisper": "OPENAI_API_KEY"}  # the setting that holds each key
 
 
 def stt_problem(settings: Settings) -> str:

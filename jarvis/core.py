@@ -23,6 +23,7 @@ from .integrations.marketing import PresenceSources
 from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
 from .integrations.teamsbot import TeamsBot
 from .integrations.ramtracking import DemoRamTracking, RamTracking, missing_credentials
+from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.voice import SpeechToTextCheck, Voice
 from .knowledge import KnowledgeBase
 from .services.accountant import Accountant
@@ -223,7 +224,7 @@ class Jarvis:
             out["GitHub (FSM source)"] = self.github
         if not self.ram.demo:
             out["RAM Tracking"] = self.ram
-        if self.settings.effective_stt in ("deepgram", "whisper"):  # browser STT has no server path to test
+        if self.settings.effective_stt in SERVER_ENGINES:  # browser STT has no server path to test
             out["Speech-to-text"] = SpeechToTextCheck(self.voice)
         return out
 

@@ -339,7 +339,8 @@ SECTIONS: tuple[Section, ...] = (
             Field("elevenlabs_speed", "Voice speed", "number", "1.0 is normal pace.", advanced=True,
                   depends_on=("tts_provider", "elevenlabs")),
             Field("azure_speech_key", "Azure Speech key", "secret",
-                  "Free and very good. Cloud Shell: bash infra/deploy.sh voice sets this up.",
+                  "Free and very good. Also used for listening (Azure Speech under Listening below). Cloud Shell: "
+                  "bash infra/deploy.sh voice sets this up.",
                   depends_on=("tts_provider", "azure")),
             Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True,
                   depends_on=("tts_provider", "azure")),
@@ -354,12 +355,18 @@ SECTIONS: tuple[Section, ...] = (
                 ("jenny_dioco", "Jenny - British female"), ("alba", "Alba - British female")),
                   help="No API key needed - downloaded once and run locally. This is the voice used whenever "
                        "no ElevenLabs or Azure key is set.", depends_on=("tts_provider", "piper")),
-            Field("stt_provider", "Listening", "select", options=(
-                ("auto", "Best available"), ("deepgram", "Deepgram"), ("whisper", "OpenAI Whisper"),
-                ("browser", "Browser"))),
+            Field("stt_provider", "Listening", "select",
+                  "Azure Speech turns what you say into text using the same Azure Speech key and region as the voice "
+                  "above (set the voice to Azure to see the key and region) - no extra account. Best available uses Deepgram if you've added a key, otherwise Azure "
+                  "Speech, otherwise the browser. OpenAI Whisper is optional and only used if you choose it and add "
+                  "an OpenAI key; if you choose it with no key, Azure Speech is used instead.",
+                  options=(("auto", "Best available"), ("azure", "Azure Speech (same key as the voice)"),
+                           ("deepgram", "Deepgram"), ("whisper", "OpenAI Whisper (optional, needs an OpenAI key)"),
+                           ("browser", "Browser"))),
             Field("deepgram_api_key", "Deepgram API key", "secret", "For always-listening mode. deepgram.com",
                   depends_on=("stt_provider", "deepgram")),
-            Field("openai_api_key", "OpenAI API key (Whisper)", "secret", advanced=True,
+            Field("openai_api_key", "OpenAI API key (optional, Whisper only)", "secret",
+                  "Not needed. Only if you choose OpenAI Whisper above.", advanced=True,
                   depends_on=("stt_provider", "whisper")),
             Field("wake_word", "Wake word", placeholder="jarvis"),
             Field("voice_ack_fillers", "Say a short acknowledgment while thinking", "bool",

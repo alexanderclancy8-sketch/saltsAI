@@ -1842,12 +1842,36 @@ function send(text, mode = "typed", opts = {}) {
     return t.includes("mp4") || t.includes("m4a") || t.includes("aac") ? "mp4"
       : t.includes("ogg") ? "ogg" : t.includes("wav") ? "wav" : t.includes("mpeg") || t.includes("mp3") ? "mp3" : "webm";
   }
+  // Azure Speech's short-audio endpoint takes 16 kHz mono PCM WAV, not the WebM/Opus or MP4 that MediaRecorder produces.
+  // So for Azure the recording is decoded in the browser (decodeAudioData handles every container the browser can record),
+  // resampled to 16 kHz mono with an OfflineAudioContext, and re-encoded as a WAV before it is uploaded. Short push-to-talk
+  // clips only, so this is quick and needs no ffmpeg on the server.
+  function encodeWav(samples, rate) {
+    const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) { const x = Math.max(-1, Math.min(1, samples[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+    return new Blob([buf], { type: "audio/wav" });
+  }
+  async function toWav16k(blob) {
+    const AC = window.AudioContext || window.webkitAudioContext, OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!AC || !OAC) throw new Error("this browser cannot decode the recording");
+    const ctx = new AC();
+    try {
+      const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+      const off = new OAC(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+      const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+      return encodeWav((await off.startRendering()).getChannelData(0), 16000);
+    } finally { try { ctx.close(); } catch { /* already closed */ } }
+  }
   // Speech-to-text engine choice and fallback. The server publishes the order in voice.stt_chain (selected engine
-  // first, then Deepgram, Whisper, and browser speech recognition last - jarvis/integrations/stt_chain.py). This
+  // first, then Azure Speech, Deepgram, Whisper, and browser speech recognition last - jarvis/integrations/stt_chain.py). This
   // object remembers which engine last worked (per browser, preferred for STT_GOOD_TTL_MS so the selected engine
   // is retried now and then) and which just failed (skipped for STT_COOLDOWN_MS so every press of the mic doesn't
   // wait on a broken engine). Browser speech recognition is never "remembered": it's the last resort, not a goal.
-  const STT_LABEL = { deepgram: "Deepgram", whisper: "OpenAI Whisper", browser: "Browser speech recognition" };
+  const STT_LABEL = { azure: "Azure Speech", deepgram: "Deepgram", whisper: "OpenAI Whisper", browser: "Browser speech recognition" };
   const STT_TIMEOUT_MS = 10000;      // one transcription request never waits longer than this
   const STT_TOTAL_MS = 25000;        // and the whole retry + fallback sequence stops starting new attempts after this
   const STT_COOLDOWN_MS = 5 * 60000;
@@ -2052,6 +2076,14 @@ function send(text, mode = "typed", opts = {}) {
       const fail = (title, body) => { toast(title, body, "warning"); captionError(`${title}: ${body}`); if (S.hudState === "listening") setHud("idle"); };
       if (blob.size < MIN_AUDIO_BYTES) { fail("Nothing recorded", "No audio was captured. Hold the mic a little longer and check the microphone isn't muted."); return; }
       const filename = `speech.${audioExtension(type)}`;
+      // What each engine is sent: the recording as made, except Azure Speech, which needs 16 kHz mono WAV. If the browser
+      // can't convert it the original goes up anyway (the server converts if it can, or says so and the chain moves on).
+      let wav = null;
+      const payload = async (engine) => {
+        if (engine !== "azure") return [blob, filename];
+        if (wav === null) { try { wav = await toWav16k(blob); } catch (e) { console.warn("[stt] WAV conversion failed", e); wav = false; } }
+        return wav ? [wav, "speech.wav"] : [blob, filename];
+      };
       // Try the engine that recorded this, retrying once on a transient failure (timeout, network, upstream 5xx) and
       // then moving to the next server engine in the chain. A bad key / quota / bad audio moves on straight away.
       const order = sttEngine.chain();
@@ -2065,7 +2097,8 @@ function send(text, mode = "typed", opts = {}) {
             if (Date.now() - startedAt > STT_TOTAL_MS) break attempts;
             showSttEngine(engine, attempt === 2 ? "retrying" : i ? "switched automatically" : "");
             caption("", `Transcribing with ${label}${attempt === 2 ? " (retrying)" : ""}…`);
-            const res = await this.postStt(blob, filename, engine);
+            const [body, name] = await payload(engine);
+            const res = await this.postStt(body, name, engine);
             if (res.ok) {
               sttEngine.markGood(engine); this.lastError = "";
               if (!res.text) { fail("Didn't catch that", "Speech-to-text returned no words. Please try again."); return; }
@@ -2108,13 +2141,13 @@ function send(text, mode = "typed", opts = {}) {
       if (this.stream && !deferRelease) this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null; this.rec = null;
       const mode = this.mode || S.voice.stt; // the engine actually recording, which may differ from Settings after a fallback
-      if (submit && mode !== "whisper") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, mode === "deepgram" ? 1100 : 300);
+      if (submit && mode !== "whisper" && mode !== "azure") setTimeout(() => { if (this.finals.trim()) utterance(this.finals); this.finals = ""; }, mode === "deepgram" ? 1100 : 300);
       if (S.hudState === "listening") setHud("idle");
     },
   };
 
   // A free, always-on wake-word-only listener (the browser's own speech recognition, no API cost) used
-  // whenever the real speech-to-text is a paid one (Deepgram/Whisper) - so "always listening" doesn't mean
+  // whenever the real speech-to-text is a paid one (Azure/Deepgram/Whisper) - so "always listening" doesn't mean
   // continuously streaming audio to a paid service. It only ever escalates to the real microphone (stt)
   // once it hears the wake word; after a period of silence, stt goes back to sleep and this takes over again.
   const sentry = {
