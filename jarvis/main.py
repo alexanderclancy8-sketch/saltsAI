@@ -719,7 +719,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     # ------------------------------------------------------------------ Claude-designed adverts (HTML)
     # The stored design is already sanitised (services/adverts.py). The console shows `document` in a sandboxed iframe
-    # (sandbox="" + a Content-Security-Policy meta) and turns `fragment` into a PNG in the browser. Nothing is rendered here.
+    # (sandbox="" + the design's own safety policy) and turns `fragment` into a PNG in the browser. Nothing is rendered here.
     @app.get("/api/adverts/{advert_name}", dependencies=[Depends(owner)])
     async def get_advert(request: Request, advert_name: str, download: int = 0):
         as_html = advert_name.endswith(".html")
@@ -727,15 +727,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         payload = J(request).adverts.payload(advert_id) if images.IMAGE_ID_RE.match(advert_id) else None
         if payload is None:
             raise HTTPException(404, "No such design")
-        headers = {"Cache-Control": "no-store", "Content-Security-Policy": adverts.CSP,
-                   "X-Content-Type-Options": "nosniff"}
         if not as_html:
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-        if download:
-            headers["Content-Disposition"] = f'attachment; filename="{payload["filename"]}.html"'
-        else:
-            headers["Content-Security-Policy"] += "; sandbox"
-        return Response(payload["document"], media_type="text/html; charset=utf-8", headers=headers)
+        return Response(payload["document"], media_type="text/html; charset=utf-8",
+                        headers=adverts.document_headers(download=bool(download), filename=payload["filename"]))
 
     @app.post("/api/adverts/{advert_id}/revise", dependencies=[Depends(owner), Depends(human_click)])
     async def revise_advert(request: Request, advert_id: str, body: AdvertReviseIn):

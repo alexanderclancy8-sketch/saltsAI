@@ -366,6 +366,17 @@ def build_document(fragment: str, logo_uri: str) -> str:
             f'<body>{body}</body></html>')
 
 
+def document_headers(*, download: bool, filename: str) -> dict[str, str]:
+    """Response headers for a design served on its own URL (GET /api/adverts/<id>.html): the same policy as the page's meta
+    tag, plus `sandbox` when it is opened in a tab, so even then it can run nothing. Applies to this document only - never to
+    the console."""
+    headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+               "Content-Security-Policy": CSP + ("" if download else "; sandbox")}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{filename}.html"'
+    return headers
+
+
 def _norm_letters(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 

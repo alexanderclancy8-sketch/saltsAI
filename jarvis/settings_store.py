@@ -410,7 +410,7 @@ SECTIONS: tuple[Section, ...] = (
                   "Claude-designed graphics need nothing extra. The OpenAI choice only works if an image key is "
                   "also saved below; it paints a picture background instead.",
                   options=(("claude", "Claude-designed graphics (no extra account)"),
-                           ("openai", "OpenAI picture backgrounds (only with an image key)")), advanced=True),
+                           ("openai", "OpenAI picture backgrounds (only with an image key)"))),
             Field("image_api_key", "OpenAI image key (optional)", "secret",
                   "Not needed. Only if you want OpenAI-painted picture backgrounds.", advanced=True),
             Field("image_model", "OpenAI image model", advanced=True, placeholder="gpt-image-1"),
