@@ -301,7 +301,17 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
 #map { height: 300px; z-index: 0; border-radius: var(--r); border: 1px solid var(--line); background: var(--navy); margin-top: 12px; }
 #map[hidden] { display: none; }
 .leaflet-container { background: var(--navy); font-family: var(--f-body); }
-.leaflet-tooltip { background: var(--navy); color: var(--text); border: 1px solid var(--line); }
+.leaflet-tooltip { background: var(--navy); color: var(--text); border: 1px solid var(--line); box-shadow: 0 2px 8px #0006; }
+/* Satellite | Map: a two-button text switch above the map. aria-pressed marks the one showing, and the pressed one is also
+   bold with a bar under it, so it is not colour alone. It gets 44px touch targets on phones (see the touch rules below). */
+.map-toggle { display: inline-flex; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--navy); }
+.map-toggle[hidden] { display: none; }
+.map-toggle button { background: none; border: 0; padding: 7px 16px; min-height: 36px; color: var(--muted); font: inherit; font-size: 13.5px; cursor: pointer; }
+.map-toggle button + button { border-left: 1px solid var(--line); }
+.map-toggle button:hover { color: var(--text); }
+.map-toggle button[aria-pressed="true"] { background: var(--accent-dim); color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.map-toggle button:focus-visible { outline: 2px solid var(--core); outline-offset: -2px; }
+.map-toggle + #map { margin-top: 8px; }
 .fleet-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 14px; color: var(--muted); }
 
 /* ---------- display overlay (show_on_display) ---------- */
@@ -576,6 +586,7 @@ input.mem-input { min-height: 0; }
   .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email], .drawer input[type=url], .drawer input[type=number], .drawer input[type=time],
   .appr-edit input[type=text], input.mem-input { min-height: 44px; }
   .cron-dom input[type=number] { width: 64px !important; }
+  .map-toggle button { min-height: 44px; min-width: 44px; padding: 0 20px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

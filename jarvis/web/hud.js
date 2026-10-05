@@ -1623,11 +1623,34 @@ function send(text, mode = "typed", opts = {}) {
   $("#btn-run-tests").addEventListener("click", async () => { toast("Running routine tests…"); const r = await (await api("/api/tests/run", { method: "POST" })).json(); const bad = r.filter((t) => !t.ok).length; toast("Routine tests finished", bad ? `${bad} failing` : "All passing", bad ? "warning" : "info"); refresh(); });
 
   // ------------------------------------------------------------------ map
-  let map = null, layer = null, tiles = null;
+  let map = null, layer = null, tiles = null, satTiles = null, labelTiles = null;
   const NO_LABEL = "no address label from RAM";
-  // Esri's canvas basemaps are free and keyless; pick the one that matches the theme that is showing.
-  const tileUrl = () => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${window.JarvisTheme?.effective() === "light" ? "Light" : "Dark"}_Gray_Base/MapServer/tile/{z}/{y}/{x}`;
+  // Two keyless Esri basemaps. "satellite" (the default) is World Imagery with Esri's place-name labels over it so towns and
+  // roads stay readable; "street" is Esri's grey canvas, picked to match the theme that is showing. The choice is kept in
+  // localStorage (jarvis.basemap, through store, which is wrapped in try/catch) and the page works without it.
+  const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
+  const SATELLITE_URL = `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`;
+  const LABELS_URL = `${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`;
+  const SATELLITE_ATTRIBUTION = "Tiles © Esri - Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community";
+  const LABELS_ATTRIBUTION = "Labels © Esri, HERE, Garmin, OpenStreetMap contributors";
+  const tileUrl = () => `${ESRI}/Canvas/World_${window.JarvisTheme?.effective() === "light" ? "Light" : "Dark"}_Gray_Base/MapServer/tile/{z}/{y}/{x}`;
+  let basemap = store.get("basemap", "satellite") === "street" ? "street" : "satellite";
   window.addEventListener("jarvis-theme", () => { if (tiles) tiles.setUrl(tileUrl()); });
+  // Show the chosen basemap: reflect it on the toggle and, once the map exists, swap which tile layers are on it.
+  function setBasemap(next, remember) {
+    basemap = next === "street" ? "street" : "satellite";
+    if (remember) store.set("basemap", basemap);
+    $$("#map-toggle button[data-basemap]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.basemap === basemap)));
+    const mapEl = $("#map");
+    if (mapEl && mapEl.dataset) mapEl.dataset.basemap = basemap;
+    if (!map) return;
+    const sat = basemap === "satellite";
+    [[satTiles, sat], [labelTiles, sat], [tiles, !sat]].forEach(([l, on]) => { if (on && !map.hasLayer(l)) l.addTo(map); else if (!on && map.hasLayer(l)) map.removeLayer(l); });
+  }
+  $("#map-toggle").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-basemap]"); if (b) setBasemap(b.dataset.basemap, true); });
+  // Space on a focused button is its native click; keep the console's hold-Space-to-talk (a window listener) out of it, as ask.js does.
+  $("#map-toggle").addEventListener("keydown", (e) => { if (e.key === " ") e.stopPropagation(); });
+  setBasemap(basemap, false);
   // The Fleet pop-up: real vehicles when RAM Tracking is connected, otherwise a clear "not connected" state.
   // live: RAM answers. failing: its details are entered but it is not answering (why = the reason, in words). Otherwise
   // it is still on sample data (why = what is still missing). Only "live" ever shows vehicles.
@@ -1660,6 +1683,7 @@ function send(text, mode = "typed", opts = {}) {
         : vans ? `Live from ${conn}: ${plural(vans, "vehicle", "vehicles")} reporting.` : "Connected, but no vehicles are reporting right now.";
     }
     $("#map").hidden = !connected || !vans;
+    $("#map-toggle").hidden = $("#map").hidden || !window.L;  // no map, no style choice (same privacy rules as the map itself)
   }
   function renderMap(data) {
     if (!data) return;
@@ -1672,10 +1696,13 @@ function send(text, mode = "typed", opts = {}) {
       return;
     }
     if (!map) {
-      map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.83, -1.78], 10);
-      // CARTO's basemaps now require a signed-up API key and render an "API KEY REQUIRED" watermark
-      // without one - Esri's dark canvas is free, keyless, and still matches the dark theme.
-      tiles = L.tileLayer(tileUrl(), { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxZoom: 16 }).addTo(map);
+      map = L.map("map", { zoomControl: false, attributionControl: true, maxZoom: 19 }).setView([53.83, -1.78], 10);
+      // CARTO's basemaps now require a signed-up API key and render an "API KEY REQUIRED" watermark without one, so both
+      // basemaps are Esri's: free and keyless. The grey canvas stops at zoom 16 (Leaflet stretches it beyond that).
+      tiles = L.tileLayer(tileUrl(), { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxNativeZoom: 16, maxZoom: 19 });
+      satTiles = L.tileLayer(SATELLITE_URL, { attribution: SATELLITE_ATTRIBUTION, maxZoom: 19, zIndex: 1 });
+      labelTiles = L.tileLayer(LABELS_URL, { attribution: LABELS_ATTRIBUTION, maxZoom: 19, zIndex: 2 });
+      setBasemap(basemap, false);
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
@@ -1684,8 +1711,11 @@ function send(text, mode = "typed", opts = {}) {
       : data.demo ? "demo" : `${data.engineers.length} vans`;
     if (map && !$("#map").hidden) map.invalidateSize();
     const pts = [];
-    (data.sites || []).forEach((s) => { L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
+    // Every marker sits on a white halo with a thin dark edge, so it stays readable on satellite imagery as well as on grey.
+    const halo = (lat, lng, r) => L.circleMarker([lat, lng], { radius: r + 3, color: "rgba(0,0,0,.55)", weight: 1, fillColor: "#fff", fillOpacity: 0.95, interactive: false, className: "map-halo" }).addTo(layer);
+    (data.sites || []).forEach((s) => { halo(s.lat, s.lng, 5); L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {
+      halo(e.lat, e.lng, 7);
       L.circleMarker([e.lat, e.lng], { radius: 7, color: e.status === "driving" ? "#ffb020" : "#26d9ff", weight: 2, fillOpacity: 0.85 })
         .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(e.address_label || NO_LABEL)}`).addTo(layer);
       pts.push([e.lat, e.lng]);
