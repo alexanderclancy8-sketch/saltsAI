@@ -1550,6 +1550,9 @@ function send(text, mode = "typed", opts = {}) {
       case "edit-save": saveEdit(id, card.querySelector(".appr-edit"), b); break;
     }
   });
+  document.addEventListener("input", (e) => {          // typing again clears the last error
+    const err = e.target.closest?.(".appr-edit")?.querySelector(".appr-error"); if (err) err.hidden = true;
+  });
   document.addEventListener("submit", (e) => {
     const form = e.target.closest?.(".appr-edit"); if (!form) return;
     e.preventDefault(); form.querySelector('[data-act="edit-save"]')?.click();

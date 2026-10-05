@@ -95,6 +95,9 @@
       case "delete": remove(li); break;
     }
   });
+  document.addEventListener("input", (e) => {
+    const err = e.target.closest?.("#pop-memory .mem-edit")?.querySelector(".appr-error"); if (err) err.hidden = true;
+  });
   document.addEventListener("submit", (e) => {
     const form = e.target.closest?.("#pop-memory .mem-edit"); if (!form) return;
     e.preventDefault(); save(form.closest(".mem-item"));

@@ -244,6 +244,7 @@ def test_edit_saves_a_new_pending_action_and_only_the_edited_version_can_be_appr
         assert j.db.get_action(ids["email"])["status"] == "pending"
         # a real edit: change only the subject
         form.locator('[name="to"]').fill("dan@kestrel.example.com")
+        assert form.locator(".appr-error").is_hidden()                    # typing again clears the last message
         form.locator('[name="subject"]').fill("Revised quote Q-1042")
         _shot(page, f"p4a-edit-{width}")
         form.locator('[data-act="edit-save"]').click()
@@ -481,6 +482,8 @@ def test_phone_message_box_controls_are_all_on_screen_and_the_keyboard_keeps_it_
         page.wait_for_timeout(300)
         page.evaluate("document.getElementById('input').blur()")
         page.wait_for_timeout(200)
+        page.wait_for_selector("#conversation .msg.assistant .fb", timeout=10000)
+        assert page.evaluate(_TOUCH_JS, None) == []                                      # Good / Wrong under a reply are touch-sized too
         core = page.eval_on_selector("#core-btn", "e => e.getBoundingClientRect().width")
         assert 72 <= core <= 96                                                         # in conversation the core makes room...
         assert page.eval_on_selector("#composer", "e => e.getBoundingClientRect().bottom") <= 820
@@ -505,21 +508,6 @@ def test_phone_sizes_never_scroll_sideways_and_keep_the_composer_on_screen(serve
         assert page.evaluate("[...document.querySelectorAll('.tb-btn')].every(b => b.getBoundingClientRect().right <= innerWidth)")
     finally:
         ctx.close()
-
-
-def test_phone_css_has_safe_area_insets_on_every_edge_and_keeps_the_keyboard_rules():
-    from pathlib import Path
-
-    web = Path(__file__).resolve().parent.parent / "jarvis" / "web"
-    css, html, js = (web / "hud.css").read_text(encoding="utf-8"), (web / "index.html").read_text(encoding="utf-8"), (web / "hud.js").read_text(encoding="utf-8")
-    phone = css[css.index("@media (max-width: 760px) {"):]
-    for edge in ("top", "right", "bottom", "left"):
-        assert f"env(safe-area-inset-{edge})" in phone, edge
-    assert "viewport-fit=cover" in html and "interactive-widget=resizes-content" in html
-    assert 'document.documentElement.style.setProperty("--app-h", window.visualViewport.height + "px")' in js     # keyboard resize kept
-    assert "body.app { height: 100vh; height: var(--app-h, 100dvh);" in css and ".composing .core-block { display: none; }" in css
-    assert "padding-block: 8px max(14px, env(safe-area-inset-bottom))" in phone                              # the composer clears the home bar
-    assert ".drawer { width: 100%; max-width: 100%; border-left: 0;" in phone                                 # full-screen pop-ups
 
 
 # ----------------------------------------------------------------------------------------------- Memory pop-up

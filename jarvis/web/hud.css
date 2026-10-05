@@ -560,7 +560,9 @@ input.mem-input { min-height: 0; }
   details.diff summary { display: flex; align-items: center; }
   .chip button, .cron-time-remove { position: relative; }
   .chip button::after, .cron-time-remove::after { content: ""; position: absolute; inset: -14px; }
-  .reply-hint button { min-width: 44px; min-height: 44px; }   /* a real 44px button: an invisible pad would sit under the message box */
+  .reply-hint button, .msg .fb button { min-width: 44px; min-height: 44px; }
+  .msg .fb { gap: 8px; }
+  .msg .fb-note { min-height: 44px; font-size: 16px; }   /* a real 44px button: an invisible pad would sit under the message box */
   .orb-badge::after { content: ""; position: absolute; inset: -12px; }
   .set-checkbox input { width: 22px; height: 22px; }
   .set-checkbox label { padding: 11px 0; flex: 1; }

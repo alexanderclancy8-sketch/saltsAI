@@ -211,6 +211,16 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   document or web page. The only things it does without asking are sending *you* the updates and reports you
   asked for, saving email *drafts* for you to review, and keeping its own notes - plus whatever *you* have
   switched on under standing approvals (next point).
+- **The Approvals inbox.** Everything Jarvis wants to send or change waits in the Approvals pop-up and shows up as a card
+  in the chat, spelling out exactly what will happen (the real recipient, subject and message; the real change in Salts
+  FSM), with **Approve**, **Edit** and **Don't send**. Nothing goes without a click. **Edit** (emails, Salts FSM changes
+  and the details of most other actions) saves your changed version as a *new* waiting request - the old one can no
+  longer be approved and the new one still needs your Approve. If an approved action fails, its card shows the error and
+  **Retry**, which puts a fresh copy back in your queue (it never re-runs by itself). Secrets are masked on every card.
+  Edit/Retry/Approve/Don't send only work from your signed-in console (and Approve/Deny from Teams).
+- **The Memory pop-up (Settings → Memory).** Lists what Jarvis has learned - "Things Jarvis should know", things he
+  remembered himself, and the short replies he has learned - each one editable and deletable. A change is used from his very
+  next message, and deleting a note also removes it from Settings so it can't come back on a restart.
 - **Standing approvals (off by default, owner-only).** Settings → Standing approvals has two switches, which are
   your own approval given in advance for two narrow things, and nothing else:
   - *Record keeping*: creating a **new** customer, site or contact in Salts FSM, and adding a note, task or
