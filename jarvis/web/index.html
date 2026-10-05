@@ -136,6 +136,10 @@
         <h3>Awaiting your approval <span class="count" id="approvals-count"></span></h3>
         <div id="approvals"></div>
       </div>
+      <div class="sec" id="failed-panel" hidden>
+        <h3>Failed - needs a look <span class="count" id="failed-count"></span></h3>
+        <div id="failed-actions"></div>
+      </div>
       <div class="sec" id="suggestions-panel">
         <h3>Suggestions <span class="count" id="suggestions-count"></span></h3>
         <div id="suggestions"></div>
@@ -227,6 +231,24 @@
       <div class="set-actions"><button class="btn" type="button" data-pop="connections">Open Connections</button></div>
     </section>
 
+    <section class="pop" id="pop-memory" data-title="Memory" hidden>
+      <p class="empty" id="memory-intro">What Jarvis has learned about the business. Reword or delete anything that is out of date or wrong;
+        he reads the change from his very next message.</p>
+      <div class="sec" id="memory-notes-sec">
+        <h3>Things Jarvis should know <span class="count" id="memory-notes-count"></span></h3>
+        <ul class="mem-list" id="memory-notes"><li class="empty">Loading…</li></ul>
+      </div>
+      <div class="sec" id="memory-learned-sec">
+        <h3>Things Jarvis has learned <span class="count" id="memory-learned-count"></span></h3>
+        <ul class="mem-list" id="memory-learned"></ul>
+      </div>
+      <div class="sec" id="memory-replies-sec">
+        <h3>Learned replies <span class="count" id="memory-replies-count"></span></h3>
+        <ul class="mem-list" id="memory-replies"></ul>
+      </div>
+      <p class="empty" id="memory-error" role="alert" hidden></p>
+    </section>
+
     <section class="pop" id="pop-settings" data-title="Settings" hidden>
       <div class="sec">
         <h3>Conversation</h3>
@@ -287,6 +309,7 @@
         <h3>Connections and account</h3>
         <div class="set-actions">
           <button class="btn" id="btn-open-connections" type="button" data-pop="connections">Connections</button>
+          <button class="btn" id="btn-open-memory" type="button" data-pop="memory">Memory</button>
           <button class="btn" id="btn-copy-report" type="button">Copy staff report link</button>
           <form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>
         </div>
@@ -306,12 +329,15 @@
     <button class="btn" id="btn-settings-cancel" type="button">Cancel</button>
     <button class="btn primary" id="btn-settings-save" type="button">Save changes</button>
   </div>
+  <!-- Phones only (shown by hud.css at <= 760px): a second Close at the bottom edge, where the thumb is. -->
+  <div class="drawer-foot"><button type="button" class="btn" id="drawer-close-bottom">Close</button></div>
 </aside>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/static/core.js"></script>
 <script src="/static/ask.js"></script>
+<script src="/static/memory.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

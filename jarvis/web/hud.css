@@ -413,27 +413,105 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
 .set-save-bar .status { font-size: 13px; color: var(--muted); flex: 1 1 140px; }
 .set-problem { color: var(--ember); border: 1px solid rgba(var(--ember-rgb), .5); border-radius: 8px; padding: 11px 13px; font-size: 13px; margin-bottom: 16px; }
 
+/* ---------- approval cards: the Approvals pop-up and the conversation use the same card ----------
+   Built by cardHtml() in hud.js from the server's redacted view of the stored action, so it shows exactly what will happen. */
+.approval { border-left: 3px solid var(--ember); }
+.appr-card { min-width: 0; }
+.appr-card[data-level="bad"] { border-left-color: var(--warn); }
+.appr-card[data-level="ok"], .appr-card.resolved { border-left-color: var(--line); }
+.appr-card.resolved { background: none; padding-block: 9px; }
+.appr-card.resolved .appr-summary { margin-bottom: 0; color: var(--muted); }
+.appr-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 6px; }
+.appr-kind { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.appr-id { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.appr-state { margin-left: auto; font-family: var(--f-mono); font-size: 12px; color: var(--ember); text-align: right; }
+.appr-card[data-level="bad"] .appr-state { color: var(--warn); }
+.appr-card[data-level="ok"] .appr-state { color: var(--ok); }
+.appr-card.resolved:not([data-level="ok"]) .appr-state { color: var(--muted); }
+.appr-summary { margin: 0 0 8px; font-weight: 500; }
+.appr-detail { margin: 0 0 8px; display: flex; flex-direction: column; gap: 6px; }
+.appr-row { display: grid; grid-template-columns: 5.2em minmax(0, 1fr); gap: 2px 10px; font-size: 13.5px; }
+.appr-row dt { font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding-top: 3px; }
+.appr-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.appr-row.block { grid-template-columns: minmax(0, 1fr); }
+.appr-row.block dd { background: var(--navy); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 11em; overflow: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
+.appr-card .btn[data-act="edit"], .appr-card .btn[data-act="retry"], .mem-item .btn[data-mem="edit"] { color: var(--core); border-color: var(--core-dim); }
+.appr-fail { margin: 0 0 6px; color: var(--warn); overflow-wrap: anywhere; }
+.appr-fail b { font-weight: 600; }
+.appr-note, .appr-hint { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+.appr-error { margin: 8px 0 0; color: var(--warn); font-size: 13px; }
+.appr-error[hidden], .appr-edit[hidden], .mem-view[hidden], .mem-edit[hidden], .mem-confirm[hidden] { display: none; }
+.appr-edit { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.appr-field { margin-bottom: 10px; }
+.appr-field label { display: block; margin-bottom: 4px; font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.appr-edit input, .appr-edit textarea, .mem-input { display: block; width: 100%; max-width: 100%; background: var(--navy-deepest); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font-size: 14.5px; outline: none; }
+.appr-edit textarea, .mem-input { resize: vertical; min-height: 64px; }
+input.mem-input { min-height: 0; }
+.appr-edit input:focus, .appr-edit textarea:focus, .mem-input:focus { border-color: var(--core); }
+.appr-edit textarea[spellcheck="false"] { font-family: var(--f-mono); font-size: 13px; }
+/* In the conversation the card sits under a small "needs your approval" label and uses the full reading width. */
+.appr-msg { max-width: min(60ch, 100%); width: 100%; }
+.appr-msg .appr-slot { min-width: 0; }
+.appr-msg .approval { margin-bottom: 0; }
+.msg.appr-msg .meta { color: var(--ember); }
+
+/* ---------- Memory pop-up ---------- */
+.mem-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.mem-item { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 12px 14px; overflow-wrap: anywhere; font-size: 14.5px; min-width: 0; }
+.mem-list .empty { border: 0; background: none; padding: 0; color: var(--muted); font-size: 14px; }
+.mem-text { margin: 0 0 4px; }
+.mem-meta { display: block; color: var(--muted); font-size: 12px; }
+.mem-item .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.mem-confirm p { margin: 0; color: var(--ember); font-size: 14px; }
+#memory-intro { margin-bottom: 4px; }
+
 /* ---------- responsive: phones (<= 760px) ----------
-   The rail becomes a horizontal pill strip, the clock is hidden, the core is smaller, and while a conversation is under
-   way or the keyboard is up the core gives way so the message box is always reachable. The drawer is already as wide as
-   the screen there (min(460px, 100%)). */
+   One-handed, in the order of what matters: a LARGE core to talk to (it grows with the screen height, never below the
+   mockup's 110px), "Approvals" always one tap away (it is the first rail chip, pinned to the left edge of the strip, with
+   a badge on the core as well), every pop-up full-screen with a Close at the thumb as well as at the top, the message box
+   at the bottom with its controls spread across the width, 44px minimum touch targets, safe-area insets on every edge,
+   and the on-screen-keyboard behaviour kept (--app-h from visualViewport; the core gives way while typing). */
+.drawer-foot { display: none; flex: none; padding: 8px max(16px, env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: var(--navy); border-top: 1px solid var(--line); }
+.drawer-foot .btn { width: 100%; }
 @media (max-width: 1023px) { :root { --rail-w: 168px; } }
 @media (max-width: 760px) {
-  :root { --pad: 16px; }
-  .topbar { padding-inline: 16px; padding-top: max(10px, env(safe-area-inset-top)); }
+  :root { --pad: 16px; --core-size: clamp(110px, calc(var(--app-h, 100dvh) * .22), 210px); }
+  .topbar { gap: 6px 10px; padding: max(8px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left)); }
+  .topbar .spacer { display: none; }
   .clock { display: none; }
+  .statusbox { margin-left: auto; order: 1; }
+  .pills { order: 2; flex: 1 1 0; min-width: 0; justify-content: flex-end; }
+  .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  /* Voice, Speaks up, Connections, Settings: one row of four equal, labelled buttons - nothing wraps to a third line. */
+  .actions { order: 3; flex: 1 1 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .tb-btn { padding-inline: 4px; font-size: 13px; text-align: center; overflow: hidden; text-overflow: ellipsis; }
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 16px; overflow-x: auto; overflow-y: hidden; gap: 4px; scrollbar-width: none;
+  .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); padding: 6px max(16px, env(safe-area-inset-right)) 6px max(16px, env(safe-area-inset-left)); overflow-x: auto; overflow-y: hidden; gap: 4px; scrollbar-width: none;
     -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
   .rail::-webkit-scrollbar { display: none; }
   .rail .label { display: none; }
   .rail-item { flex: none; width: auto; border: 1px solid var(--line); border-radius: 99px; padding: 5px 12px; }
-  .stage { padding-inline: 16px; }
-  .core-btn, #reactor { width: 110px; height: 110px; }
-  .has-chat .core-btn, .has-chat #reactor { width: 84px; height: 84px; }
+  /* Approvals stays pinned at the left of the strip however far it is scrolled, and says so when something is waiting. */
+  .rail-item[data-pop="approvals"] { position: sticky; left: 0; z-index: 1; background: var(--navy-deepest); }
+  .rail-item[data-pop="approvals"][data-level="warn"] { border-color: var(--ember); }
+  .rail-item[data-pop="approvals"][data-level="bad"] { border-color: var(--warn); }
+  .stage { padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right)); }
+  .core-block { padding-block: 8px 2px; }
+  .core-btn, #reactor { width: var(--core-size); height: var(--core-size); }
+  .has-chat .core-btn, .has-chat #reactor { width: clamp(72px, calc(var(--app-h, 100dvh) * .11), 96px); height: clamp(72px, calc(var(--app-h, 100dvh) * .11), 96px); }
+  .orb-badge { top: 4px; right: 4px; min-width: 28px; height: 28px; font-size: 13.5px; }
   .composing .core-block { display: none; }
   .has-chat .stt-engine { display: none; }
+  /* Once a conversation is under way the strip becomes one scrolling line and the caption (which repeats the last reply)
+     steps aside, so the conversation gets the height. Approvals stays one tap away: first chip in the rail, and the badge. */
+  .has-chat .needs { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; padding-top: 4px; scrollbar-width: none; max-width: 100%; }
+  .has-chat .needs::-webkit-scrollbar { display: none; }
+  .has-chat .needs .label, .has-chat .need, .has-chat .needs-clear { flex: none; white-space: nowrap; }
+  .has-chat .caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .convo { min-height: 0; }
   .msg { max-width: 100%; }
+  /* Message box: the field takes the full row, then the menu, attach and mic and a SEND that fills the rest. */
+  .composer { padding-block: 8px max(14px, env(safe-area-inset-bottom)); gap: 8px; }
   .composer .field { font-size: 16px; }  /* >= 16px: iOS zooms the page on focus below that */
   .display { inset: 0; border-radius: 0; border: none; transform: translateY(16px);
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
@@ -442,16 +520,27 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
   .display .body { padding: 14px 16px 24px; }
   /* Toasts go to the top: at the bottom they sat on top of the message box and under the question pop-up. */
   .toasts { right: 12px; left: 12px; bottom: auto; top: calc(env(safe-area-inset-top) + 56px); max-width: none; }
-  .drawer-head { padding: max(14px, env(safe-area-inset-top)) 16px 12px; }
-  .drawer-body { padding: 14px 16px 24px; }
-  .set-save-bar { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
-  .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email], .drawer input[type=url], .drawer input[type=number], .drawer input[type=time], .drawer textarea { font-size: 16px; }
+  /* Pop-ups are full-screen: edge to edge, top to bottom, inside the safe areas, with a Close at the bottom (thumb) too. */
+  .drawer { width: 100%; max-width: 100%; border-left: 0; box-shadow: none; }
+  .drawer-head { padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left)); }
+  .drawer-body { padding: 14px max(16px, env(safe-area-inset-right)) 24px max(16px, env(safe-area-inset-left)); }
+  .set-save-bar { padding: 12px max(16px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  .drawer-foot { display: block; }
+  .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email], .drawer input[type=url], .drawer input[type=number], .drawer input[type=time], .drawer textarea,
+  .appr-edit input, .appr-edit textarea, .mem-input { font-size: 16px; }
+  .appr-row { grid-template-columns: minmax(0, 1fr); }
+  .appr-row dt { padding-top: 0; }
+  .appr-msg .appr-row.block dd { max-height: 4.6em; }   /* in the conversation: a few lines, scroll for the rest */
+  .appr-msg .appr-safe { display: none; }
+  .appr-card .row .btn, .mem-item .row .btn { flex: 1 1 auto; }
 }
-/* Narrow phones: the field takes its own row above the buttons so nothing is squeezed. */
+/* Narrow phones: the field takes its own row above the buttons so nothing is squeezed, and SEND fills the rest of the row. */
 @media (max-width: 480px) {
   .composer { flex-wrap: wrap; }
   .composer .field { flex: 1 1 100%; order: -1; }
-  .composer .spacer { flex: 1; }
+  .composer .btn-send { flex: 1 1 0; min-width: 96px; }
+  .brand small { display: none; }   /* the company name leaves room for the demo-data pill beside the status */
+  .topbar { column-gap: 8px; }
 }
 /* Short screens (phones on their side, small laptops): keep the core from eating the whole height. */
 @media (max-height: 560px) {
@@ -469,12 +558,14 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
   .chip { display: inline-flex; align-items: center; }
   .linkish { min-width: 44px; }
   details.diff summary { display: flex; align-items: center; }
-  .chip button, .reply-hint button, .cron-time-remove { position: relative; }
-  .chip button::after, .reply-hint button::after, .cron-time-remove::after { content: ""; position: absolute; inset: -14px; }
+  .chip button, .cron-time-remove { position: relative; }
+  .chip button::after, .cron-time-remove::after { content: ""; position: absolute; inset: -14px; }
+  .reply-hint button { min-width: 44px; min-height: 44px; }   /* a real 44px button: an invisible pad would sit under the message box */
   .orb-badge::after { content: ""; position: absolute; inset: -12px; }
   .set-checkbox input { width: 22px; height: 22px; }
   .set-checkbox label { padding: 11px 0; flex: 1; }
-  .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email], .drawer input[type=url], .drawer input[type=number], .drawer input[type=time] { min-height: 44px; }
+  .drawer select, .drawer input[type=text], .drawer input[type=password], .drawer input[type=email], .drawer input[type=url], .drawer input[type=number], .drawer input[type=time],
+  .appr-edit input[type=text], input.mem-input { min-height: 44px; }
   .cron-dom input[type=number] { width: 64px !important; }
 }
 

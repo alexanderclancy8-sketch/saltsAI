@@ -10,6 +10,9 @@
   const S = {
     status: null, voice: { tts: "browser", stt: "browser", wake_word: "jarvis", language: "en-GB", ack_fillers: true, silence_ms: 1200 },
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
+    // Approvals inbox: pending / failed / recently decided actions as the server describes them (redacted), the ids that
+    // have had a card in the conversation this session, and whether the chat history is in yet (cards go after it).
+    inbox: { pending: [], failed: [], recent: [] }, seenPending: new Set(), quietPending: new Set(), chatReady: false, inboxLoaded: false, chatInit: false, hasHistory: false,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
     // sent: what THIS tab has sent whose "user_message" has not come back yet. mine: whether the turn now streaming in
@@ -161,7 +164,7 @@
   // ONE drawer component: every section of the console (and Settings / Connections) is a .pop inside #drawer-body.
   // Drawer.show(name) reveals one and slides the drawer in from the right; it is closed by the Close button,
   // Escape, or a click on the scrim (outside). It is never wider than the viewport (see .drawer in hud.css).
-  const POPS = ["approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming", "demo", "settings", "connections"];
+  const POPS = ["approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming", "demo", "memory", "settings", "connections"];
   const Drawer = {
     current: null, opener: null,
     isOpen() { return $("#drawer").classList.contains("open"); },
@@ -179,6 +182,7 @@
       if (first) $("#drawer-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
       if (name === "fleet") fitMapSoon();             // the map is laid out at 0x0 while hidden; re-measure now it can be seen
       if (name === "demo") renderDemo();
+      if (name === "memory") window.JarvisMemory?.load();
       if (name === "settings" || name === "connections") {
         if (!Settings.loaded) Settings.load();
         if (name === "connections") Settings.showList();
@@ -198,6 +202,7 @@
     },
   };
   $("#drawer-close").addEventListener("click", () => Drawer.close());
+  $("#drawer-close-bottom").addEventListener("click", () => Drawer.close()); // phones: the same Close, at the thumb
   $("#scrim").addEventListener("click", () => Drawer.close());
   document.addEventListener("click", (e) => { const b = e.target.closest("[data-pop]"); if (b) Drawer.show(b.dataset.pop, b); });
   // Keep Tab inside the open drawer.
@@ -232,8 +237,10 @@
     // Counts follow the design mockup: Approvals = actions waiting for a click (suggestions are listed inside the pop-up and
     // in "Needs you"); Comms = unread; Issues = open; Health = passed/total; Ops = things needing attention; Fleet reads
     // "off" when vehicle tracking is not connected; Finance = customers to watch; Presence has no count; Coming up = listed.
-    const na = S.approvals?.length || 0, ns = S.suggestions?.length || 0;
-    setRail("approvals", na, na ? "warn" : "", na ? `${plural(na, "action", "actions")} waiting for your approval` : "nothing waiting for you");
+    const na = S.inbox.pending.length, nf = S.inbox.failed.length, ns = S.suggestions?.length || 0;
+    setRail("approvals", na + nf, nf ? "bad" : na ? "warn" : "",
+      (na ? `${plural(na, "action", "actions")} waiting for your approval` : "nothing waiting for you") + (nf ? `, ${nf} failed - retry?` : ""));
+    if (nf) add(95, "bad", `${plural(nf, "action", "actions")} failed - needs a look`, "approvals");
     if (na) add(80, "warn", `${plural(na, "action", "actions")} waiting for your approval`, "approvals");
     if (ns) add(35, "warn", `${plural(ns, "suggestion", "suggestions")} from Jarvis`, "approvals");
 
@@ -292,7 +299,7 @@
   // Approvals/suggestions must never go silently unnoticed - the rail count and "Needs you" cover it, and a small
   // pulsing badge on the core itself opens the real Approvals pop-up (with its working Approve/Cancel buttons).
   function updateOrbBadge() {
-    const n = (S.approvals?.length || 0) + (S.suggestions?.length || 0);
+    const n = S.inbox.pending.length + S.inbox.failed.length + (S.suggestions?.length || 0);
     const badge = $("#orb-badge");
     badge.hidden = n === 0;
     if (n) badge.textContent = String(n);
@@ -488,6 +495,7 @@
 
   // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
   // as ordinary chat text - never through decide()/the approvals path.
+  window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
   window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 
   // ------------------------------------------------------------------ self-echo guard
@@ -778,7 +786,9 @@
     try {
       const rows = await (await api("/api/transcript")).json();
       rows.slice(-20).forEach((r) => addMessage(r.role, r.text, time(r.created_at)));
+      S.hasHistory = rows.length > 0;
     } catch { /* ignore */ }
+    S.chatReady = true; syncChatCards();   // approval cards go after the history, never above it
   }
 
 // `opts` may be shorthand `true` for { spoken: true } (kept for existing voice call sites). `spoken` is true
@@ -1152,12 +1162,12 @@ function send(text, mode = "typed", opts = {}) {
         break;
       case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id); break;
       case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
-      case "approvals": S.approvals = d; renderApprovals(); break;
+      case "approvals": S.approvals = d; loadInboxSoon(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
       case "issue": refreshSoon(); break;
       case "tests": renderTests(d); break;
       case "map": renderMap(d); break;
-      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; document.body.classList.remove("has-chat"); caption("Fresh start. What can I do for you?"); break;
+      case "conversation_reset": filler.end(); window.JarvisAsk?.close(); $("#conversation").innerHTML = ""; document.body.classList.remove("has-chat"); S.seenPending.clear(); quietExisting(); caption("Fresh start. What can I do for you?"); break;
       case "stopped": if (!speaker.active) setHud("idle"); extendFollowUp(); break;
       case "reload":
         toast("Settings applied", "Reconnecting…");
@@ -1208,7 +1218,7 @@ function send(text, mode = "typed", opts = {}) {
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
-      renderPresence(st.presence); renderCustomers(st.customer_watch); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSuggestions(); renderSettings(st);
+      renderPresence(st.presence); renderCustomers(st.customer_watch); renderDeadlines(st.deadlines, st.accreditations); renderSuggestions(); renderSettings(st); await loadInbox();
       renderActivity(st.activity);
       renderRail(); if (Drawer.current === "demo") renderDemo(); if (Drawer.current === "fleet") renderFleetStatus();
     } catch (e) { console.warn(e); }
@@ -1376,24 +1386,129 @@ function send(text, mode = "typed", opts = {}) {
     $("#deadlines").innerHTML = !items.length ? `<li class="empty">Nothing dated coming up.</li>` : items.map((d) => `<li class="split ${d.days_left < 0 ? "bad" : d.days_left <= 14 ? "warn" : ""}"><span>${esc(d.what)}</span><small>${dayMonth(d.due)} · ${d.days_left < 0 ? Math.abs(d.days_left) + " days overdue" : d.days_left + " days"}</small></li>`).join("");
   }
 
+  // ------------------------------------------------------------------ approvals inbox
+  // Everything Jarvis wants to send or change waits here AND appears as a card in the conversation. ONE card renderer
+  // (cardHtml) draws both, from /api/approvals/inbox: the server builds each card from the stored payload itself (so it
+  // says exactly what will happen) and redacts secrets first. Buttons: Approve, Edit, Don't send; a failed action shows
+  // its error and Retry. Nothing here runs anything by itself - Approve is a click, Edit saves a NEW pending action that
+  // still needs its own Approve, and Retry queues a new pending action (the server never re-runs a failed one).
+  const APPR_STATE = { pending: "Waiting for you", approved: "Approved - running", done: "Done", failed: "Failed", denied: "Not sent" };
+
+  function detailsHtml(v) {
+    return `<dl class="appr-detail">${(v.details || []).map((r) =>
+      `<div class="appr-row${r.block ? " block" : ""}"><dt>${esc(r.label)}</dt><dd>${esc(r.value)}</dd></div>`).join("")}</dl>`;
+  }
+  function editFormHtml(v, where) {
+    const fields = (v.editable_fields || []).map((f) => {
+      const id = `ef-${where}-${v.id}-${f.key}`, val = esc(f.value);
+      const input = f.type === "textarea" || f.type === "json"
+        ? `<textarea id="${id}" name="${esc(f.key)}" rows="${f.type === "json" ? 7 : 6}" spellcheck="${f.type === "json" ? "false" : "true"}">${val}</textarea>`
+        : `<input id="${id}" type="text" name="${esc(f.key)}" value="${val}" autocomplete="off">`;
+      return `<div class="appr-field"><label for="${id}">${esc(f.label)}</label>${input}</div>`;
+    }).join("");
+    return `<form class="appr-edit" data-id="${v.id}" hidden>${fields}
+      <p class="appr-error" role="alert" hidden></p>
+      <p class="appr-hint">Saving puts the edited version in your queue as a new request. It is only sent when you press Approve on it.</p>
+      <div class="row"><button type="button" class="btn go" data-act="edit-save" data-id="${v.id}">Save edit</button><button type="button" class="btn" data-act="edit-cancel" data-id="${v.id}">Cancel</button></div></form>`;
+  }
+  function cardHtml(v, where = "drawer") {
+    const st = v.status, id = v.id;
+    let level = "", state = APPR_STATE[st] || st, body = "", foot = "";
+    const kind = `<span class="appr-kind">${esc(v.kind_label)}</span>`;
+    if (st === "pending") {
+      level = "warn";
+      foot = `<p class="appr-note appr-safe">Nothing is sent or changed until you press Approve.</p>
+        <div class="row"><button type="button" class="btn go" data-act="approve" data-id="${id}">Approve</button>${v.editable_fields?.length ? `<button type="button" class="btn" data-act="edit" data-id="${id}" aria-expanded="false">Edit</button>` : ""}<button type="button" class="btn stop" data-act="deny" data-id="${id}">Don't send</button></div>${v.editable_fields?.length ? editFormHtml(v, where) : ""}`;
+      if (v.supersede_kind === "edit") state = "Edited - waiting for you";
+      if (v.supersede_kind === "retry") state = "Retry - waiting for you";
+    } else if (st === "failed") {
+      level = "bad";
+      body = `<p class="appr-fail"><b>It didn't go through.</b> ${esc(v.error || "No reason was recorded.")}</p>`;
+      foot = v.can_retry
+        ? `<p class="appr-note">Retry puts it back in your queue as a new request - nothing runs until you press Approve. Check first that it didn't partly go through.</p>
+           <div class="row"><button type="button" class="btn" data-act="retry" data-id="${id}">Retry</button></div>`
+        : (v.superseded_by ? `<p class="appr-note">Retried as #${v.superseded_by}.</p>` : "");
+    } else if (st === "done") {
+      level = "ok"; state = v.automatic ? "Done automatically" : "Done";
+      body = v.result ? `<p class="appr-note">${esc(v.result)}</p>` : "";
+    } else if (st === "denied") {
+      state = v.superseded_by ? `Edited - replaced by #${v.superseded_by}` : "Not sent";
+      body = v.superseded_by ? "" : (v.result ? `<p class="appr-note">${esc(v.result)}</p>` : "");
+    }
+    const compact = !["pending", "failed"].includes(st);
+    return `<article class="approval appr-card${compact ? " resolved" : ""}" data-id="${id}" data-status="${esc(st)}" data-level="${level}" aria-label="${esc(v.kind_label)} - ${esc(state)}">
+      <header class="appr-head">${kind}<span class="appr-id">#${id}</span><span class="appr-state">${esc(state)}</span></header>
+      <p class="appr-summary">${esc(v.summary)}</p>${compact ? "" : detailsHtml(v)}${body}${foot}</article>`;
+  }
+  // Keep the cards already on screen when nothing about them changed, so a card being edited keeps its text, focus and
+  // caret when a live update arrives; replace only the ones that changed, drop the ones that are gone.
+  const cardSig = (v) => [v.id, v.status, v.superseded_by, v.result, v.error, v.summary].join("|");
+  function syncCards(box, views, where) {
+    const have = new Map(Array.from(box.querySelectorAll(":scope > .appr-card")).map((n) => [n.dataset.id, n]));
+    let prev = null;
+    for (const v of views) {
+      let node = have.get(String(v.id)); have.delete(String(v.id));
+      if (!node || node.dataset.sig !== cardSig(v)) {
+        const t = document.createElement("div"); t.innerHTML = cardHtml(v, where).trim();
+        const fresh = t.firstElementChild; fresh.dataset.sig = cardSig(v);
+        if (node) node.replaceWith(fresh); else box.appendChild(fresh);
+        node = fresh;
+      }
+      if (prev ? prev.nextElementSibling !== node : box.firstElementChild !== node) box.insertBefore(node, prev ? prev.nextElementSibling : box.firstChild);
+      prev = node;
+    }
+    have.forEach((n) => n.remove());
+  }
   function renderApprovals() {
-    const list = S.approvals || [];
-    $("#approvals-panel").hidden = !list.length;
-    $("#approvals-empty").hidden = !!(list.length || S.suggestions?.length);
-    $("#approvals-count").textContent = list.length ? String(list.length) : "";
-    $("#approvals").innerHTML = list.map((a) => `<div class="approval">#${a.id} ${esc(a.summary)}
-      ${a.payload?.diff ? `<details class="diff"><summary>Show code change</summary><pre>${esc(a.payload.diff)}</pre></details>` : ""}
-      ${a.kind === "email_send" ? `<details class="diff"><summary>Show email</summary><pre>${esc("To: " + a.payload.to.join(", ") + "\n\n" + a.payload.body)}</pre></details>` : ""}
-      ${a.kind === "sage_invoices" ? `<details class="diff"><summary>Show invoices</summary><pre>${esc(a.payload.jobs.map((j) => `${j.job}  ${j.customer}  £${j.net_value} + VAT  (${j.site})`).join("\n"))}</pre></details>` : ""}
-      ${a.kind === "review_requests" ? `<details class="diff"><summary>Show recipients</summary><pre>${esc(a.payload.requests.map((r) => `${r.email}  ${r.site}`).join("\n"))}</pre></details>` : ""}
-      ${a.kind === "fsm_write" ? `<details class="diff"><summary>Show change</summary><pre>${esc(a.payload.method + " " + a.payload.path + "\n" + JSON.stringify(a.payload.body, null, 2))}</pre></details>` : ""}
-      <div class="row"><button class="btn go" data-act="approve" data-id="${a.id}">Approve</button><button class="btn stop" data-act="deny" data-id="${a.id}">Cancel</button></div></div>`).join("");
+    const pending = S.inbox.pending, failed = S.inbox.failed;
+    $("#approvals-panel").hidden = !pending.length;
+    $("#failed-panel").hidden = !failed.length;
+    $("#approvals-empty").hidden = !!(pending.length || failed.length || S.suggestions?.length);
+    $("#approvals-count").textContent = pending.length ? String(pending.length) : "";
+    $("#failed-count").textContent = failed.length ? String(failed.length) : "";
+    syncCards($("#approvals"), pending, "drawer");
+    syncCards($("#failed-actions"), failed, "drawer");
+    syncChatCards();
     updateOrbBadge();
   }
+  // The conversation copy: one card per action that is queued while you are here (and, when there is already a
+  // conversation on screen, every one still waiting when the page opens), updated in place as it is approved, sent, not
+  // sent, edited or fails. In the empty "welcome" state those already waiting stay in the pop-up, the rail count and
+  // "Needs you" instead, so the core isn't crowded out on a phone. Cards never add the "has-chat" class.
+  function quietExisting() { S.inbox.pending.forEach((v) => S.quietPending.add(String(v.id))); }
+  function syncChatCards() {
+    if (!S.chatReady || !S.inboxLoaded) return;
+    if (!S.chatInit) { S.chatInit = true; if (!S.hasHistory) quietExisting(); }
+    const box = $("#conversation");
+    const all = new Map([...S.inbox.recent, ...S.inbox.failed, ...S.inbox.pending].map((v) => [String(v.id), v]));
+    S.inbox.pending.forEach((v) => { if (!S.quietPending.has(String(v.id))) S.seenPending.add(String(v.id)); });
+    for (const key of S.seenPending) {
+      const v = all.get(key);
+      if (!v) continue;                                   // older than the inbox window: leave whatever is there
+      let wrap = box.querySelector(`.appr-msg[data-id="${key}"]`);
+      if (!wrap) {
+        wrap = document.createElement("div"); wrap.className = "msg assistant appr-msg"; wrap.dataset.id = key;
+        wrap.innerHTML = `<div class="meta">Jarvis · needs your approval</div><div class="appr-slot"></div>`;
+        box.appendChild(wrap); box.scrollTop = 1e9;
+      }
+      syncCards(wrap.querySelector(".appr-slot"), [v], "chat");
+    }
+  }
+  let inboxTimer = null;
+  async function loadInbox() {
+    try {
+      const data = await (await api("/api/approvals/inbox")).json();
+      S.inbox = { pending: data.pending || [], failed: data.failed || [], recent: data.recent || [] };
+      S.approvals = S.inbox.pending;                       // the voice "approve" path and the rail read this
+      S.inboxLoaded = true;
+      renderApprovals(); renderSuggestions(); renderRail();
+    } catch (e) { console.warn(e); }
+  }
+  const loadInboxSoon = () => { clearTimeout(inboxTimer); inboxTimer = setTimeout(loadInbox, 120); };
   function renderSuggestions() {
     const list = S.suggestions || [];
     $("#suggestions-panel").hidden = !list.length;
-    $("#approvals-empty").hidden = !!(list.length || S.approvals?.length);
+    $("#approvals-empty").hidden = !!(list.length || S.inbox.pending.length || S.inbox.failed.length);
     $("#suggestions-count").textContent = list.length ? String(list.length) : "";
     // Every other panel caps what it shows at once (issues 8, notifications 6) - suggestions didn't,
     // so a busy day's list of full-width action cards could bury COMMS/ISSUES/TESTS below the fold.
@@ -1409,11 +1524,73 @@ function send(text, mode = "typed", opts = {}) {
     if (b.dataset.sug === "done" && r.ok) send((await r.json()).prompt, S.speakPref === "always" ? "voice" : "typed");
   });
 
-  $("#approvals").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b) decide(b.dataset.id, b.dataset.act); });
+  // One click handler for every card, in the pop-up and in the conversation. Each of these is a person pressing a button
+  // on an authenticated page; the server decides again (owner session, same-origin, still pending) on every call.
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".appr-card [data-act]");
+    if (!b) return;
+    const card = b.closest(".appr-card"), id = b.dataset.id;
+    switch (b.dataset.act) {
+      case "approve": case "deny": decide(id, b.dataset.act); break;
+      case "retry": retryAction(id, b); break;
+      case "edit": {
+        const form = card.querySelector(".appr-edit"); if (!form) break;
+        form.hidden = !form.hidden; b.setAttribute("aria-expanded", String(!form.hidden));
+        if (!form.hidden) form.querySelector("input, textarea")?.focus({ preventScroll: false });
+        break;
+      }
+      case "edit-cancel": {
+        const form = card.querySelector(".appr-edit");
+        form.querySelectorAll("input, textarea").forEach((f) => { f.value = f.defaultValue; });
+        form.querySelector(".appr-error").hidden = true; form.hidden = true;
+        card.querySelector('[data-act="edit"]')?.setAttribute("aria-expanded", "false");
+        card.querySelector('[data-act="edit"]')?.focus();
+        break;
+      }
+      case "edit-save": saveEdit(id, card.querySelector(".appr-edit"), b); break;
+    }
+  });
+  document.addEventListener("submit", (e) => {
+    const form = e.target.closest?.(".appr-edit"); if (!form) return;
+    e.preventDefault(); form.querySelector('[data-act="edit-save"]')?.click();
+  });
+  async function saveEdit(id, form, btn) {
+    const changes = {};
+    form.querySelectorAll("input, textarea").forEach((f) => { if (f.value !== f.defaultValue) changes[f.name] = f.value; }); // only what was changed
+    const err = form.querySelector(".appr-error");
+    if (!Object.keys(changes).length) { err.textContent = "You haven't changed anything."; err.hidden = false; return; }
+    btn.disabled = true; err.hidden = true;
+    try {
+      const r = await api(`/api/approvals/${id}/edit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ changes }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { err.textContent = data.detail || "That edit couldn't be saved."; err.hidden = false; return; }
+      toast("Edit saved", data.result);
+      await loadInbox();
+    } catch { /* api() handled a sign-out; anything else is shown below */ err.textContent = "That edit couldn't be saved - try again."; err.hidden = false; }
+    finally { btn.disabled = false; }
+  }
+  async function retryAction(id, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api(`/api/approvals/${id}/retry`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) toast("Couldn't retry that", data.detail || "", "warning"); else toast("Queued for approval", data.result);
+      await loadInbox();
+    } catch { toast("Couldn't retry that", "Try again in a moment.", "warning"); }
+    finally { if (btn) btn.disabled = false; }
+  }
+  const setBusy = (id, busy) => $$(`.appr-card [data-act][data-id="${id}"]`).forEach((b) => { b.disabled = busy; });
   async function decide(id, act) {
-    const r = await (await api(`/api/approvals/${id}/${act}`, { method: "POST" })).json();
-    toast(act === "approve" ? "Approved" : "Cancelled", r.result);
-    say(act === "approve" ? "Right, on it." : "Right, I've dropped that one.");
+    setBusy(id, true);                                   // one click, one request: no double approve
+    try {
+      const r = await api(`/api/approvals/${id}/${act}`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { toast("That didn't work", data.detail || "Try again in a moment.", "warning"); await loadInbox(); return; }
+      toast(act === "approve" ? "Approved" : "Not sent", data.result);
+      say(act === "approve" ? "Right, on it." : "Right, I've dropped that one.");
+      await loadInbox();
+    } catch { toast("That didn't work", "Try again in a moment.", "warning"); }
+    finally { setBusy(id, false); }
   }
 
   $("#btn-run-tests").addEventListener("click", async () => { toast("Running routine tests…"); const r = await (await api("/api/tests/run", { method: "POST" })).json(); const bad = r.filter((t) => !t.ok).length; toast("Routine tests finished", bad ? `${bad} failing` : "All passing", bad ? "warning" : "info"); refresh(); });
