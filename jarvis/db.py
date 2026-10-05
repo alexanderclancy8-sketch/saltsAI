@@ -926,6 +926,10 @@ class Database:
         return self.get_false_alarm_record(job_ref) or {}
 
     # -- processed emails -----------------------------------------------------------------
+    def email_processed(self, message_id: str) -> bool:
+        """True if this key was already marked by ``mark_email_processed`` (a read-only look; nothing is written)."""
+        return self.query_one("SELECT 1 AS hit FROM processed_emails WHERE message_id = ?", (message_id,)) is not None
+
     def mark_email_processed(self, message_id: str) -> bool:
         """Returns True if newly marked, False if it had already been processed."""
         with self._lock:

@@ -154,6 +154,43 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "serviceinbox", "Service inbox (service@)",
+        "A second shared mailbox, where Bradford Council portal job requests arrive. Jarvis can read it (shown as "
+        "\"service@\" in Comms) and PROPOSES a job for each council request - nothing is created, sent, replied to "
+        "or deleted without your click. Blank = off. Only you can change these.",
+        (
+            Field("service_inbox", "Service inbox address", "email",
+                  "e.g. service@saltsfireandsecurity.co.uk. Needs Microsoft 365 connected above, and the same Azure "
+                  "app must be allowed to read this mailbox (see the steps below). Blank = Jarvis never reads it."),
+            Field("council_intake_enabled", "Propose jobs from council portal emails", "bool",
+                  "On: every few minutes Jarvis reads new emails in this mailbox that look like a Bradford Council "
+                  "portal request and queues a PROPOSED job for your approval. Off: the mailbox is only readable "
+                  "from Comms and by asking Jarvis."),
+            Field("council_sender_patterns", "Council emails come from",
+                  help="Comma-separated sender domains or addresses, e.g. bradford.gov.uk. A domain also matches its "
+                       "sub-domains. An email from one of these is checked as a possible request."),
+            Field("council_subject_patterns", "Or have these in the subject",
+                  help="Comma-separated phrases (any case), e.g. work order, repair request. An email that "
+                       "matches but is NOT from a sender above is still proposed, marked \"sender not recognised\"."),
+            Field("council_customer_name", "Customer to propose the job against",
+                  help="The Salts FSM customer name used on proposed council jobs. Blank = don't set one.",
+                  advanced=True),
+        ),
+        required=("service_inbox",),
+        test=True,
+        guide=(
+            "Jarvis reads this mailbox through the same Azure app registration as your own mailbox (Microsoft 365 "
+            "above) - no new app and no new secret.",
+            "That app needs a Microsoft Graph APPLICATION permission of Mail.Read (Mail.ReadWrite is fine too) with "
+            "admin consent. If you already granted Mail.ReadWrite for your own mailbox, that already covers it.",
+            "If an Exchange Online Application Access Policy limits which mailboxes the app may use (the README "
+            "suggests one for your own mailbox), add service@ to it, e.g. add the address to the mail-enabled "
+            "security group the policy points at, then wait up to 30 minutes for Exchange to apply it.",
+            "Save, then press Test: it reads one message header from the mailbox and says exactly what to fix if "
+            "Microsoft refuses.",
+        ),
+    ),
+    Section(
         "sharedinbox", "Shared inbox (info@)", "Keeps the shared inbox for important operational items only. "
         "Everything else goes to Teams and the display.",
         (
@@ -545,7 +582,8 @@ OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f 
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
     "staff_report_key", "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
     "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
-    "engineer_model", "engineer_effort"})  # which model / how hard the code-writing agents work: owner's call (cost)
+    "engineer_model", "engineer_effort"}) | frozenset(  # which model / how hard the code-writing agents work: owner's call (cost)
+    f.key for s in SECTIONS if s.id == "serviceinbox" for f in s.fields)  # which extra mailbox Jarvis may read, and what counts as a council request
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -639,6 +677,15 @@ class SettingsStore:
                 value = f"https://{value}"
             if not re.match(r"^https?://[^\s/]+", value):
                 return None, "Start with https://"
+        if key == "service_inbox" and value:
+            value = str(value).lower()
+        if key in ("council_sender_patterns", "council_subject_patterns"):
+            items = [p.strip() for p in str(value).split(",") if p.strip()]
+            if key == "council_sender_patterns" and not all(re.fullmatch(r"[A-Za-z0-9@._\-]{3,100}", p) for p in items):
+                return None, "Use domains or addresses only, separated by commas, e.g. bradford.gov.uk"
+            if len(items) > 20 or any(len(p) > 60 for p in items):
+                return None, "Use up to 20 short entries (60 characters each), separated by commas."
+            value = ",".join(items)
         if key == "ram_api_base_url" and value:
             from .integrations.ramtracking import origin_of
 

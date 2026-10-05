@@ -136,4 +136,8 @@ def build_scheduler(j) -> AsyncIOScheduler:
                       minutes=s.inbox_check_interval_min, id="po_intake_scan", max_instances=1, coalesce=True)
         sched.add_job(_check(j, "job_intake_scan", "Voicemail job intake", j.job_intake.scan_inbox), "interval",
                       minutes=s.inbox_check_interval_min, id="job_intake_scan", max_instances=1, coalesce=True)
+        # service@ (Bradford Council portal requests): does nothing until the owner sets the address in Settings
+        sched.add_job(_check(j, "council_intake_scan", "Council portal request scan", j.council_intake.scan_inbox),
+                      "interval", minutes=s.inbox_check_interval_min, id="council_intake_scan", max_instances=1,
+                      coalesce=True)
     return sched

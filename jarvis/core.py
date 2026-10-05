@@ -40,6 +40,7 @@ from .services.digest import WeeklyDigest
 from .services.documents import Documents
 from .services.false_alarms import FalseAlarmLog
 from .services.images import ImageGenerator
+from .services.council_intake import CouncilIntake
 from .services.job_intake import JobIntake
 from .services.meetings import Meetings
 from .services.ooh import OutOfHours
@@ -59,6 +60,7 @@ from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
+from .services.service_inbox import ServiceInbox
 from .services.routine_tests import RoutineTester
 from .services.fsm_engineer import FsmEngineer
 from .services.security_watch import SecurityWatch
@@ -132,6 +134,10 @@ class Jarvis:
         self.po_intake = PoIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         # voicemail / call-transcript emails -> proposed jobs; each is queued for approval, never created directly
         self.job_intake = JobIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
+        # the second shared mailbox (service@): read for Comms / the Test button; council portal requests in it -> proposed jobs
+        self.service_inbox = ServiceInbox(self)
+        self.council_intake = CouncilIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm,
+                                            self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)
         self.issues.actions = self.actions
         self.fsm_engineer = FsmEngineer(self)  # read-only FSM audit; hands failures to issue_fix (still needs approval)
@@ -215,6 +221,18 @@ class Jarvis:
             out["Speech-to-text"] = SpeechToTextCheck(self.voice)
         return out
 
+    def service_inbox_status(self) -> str:
+        """One honest line for the Connections list: off, waiting for Microsoft 365, or what Jarvis does with the mailbox.
+        Never says DEMO: there is no sample service inbox, so it doesn't add to the console's sample-data count."""
+        s = self.settings
+        if not self.service_inbox.enabled:
+            return "off - no address set (Settings > Service inbox)"
+        if self.mail.demo:
+            return f"{self.service_inbox.address} - waiting for Microsoft 365 to be connected"
+        scan = (f"council portal requests are proposed as jobs every {s.inbox_check_interval_min} min, for your approval"
+                if s.council_intake_enabled else "council request scan is off")
+        return f"{self.service_inbox.address} - readable from Comms; {scan}"
+
     def vehicle_tracking_status(self) -> str:
         """One honest line for the Connections list and the Fleet pop-up: sample data (and exactly which RAM detail is
         still missing), RAM entered but not working (with the reason), or live. "NOT CONNECTED" never contains the word
@@ -253,6 +271,7 @@ class Jarvis:
             "PO intake": (f"scans the inbox every {s.inbox_check_interval_min} min for customer purchase orders, "
                          "matches them to a sent quote and queues the job for your approval" if not self.mail.demo
                          else "DEMO data - connect Microsoft 365"),
+            "Service inbox (service@)": self.service_inbox_status(),
             "Speaking up in chat": (f"on - quiet {s.proactive_quiet_start} to {s.proactive_quiet_end}, at most "
                                     f"{s.proactive_max_per_hour or 'any number'} an hour"
                                     if s.proactive_chat_enabled else "off - Jarvis only answers when you ask"),
