@@ -326,7 +326,9 @@ def test_a_proactive_message_is_read_by_one_tab_only(browser, chat):
         _speak_to(first)                              # a spoken turn: both tabs now know the session is a voice one
         _wait_for_reply(first)
         second.wait_for_selector(".msg.assistant .src", timeout=20000)
-        time.sleep(1.5)
+        for page in (first, second):   # Jarvis only speaks up when nothing else is going on: wait until both tabs are idle
+            page.wait_for_function("document.getElementById('state').textContent.trim() === 'Online'", timeout=20000)
+        time.sleep(1.0)
         before = len(first.evaluate("__voice.speech")) + len(second.evaluate("__voice.speech"))
         first.evaluate("fetch('/__test/proactive', {method: 'POST'})")
         for page in (first, second):

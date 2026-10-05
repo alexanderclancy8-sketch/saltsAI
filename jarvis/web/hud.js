@@ -475,7 +475,7 @@
 
   // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
   // as ordinary chat text - never through decide()/the approvals path.
-  window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => speaksThisTurn(S.lastMode), mode: () => S.lastMode });
+  window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 
   // ------------------------------------------------------------------ self-echo guard
   // Without headphones the mic hears Jarvis's own voice. Nothing heard while he's talking, or in the short tail
