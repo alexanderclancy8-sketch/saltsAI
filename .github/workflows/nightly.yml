@@ -1,0 +1,98 @@
+# Nightly "time-travel" run of the full suite. It exists to catch the failures that only show up when the clock or the
+# time zone is not what the author's machine had: fixtures built around a fixed date that the real date later passes,
+# code that leaks a process-wide TZ, tests that assumed a Windows/UTC box. The PR CI (ci.yml) stays fast and untouched;
+# this is schedule/manual only, so it can never block a pull request - a red run here is a heads-up to fix the test
+# (or the code) before it turns every PR red.
+#
+#   normal            the suite exactly as ci.yml runs it (is the baseline green today?)
+#   clock +40 days    the same suite under libfaketime, 40 days in the future
+#   TZ Auckland       the same suite with the process time zone at UTC+12/+13 (the far side of London/UTC)
+#
+# Run it by hand: Actions tab -> "Nightly time-travel tests" -> Run workflow (or `gh workflow run nightly.yml`).
+# Scheduled workflows only run from the repository's default branch, so this starts firing once it is merged there.
+name: Nightly time-travel tests
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  suite:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false # one scenario failing must not hide the others
+      matrix:
+        include:
+          - name: normal
+          - name: clock +40 days
+            faketime: "+40d"
+          - name: TZ Pacific/Auckland
+            tz: Pacific/Auckland
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Install libfaketime
+        if: matrix.faketime
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq faketime
+      - name: Check the scenario really changes what the tests see
+        if: matrix.faketime || matrix.tz
+        shell: bash
+        env:
+          FAKETIME_OFFSET: ${{ matrix.faketime }}
+          SCENARIO_TZ: ${{ matrix.tz }}
+        run: |
+          if [ -n "$FAKETIME_OFFSET" ]; then
+            real=$(python -c "import time; print(int(time.time()))")
+            fake=$(faketime -f "$FAKETIME_OFFSET" python -c "import time; print(int(time.time()))")
+            days=$(( (fake - real) / 86400 ))
+            echo "faketime $FAKETIME_OFFSET moves the Python clock by $days days"
+            if [ "$days" -lt 39 ] || [ "$days" -gt 41 ]; then
+              echo "::error::libfaketime did not shift the Python clock by ~40 days (got $days); the time-travel run would be meaningless."
+              exit 1
+            fi
+          fi
+          if [ -n "$SCENARIO_TZ" ]; then
+            utc=$(python -c "import datetime; print(datetime.datetime.now().hour)")
+            there=$(TZ="$SCENARIO_TZ" python -c "import datetime; print(datetime.datetime.now().hour)")
+            echo "local hour here: $utc, under TZ=$SCENARIO_TZ: $there"
+            if [ "$utc" = "$there" ]; then
+              echo "::error::TZ=$SCENARIO_TZ did not change the local time; is tzdata installed?"
+              exit 1
+            fi
+          fi
+      - name: Run the full suite (${{ matrix.name }})
+        shell: bash
+        env:
+          FAKETIME_OFFSET: ${{ matrix.faketime }}
+          SCENARIO_TZ: ${{ matrix.tz }}
+          SCENARIO_NAME: ${{ matrix.name }}
+        run: |
+          set +e
+          if [ -n "$SCENARIO_TZ" ]; then export TZ="$SCENARIO_TZ"; fi
+          if [ -n "$FAKETIME_OFFSET" ]; then
+            faketime -f "$FAKETIME_OFFSET" python -m pytest -q -rfE --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
+          else
+            python -m pytest -q -rfE --tb=short -p no:cacheprovider 2>&1 | tee pytest.log
+          fi
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            failed=$(grep -E '^(FAILED|ERROR) ' pytest.log | sort -u)
+            {
+              echo "### Nightly scenario failed: $SCENARIO_NAME"
+              echo
+              echo "pytest exited with status $status. Failing tests:"
+              echo
+              echo '```'
+              echo "${failed:-"(none listed - see the log: probably a collection/crash problem)"}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Nightly scenario '$SCENARIO_NAME' failed::$(echo "$failed" | head -20 | tr '\n' ';')"
+            exit "$status"
+          fi
