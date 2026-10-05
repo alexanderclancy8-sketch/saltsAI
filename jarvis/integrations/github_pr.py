@@ -137,6 +137,7 @@ class PRClient:
         return untrusted(text, limit, self._secrets)
 
     async def _get(self, path: str, **params: Any) -> Any:
+        await self.gh.resolve_default_branch()  # so every later gh.default_branch read is the repo's real main line
         return await self.gh._req("GET", f"/repos/{self.repo}{path}", params=params or None)  # noqa: SLF001
 
     async def _get_all(self, path: str, pages: int = 3, per_page: int = 100) -> list[Any]:
@@ -152,6 +153,7 @@ class PRClient:
         full = f"/repos/{self.repo}{path}"
         if not any(method == m and rx.match(full) for m, rx in _WRITE_ALLOWED):
             raise PRError(f"Refused: {method} {path} is not an allowed GitHub action for Jarvis.")
+        await self.gh.resolve_default_branch()
         _check_payload(method, path, payload, self.gh.default_branch)
         return await self.gh._req(method, full, json=payload)  # noqa: SLF001
 
@@ -249,6 +251,7 @@ class PRClient:
     # ------------------------------------------------------------------ (3) repo_read
     async def read(self, path: str = "", ref: str | None = None, start_line: int = 1) -> Any:
         path = check_path(path)
+        await self.gh.resolve_default_branch()
         ref = check_ref(ref) if ref else self.gh.default_branch
         data = await self._get(f"/contents/{quote(path, safe='/')}" if path else "/contents", ref=ref)
         if isinstance(data, list):
@@ -276,6 +279,7 @@ class PRClient:
         needle = (query or "").strip().lower()
         if len(needle) < 2:
             raise PRError("Give at least two characters to search for.")
+        await self.gh.resolve_default_branch()
         ref = check_ref(ref) if ref else self.gh.default_branch
         import fnmatch
 
@@ -339,6 +343,7 @@ class PRClient:
         """Open a PR from ``head`` into ``base``, both branches of this repository. ``head`` can never be main/master
         or the default branch (that would mean pushing to main); nothing is pushed or merged by opening a PR."""
         head, base = check_ref(head), check_ref(base)
+        await self.gh.resolve_default_branch()
         if head in PROTECTED_BRANCHES or head == self.gh.default_branch:
             raise PRError(f"Refused: '{head}' is the main branch. A pull request has to come from a separate branch - "
                           "Jarvis never pushes to main.")
@@ -390,8 +395,9 @@ class PRClient:
                 "url": data.get("html_url")}
 
     # ------------------------------------------------------------------ pr_resolve_conflicts without git  [WRITE]
-    def _check_pr_branch(self, branch: str, base: str) -> tuple[str, str]:
+    async def _check_pr_branch(self, branch: str, base: str) -> tuple[str, str]:
         branch, base = check_ref(branch), check_ref(base)
+        await self.gh.resolve_default_branch()
         if branch in PROTECTED_BRANCHES or branch in (self.gh.default_branch, base):
             raise PRError(f"Refused: '{branch}' is main or the base branch - Jarvis never pushes to it.")
         return branch, base
@@ -399,7 +405,7 @@ class PRClient:
     async def update_branch(self, branch: str, base: str, message: str) -> dict[str, Any]:
         """Merge ``base`` into the PR branch ``branch`` with GitHub's merges API. ``result`` is ``merged`` (with the
         new ``sha``), ``up_to_date`` (nothing to merge) or ``conflict`` (GitHub answered 409: a real conflict)."""
-        branch, base = self._check_pr_branch(branch, base)
+        branch, base = await self._check_pr_branch(branch, base)
         try:
             data = await self._send("POST", "/merges", {"base": branch, "head": base, "commit_message": message})
         except RuntimeError as e:
@@ -433,7 +439,7 @@ class PRClient:
         sides to different results (a superset of what git would flag - there is no line-level merge here);
         ``unsupported`` are those where one side deleted the file; ``theirs_only`` are base-side changes that carry
         over unchanged."""
-        branch, base = self._check_pr_branch(branch, base)
+        branch, base = await self._check_pr_branch(branch, base)
         mine = {f["filename"]: f for f in await self._compare_files(f"{quote(base, safe='/')}...{quote(branch, safe='/')}")}
         theirs = {f["filename"]: f for f in await self._compare_files(f"{quote(branch, safe='/')}...{quote(base, safe='/')}")}
         conflicts, unsupported = [], []
@@ -468,7 +474,7 @@ class PRClient:
         """Create a two-parent merge commit (``head_sha`` = the PR branch tip, plus the tip of ``base``) through the git
         data API and move the PR branch to it. The tree is the PR branch's tree plus the base-side-only changes plus the
         supplied ``resolutions``. The ref update is never forced, so a branch that moved meanwhile makes it fail."""
-        branch, base = self._check_pr_branch(branch, base)
+        branch, base = await self._check_pr_branch(branch, base)
         head_commit = await self._get(f"/git/commits/{head_sha}")
         base_commit = await self._get(f"/commits/{quote(base, safe='/')}")
         base_tree = await self._get(f"/git/trees/{base_commit['commit']['tree']['sha']}", recursive=1)

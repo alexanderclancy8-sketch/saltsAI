@@ -198,7 +198,10 @@ class Settings(BaseSettings):
     # --- Self-improvement (Jarvis's own source) --------------------------
     jarvis_repo: str = ""  # owner/repo - this repository, so Jarvis can propose changes to itself
     jarvis_github_token: str = ""  # blank reuses github_token if that PAT already covers this repo too
-    jarvis_default_branch: str = "main"
+    jarvis_default_branch: str = "main"  # FALLBACK main line, used only if GitHub can't report the repo's default branch
+    # Target/branch from the repository's real default branch (GitHub API ``default_branch``) rather than the configured
+    # one above, so self-improvement PRs land on the main line even if JARVIS_DEFAULT_BRANCH is stale or unset.
+    jarvis_follow_default_branch: bool = True
 
     # --- Azure ------------------------------------------------------------
     azure_storage_connection_string: str = ""
