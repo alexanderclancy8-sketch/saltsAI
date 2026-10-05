@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from ..brain import llm, plugins
+from .agent_runs import AgentRuns
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ class SelfImprove:
         self.client = client
         self.gh = github
         self._tasks: set[asyncio.Task] = set()
+        self.runs = AgentRuns(db)
 
     @property
     def enabled(self) -> bool:
@@ -127,6 +129,19 @@ class SelfImprove:
 
     # ------------------------------------------------------------------ entry point
     async def run(self, request: str) -> dict[str, Any]:
+        if not self.enabled:
+            return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
+        with self.runs.track("self_improve", request):  # progress record for the agent_runs tool; changes nothing
+            result = await self._run(request)
+            if "error" in result:
+                self.runs.finish("failed", result["error"])
+            elif "pr_url" in result:
+                self.runs.finish("submitted", result["pr_url"])
+            else:
+                self.runs.finish("gave_up", result.get("analysis", ""))
+        return result
+
+    async def _run(self, request: str) -> dict[str, Any]:
         if not self.enabled:
             return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
         try:
@@ -207,7 +222,9 @@ class SelfImprove:
                     out, finished_now = self._tool_call(block.name, block.input, ws)
                     finished = finished or finished_now
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+                    self.runs.step(block.name, block.input)
                 except (WorkspaceError, ValidationError, ValueError, OSError) as e:
+                    self.runs.step(block.name, block.input, ok=False)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                     "content": json.dumps({"error": str(e)[:2000]})})
             if finished:
@@ -229,6 +246,7 @@ class SelfImprove:
             analysis: str = ""
 
         ws.snapshot()
+        self.runs.note("handed to Claude Code (subscription backend) - no per-step trail on this backend")
         system = SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request) \
             .replace("/repo", "the current directory").replace(
                 "Finish by calling `submit_change`. If what's being asked isn't safe, isn't a good idea, or "

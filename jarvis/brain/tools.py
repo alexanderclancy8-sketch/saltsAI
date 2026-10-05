@@ -396,6 +396,11 @@ class SelfImproveIn(BaseModel):
     request: str = Field(description="What to add, change or fix in Jarvis's own code, in plain English")
 
 
+class AgentRunsIn(BaseModel):
+    limit: int = Field(5, description="How many of the most recent runs to list (newest first)")
+    run_id: int | None = Field(None, description="Show one run by its id, with its full trail of steps")
+
+
 class HealthIn(BaseModel):
     days: int = Field(90, description="Period to assess, in days")
 
@@ -1075,6 +1080,13 @@ async def run_security_review(j, a: NoInput):
 
 async def self_improve(j, a: SelfImproveIn):
     return j.self_improve.start(a.request)
+
+
+async def agent_runs(j, a: AgentRunsIn):
+    from ..services.agent_runs import STALL_AFTER, AgentRuns
+
+    runs = AgentRuns(j.db).recent(a.limit, a.run_id)
+    return {"runs": runs, "stalled_after_minutes": int(STALL_AFTER.total_seconds() // 60)}
 
 
 async def log_job(j, a: LogJobIn):
@@ -2060,6 +2072,13 @@ TOOLS: list[Tool] = [
                         "it behaves - and open a pull request for it. Never merged or deployed automatically, "
                         "always left for a human to review and merge. Runs in the background and can take a "
                         "few minutes.", SelfImproveIn, self_improve, "Working on myself"),
+    Tool("agent_runs", "Read-only progress report on the background engineering agents (self_improve changes to "
+                       "Jarvis's own code, issue auto-fixes, security reviews): current and recent runs with "
+                       "status (running / submitted / gave_up / failed / stalled), when each started, when it "
+                       "last did anything, and the trail of what it has done so far. 'stalled' means it's "
+                       "still marked running but has been silent for 30+ minutes. Use it when the owner asks "
+                       "what an agent is up to, whether it's stuck, or why nothing has come back yet.",
+         AgentRunsIn, agent_runs, "Checking on the engineering agents"),
     Tool("log_job", "Log a new job in Salts FSM from a plain description - a fault report, call-out or booking. "
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "

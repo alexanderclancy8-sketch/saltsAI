@@ -24,6 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from ..brain import llm
+from .agent_runs import AgentRuns
 from .digest import security_kind
 from .workspace import Workspace, WorkspaceError
 
@@ -109,6 +110,7 @@ class SecurityWatch:
         self.gh = github
         self.issues = issues
         self._tasks: set[asyncio.Task] = set()
+        self.runs = AgentRuns(db)
 
     @property
     def enabled(self) -> bool:
@@ -125,6 +127,18 @@ class SecurityWatch:
 
     # ------------------------------------------------------------------ entry point
     async def run(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"error": "Not configured (needs GITHUB_TOKEN and FSM_REPO)."}
+        with self.runs.track("security_watch", "Security review of the Salts FSM codebase"):  # progress record only
+            result = await self._run()
+            if "error" in result:
+                self.runs.finish("failed", result["error"])
+            else:
+                self.runs.finish("submitted", f"{len(result.get('new_issues', []))} new finding(s). "
+                                              f"{result.get('summary', '')}")
+        return result
+
+    async def _run(self) -> dict[str, Any]:
         if not self.enabled:
             return {"error": "Not configured (needs GITHUB_TOKEN and FSM_REPO)."}
         sha = await self.gh.branch_sha()
@@ -213,7 +227,9 @@ class SecurityWatch:
                     if block.name == "submit_findings":
                         finished = SubmitFindings.model_validate(block.input)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
+                    self.runs.step(block.name, block.input)
                 except (WorkspaceError, ValidationError, ValueError) as e:
+                    self.runs.step(block.name, block.input, ok=False)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                     "content": str(e)[:2000]})
             if finished:
@@ -238,6 +254,7 @@ class SecurityWatch:
         """Same review on the Claude subscription: Claude Code's own read-only tools, confined to the checkout."""
         from ..brain.max_backend import parse_structured, run_once
 
+        self.runs.note("handed to Claude Code (subscription backend) - no per-step trail on this backend")
         system = SECURITY_SYSTEM.format(company=self.s.company_name).replace("/repo", "the current directory")
         result = await run_once(self.s, system=system,
                                 prompt="Review the whole repository for security vulnerabilities.",
