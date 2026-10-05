@@ -28,10 +28,12 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ValidationError
 
 from . import plugins
+from .. import access
 from ..redact import redact_text
 from ..events import quiet_turn
+from ..services.conversation_quality import TurnRecord
 from ..services.tracking import requester_label
-from .prompts import build_system
+from .prompts import build_system, build_team_system
 from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 
@@ -60,26 +62,30 @@ def base_options(settings, *, model: str | None = None, **kw: Any):
                               permission_mode="dontAsk", **kw)
 
 
-def build_sdk_tools(j, tools: list | None = None) -> list:
+def build_sdk_tools(j, tools: list | None = None, caller: access.Caller | None = None, bus=None) -> list:
+    """``caller`` / ``bus``: for a Team-mode session's brain - every call is dispatched as that caller (so
+    ``access.tool_allowed`` applies even if the SDK were somehow asked for another tool) and its tool events go to that
+    session's own bus. The owner's brain passes neither."""
     from claude_agent_sdk import tool
 
+    events = bus or j.bus
     sdk_tools = []
     for t in (tools if tools is not None else TOOLS):
         async def handler(args: dict[str, Any], _t=t) -> dict[str, Any]:
             call_id = uuid.uuid4().hex[:8]
-            j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "start"})
+            events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "start"})
             try:
                 parsed = _t.model.model_validate(args or {})
-                result = await dispatch(j, _t, parsed)
-                j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "done"})
+                result = await dispatch(j, _t, parsed, caller=caller)
+                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "done"})
                 return {"content": [{"type": "text", "text": serialise(result)}]}
             except ValidationError as e:
-                j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
+                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
                 return {"content": [{"type": "text", "text": json.dumps({"INVALID_INPUT": e.errors(include_url=False)},
                                                                          default=str)}], "is_error": True}
             except Exception as e:  # noqa: BLE001
                 log.exception("Tool %s failed", _t.name)
-                j.bus.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
+                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
                 return {"content": [{"type": "text", "text": redact_text(f"{type(e).__name__}: {e}")[:2000]}],
                         "is_error": True}
 
@@ -87,11 +93,13 @@ def build_sdk_tools(j, tools: list | None = None) -> list:
     return sdk_tools
 
 
-def build_mcp_server(j, tool_names: list[str] | None = None):
+def build_mcp_server(j, tool_names: list[str] | None = None, caller: access.Caller | None = None, bus=None):
     from claude_agent_sdk import create_sdk_mcp_server
 
     tools = [t for t in TOOLS if tool_names is None or t.name in tool_names] if tool_names is not None else None
-    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j, tools))
+    if caller is not None:  # never expose a tool the caller may not use, whatever names were asked for
+        tools = [t for t in (tools if tools is not None else TOOLS) if access.tool_allowed(t.name, caller)]
+    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j, tools, caller, bus))
 
 
 def _tool_label(name: str) -> str:
@@ -114,10 +122,15 @@ class MaxBrain:
     from the task that connected it, so a single worker task owns it and handles messages one at a time.
     """
 
-    def __init__(self, j):
+    def __init__(self, j, caller: access.Caller | None = None, bus=None):
         self.j = j
         self.s = j.settings
-        self.server = build_mcp_server(j)
+        self.caller = caller
+        self.team = caller is not None and caller.is_team
+        self.bus = bus or j.bus
+        self.trace = None  # a team session describes its own turns (set by TeamSessions); the owner's is j.trace
+        self.tools = [t for t in TOOLS if access.tool_allowed(t.name, caller)]
+        self.server = build_mcp_server(j, [t.name for t in self.tools], caller, bus) if self.team else build_mcp_server(j)
         self.session_id: str | None = None
         self.messages: list[dict[str, Any]] = []  # kept for interface parity (history lives in the session)
         self.uploads = self.s.data_dir / "uploads"
@@ -134,16 +147,20 @@ class MaxBrain:
         self.refresh_system()
 
     def refresh_system(self) -> None:
-        blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
-                              history_before_id=self._history_before)
+        if self.team:
+            blocks = build_team_system(self.s, self.j.kb, self.caller)
+        else:
+            blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
+                                  history_before_id=self._history_before)
         self.system = "\n\n".join(b["text"] for b in blocks)
 
     def reset(self) -> None:
         self.session_id = None
         self._fresh_start = True  # the worker restarts Claude Code without the old conversation
-        self._history_before = self.j.db.last_transcript_id()
+        if not self.team:
+            self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
-        self.j.bus.publish("conversation_reset", None)
+        self.bus.publish("conversation_reset", None)
 
     def _save_attachments(self, attachments: list[dict[str, str]] | None) -> list[str]:
         import base64
@@ -175,6 +192,8 @@ class MaxBrain:
                   speaker: str | None = None) -> str:
         # The worker task runs the turn, so a background (silent) turn has to say so explicitly - a context variable
         # set here would not reach it. See events.quiet_turn.
+        if self.team:
+            attachments = None  # a team session has no attachments (and no file reading: the Read tool is not offered)
         return await self._submit(("ask", text, mode, attachments, speaker, quiet_turn.get()))
 
     async def warm(self) -> None:
@@ -227,7 +246,8 @@ class MaxBrain:
 
     async def _connected(self, effort: str, model: str):
         """The running Claude Code client, restarted only if effort, model, instructions or the conversation changed."""
-        extra = plugins.chat_setup(self.s)  # read-only browsing, only if switched on AND every safeguard is met
+        # read-only browsing, only if switched on AND every safeguard is met; never for a team session
+        extra = plugins.PluginSetup() if self.team else plugins.chat_setup(self.s)
         key = (effort, model, self.system, extra.signature)
         if self._client is not None and self._client_key == key and not self._fresh_start:
             return self._client
@@ -239,9 +259,10 @@ class MaxBrain:
         more: dict[str, Any] = {"hooks": extra.hooks()} if extra.guard is not None else {}
         options = base_options(
             self.s, model=model, system_prompt=self.system + extra.prompt, effort=effort,
-            tools=CHAT_BUILTINS, mcp_servers={SERVER: self.server, **extra.mcp_servers},
-            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in TOOLS] + CHAT_BUILTINS + extra.allowed_tools,
-            disallowed_tools=BLOCKED,
+            tools=[] if self.team else CHAT_BUILTINS, mcp_servers={SERVER: self.server, **extra.mcp_servers},
+            allowed_tools=[f"mcp__{SERVER}__{t.name}" for t in self.tools] + ([] if self.team else CHAT_BUILTINS)
+            + extra.allowed_tools,
+            disallowed_tools=BLOCKED + (["WebSearch", "WebFetch", "Read"] if self.team else []),
             include_partial_messages=True, resume=self.session_id, max_turns=30, cwd=str(self.uploads), **more)
         started = time.monotonic()
         client = ClaudeSDKClient(options=options)
@@ -261,6 +282,14 @@ class MaxBrain:
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
                     speaker: str | None = None, quiet: bool = False) -> str:
         token = quiet_turn.set(quiet)
+        if self.team:
+            # the caller travels with the turn, never in the shared j.asked_by that belongs to the owner's turn
+            who = access.current_caller.set(self.caller)
+            try:
+                return await self._turn_events(text, mode, attachments, speaker)
+            finally:
+                access.current_caller.reset(who)
+                quiet_turn.reset(token)
         # who is asking, for the out-of-hours van look-up log (read by the tracking tools)
         self.j.asked_by = requester_label(self.s, speaker, quiet)
         try:
@@ -273,15 +302,17 @@ class MaxBrain:
                            speaker: str | None = None) -> str:
         from claude_agent_sdk import ResultMessage, StreamEvent
 
-        bus, db = self.j.bus, self.j.db
+        bus, db = self.bus, self.j.db
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
         repeat = repeat_note(self._repeats.check(text))
         files = self._save_attachments(attachments)
         note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
-        db.add_transcript("user", text)
-        qt = self.j.quality.begin(text, mode)  # conversation-quality metrics; never raises (see conversation_quality.py)
+        if not self.team:  # a team session is never written to the owner's transcript or metrics
+            db.add_transcript("user", text)
+        qt = (TurnRecord(self.j.quality, None, mode) if self.team  # a record with no id measures nothing
+              else self.j.quality.begin(text, mode))  # conversation-quality metrics; never raises (see conversation_quality.py)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode, "turn_id": qt.turn_id})
 
@@ -358,9 +389,12 @@ class MaxBrain:
             bus.publish("error", {"message": msg, "detail": redact_text(detail)[:300]})
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
-        db.add_transcript("assistant", reply)
+        if not self.team:
+            db.add_transcript("assistant", reply)
         qt.finish(reply)
-        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **self.j.trace.finish()})
+        trace = self.trace if self.team else self.j.trace
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id,
+                              **(trace.finish() if trace is not None else {})})
         return reply
 
 

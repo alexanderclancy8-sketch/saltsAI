@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .. import demo_guard, history
+from .. import access, demo_guard, history
 from ..humanize import human_datetime
 from ..redact import redact_text
 from ..services.async_tools import DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S
@@ -41,8 +41,25 @@ class Tool:
                 "eager_input_streaming": True}
 
 
-async def dispatch(j, tool: Tool, args: BaseModel) -> Any:
-    """Run a read-only tool now; anything that changes something is queued for the owner's approval."""
+async def dispatch(j, tool: Tool, args: BaseModel, caller: access.Caller | None = None) -> Any:
+    """Run a read-only tool now; anything that changes something is queued for the owner's approval.
+
+    ``caller`` is who is asking (None = the owner's own conversation, a scheduled job or Jarvis himself, as always). This is
+    the one chokepoint every conversation's tool calls pass through, so it is where Team mode is enforced for tools:
+    ``access.tool_allowed`` refuses anything outside a team caller's allowlist even if some other layer offered it. While the
+    handler runs, the caller is available as ``access.current_caller`` (the approval queue records who asked for an action)."""
+    caller = caller if caller is not None else access.current_caller.get()
+    if not access.tool_allowed(tool.name, caller):
+        return access.refusal(tool.name)
+    token = access.current_caller.set(caller) if caller is not None else None
+    try:
+        return await _dispatch(j, tool, args)
+    finally:
+        if token is not None:
+            access.current_caller.reset(token)
+
+
+async def _dispatch(j, tool: Tool, args: BaseModel) -> Any:
     if tool.approval:
         summary = tool.describe(args) if tool.describe else f"{tool.label}: {args.model_dump_json()}"
         action_id = j.actions.queue(f"tool:{tool.name}", summary, {"tool": tool.name, "args": args.model_dump()})
@@ -1585,7 +1602,11 @@ async def stock_job_materials(j, a: JobRefIn):
 
 def _asker(j) -> str:
     """Who is asking in this conversation, for the out-of-hours van look-up log ("" when no turn is running, which
-    keeps out-of-hours positions hidden - see services/tracking.py)."""
+    keeps out-of-hours positions hidden - see services/tracking.py). A team session's turn carries its caller in a context
+    variable (never in the shared ``j.asked_by``, which belongs to the owner's turn), so the look-up is logged against them."""
+    caller = access.current_caller.get()
+    if caller is not None and caller.is_team:
+        return caller.label
     return str(getattr(j, "asked_by", "") or "")
 
 
@@ -1908,7 +1929,9 @@ async def fsm_engineer_audit(j, a: FsmEngineerAuditIn):
 
 
 async def knowledge_search(j, a: KnowledgeIn):
-    return j.kb.search(a.query) or "Nothing relevant in the knowledge base."
+    caller = access.current_caller.get()
+    exclude = access.TEAM_KB_EXCLUDED if caller is not None and caller.is_team else ()  # never the owner's private notes
+    return j.kb.search(a.query, exclude_prefixes=exclude) or "Nothing relevant in the knowledge base."
 
 
 async def remember(j, a: RememberIn):
@@ -1963,11 +1986,11 @@ async def watch_action(j, a: WatchActionIn):
 
 
 async def run_in_background(j, a: RunInBackgroundIn):
-    return j.async_tools.start(a.tool, a.args, a.policy, a.timeout_s)
+    return j.async_tools.start(a.tool, a.args, a.policy, a.timeout_s, caller=access.current_caller.get())
 
 
 async def background_results(j, a: BackgroundResultsIn):
-    return j.async_tools.results(a.limit, a.call_id)
+    return j.async_tools.results(a.limit, a.call_id, caller=access.current_caller.get())
 
 
 async def archive_to_azure(j, a: ArchiveIn):

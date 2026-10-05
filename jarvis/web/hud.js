@@ -1,7 +1,14 @@
 /* JARVIS HUD - live display, conversation, voice in/out. */
 (() => {
   "use strict";
-  const $ = (s) => document.querySelector(s);
+  // Team mode: a team member's page is sent WITHOUT the Finance / Approvals / Comms / Issues / Health / Memory / Connections
+  // markup (the server strips it), and every route behind those is refused to a team session by the server. This script only
+  // has to cope with that markup being absent: lookups of it get a detached element that absorbs them, and the code below
+  // never fetches data for a section a team member does not have.
+  const ROLE = document.body.dataset.role || "owner";
+  const TEAM = ROLE === "team", WHO = document.body.dataset.who || "";
+  const GHOST = document.createElement("div");
+  const $ = (s) => document.querySelector(s) || (TEAM ? GHOST : null);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
   const store = {
     get(k, d) { try { const v = localStorage.getItem("jarvis." + k); return v === null ? d : v; } catch { return d; } },
@@ -144,7 +151,7 @@
 
   // ------------------------------------------------------------------ HUD state + reactor
   // What he calls the owner follows the "How Jarvis talks" setting (the server sends it as status.address).
-  const address = () => S.status?.address || "sir";
+  const address = () => TEAM ? (WHO.split(" ")[0] || "there") : (S.status?.address || "sir");
   const STATE_LABEL = { idle: "Online", listening: "Listening", thinking: "Working", speaking: "Speaking", get awaiting() { return `Yes, ${address()}?`; } };
   function setHud(state) {
     S.hudState = state;
@@ -169,7 +176,7 @@
     current: null, opener: null,
     isOpen() { return $("#drawer").classList.contains("open"); },
     show(name, opener) {
-      if (!POPS.includes(name)) return;
+      if (!POPS.includes(name) || !document.getElementById(`pop-${name}`)) return; // (a team page has no Finance, Approvals ...)
       const first = !this.isOpen();
       if (first) this.opener = opener || document.activeElement;
       this.current = name;
@@ -183,7 +190,8 @@
       if (name === "fleet") fitMapSoon();             // the map is laid out at 0x0 while hidden; re-measure now it can be seen
       if (name === "demo") renderDemo();
       if (name === "memory") window.JarvisMemory?.load();
-      if (name === "settings" || name === "connections") {
+      if (name === "settings" && ROLE === "owner") TeamAccess.load();
+      if ((name === "settings" || name === "connections") && !TEAM) {
         if (!Settings.loaded) Settings.load();
         if (name === "connections") Settings.showList();
       }
@@ -219,7 +227,10 @@
   // ------------------------------------------------------------------ rail counts and the "Needs you" strip
   // Both are computed from the same status data the pop-ups render. A rail count turns amber when that section needs a
   // look and red when something is failing; "Needs you" shows the three most urgent things, each opening its pop-up.
+  // A team console has none of Approvals, Comms, Issues, Health or Finance: nothing about them is fetched, counted or listed.
+  const TEAM_HIDDEN = ["approvals", "comms", "issues", "health", "finance"];
   function setRail(name, n, level, text) {
+    if (TEAM && TEAM_HIDDEN.includes(name)) return;
     const item = $(`.rail-item[data-pop="${name}"]`), count = $(`#rc-${name}`);
     if (!item || !count) return;
     count.textContent = String(n);
@@ -232,7 +243,7 @@
   function renderRail() {
     const d = S.data || {};
     const needs = [];
-    const add = (weight, level, text, pop) => needs.push({ weight, level, text, pop });
+    const add = (weight, level, text, pop) => { if (!(TEAM && TEAM_HIDDEN.includes(pop))) needs.push({ weight, level, text, pop }); };
 
     // Counts follow the design mockup: Approvals = actions waiting for a click (suggestions are listed inside the pop-up and
     // in "Needs you"); Comms = unread; Issues = open; Health = passed/total; Ops = things needing attention; Fleet reads
@@ -495,7 +506,7 @@
 
   // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
   // as ordinary chat text - never through decide()/the approvals path.
-  window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
+  if (!TEAM) window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
   window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 
   // ------------------------------------------------------------------ self-echo guard
@@ -558,6 +569,7 @@
   // here must never affect speech or the conversation, so every call swallows its errors.
   const turnClock = { sentAt: 0, turnId: null }; // sentAt: performance.now() when a spoken request was sent
   function voiceEvent(body) {
+    if (TEAM) return; // the conversation-quality records are the owner's; a team console reports nothing to them
     try { api("/api/voice-events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {}); } catch { /* never matters */ }
   }
   function noteFirstAudio() {
@@ -739,7 +751,7 @@
   function addMessage(role, text, extra = "") {
     const el = document.createElement("div");
     el.className = `msg ${role}`;
-    el.innerHTML = `<div class="meta">${role === "user" ? esc(S.status?.owner || "You") : "Jarvis"}${extra ? " · " + esc(extra) : ""}</div><div class="md"></div>`;
+    el.innerHTML = `<div class="meta">${role === "user" ? esc(TEAM ? (WHO || "You") : (S.status?.owner || "You")) : "Jarvis"}${extra ? " · " + esc(extra) : ""}</div><div class="md"></div>`;
     el.querySelector(".md").innerHTML = role === "assistant" ? md(text) : esc(text).replace(/\n/g, "<br>");
     $("#conversation").appendChild(el);
     $("#conversation").scrollTop = 1e9;
@@ -783,6 +795,7 @@
   });
 
   async function loadTranscript() {
+    if (TEAM) { S.chatReady = true; return; } // a team member starts a fresh conversation: the owner's record is not theirs
     try {
       const rows = await (await api("/api/transcript")).json();
       rows.slice(-20).forEach((r) => addMessage(r.role, r.text, time(r.created_at)));
@@ -911,6 +924,7 @@ function send(text, mode = "typed", opts = {}) {
     rsRender();
   }
   function rsSoon() {
+    if (TEAM) return; // learned replies are the owner's
     clearTimeout(RS.timer);
     const v = $("#input").value;
     // Already showing something that still fits what's typed: no need to ask again.
@@ -1209,7 +1223,16 @@ function send(text, mode = "typed", opts = {}) {
   });
 
   // ------------------------------------------------------------------ panels
+  async function refreshTeam() {
+    const st = await (await api("/api/status")).json();
+    S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); sttStatus.render();
+    S.data = { staff: st.staff, overdue_jobs: st.overdue_jobs, presence: st.presence, accreditations: st.accreditations };
+    $("#company").textContent = (st.company || "").toUpperCase();
+    renderOps(st.staff, st.overdue_jobs); renderPresence(st.presence); renderDeadlines([], st.accreditations); renderSettings(st);
+    renderRail(); if (Drawer.current === "fleet") renderFleetStatus();
+  }
   async function refresh() {
+    if (TEAM) { try { await refreshTeam(); } catch (e) { console.warn(e); } return; }
     try {
       const st = await (await api("/api/status")).json();
       S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); sttStatus.render(); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
@@ -1496,6 +1519,7 @@ function send(text, mode = "typed", opts = {}) {
   }
   let inboxTimer = null;
   async function loadInbox() {
+    if (TEAM) return; // no approvals inbox on a team console
     try {
       const data = await (await api("/api/approvals/inbox")).json();
       S.inbox = { pending: data.pending || [], failed: data.failed || [], recent: data.recent || [] };
@@ -1608,6 +1632,10 @@ function send(text, mode = "typed", opts = {}) {
   // live: RAM answers. failing: its details are entered but it is not answering (why = the reason, in words). Otherwise
   // it is still on sample data (why = what is still missing). Only "live" ever shows vehicles.
   function fleetState() {
+    if (TEAM) {  // no connection list on a team page: the status says only whether vehicle tracking is live
+      const live = !!S.status?.fleet?.connected;
+      return { live, failing: false, why: live ? "" : (S.status?.fleet?.why || "") };
+    }
     const conn = S.status?.connections?.["Vehicle tracking"] || "";
     const failing = /^NOT CONNECTED/.test(conn) || !!S.tracking?.ram_error;
     const live = !!conn && !isDemo(conn) && !failing;
@@ -1624,8 +1652,9 @@ function send(text, mode = "typed", opts = {}) {
     if (!connected) {
       // Not connected (still sample data, or entered but not answering): say so plainly, with the reason, and show no
       // map (sample positions are not vehicles).
-      el.innerHTML = `<span>Vehicle tracking is not connected, so there are no live vehicle positions. ${fleet.failing ? esc(fleet.why) : fleet.why ? esc(fleet.why[0].toUpperCase() + fleet.why.slice(1)) : "Add the RAM Tracking details under Connections."}</span>`;
-      el.insertAdjacentHTML("beforeend", `<button class="btn small" type="button" data-pop="connections">Open Connections</button>`);
+      el.innerHTML = `<span>Vehicle tracking is not connected, so there are no live vehicle positions. ${fleet.failing ? esc(fleet.why) : fleet.why ? esc(fleet.why[0].toUpperCase() + fleet.why.slice(1)) : TEAM ? "" : "Add the RAM Tracking details under Connections."}</span>`;
+      if (!TEAM) el.insertAdjacentHTML("beforeend", `<button class="btn small" type="button" data-pop="connections">Open Connections</button>`);
+      else el.insertAdjacentHTML("beforeend", `<span> Ask the office to connect it.</span>`);
     } else {
       el.textContent = !data ? "Loading…" : data.rate_limited ? data.note : data.working_hours === false ? (data.note || "Outside working hours - locations are not shown.")
         : vans ? `Live from ${conn}: ${plural(vans, "vehicle", "vehicles")} reporting.` : "Connected, but no vehicles are reporting right now.";
@@ -2661,6 +2690,51 @@ function send(text, mode = "typed", opts = {}) {
   $("#set-talk").addEventListener("change", (e) => Settings.setTalk(e.target.value));
   $("#btn-settings-save").addEventListener("click", () => Settings.save());
   $("#btn-settings-cancel").addEventListener("click", () => Settings.revert());
+
+  // ------------------------------------------------------------------ team access (the owner's Settings)
+  // The code engineers and office staff use at /login (Team sign-in). Only the owner sees this and only the owner's session
+  // is accepted by /api/team-access. The code is typed here, goes to the server once and is stored only as a salted hash:
+  // it is never shown again, so the box is always empty.
+  const TeamAccess = {
+    info: null,
+    async load() {
+      if (!$("#team-access-status") || ROLE !== "owner") return;
+      try { this.info = await (await api("/api/team-access")).json(); } catch { this.info = null; }
+      this.render();
+    },
+    render() {
+      const i = this.info, el = $("#team-access-status");
+      if (!el) return;
+      el.textContent = !i ? "Couldn't read the team access setting."
+        : i.enabled ? `On. Code last set ${i.updated_at ? new Date(i.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "earlier"}${i.sessions ? `; ${plural(i.sessions, "person", "people")} signed in now` : ""}.`
+          : "Off. Nobody can sign in to the team console.";
+      $("#btn-team-off").hidden = !(i && i.enabled);
+      $("#btn-team-set").textContent = i && i.enabled ? "Change code" : "Turn on with this code";
+    },
+    async send(method, body) {
+      const r = await api("/api/team-access", { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { toast("Team access didn't change", data.detail || "Try again.", "warning"); return false; }
+      this.info = data; this.render(); return true;
+    },
+  };
+  $("#btn-team-set")?.addEventListener("click", async () => {
+    const box = $("#team-code"), code = box.value.trim();
+    if (code.length < 8) { toast("Use at least 8 characters", "Pick a code the team can remember, and tell them it.", "warning"); box.focus(); return; }
+    if (await TeamAccess.send("POST", { code })) { box.value = ""; toast("Team code saved", "Anyone signed in with the old code has been signed out."); }
+  });
+  $("#btn-team-off")?.addEventListener("click", async () => {
+    if (confirm("Switch off team sign-in? Everyone signed in as team will be signed out.") && await TeamAccess.send("DELETE")) toast("Team sign-in is off", "Nobody can sign in as team now.");
+  });
+
+  // The role, shown subtly in the top bar ("Team - Sam", "Owner", "Manager").
+  (() => {
+    const chip = $("#role-chip"); if (!chip) return;
+    const label = { owner: "Owner", manager: "Manager", team: "Team" }[ROLE] || ROLE;
+    chip.textContent = TEAM && WHO ? `${label} · ${WHO}` : label;
+    chip.title = TEAM ? "You are signed in to the team version of Jarvis (no finance, approvals or connections)" : `You are signed in as ${label.toLowerCase()}`;
+    chip.hidden = false;
+  })();
 
   // ------------------------------------------------------------------ boot
   (async () => {

@@ -97,6 +97,35 @@ tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (r
 `Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then
 `brain.refresh_system()` so the next turn reads the change. Tests: `tests/test_memory_popup.py`.
 
+*Daily rhythm (`services/daily_rhythm.py`).* The morning briefing (09:00) and end-of-day wrap-up (17:30), Monday to Friday, UK
+time, are intentional scheduled posts (not "checks": they always say something). `briefing_enabled` / `briefing_cron` /
+`wrapup_enabled` / `wrapup_cron` are in Settings > Schedules. Each text has a word budget enforced in code
+(`MAX_WORDS` 150, asked for as 130 to 150; over budget -> one "shorten it" retry -> trimmed to whole sentences), so it is under
+a minute spoken. `daily_rhythm.deliver` posts the same text to the console (`Proactive.scheduled`: into the conversation record
+always, pushed as a `proactive` event so a muted session never gets it, held as a notification in quiet hours, read aloud only
+when "Jarvis speaking up" is on) and to Teams/email (`Notifier.send_owner_update`). A failed run is logged as failed and leaves a
+warning, never silence. Tests: `tests/test_daily_rhythm.py`.
+
+*Team mode (`jarvis/access.py`, `services/team_access.py`, `services/team_sessions.py`; tests `tests/test_team_mode.py`,
+`tests/test_team_console_browser.py`).* Three roles: owner (the principal owner), manager (anyone `auth.is_owner` lets in today,
+unchanged) and team (engineers and office staff). A team member signs in at `/login/team` with a name and ONE team access code
+the owner sets in Settings > Team access (`/api/team-access`, principal-owner only, same-origin click); only a salted scrypt hash
+is stored (kv `team_access`), the code is never returned or logged, and changing or clearing it signs every team session out
+(the hash is part of the cookie's signing key). The team cookie (`jarvis_team_session`, 7 days) is separate from the owner's and
+can never satisfy `is_owner`/`is_principal_owner`; `auth.role_of` is the one place a connection becomes a role. Enforcement is on
+the backend, default deny, in two tables in `access.py`: `ROUTE_POLICY` classifies EVERY route (public / page / team / manager /
+owner; `main.create_app`'s app-wide `guard` 401s/403s before any handler, an unlisted route is refused to everyone, and the
+inventory test fails on one), and `TEAM_TOOLS` is the only tools a team caller may use - checked by `tools.dispatch` AND
+`AsyncTools.start`, so a background call can't reach a tool its requester couldn't call (rows carry `requester`/`role`;
+`background_results` shows a team member only their own; team background calls are forced SILENT). A team session talks to its OWN
+brain (`TeamSessions`: same two backends, team tools only, no web/file tools, in-memory conversation, never the owner's
+transcript or metrics, a prompt with nothing of the owner's) on its OWN event bus; its WebSocket reads only that bus plus
+`reload` (`access.TEAM_EVENTS`) - never approvals, notifications, proactive posts or finance. `/api/status` for team is built
+from `TEAM_STATUS_KEYS` and reads only staff, overdue jobs, presence and accreditations; the page itself is cut down
+server-side (`<!--role:...-->` regions in `index.html`). A team request that queues an approval (`log_job`) always waits for a
+human, never consults the standing approvals, and is stamped "asked for by NAME (team)" on the card. When you add a route, add
+it to `ROUTE_POLICY`; when you add a tool, it is denied to team until you add it to `TEAM_TOOLS` on purpose.
+
 *Standing approvals (the one deliberate exception to "queue, then a human clicks").* `services/standing_approvals.py`
 lets the OWNER, in Settings only, pre-approve two narrow classes: "Record keeping" (a `fsm_write` POST creating a
 customer/site/contact/note/task/reminder, exact path shapes and body keys) and "Routine acknowledgements" (the

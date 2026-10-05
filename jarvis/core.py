@@ -69,6 +69,8 @@ from .services.site_access import SiteAccessCodes
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.suggestions import Suggestions
+from .services.team_access import TeamAccess
+from .services.team_sessions import TeamSessions
 from .services.verification import ActionVerifier
 from .services.wrapup import WrapUp
 from .services.tracking import Tracker
@@ -178,6 +180,9 @@ class Jarvis:
         # Describes each chat turn from the tool events (source line, pop-up button, follow-ups) - see brain/trace.py.
         self.trace = TurnTrace(self)
         self.bus.add_tap(self.trace.on_event)
+        # Team mode: the access code for engineers/office staff (hashed, in the database) and one cut-down brain per team session.
+        self.team_access = TeamAccess(self.db)
+        self.team_sessions = TeamSessions(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
             from .brain.max_backend import MaxBrain
@@ -301,6 +306,7 @@ class Jarvis:
     async def stop(self) -> None:
         await self.proactive.stop()
         await self.async_tools.stop()
+        await self.team_sessions.close()
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
         if hasattr(self.brain, "close"):

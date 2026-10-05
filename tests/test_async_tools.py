@@ -367,7 +367,7 @@ def test_the_background_runner_has_no_way_to_approve_anything():
     for forbidden in (".approve(", ".deny(", "set_action_status", "actions.queue", "create_action"):
         assert forbidden not in source
     # the tool it runs goes through the one dispatch(), where approval=True is enforced
-    assert "dispatch(self.j, tool, args)" in source
+    assert "dispatch(self.j, tool, args, caller=caller)" in source  # same gate, now as the requester
 
 
 # --------------------------------------------------------------------------- review fixes

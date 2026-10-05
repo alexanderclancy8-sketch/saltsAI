@@ -63,13 +63,16 @@ class KnowledgeBase:
         if text.strip():
             self.chunks.append(Chunk(doc, heading, text.strip(), _tokens(heading + " " + text)))
 
-    def search(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+    def search(self, query: str, limit: int = 5, exclude_prefixes: tuple[str, ...] = ()) -> list[dict[str, str]]:
+        """``exclude_prefixes``: folders (e.g. "private/") whose documents are never returned - used for the team version."""
         q = _tokens(query)
         if not q or not self.chunks:
             return []
         n = len(self.chunks)
         scored = []
         for c in self.chunks:
+            if exclude_prefixes and c.doc.startswith(exclude_prefixes):
+                continue
             tf = Counter(c.tokens)
             score = 0.0
             for t in q:

@@ -176,7 +176,8 @@ def test_centre_column_has_core_hint_needs_you_conversation_and_message_box():
     assert ">SEND</button>" in comp and ">STOP</button>" in comp
     for ident in ("btn-shortcuts", "quick", "input", "btn-mic", "btn-send", "btn-stop", "btn-attach", "reply-hint", "reply-hint-forget", "orb-badge"):
         assert f'id="{ident}"' in INDEX, ident
-    labels = re.findall(r'role="menuitem" class="chip-btn" data-q="[^"]*">([^<]+)<', INDEX)
+    owners_page = re.sub(r"<!--role:team-->.*?<!--/role:team-->", "", INDEX, flags=re.S)  # (the team version has its own shortcuts)
+    labels = re.findall(r'role="menuitem" class="chip-btn" data-q="[^"]*">([^<]+)<', owners_page)
     assert labels == ["Briefing", "Wrap-up", "Team review", "Business health", "Cash flow", "Where's everyone?", "Stock", "Customers", "Marketing"]
     # Send becomes Stop while a reply streams; Stop aborts the in-flight request on the HTTP fallback path
     assert '$("#btn-send").hidden = busy' in HUD and '$("#btn-stop").hidden = !busy' in HUD

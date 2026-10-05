@@ -153,6 +153,9 @@ def view(action: dict[str, Any]) -> dict[str, Any]:
         payload = {"value": payload}
     status = str(action.get("status", ""))
     label, rows = _rows(kind, clean(payload))
+    asker = payload.get("requested_by")
+    if isinstance(asker, str) and asker.strip():  # asked for by a team member (Team mode): whoever approves sees who
+        rows = [{"label": "Asked for by", "value": clean(asker)[:80], "block": False}, *rows]
     by = str(action.get("approved_by") or "")
     result = clean(str(action.get("result") or ""))[:1000]
     superseded = action.get("superseded_by")
