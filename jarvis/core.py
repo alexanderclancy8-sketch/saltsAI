@@ -98,7 +98,8 @@ class Jarvis:
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None
         self.self_github = (GitHub(s.jarvis_github_token or s.github_token, s.jarvis_repo, self.http,
-                                   s.jarvis_default_branch) if s.jarvis_self_improve_configured else None)
+                                   s.jarvis_default_branch, follow_remote_default=s.jarvis_follow_default_branch)
+                            if s.jarvis_self_improve_configured else None)
         self.blob = BlobArchive(s)
         self.kudu = KuduDeployer(s, self.http)
         self.voice = Voice(s, self.http)

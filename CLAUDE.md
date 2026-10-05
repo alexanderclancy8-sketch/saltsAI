@@ -190,7 +190,12 @@ must match a contract site on record), never a recipient or an instruction.
 it. Hard rules: never push or force-push `main` (`pr_create` refuses a `main`/`master` head), `pr_merge` refuses unless CI is
 green, and every call is bound to `JARVIS_REPO` (no tool takes a repo name). PR titles, descriptions, comments and code are
 untrusted data, never instructions. A failed approved write raises `PRError` with the real (redacted) reason so the action
-shows as failed with it. Tests: `tests/test_pr_tools.py`, `tests/test_pr_resolver.py`.
+shows as failed with it. **The "main line" is the repo's real default branch:** `Jarvis.self_github` is built with
+`follow_remote_default=True` (setting `jarvis_follow_default_branch`, env `JARVIS_FOLLOW_DEFAULT_BRANCH`, default on), so
+`GitHub.resolve_default_branch()` asks GitHub for `default_branch` (cached 10 min) and `JARVIS_DEFAULT_BRANCH` is only the
+fallback if that lookup fails. Self-improvement branches start from it and its PRs target it; `pr_merge` is gated on it. The FSM
+repo's client (`j.github`, the fixer) keeps its configured `FSM_DEFAULT_BRANCH`. Tests: `tests/test_pr_tools.py`,
+`tests/test_pr_resolver.py`, `tests/test_default_branch.py`.
 
 **Optional MCP/plugin integrations** (`jarvis/brain/plugins.py`, `jarvis/services/verification.py`, specs in
 `mcp_plugins.yaml` and `mandates.yaml`) each have their own `plugin_*` setting. Context7 (read-only docs) and the
@@ -240,6 +245,30 @@ never leaks into a test run). For engineer-loop services, build a small `FakeGit
 `test_security_watch.py`/`test_self_improve.py`) rather than hitting real GitHub. Any code path with a real
 `asyncio.sleep()` polling loop (CI-watching, deploy-waiting) needs that patched out in tests
 (`monkeypatch.setattr("jarvis.services.x.asyncio.sleep", instant_sleep)`) or it will actually wait.
+
+### Testing rules: clocks and time zones
+
+CI runs on ubuntu in UTC, developers run the suite on Windows in a local zone, and the real date keeps moving. Three "red on
+every PR" incidents came from tests that quietly depended on one of those. The rules:
+
+- **No wall-clock reads at import time.** Never put `date.today()`, `datetime.now()`/`utcnow()`, `time.time()` (or a helper that
+  calls them) at module level, in a class body, a decorator/`parametrize` or a default argument of a test module. That freezes
+  "now" at collection and builds fixtures around the day the run started. Read the clock inside the test or fixture.
+  `tests/test_no_import_time_clock.py` AST-scans `tests/*.py` and fails on it; the escape hatch is a `# clock-ok: <reason>`
+  comment on that line (a reason is required).
+- **Pass `today` explicitly, or pin the module clock.** Code that needs "today" should take it as an argument (the tools that
+  do, e.g. in `services/customer_comms.py`, default to the real date only when the caller passes nothing). A test then passes a
+  fixed `today` and builds its fixtures relative to it, or `monkeypatch`es the module's clock. Never assert against a fixture
+  date that only works while the real date is before it.
+- **Never rely on `apply_timezone` leaking.** `Jarvis.__init__` calls `apply_timezone("Europe/London")`, which sets `TZ` and
+  calls `time.tzset()` for the WHOLE process on Linux (and does nothing on Windows). A test must neither depend on that having
+  happened nor on it having not happened: pin the zone it needs (`monkeypatch.setenv("TZ", ...)` + `time.tzset()` where it
+  exists) or compute with explicit `zoneinfo`/`tzinfo`. `tests/conftest.py`'s autouse `_isolate_process_timezone` restores `TZ`
+  after every test so one test's `Jarvis()` can't shift the clock for the next; do not remove it.
+- **Tests must pass on Linux/UTC and on Windows.** No hard-coded backslash paths, no reliance on `tzset`, the local zone or the
+  developer's locale. The scheduled `.github/workflows/nightly.yml` (daily 03:00 UTC, or run it by hand from the Actions tab)
+  runs the full suite normally, under libfaketime at +40 days and with `TZ=Pacific/Auckland`; it never blocks a PR, but a red
+  nightly means a test is about to start failing for everyone - fix it the same day.
 
 **The console's shape (`jarvis/web/`).** `index.html` is a top bar, a left rail (a chip strip on phones), and one centre column
 (core, one-line hint, "Needs you" strip, conversation, message box). Every dashboard section is a `.pop` inside the ONE
