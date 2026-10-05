@@ -28,9 +28,24 @@ SONNET = ("claude-sonnet-5-5", "Claude Sonnet 5.5 - quicker")
 EFFORT = (("low", "Quick"), ("medium", "Balanced"), ("high", "Thorough"))
 # The engineering agents also accept the two highest levels the Agent SDK and API support (see config.ENGINEER_EFFORT_LEVELS).
 ENGINEER_EFFORT = EFFORT + (("xhigh", "Extra thorough (some models only)"), ("max", "Maximum"))
-AZURE_VOICES = tuple((f"en-GB-{n}Neural", f"{n} ({g})") for n, g in (
-    ("Ryan", "male"), ("Thomas", "male"), ("Oliver", "male"), ("Alfie", "male"), ("Elliot", "male"), ("Ethan", "male"),
-    ("Noah", "male"), ("Sonia", "female"), ("Libby", "female"), ("Olivia", "female")))
+# British English Azure neural voices offered under Connections > Voice. The Multilingual ones are Azure's newer,
+# higher-quality generation; Ryan is first because it also supports the conversational style (jarvis/integrations/
+# ssml.py). Add a name here only once it is confirmed in Azure's en-GB voice list - a wrong name makes every spoken
+# reply fail over to the browser voice.
+AZURE_VOICES = (
+    ("en-GB-RyanNeural", "Ryan (male)"),
+    ("en-GB-OllieMultilingualNeural", "Ollie - newer, high quality (male)"),
+    ("en-GB-ThomasNeural", "Thomas (male)"),
+    ("en-GB-OliverNeural", "Oliver (male)"),
+    ("en-GB-AlfieNeural", "Alfie (male)"),
+    ("en-GB-ElliotNeural", "Elliot (male)"),
+    ("en-GB-EthanNeural", "Ethan (male)"),
+    ("en-GB-NoahNeural", "Noah (male)"),
+    ("en-GB-SoniaNeural", "Sonia (female)"),
+    ("en-GB-AdaMultilingualNeural", "Ada - newer, high quality (female)"),
+    ("en-GB-LibbyNeural", "Libby (female)"),
+    ("en-GB-OliviaNeural", "Olivia (female)"),
+)
 
 
 @dataclass(frozen=True)
@@ -292,6 +307,7 @@ SECTIONS: tuple[Section, ...] = (
             Field("azure_speech_region", "Azure Speech region", placeholder="uksouth", advanced=True,
                   depends_on=("tts_provider", "azure")),
             Field("azure_tts_voice", "Azure voice", "select", options=AZURE_VOICES,
+                  help="Press Play sample to hear the voice you've picked (needs the Azure Speech key saved).",
                   depends_on=("tts_provider", "azure")),
             Field("azure_tts_style", "Azure speaking style", "select",
                   options=(("chat", "Conversational"), ("", "Standard")), advanced=True,
