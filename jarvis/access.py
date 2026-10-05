@@ -206,6 +206,8 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/memory/replies/{reply_id}": MANAGER_OK,
     "DELETE /api/memory/replies/{reply_id}": MANAGER_OK,
     "POST /api/suggestions/refresh": MANAGER_OK,
+    "POST /api/suggestions/{key:path}/prepare": MANAGER_OK,   # drafts the work and queues it for approval; runs nothing
+    "POST /api/suggestions/{key:path}/snooze": MANAGER_OK,    # Not now: quiet here and in Salts FSM until tomorrow
     "POST /api/suggestions/{key:path}/{decision}": MANAGER_OK,
     "GET /api/issues": MANAGER_OK,
     "POST /api/issues/{issue_id}/resolve": MANAGER_OK,

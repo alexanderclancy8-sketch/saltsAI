@@ -196,7 +196,9 @@ CREATE TABLE IF NOT EXISTS suggestions (
     detail TEXT DEFAULT '',
     prompt TEXT NOT NULL,
     priority INTEGER DEFAULT 2,
-    status TEXT NOT NULL DEFAULT 'open'
+    status TEXT NOT NULL DEFAULT 'open',
+    kind TEXT DEFAULT '',
+    meta TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS action_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -365,6 +367,11 @@ class Database:
         for col in ("requester", "role"):
             if col not in bg_cols:
                 self._conn.execute(f"ALTER TABLE background_calls ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        # A suggestion with a Prepare button (services/fsm_suggestions.py) carries its kind and a little JSON (record label, reason).
+        sug_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(suggestions)").fetchall()}
+        for col in ("kind", "meta"):
+            if col not in sug_cols:
+                self._conn.execute(f"ALTER TABLE suggestions ADD COLUMN {col} TEXT DEFAULT ''")
         issue_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(issues)").fetchall()}
         for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
             if col not in issue_cols:
@@ -881,18 +888,23 @@ class Database:
     def get_suggestion(self, key: str) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM suggestions WHERE key = ?", (key,))
 
-    def upsert_suggestion(self, key: str, title: str, detail: str, prompt: str, priority: int) -> bool:
+    def upsert_suggestion(self, key: str, title: str, detail: str, prompt: str, priority: int,
+                          kind: str = "", meta: str = "") -> bool:
         """Insert or refresh an open suggestion. Returns True if it is new."""
         existing = self.get_suggestion(key)
         ts = now_iso()
         if existing is None:
-            self.execute("INSERT INTO suggestions (key, created_at, updated_at, title, detail, prompt, priority) "
-                         "VALUES (?,?,?,?,?,?,?)", (key, ts, ts, title, detail, prompt, priority))
+            self.execute("INSERT INTO suggestions (key, created_at, updated_at, title, detail, prompt, priority, kind, meta) "
+                         "VALUES (?,?,?,?,?,?,?,?,?)", (key, ts, ts, title, detail, prompt, priority, kind, meta))
             return True
         if existing["status"] == "open":
-            self.execute("UPDATE suggestions SET title = ?, detail = ?, prompt = ?, priority = ?, updated_at = ? "
-                         "WHERE key = ?", (title, detail, prompt, priority, ts, key))
+            self.execute("UPDATE suggestions SET title = ?, detail = ?, prompt = ?, priority = ?, kind = ?, meta = ?,"
+                         " updated_at = ? WHERE key = ?", (title, detail, prompt, priority, kind, meta, ts, key))
         return False
+
+    def kind_suggestions(self) -> list[dict[str, Any]]:
+        """Every suggestion that has a Prepare handler (services/fsm_suggestions.py), whatever its status."""
+        return self.query("SELECT * FROM suggestions WHERE kind != '' ORDER BY priority, updated_at DESC")
 
     def set_suggestion_status(self, key: str, status: str) -> None:
         self.execute("UPDATE suggestions SET status = ?, updated_at = ? WHERE key = ?", (status, now_iso(), key))

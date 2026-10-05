@@ -185,7 +185,9 @@ def test_the_levels_are_what_the_spec_says(world):
                 "POST /api/memory/facts/{fact_id}", "DELETE /api/memory/facts/{fact_id}",
                 "POST /api/memory/replies/{reply_id}", "DELETE /api/memory/replies/{reply_id}",
                 "GET /api/staff-report-address", "GET /auth/sage/start", "GET /auth/sage/callback", "POST /api/briefing",
-                "POST /api/wrapup", "GET /api/digests", "GET /api/transcript", "POST /api/tests/run"):
+                "POST /api/wrapup", "GET /api/digests", "GET /api/transcript", "POST /api/tests/run",
+                # suggestions: Prepare drafts and queues an approval, Not now snoozes it in Salts FSM - never for a team session
+                "POST /api/suggestions/{key:path}/prepare", "POST /api/suggestions/{key:path}/snooze"):
         assert p[key] == MANAGER_OK, key
     assert p["GET /api/team-access"] == p["POST /api/team-access"] == p["DELETE /api/team-access"] == OWNER_ONLY
     assert p["POST /api/chat"] == p["GET /api/status"] == p["WS /ws"] == TEAM_OK
@@ -694,6 +696,17 @@ async def test_standing_approvals_are_not_even_consulted_for_a_team_requester_bu
     owner_id = j.actions.queue("fsm_write", "Create customer Acme Alarms", payload)
     assert j.db.get_action(owner_id)["status"] == "approved"  # the owner's own request: standing approval, as before
     await asyncio.sleep(0.05)
+
+
+def test_a_team_session_cannot_prepare_or_snooze_a_suggestion_and_nothing_changes(clients):
+    owner_c, team_c, w = clients
+    w.j.db.upsert_suggestion("quote_followup:Q1", "Chase quote Q1?", "d", "p", 2, "quote_followup", "{}")
+    for path in ("/api/suggestions/quote_followup:Q1/prepare", "/api/suggestions/quote_followup:Q1/snooze"):
+        assert team_c.post(path).status_code == 403
+        assert w.anon().post(path).status_code == 401
+    assert w.j.db.pending_actions() == [] and w.j.db.get_suggestion("quote_followup:Q1")["status"] == "open"
+    assert w.j.fsm_suggestions.prepared_marker("quote_followup:Q1") is None
+    assert "suggestions" not in team_c.get("/api/status").json()                    # and a team console is not even told they exist
 
 
 def test_nothing_in_team_mode_can_approve_deny_edit_or_retry():

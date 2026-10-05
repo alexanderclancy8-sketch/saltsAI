@@ -2407,7 +2407,10 @@ TOOLS: list[Tool] = [
                             "which need chasing (7 and 21 days), and win rate.", NoInput, remedial_quotes,
          "Checking remedial quotes"),
     Tool("suggestions", "Refresh and list your current proactive suggestions (unbilled work, quotes to chase, "
-                        "overdue jobs to assign, debts to chase, stock to reorder, expiring qualifications, audits).",
+                        "overdue jobs to assign, debts to chase, stock to reorder, expiring qualifications, audits). Read-only. Quotes "
+                        "to chase also appear in the Salts FSM Action Centre; each has a Prepare button there and in the "
+                        "Approvals drawer, which only drafts the chase email and queues it for the owner's approval. Only a "
+                        "person can press Prepare or Not now - tell them it is there, you cannot do it for them.",
          NoInput, suggestions_list, "Reviewing suggestions"),
     Tool("end_of_day_wrap_up", "The end-of-day wrap-up: what got done, what slipped, what's awaiting approval, "
                                "and tomorrow's first jobs and risks.", NoInput, end_of_day_wrap_up,

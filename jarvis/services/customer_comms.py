@@ -137,6 +137,24 @@ class CustomerComms:
                 for q in result["queued"]) + "\n\nApprove or cancel each one in the approvals queue."})
         return result
 
+    async def draft_quote_followup(self, quote_id: str, today: date | None = None) -> dict[str, Any]:
+        """Queue the chase email for ONE sent quote (the suggestions' Prepare button, services/fsm_suggestions.py).
+
+        The same draft, marker and approval as ``draft_all(["quote_followup"])`` - so the scheduled sweep and a Prepare press
+        can never both draft the same quote - but for a single quote, whatever its age (the suggestion has its own threshold).
+        Like everything here it only QUEUES an ``email_send`` for a human to approve; it never sends. ``already`` is set (to
+        the marker, ``queued:<action id>``) when this quote was drafted before, and nothing new is queued."""
+        today = today or date.today()
+        result: dict[str, Any] = {"queued": [], "skipped": [],
+                                  "note": "Draft queued for approval - nothing has been sent."}
+        prior = self.j.db.get_kv(f"comms:quote_followup:{quote_id}")
+        if prior:
+            result["already"] = prior
+            return result
+        find = self._contact_lookup(await self.j.fsm.contracts())
+        await self._quote_followups(result, today, find, only=str(quote_id))
+        return result
+
     # ------------------------------------------------------------------ job events
     async def _job_events(self, result: dict[str, Any], job: dict[str, Any], wanted: list[str], today: date, find) -> None:
         j = self.j
@@ -232,11 +250,13 @@ class CustomerComms:
                         f"day that suits and we'll get it booked in.\n\n{self._sign_off()}", f"{customer} / {site}")
 
     # ------------------------------------------------------------------ quote follow-up
-    async def _quote_followups(self, result: dict[str, Any], today: date, find) -> None:
+    async def _quote_followups(self, result: dict[str, Any], today: date, find, only: str | None = None) -> None:
         j = self.j
-        min_age = j.settings.customer_comms_quote_followup_days
+        min_age = 0 if only is not None else j.settings.customer_comms_quote_followup_days
         for q in await j.fsm.quotes("sent"):
             if _status(q) != "sent" or not q.get("id"):
+                continue
+            if only is not None and str(q["id"]) != only:
                 continue
             sent = _day(q.get("sent_date"))
             if not sent or not (min_age <= (today - sent).days <= QUOTE_MAX_AGE_DAYS):

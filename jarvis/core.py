@@ -70,6 +70,7 @@ from .services.self_learning import SelfLearning
 from .services.site_access import SiteAccessCodes
 from .services.staff import StaffMonitor
 from .services.stores import Stores
+from .services.fsm_suggestions import FsmSuggestions
 from .services.suggestions import Suggestions
 from .services.team_access import TeamAccess
 from .services.team_sessions import TeamSessions
@@ -173,6 +174,7 @@ class Jarvis:
         self.documents = Documents(self)
         self.images = ImageGenerator(self)  # draft social media graphics; never posted anywhere
         self.suggestions = Suggestions(self)
+        self.fsm_suggestions = FsmSuggestions(self)  # suggestions with a Prepare button, shared with the FSM Action Centre
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.activity = ActivityLog(self)  # every scheduled check's runs; the chat shows one quiet line per check

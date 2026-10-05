@@ -108,6 +108,13 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("suggestions", j.suggestions.sweep),
                   cron_trigger(s.suggestions_cron, timezone=s.timezone), id="suggestions",
                   max_instances=1, coalesce=True)
+    # Suggestions with a Prepare button: kept true every 15 minutes in working hours (hourly outside them), published to the
+    # Salts FSM Action Centre when the owner's switch is on, and the FSM polled every minute for Prepare presses. Quiet:
+    # neither posts into the chat; they only fill the Approvals drawer / the FSM. Both are cheap no-ops with the switch off.
+    sched.add_job(_check(j, "fsm_suggestions", "Suggestions sync", j.fsm_suggestions.scheduled_sync), "interval",
+                  minutes=max(1, s.suggestions_fsm_interval_min), id="fsm_suggestions", max_instances=1, coalesce=True)
+    sched.add_job(_guard("suggestion requests", j.fsm_suggestions.poll), "interval",
+                  seconds=max(10, s.suggestions_fsm_poll_s), id="fsm_suggestion_requests", max_instances=1, coalesce=True)
     if s.wrapup_enabled:
         sched.add_job(_daily(j, "wrapup", "End-of-day wrap-up", j.wrapup.run),
                       cron_trigger(s.wrapup_cron, timezone=s.timezone), id="wrapup",

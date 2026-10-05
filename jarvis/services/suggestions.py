@@ -277,7 +277,7 @@ class Suggestions:
             if db.upsert_suggestion(c["key"], c["title"], c["detail"], c["prompt"], c["priority"]):
                 new.append(c)
         for s in db.open_suggestions():  # the underlying problem went away
-            if s["key"] not in keys:
+            if s["key"] not in keys and not s.get("kind"):  # (a suggestion with a Prepare handler is kept true by fsm_suggestions.sync)
                 db.set_suggestion_status(s["key"], "resolved")
         current = db.open_suggestions()
         self.j.bus.publish("suggestions", current)
