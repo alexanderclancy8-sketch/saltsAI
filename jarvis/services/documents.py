@@ -1368,10 +1368,13 @@ class Documents:
                 out["branding_note"] = "Branded with the Salts navy and the company logo."
         return out
 
-    async def read_attachments(self, message_id: str, name: str | None = None) -> dict[str, Any]:
-        """Text of the Word/Excel attachments on an email (optionally just the one called `name`)."""
+    async def read_attachments(self, message_id: str, name: str | None = None,
+                               mailbox: str | None = None) -> dict[str, Any]:
+        """Text of the Word/Excel attachments on an email (optionally just the one called `name`). `mailbox` is a
+        resolved shared-mailbox address (see microsoft365.mailbox_for); None = the owner's own mailbox."""
         try:
-            files = await self.j.mail.office_attachments(message_id)
+            files = await (self.j.mail.office_attachments(message_id, mailbox=mailbox) if mailbox
+                           else self.j.mail.office_attachments(message_id))
         except Exception as e:  # noqa: BLE001
             return {"error": f"I couldn't fetch the attachments just now ({type(e).__name__})."}
         if name:
@@ -1404,11 +1407,14 @@ class Documents:
                                       effort="low", max_tokens=16000)
         return _limit(clean_pdf_text(result.text).strip())
 
-    async def read_pdf_attachments(self, message_id: str, name: str | None = None) -> dict[str, Any]:
+    async def read_pdf_attachments(self, message_id: str, name: str | None = None,
+                                   mailbox: str | None = None) -> dict[str, Any]:
         """Text of the PDF attachments on an email (optionally just the one called `name`): the PDF's own text layer,
-        or a transcription when it is a scan. Read-only - nothing is stored, sent or acted on."""
+        or a transcription when it is a scan. Read-only - nothing is stored, sent or acted on. `mailbox` is a resolved
+        shared-mailbox address (see microsoft365.mailbox_for); None = the owner's own mailbox."""
         try:
-            files = await self.j.mail.pdf_attachments(message_id)
+            files = await (self.j.mail.pdf_attachments(message_id, mailbox=mailbox) if mailbox
+                           else self.j.mail.pdf_attachments(message_id))
         except Exception as e:  # noqa: BLE001
             return {"error": f"I couldn't fetch the attachments just now ({type(e).__name__})."}
         if name:

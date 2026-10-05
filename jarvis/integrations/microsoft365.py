@@ -27,8 +27,9 @@ from .mail_guard import GuardedMessage, guard_message
 
 log = logging.getLogger(__name__)
 GRAPH = "https://graph.microsoft.com/v1.0"
+_MAILBOX_RE = re.compile(r"[A-Za-z0-9._%+'\-]{1,64}@[A-Za-z0-9.\-]{1,100}\.[A-Za-z]{2,24}")
 FOLDER_MISS_TTL_S = 300  # how long a "folder not found" answer is trusted before looking again
-MESSAGE_FIELDS ="id,subject,from,toRecipients,receivedDateTime,isRead,importance,bodyPreview,hasAttachments,webLink"
+MESSAGE_FIELDS = "id,subject,from,toRecipients,receivedDateTime,isRead,importance,bodyPreview,hasAttachments,webLink"
 
 
 def _strip(text: str, limit: int = 6000) -> str:
@@ -50,6 +51,24 @@ def _summarise(msg: dict[str, Any]) -> dict[str, Any]:
         "has_attachments": msg.get("hasAttachments"),
         "link": msg.get("webLink"),
     }
+
+
+SERVICE_SOURCE = "service"  # the value of a tool's `mailbox` argument that means the configured service inbox
+
+
+def mailbox_for(settings: Settings, source: str | None) -> tuple[str | None, str]:
+    """(Graph mailbox address or None for the owner's own, error message). The ONLY way a tool or the Comms drawer picks
+    a mailbox: ``source`` is the enumerated word "owner" (default) or "service", never an address, so nothing a model
+    or an email writes can point Jarvis at some other mailbox. "service" is the address the owner saved in Settings."""
+    if not source or source == "owner":
+        return None, ""
+    if source == SERVICE_SOURCE:
+        address = (settings.service_inbox or "").strip().lower()
+        if not address:
+            return None, ("The service inbox isn't set up. The owner can add its address in Settings > Service "
+                          "inbox (service@).")
+        return address, ""
+    return None, "mailbox must be 'owner' or 'service'."
 
 
 OFFICE_EXTENSIONS = (".docx", ".xlsx")  # macro-enabled (.docm/.xlsm) and legacy formats are deliberately not read
@@ -95,9 +114,19 @@ class GraphMail:
     def _mbx(self) -> str:
         return f"{GRAPH}/users/{self.s.ms_mailbox}"
 
+    def _base(self, mailbox: str | None) -> str:
+        """The Graph URL root of ``mailbox`` (None = the owner's own mailbox, exactly as before). The address is only ever
+        one the owner saved in Settings (ooh_mailbox, service_inbox) - callers resolve it with ``mailbox_for`` - but it is
+        still checked to be one plain address before it goes into a URL path."""
+        if not mailbox:
+            return self._mbx
+        if not _MAILBOX_RE.fullmatch(mailbox):
+            raise ValueError("That is not a mailbox address.")
+        return f"{GRAPH}/users/{mailbox}"
+
     async def list_messages(self, unread_only: bool = False, top: int = 15, since_hours: int | None = None,
                             folder: str = "inbox", mailbox: str | None = None) -> list[dict[str, Any]]:
-        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        base = self._base(mailbox)
         filters = []
         if unread_only:
             filters.append("isRead eq false")
@@ -112,15 +141,15 @@ class GraphMail:
         r.raise_for_status()
         return [_summarise(m) for m in r.json().get("value", [])]
 
-    async def search_messages(self, query: str, top: int = 15) -> list[dict[str, Any]]:
+    async def search_messages(self, query: str, top: int = 15, mailbox: str | None = None) -> list[dict[str, Any]]:
         params = {"$search": f'"{query.replace(chr(34), "")}"', "$top": str(top), "$select": MESSAGE_FIELDS}
-        r = await self.http.get(f"{self._mbx}/messages", params=params,
+        r = await self.http.get(f"{self._base(mailbox)}/messages", params=params,
                                 headers=await self._headers({"ConsistencyLevel": "eventual"}))
         r.raise_for_status()
         return [_summarise(m) for m in r.json().get("value", [])]
 
     async def get_message(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
-        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        base = self._base(mailbox)
         r = await self.http.get(
             f"{base}/messages/{message_id}",
             params={"$select": MESSAGE_FIELDS + ",body,ccRecipients"},
@@ -137,7 +166,7 @@ class GraphMail:
     async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
                               max_bytes: int = 15_000_000) -> list[dict[str, str]]:
         """PDF attachments of a message as base64 (e.g. an answering service's call report)."""
-        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        base = self._base(mailbox)
         r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
         r.raise_for_status()
         out = []
@@ -152,10 +181,18 @@ class GraphMail:
     async def office_attachments(self, message_id: str, mailbox: str | None = None,
                                  max_bytes: int = 15_000_000) -> list[dict[str, str]]:
         """Word (.docx) and Excel (.xlsx) attachments of a message as base64 - read-only, nothing is changed."""
-        base = f"{GRAPH}/users/{mailbox}" if mailbox else self._mbx
+        base = self._base(mailbox)
         r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
         r.raise_for_status()
         return select_office_attachments(r.json().get("value", []), max_bytes)
+
+    async def attachment_names(self, message_id: str, mailbox: str | None = None, limit: int = 20) -> list[str]:
+        """File names of a message's attachments (names only - no content is downloaded)."""
+        r = await self.http.get(f"{self._base(mailbox)}/messages/{message_id}/attachments",
+                                params={"$select": "name,size,contentType", "$top": str(limit)},
+                                headers=await self._headers())
+        r.raise_for_status()
+        return [str(a.get("name") or "") for a in r.json().get("value", []) if a.get("name")][:limit]
 
     async def mark_read(self, message_id: str) -> None:
         r = await self.http.patch(f"{self._mbx}/messages/{message_id}", json={"isRead": True},
@@ -407,7 +444,10 @@ class DemoMail:
         msgs = [m for m in self._messages if not unread_only or not m["is_read"]]
         return [{k: v for k, v in m.items() if k != "body"} for m in msgs[:top]]
 
-    async def search_messages(self, query: str, top: int = 15) -> list[dict[str, Any]]:
+    async def attachment_names(self, message_id: str, mailbox: str | None = None, limit: int = 20) -> list[str]:
+        return []
+
+    async def search_messages(self, query: str, top: int = 15, mailbox: str | None = None) -> list[dict[str, Any]]:
         q = query.lower()
         hits = [m for m in self._messages if q in (m["subject"] + m["body"]).lower()]
         return [{k: v for k, v in m.items() if k != "body"} for m in hits[:top]]

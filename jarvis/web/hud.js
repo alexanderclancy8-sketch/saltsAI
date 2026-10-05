@@ -255,10 +255,15 @@
     if (na) add(80, "warn", `${plural(na, "action", "actions")} waiting for your approval`, "approvals");
     if (ns) add(35, "warn", `${plural(ns, "suggestion", "suggestions")} from Jarvis`, "approvals");
 
-    const unread = Array.isArray(d.inbox?.unread) ? d.inbox.unread : [];
+    const own = Array.isArray(d.inbox?.unread) ? d.inbox.unread : [];
+    // The shared service@ inbox (Bradford Council portal requests) counts too, but is always named, so the two stay apart.
+    const svc = d.inbox?.service?.enabled && Array.isArray(d.inbox.service.unread) ? d.inbox.service.unread : [];
+    const svcLabel = d.inbox?.service?.label || "service@";
+    const unread = [...own, ...svc];
     const hot = unread.filter((m) => m.importance === "high").length;
-    setRail("comms", unread.length, unread.length ? "warn" : "", `${plural(unread.length, "unread message", "unread messages")}${hot ? `, ${hot} important` : ""}`);
-    if (unread.length) add(hot ? 40 : 20, "warn", `${unread.length} unread`, "comms");
+    setRail("comms", unread.length, unread.length ? "warn" : "",
+      `${plural(unread.length, "unread message", "unread messages")}${svc.length ? ` (${svc.length} in ${svcLabel})` : ""}${hot ? `, ${hot} important` : ""}`);
+    if (unread.length) add(hot ? 40 : 20, "warn", `${unread.length} unread${svc.length ? ` (${svc.length} in ${svcLabel})` : ""}`, "comms");
 
     const issues = d.issues || [];
     const severe = issues.filter((i) => ["critical", "high"].includes(i.severity)).length;
@@ -1303,10 +1308,29 @@ function send(text, mode = "typed", opts = {}) {
 
   function renderInbox(inbox) {
     const list = inbox?.unread || [];
+    const svc = inbox?.service?.enabled ? inbox.service : null;
+    // With a second inbox shown, say which one this is; with only the one, the heading stays as it always was.
+    $("#inbox-title").textContent = svc ? "Unread in your inbox" : "Unread messages";
     $("#inbox-count").textContent = Array.isArray(list) ? `${list.length} unread${inbox.demo ? " · demo" : ""}` : "";
-    if (!Array.isArray(list)) { $("#inbox").innerHTML = `<li class="empty">${esc(list?.error || "Unavailable")}</li>`; return; }
+    if (!Array.isArray(list)) { $("#inbox").innerHTML = `<li class="empty">${esc(list?.error || "Unavailable")}</li>`; renderServiceInbox(svc); return; }
     $("#inbox").innerHTML = list.length ? list.map((m) => `<li class="${m.importance === "high" ? "hot" : ""}">${esc(m.subject)}<span class="sub">${esc(m.from_name || m.from_email)} · ${time(m.received)}</span></li>`).join("")
       : `<li class="empty">Inbox clear.</li>`;
+    renderServiceInbox(svc);
+  }
+  // The shared service@ mailbox (Bradford Council portal requests): its own labelled list under the owner's inbox. A Graph
+  // problem is shown as the sentence the server wrote (it says what to fix), never a stack trace.
+  function renderServiceInbox(svc) {
+    const sec = $("#svc-inbox-sec");
+    if (!sec) return;
+    sec.hidden = !svc;
+    if (!svc) return;
+    const list = Array.isArray(svc.unread) ? svc.unread : [];
+    $("#svc-inbox-label").textContent = svc.label || "service@";
+    sec.querySelector("h3").title = svc.address || "";
+    $("#svc-inbox-count").textContent = svc.error ? "" : `${list.length} unread`;
+    $("#svc-inbox").innerHTML = svc.error ? `<li class="empty">${esc(svc.error)}</li>`
+      : list.length ? list.map((m) => `<li class="${m.importance === "high" ? "hot" : ""}">${esc(m.subject)}<span class="sub">${esc(svc.label || "service@")} · ${esc(m.from_name || m.from_email)} · ${time(m.received)}</span></li>`).join("")
+      : `<li class="empty">${svc.demo ? "Connect Microsoft 365 to read it." : "Nothing unread."}</li>`;
   }
 
   function renderIssues(issues = []) {

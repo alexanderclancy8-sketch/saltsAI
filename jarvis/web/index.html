@@ -156,8 +156,12 @@
 
     <!--role:manager--><section class="pop" id="pop-comms" data-title="Comms" hidden>
       <div class="sec">
-        <h3>Unread messages <span class="count" id="inbox-count"></span></h3>
+        <h3><span id="inbox-title">Unread messages</span> <span class="count" id="inbox-count"></span></h3>
         <ul class="list" id="inbox"><li class="empty">Loading…</li></ul>
+      </div>
+      <div class="sec" id="svc-inbox-sec" hidden>
+        <h3>Unread in <span id="svc-inbox-label">service@</span> <span class="count" id="svc-inbox-count"></span></h3>
+        <ul class="list" id="svc-inbox"></ul>
       </div>
     </section><!--/role:manager-->
 

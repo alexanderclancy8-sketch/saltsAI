@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import access, demo_guard, history
 from ..humanize import human_datetime
+from ..integrations.microsoft365 import mailbox_for
 from ..redact import redact_text
 from ..services.async_tools import DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S
 from .pr_tools import build_pr_tools
@@ -95,19 +96,28 @@ class NoInput(BaseModel):
     pass
 
 
+MAILBOX_DESC = ("Which mailbox to read: 'owner' (default) is the owner's own mailbox; 'service' is the shared service@ "
+                "mailbox where Bradford Council portal job requests arrive (read-only; only if the owner has set it up). "
+                "A message id belongs to the mailbox it was listed from, so pass the same value to email_read / "
+                "email_attachment_read / email_pdf_read. This is a choice of two words, never an address.")
+
+
 class InboxIn(BaseModel):
     unread_only: bool = True
     limit: int = Field(10, description="Max emails, up to 25")
     since_hours: int | None = Field(None, description="Only emails received in the last N hours")
+    mailbox: Literal["owner", "service"] = Field("owner", description=MAILBOX_DESC)
 
 
 class SearchIn(BaseModel):
     query: str
     limit: int = 10
+    mailbox: Literal["owner", "service"] = Field("owner", description=MAILBOX_DESC)
 
 
 class MessageIn(BaseModel):
     message_id: str
+    mailbox: Literal["owner", "service"] = Field("owner", description=MAILBOX_DESC)
 
 
 class DraftIn(BaseModel):
@@ -754,11 +764,13 @@ class QuoteScopeIn(BaseModel):
 class AttachmentReadIn(BaseModel):
     message_id: str = Field(description="The email's id (from email_inbox / email_search)")
     name: str | None = Field(None, description="Only this attachment's file name; default is every .docx/.xlsx")
+    mailbox: Literal["owner", "service"] = Field("owner", description=MAILBOX_DESC)
 
 
 class PdfReadIn(BaseModel):
     message_id: str = Field(description="The email's id (from email_inbox / email_search)")
     name: str | None = Field(None, description="Only this PDF's file name; default is every PDF attachment")
+    mailbox: Literal["owner", "service"] = Field("owner", description=MAILBOX_DESC)
 
 
 class OfficeDocumentIn(BaseModel):
@@ -947,15 +959,44 @@ class ArchiveIn(BaseModel):
 
 
 # --------------------------------------------------------------------------- handlers
+def _service_mailbox(j, source: str) -> tuple[str | None, dict[str, Any] | None]:
+    """(mailbox to pass to the mail layer, or None for the owner's own; a finished answer when there is nothing to read).
+    The owner's own mailbox is the default and takes exactly the code path it always did."""
+    mailbox, err = mailbox_for(j.settings, source)
+    if err:
+        return None, {"error": err}
+    if mailbox and j.mail.demo:  # Microsoft 365 isn't connected: there is no real service mailbox to read
+        return None, {"demo": True, "mailbox": "service", "emails": [],
+                      "note": "Microsoft 365 isn't connected yet, so there is no service inbox to read."}
+    return mailbox, None
+
+
 async def email_inbox(j, a: InboxIn):
+    mailbox, done = _service_mailbox(j, a.mailbox)
+    if done is not None:
+        return done
+    if mailbox:
+        return {"demo": False, "mailbox": "service", "emails": await j.mail.list_messages(
+            a.unread_only, min(a.limit, 25), a.since_hours, mailbox=mailbox)}
     return {"demo": j.mail.demo, "emails": await j.mail.list_messages(a.unread_only, min(a.limit, 25), a.since_hours)}
 
 
 async def email_search(j, a: SearchIn):
+    mailbox, done = _service_mailbox(j, a.mailbox)
+    if done is not None:
+        return done
+    if mailbox:
+        return {"demo": False, "mailbox": "service",
+                "emails": await j.mail.search_messages(a.query, min(a.limit, 25), mailbox=mailbox)}
     return {"demo": j.mail.demo, "emails": await j.mail.search_messages(a.query, min(a.limit, 25))}
 
 
 async def email_read(j, a: MessageIn):
+    mailbox, done = _service_mailbox(j, a.mailbox)
+    if done is not None:
+        return done
+    if mailbox:
+        return {**await j.mail.get_message(a.message_id, mailbox=mailbox), "mailbox": "service"}
     return await j.mail.get_message(a.message_id)
 
 
@@ -1807,10 +1848,20 @@ async def bid_document(j, a: BidDocumentIn):
 
 
 async def email_attachment_read(j, a: AttachmentReadIn):
+    mailbox, done = _service_mailbox(j, a.mailbox)
+    if done is not None:
+        return done
+    if mailbox:
+        return await j.documents.read_attachments(a.message_id, a.name, mailbox=mailbox)
     return await j.documents.read_attachments(a.message_id, a.name)
 
 
 async def email_pdf_read(j, a: PdfReadIn):
+    mailbox, done = _service_mailbox(j, a.mailbox)
+    if done is not None:
+        return done
+    if mailbox:
+        return await j.documents.read_pdf_attachments(a.message_id, a.name, mailbox=mailbox)
     return await j.documents.read_pdf_attachments(a.message_id, a.name)
 
 
@@ -2005,7 +2056,8 @@ async def morning_briefing(j, a: NoInput):
 
 
 TOOLS: list[Tool] = [
-    Tool("email_inbox", "List recent emails in the owner's Outlook inbox (sender, subject, preview, id).",
+    Tool("email_inbox", "List recent emails in the owner's Outlook inbox (sender, subject, preview, id). Pass "
+                        "mailbox='service' for the shared service@ inbox (Bradford Council portal requests).",
          InboxIn, email_inbox, "Checking the inbox"),
     Tool("email_search", "Search the owner's mailbox by keywords, sender name, company or subject.",
          SearchIn, email_search, "Searching email"),

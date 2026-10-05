@@ -493,6 +493,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             await _safe(j.ram.probe(), "RAM Tracking")
         data, presence, customers = await asyncio.gather(
             j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
+        data["inbox"] = {**data.get("inbox", {}), "service": await _safe(j.service_inbox.unread(), "service inbox")}
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     approvals=approval_inbox.pending_for_display(j.db),
                     activity=j.activity.summary(),
@@ -1087,7 +1088,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
                                      "the display password and staff key, or whether van locations show outside "
-                                     "working hours, or whether and where Jarvis may browse the web.")
+                                     "working hours, or whether and where Jarvis may browse the web, or which "
+                                     "service inbox Jarvis reads.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

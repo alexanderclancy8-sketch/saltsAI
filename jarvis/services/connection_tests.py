@@ -60,6 +60,10 @@ async def _microsoft365(j) -> tuple[bool, str]:
     return True, f"Reading {j.settings.ms_mailbox} works."
 
 
+async def _serviceinbox(j) -> tuple[bool, str]:
+    return await j.service_inbox.test()
+
+
 async def _teams(j) -> tuple[bool, str]:
     if not j.teams.enabled:
         return False, "Add the channel webhook URL first."
@@ -192,7 +196,7 @@ async def _marketing(j) -> tuple[bool, str]:
 
 
 TESTS = {
-    "claude": _claude, "microsoft365": _microsoft365, "teams": _teams, "teamsbot": _teamsbot, "fsm": _fsm,
+    "claude": _claude, "microsoft365": _microsoft365, "serviceinbox": _serviceinbox, "teams": _teams, "teamsbot": _teamsbot, "fsm": _fsm,
     "sage": _sage, "ram": _ram, "github": _github, "selfimprove": _selfimprove, "storage": _storage,
     "voice": _voice, "marketing": _marketing,
 }

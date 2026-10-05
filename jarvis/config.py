@@ -172,6 +172,17 @@ class Settings(BaseSettings):
     ooh_email_from: str = ""
     ooh_mailbox: str = ""  # mailbox the reports arrive in (e.g. info@...); defaults to MS_MAILBOX
     ooh_subject_keyword: str = "out of hours"
+    # A SECOND shared mailbox (service@) where Bradford Council portal job requests arrive. Blank = off: nothing reads it.
+    # Owner-only (settings_store.OWNER_ONLY_KEYS); never settable by the model or by a tool argument. Read through the same
+    # Microsoft 365 app registration as MS_MAILBOX (Mail.Read/ReadWrite application permission on this mailbox too).
+    service_inbox: str = ""
+    council_intake_enabled: bool = True  # scan the service inbox for council portal requests (each one only PROPOSED)
+    # Which emails in it count as a council portal request: an email qualifies if its SENDER matches any sender pattern
+    # (domain, or a full address when the pattern has an @) or its SUBJECT contains any subject phrase. Comma-separated.
+    council_sender_patterns: str = "bradford.gov.uk"
+    council_subject_patterns: str = ("work order,job request,service request,repair request,request for works,"
+                                     "portal notification,new request")
+    council_customer_name: str = "Bradford Council"  # the FSM customer a council job is proposed against ("" = none)
     # The shared inbox is for OPERATIONAL items that matter only. Automated email to it is held back unless
     # the notification's importance (info < normal < important < urgent) reaches the minimum below - see
     # jarvis/services/notifier.py. Repeats of the same alert are collapsed and the inbox is rate-limited.
@@ -392,7 +403,7 @@ class Settings(BaseSettings):
 
     @property
     def shared_mailbox_entries(self) -> set[str]:
-        raw = [*self.shared_mailboxes.split(","), self.ooh_mailbox]
+        raw = [*self.shared_mailboxes.split(","), self.ooh_mailbox, self.service_inbox]
         return {e.strip().lower() for e in raw if e and e.strip()}
 
     @property
