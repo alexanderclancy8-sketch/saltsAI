@@ -253,9 +253,11 @@ class FSMClient:
         if method.upper() not in ("POST", "PUT", "PATCH") or ".." in path or "://" in path:
             raise ValueError("Only POST/PUT/PATCH to a relative API path is allowed")
         r = await self.http.request(method.upper(), self._url(path), json=body, headers=self._headers(), timeout=30)
-        if r.is_error:
-            # Say WHY the FSM refused (e.g. 'A customer called X already exists'), not just the status code -
-            # this text is what the owner sees on the HUD when an approved change fails.
+        if not 200 <= r.status_code < 300:
+            # Anything that is not a 2xx is a failed write - including a 3xx (e.g. a redirect to a login page), which
+            # is not an error to httpx but did not change anything. Say WHY (e.g. 'A customer called X already
+            # exists'), not just the status code - this text is what the owner sees on the HUD when an approved
+            # change fails.
             raise httpx.HTTPStatusError(f"Salts FSM refused the change ({r.status_code}): {r.text[:400]}",
                                         request=r.request, response=r)
         return r.json() if r.content else {"status": r.status_code}

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from typing import Any
 
 from . import auth
+from .brain.prompts import address_for
 from .config import Settings, get_settings
 from .core import Jarvis
 from .integrations.finance import SageFinance
@@ -27,7 +28,8 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import connection_tests, documents
+from .services import connection_tests, documents, images
+from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
 from .settings_store import AZURE_VOICES, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
@@ -313,11 +315,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.get("/api/status", dependencies=[Depends(owner)])
     async def status(request: Request):
         j = J(request)
+        if not j.ram.demo:  # RAM is set up: find out (at most every few minutes) whether it actually answers
+            await _safe(j.ram.probe(), "RAM Tracking")
         data, presence, customers = await asyncio.gather(
             j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
+                    activity=j.activity.summary(),
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
-                    owner=settings.owner_name, company=settings.company_name,
+                    owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
                     resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
@@ -326,7 +331,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/tracking", dependencies=[Depends(owner)])
     async def tracking(request: Request):
-        return await J(request).tracker.live()
+        # The Fleet panel. Outside working hours this only shows vans if the owner's setting allows it, and then the
+        # look-up is logged against whoever is signed in (the manager's name, or the owner's own display session).
+        return await J(request).tracker.live(requester_label(settings, speaker(request)), tool="fleet_panel")
 
     # ------------------------------------------------------------------ voice
     @app.post("/api/tts", dependencies=[Depends(owner)])
@@ -493,6 +500,32 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return Response(data, media_type=mime,
                         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                                  "Cache-Control": "no-store"})
+
+    # ------------------------------------------------------------------ draft social media graphics (PNG)
+    @app.get("/api/images/{image_name}", dependencies=[Depends(owner)])
+    async def get_image(image_name: str, download: int = 0):
+        image_id = image_name[:-4] if image_name.endswith(".png") else ""
+        if not images.IMAGE_ID_RE.match(image_id):
+            raise HTTPException(404, "No such image")
+        path = images.images_dir(settings) / f"{image_id}.png"
+        if not path.is_file():
+            raise HTTPException(404, "No such image")
+        headers = {"Cache-Control": "no-store"}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="salts-draft-post-{image_id[:8]}.png"'
+        return Response(path.read_bytes(), media_type="image/png", headers=headers)
+
+    @app.post("/api/brand/logo", dependencies=[Depends(owner)])
+    async def upload_logo(logo: UploadFile = File(...)):
+        """Supply the company logo once; generated graphics use it from then on (over the bundled Salts logo)."""
+        data = await logo.read(images.MAX_LOGO_BYTES + 1)
+        try:
+            await asyncio.to_thread(images.save_logo, settings, data)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except ImportError:
+            raise HTTPException(503, "Image handling isn't installed on this server.") from None
+        return {"saved": True, "message": "Logo saved - it will be used on every graphic from now on."}
 
     # ------------------------------------------------------------------ approvals
     @app.get("/api/approvals", dependencies=[Depends(owner)])
@@ -728,7 +761,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data = store.view(j.db, context)
         data["context"] = {
             **context,
-            "staff_report_link": f"{base}/report?key={settings.staff_report_key}" if settings.staff_report_key else "",
+            # The staff report link carries the staff key, so it is NOT part of this payload (or of any page): the
+            # "Copy staff report link" button fetches it from /api/staff-report-address only when it is pressed.
+            "staff_report_link_set": bool(settings.staff_report_key),
             "sage": {"configured": isinstance(j.finance, SageFinance),
                      "connected": isinstance(j.finance, SageFinance) and j.finance.connected},
             "backend": settings.effective_llm_backend,
@@ -736,6 +771,14 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             "microsoft_signin": os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() == "true",
         }
         return data
+
+    @app.get("/api/staff-report-address", dependencies=[Depends(owner)])
+    async def staff_report_address():
+        """The one place the staff report address (which includes the staff key) leaves the server: handed to the
+        "Copy staff report link" button, which puts it on the clipboard and never on the page. Not cached."""
+        base = settings.public_base_url.rstrip("/")
+        link = f"{base}/report?key={settings.staff_report_key}" if settings.staff_report_key else ""
+        return JSONResponse({"link": link}, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/settings", dependencies=[Depends(owner)])
     async def get_settings_page(request: Request):
@@ -749,7 +792,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if (OWNER_ONLY_KEYS & (set(body.values) | set(body.clear))) and not auth.is_principal_owner(
                 settings, request, trusted_owner_email):
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
-                                     "or the display password and staff key.")
+                                     "the display password and staff key, or whether van locations show outside "
+                                     "working hours.")
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)

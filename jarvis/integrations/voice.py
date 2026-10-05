@@ -26,7 +26,7 @@ import httpx
 
 from ..config import Settings
 from .ssml import build_ssml
-from .stt_chain import ENGINE_LABELS, engine_configured, stt_chain
+from .stt_chain import ENGINE_LABELS, KEY_NAMES, engine_configured, stt_chain, stt_problem
 
 log = logging.getLogger(__name__)
 
@@ -245,6 +245,7 @@ class Voice:
             "tts": self.s.effective_tts,
             "stt": self.s.effective_stt,
             "stt_chain": stt_chain(self.s),  # fallback order the browser walks if an engine fails (stt_chain.py)
+            "stt_problem": stt_problem(self.s),  # "" or why the chosen engine can't be used (shown in the top bar)
             "wake_word": self.s.wake_word,
             "language": self.s.stt_language,
             "voice": voice,
@@ -594,6 +595,11 @@ class SpeechToTextCheck:
 
     async def check(self) -> str:
         provider = self.voice.s.effective_stt
+        problem = stt_problem(self.voice.s)
+        if problem:  # chosen but not usable: fails (so it stays visible) and says what voice input does instead
+            key = KEY_NAMES.get(self.voice.s.effective_stt, "the key")
+            raise VoiceError(f"{problem} ({key}). Voice input is using the browser's speech recognition instead - add the "
+                             "key under Connections > Voice, or choose the browser engine there.")
         t0 = time.perf_counter()
         await self.voice.transcribe(silent_wav(), "audio/wav")
         return f"{provider} accepted a test clip in {int((time.perf_counter() - t0) * 1000)} ms"

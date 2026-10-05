@@ -241,12 +241,30 @@ CREATE TABLE IF NOT EXISTS reply_habits (
     last_used TEXT NOT NULL,
     UNIQUE(norm, context)
 );
+CREATE TABLE IF NOT EXISTS check_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_check_runs_job ON check_runs (job_key, id);
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
     kind TEXT NOT NULL,
     title TEXT NOT NULL,
     markdown TEXT NOT NULL
+);
+-- One row per engineer whose van position/journey was looked up outside working hours (who asked, when, which tool).
+CREATE TABLE IF NOT EXISTS location_lookup_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    asked_by TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    engineer TEXT NOT NULL,
+    mode TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS false_alarm_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -466,6 +484,17 @@ class Database:
     def delete_automation(self, automation_id: int) -> None:
         self.execute("DELETE FROM automations WHERE id = ?", (automation_id,))
 
+    # -- scheduled-check activity log (services/activity.py) ---------------------------------
+    def add_check_run(self, job_key: str, job_name: str, outcome: str, detail: str = "") -> int:
+        return self.execute("INSERT INTO check_runs (ran_at, job_key, job_name, outcome, detail) VALUES (?,?,?,?,?)",
+                            (now_iso(), job_key, job_name, outcome, detail))
+
+    def check_runs_since(self, since_iso: str) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM check_runs WHERE ran_at >= ? ORDER BY id", (since_iso,))
+
+    def prune_check_runs(self, before_iso: str) -> None:
+        self.execute("DELETE FROM check_runs WHERE ran_at < ?", (before_iso,))
+
     # -- approvals ------------------------------------------------------------------
     def create_action(self, kind: str, summary: str, payload: dict[str, Any], status: str = "pending",
                       approved_by: str = "") -> int:
@@ -524,6 +553,14 @@ class Database:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
 
+    def failed_actions(self, since_iso: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        """Approved actions that then failed (newest first), optionally only those decided at/after `since_iso`."""
+        rows = self.query("SELECT * FROM pending_actions WHERE status = 'failed' AND decided_at >= ?"
+                          " ORDER BY id DESC LIMIT ?", (since_iso, limit))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        return rows
+
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",
                      (status, result, now_iso(), action_id))
@@ -555,6 +592,21 @@ class Database:
     def set_kv(self, key: str, value: str) -> None:
         self.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                      (key, value))
+
+    # -- out-of-hours van location look-ups ---------------------------------------------------
+    def log_location_lookup(self, asked_by: str, tool: str, engineer: str, mode: str) -> int:
+        return self.execute("INSERT INTO location_lookup_log (created_at, asked_by, tool, engineer, mode) "
+                            "VALUES (?,?,?,?,?)", (now_iso(), asked_by, tool, engineer, mode))
+
+    def recent_location_lookup(self, asked_by: str, tool: str, engineer: str, within_minutes: int) -> bool:
+        since = (datetime.now(timezone.utc) - timedelta(minutes=within_minutes)).isoformat(timespec="seconds")
+        return self.query_one("SELECT 1 FROM location_lookup_log WHERE asked_by = ? AND tool = ? AND engineer = ? "
+                              "AND created_at >= ? LIMIT 1", (asked_by, tool, engineer, since)) is not None
+
+    def location_lookups(self, days: int = 7, limit: int = 200) -> list[dict[str, Any]]:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        return self.query("SELECT created_at, asked_by, tool, engineer, mode FROM location_lookup_log "
+                          "WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:

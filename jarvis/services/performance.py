@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from .. import demo_guard
 from ..config import ROOT_DIR
 
 EXAMPLE_FILE = ROOT_DIR / "staff_roles.example.yaml"
@@ -50,7 +51,14 @@ class StaffRegister:
         data.setdefault("defaults", {})
         data.setdefault("staff", [])
         data["_source"] = "example (demo)" if src == EXAMPLE_FILE else str(src)
+        if src == EXAMPLE_FILE:
+            demo_guard.touch(demo_guard.STAFF)  # the sample people: never handed to the model as the real team
         return data
+
+    @property
+    def demo(self) -> bool:
+        """True while there is no real register yet and the example people are what the console shows."""
+        return not self.path.exists()
 
     def save(self, data: dict[str, Any]) -> None:
         data = {k: v for k, v in data.items() if not k.startswith("_")}
@@ -82,6 +90,8 @@ class StaffRegister:
                add_duties: list[str] | None = None, remove_duties: list[str] | None = None,
                expectations: dict[str, float] | None = None) -> dict[str, Any]:
         data = self.load()
+        if self.demo:
+            data["staff"] = []  # the first real person starts the real register: the sample people are not carried in
         person = next((p for p in data["staff"] if p["name"].lower() == name.lower()), None)
         if person is None:
             person = {"name": name, "type": type_ or "office", "role": role or "", "duties": []}
@@ -104,6 +114,11 @@ class StaffRegister:
         return person
 
     def prompt_summary(self) -> str:
+        if self.demo:
+            # The example people are placeholders. They are not put in the model's prompt (nor in the prompts of the
+            # documents built from this summary), or he would talk about a team that does not exist.
+            return ("- No real staff register yet: only sample people exist, so do not name or describe anyone from it. "
+                    "Say the register is not set up and ask for each person's role, duties and targets.")
         lines = []
         for p in self.people():
             duties = "; ".join(p.get("duties") or []) or "duties not recorded"

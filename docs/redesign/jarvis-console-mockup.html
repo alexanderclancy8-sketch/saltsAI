@@ -1,0 +1,400 @@
+<title>J.A.R.V.I.S. Console</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oxanium:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the agent is the page. One centred column (core, conversation, composer); every dashboard section lives behind a quiet rail of labels with counts and opens as a pop-up drawer. Single dark world, navy family shared with SALTS FSM. */
+:root{
+  color-scheme:dark;
+  --navy-deepest:#060d1a;
+  --navy:#0b1628;
+  --panel:#101f38;
+  --panel-hi:#16294a;
+  --line:#1d3155;
+  --text:#e6eefb;
+  --muted:#8fa3c4;
+  --core:#4fd8ff;      /* the agent's voice */
+  --core-dim:#1c6f8f;
+  --ember:#ffab4a;     /* working / needs a look */
+  --ok:#5fe0a8;
+  --warn:#ff7a6b;
+  --f-display:'Oxanium','Segoe UI',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+  --f-mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{background:var(--navy-deepest);color:var(--text);font-family:var(--f-body);font-size:15px;line-height:1.5}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--core);outline-offset:2px}
+.label{font-family:var(--f-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.brand{font-family:var(--f-display);font-weight:700;letter-spacing:.32em;font-size:15px}
+.brand small{display:block;font-family:var(--f-mono);font-weight:400;font-size:10px;letter-spacing:.2em;color:var(--muted)}
+.field{background:var(--navy);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;width:100%}
+.field::placeholder{color:var(--muted)}
+.btn{background:var(--core);color:#03202c;border:0;border-radius:var(--r);padding:12px 16px;font-weight:600;font-family:var(--f-display);letter-spacing:.06em}
+.btn:hover{filter:brightness(1.1)}
+.ghost{background:none;border:1px solid var(--line);border-radius:var(--r);padding:8px 12px;color:var(--muted)}
+.ghost:hover{color:var(--text);border-color:var(--core-dim)}
+.ghost[aria-pressed="true"]{color:var(--core);border-color:var(--core-dim)}
+
+/* ---------- Sign-in ---------- */
+#login{height:100%;display:grid;place-items:center;padding-inline:16px;
+  background:radial-gradient(ellipse at 50% 38%,#12284a 0%,var(--navy-deepest) 62%)}
+.login-card{width:min(360px,100%);display:flex;flex-direction:column;align-items:center;gap:18px;text-align:center}
+.login-card canvas{width:180px;height:180px}
+.login-card h1{font-family:var(--f-display);font-weight:600;font-size:22px;margin:0;text-wrap:balance}
+.login-card form{width:100%;display:flex;flex-direction:column;gap:10px}
+.note{font-size:12px;color:var(--muted);margin:0}
+
+/* ---------- Console ---------- */
+#app{height:100%;display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+.top{grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid var(--line)}
+.top .spacer{flex:1}
+.clock{font-family:var(--f-mono);font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.demo{font-size:12px;color:var(--ember);border:1px solid currentColor;border-radius:99px;background:none;padding:3px 10px}
+.state{display:inline-flex;align-items:center;gap:8px;font-family:var(--f-mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.state b{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+[data-state="listening"] .state{color:var(--core)}[data-state="listening"] .state b{background:var(--core)}
+[data-state="thinking"] .state{color:var(--ember)}[data-state="thinking"] .state b{background:var(--ember)}
+[data-state="speaking"] .state{color:var(--ok)}
+
+.rail{border-right:1px solid var(--line);padding:16px 10px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.rail .label{padding:0 10px 8px}
+.rail button{display:flex;justify-content:space-between;align-items:center;gap:8px;background:none;border:0;border-radius:8px;padding:8px 10px;color:var(--muted);text-align:left;white-space:nowrap}
+.rail button:hover{background:var(--panel);color:var(--text)}
+.rail button span{font-family:var(--f-mono);font-size:12px;font-variant-numeric:tabular-nums}
+.rail .hot span{color:var(--ember)}
+.rail .bad span{color:var(--warn)}
+
+main{display:flex;flex-direction:column;align-items:center;min-height:0;min-width:0;
+  background:radial-gradient(ellipse at 50% 12%,#10244380 0%,transparent 55%)}
+.col{width:min(720px,100%);padding-inline:20px}
+.stage{display:flex;flex-direction:column;align-items:center;gap:2px;padding-block:14px 4px;text-align:center}
+#core{width:150px;height:150px;background:none;border:0;border-radius:50%;padding:0}
+#core canvas{width:150px;height:150px;display:block}
+.stage p{margin:0;color:var(--muted);font-size:13px}
+.log{flex:1;min-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:16px;padding-block:14px}
+.msg{display:flex;flex-direction:column;gap:3px;max-width:60ch}
+.msg p{margin:0}
+.msg.you{align-self:flex-end;align-items:flex-end}
+.msg.you p{background:var(--panel-hi);padding:8px 14px;border-radius:14px 14px 4px 14px}
+.msg.j p{border-left:2px solid var(--core);padding-left:14px}
+.auto{border:1px solid var(--line);border-radius:var(--r);font-size:13px;color:var(--muted)}
+.auto summary{cursor:pointer;padding:8px 12px;list-style:none;display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap}
+.auto summary::-webkit-details-marker{display:none}
+.auto summary u{color:var(--core);text-decoration:none}
+.auto div{padding:0 12px 10px;font-family:var(--f-mono);font-size:12px;display:flex;flex-direction:column;gap:2px}
+
+.needs{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px 8px;padding-top:8px}
+.chip{background:none;border:1px solid var(--line);border-radius:99px;padding:4px 12px;font-size:13px;color:var(--muted)}
+.chip:hover{color:var(--text);border-color:var(--core-dim)}
+.chip.red{color:var(--warn)}.chip.amber{color:var(--ember)}
+.step{font-family:var(--f-mono);font-size:12px;color:var(--muted);padding-left:16px}
+.src{font-size:12px;color:var(--muted);padding-left:16px}
+.extras{display:flex;flex-wrap:wrap;gap:6px;padding:4px 0 0 16px}
+.draft{margin:4px 0 0 16px;border:1px solid var(--line);border-radius:var(--r);background:var(--navy);padding:12px 14px;display:flex;flex-direction:column;gap:8px;font-size:14px}
+.draft p{border:0!important;padding:0!important;color:var(--muted)}
+.draft .acts{display:flex;flex-wrap:wrap;gap:8px}
+.draft .btn{padding:8px 14px}
+#voice{width:100%;height:100%;margin:0;border:0;background:radial-gradient(ellipse at 50% 40%,#12284a 0%,var(--navy-deepest) 65%)}
+.vwrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px 16px;text-align:center}
+.vwrap canvas{width:min(280px,70vw);height:min(280px,70vw)}
+#vCap{max-width:44ch;min-height:6em;font-size:19px;line-height:1.45;margin:0;text-wrap:balance}
+#vCap.you{color:var(--muted)}
+.composer{position:relative;display:flex;gap:8px;padding-block:10px 16px}
+.composer .field{flex:1;min-width:0}
+.sq{width:46px;flex:none;padding:0;display:grid;place-items:center}
+.mic{border-color:var(--core-dim);color:var(--core)}
+[data-state="listening"] .mic{background:var(--core);color:#03202c}
+#menu{position:absolute;bottom:100%;left:0;width:min(240px,100%);background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:6px;display:flex;flex-direction:column;box-shadow:0 12px 40px #0009}
+#menu button{background:none;border:0;border-radius:6px;padding:7px 10px;text-align:left}
+#menu button:hover{background:var(--panel-hi)}
+
+/* ---------- Pop-up drawer ---------- */
+dialog{border:0;padding:0;color:var(--text);background:var(--navy);width:min(460px,100%);max-width:100%;height:100%;max-height:100%;margin:0 0 0 auto;border-left:1px solid var(--line)}
+dialog::backdrop{background:#030812b3}
+dialog.pop{height:auto;margin:auto;width:min(440px,calc(100% - 32px));border:1px solid var(--line);border-radius:14px}
+.picks{display:flex;flex-direction:column;gap:8px}
+.picks .ghost{text-align:left;color:var(--text);padding:12px 14px}
+.picks .ghost:hover{background:var(--panel-hi);border-color:var(--core)}
+.dbody>p{margin:0}
+.crow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;width:100%;background:none;border:0;padding:4px 6px;margin:-4px -6px;border-radius:8px;text-align:left}
+.crow:hover{background:var(--panel)}
+.crow small{white-space:nowrap;color:var(--muted)}
+.crow small.ok{color:var(--ok)}.crow small.red{color:var(--warn)}
+.dhead{position:sticky;top:0;background:var(--navy);display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
+.dhead h2{margin:0;font-family:var(--f-display);font-weight:600;font-size:18px;letter-spacing:.04em}
+.dbody{padding:16px 20px 28px;display:flex;flex-direction:column;gap:22px}
+.dbody h3{margin:0 0 8px;font-weight:400;display:flex;justify-content:space-between;gap:8px}
+.rows{list-style:none;margin:0;padding:0}
+.rows li{padding:10px 0;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:1px}
+.rows li:last-child{border-bottom:0}
+.rows small{color:var(--muted);font-size:12px}
+.rows .split{flex-direction:row;justify-content:space-between;gap:12px;align-items:baseline}
+.rows .split small{white-space:nowrap}
+.ok{color:var(--ok)}.amber{color:var(--ember)}.red{color:var(--warn)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px 12px}
+.stats div{display:flex;flex-direction:column}
+.stats b{font-family:var(--f-display);font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.stats small{color:var(--muted);font-size:12px}
+.empty{color:var(--muted);font-size:14px;margin:0}
+.set{display:flex;flex-direction:column;gap:6px}
+.set select{background:var(--navy-deepest);border:1px solid var(--line);border-radius:8px;padding:9px 10px;width:100%}
+
+@media (max-width:760px){
+  html,body{height:100%}
+  #app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr)}
+  .top{padding-inline:16px}
+  .rail{flex-direction:row;border-right:0;border-bottom:1px solid var(--line);padding:8px 16px;overflow-x:auto;gap:4px}
+  .rail .label{display:none}
+  .rail button{border:1px solid var(--line);border-radius:99px;padding:5px 12px}
+  .col{padding-inline:16px}
+  #core,#core canvas{width:110px;height:110px}
+  .clock{display:none}
+}
+</style>
+
+<section id="login">
+  <div class="login-card">
+    <canvas id="orbLogin" width="360" height="360" aria-hidden="true"></canvas>
+    <div class="brand">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY</small></div>
+    <h1>Identify yourself, sir.</h1>
+    <form id="loginForm">
+      <input class="field" id="pw" type="password" placeholder="Password" aria-label="Password" autocomplete="off">
+      <button class="btn" type="submit">SIGN IN</button>
+    </form>
+    <p class="note">Design mockup. Nothing is checked or sent. Press Sign in to open the console.</p>
+  </div>
+</section>
+
+<div id="app" data-state="standby" hidden>
+  <header class="top">
+    <div class="brand">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY</small></div>
+    <span class="state" role="status" aria-live="polite"><b></b><span id="stateText">Online</span></span>
+    <span class="spacer"></span>
+    <button class="demo" type="button" data-open="demo">Demo data: 3 sources</button>
+    <span class="clock" id="clock"></span>
+    <button class="ghost" type="button" id="voiceOut" aria-pressed="false" title="Read replies aloud">Voice off</button>
+    <button class="ghost" type="button" id="speaks" aria-pressed="true" title="Let Jarvis post into this session by himself">Speaks up</button>
+    <button class="ghost" type="button" data-open="connections">Connections</button>
+    <button class="ghost" type="button" data-open="settings">Settings</button>
+  </header>
+
+  <nav class="rail" aria-label="Dashboard sections">
+    <div class="label">On request</div>
+    <button type="button" data-open="approvals">Approvals <span>0</span></button>
+    <button type="button" data-open="comms" class="hot">Comms <span>8</span></button>
+    <button type="button" data-open="issues" class="hot">Issues <span>12</span></button>
+    <button type="button" data-open="health" class="bad">Health <span>13/15</span></button>
+    <button type="button" data-open="ops">Ops <span>0</span></button>
+    <button type="button" data-open="fleet">Fleet <span>off</span></button>
+    <button type="button" data-open="finance" class="hot">Finance <span>1</span></button>
+    <button type="button" data-open="presence">Presence</button>
+    <button type="button" data-open="coming">Coming up <span>8</span></button>
+  </nav>
+
+  <main>
+    <div class="col stage">
+      <button id="core" type="button" aria-label="Start or stop listening"><canvas id="orb" width="300" height="300"></canvas></button>
+      <p id="stateHint">Live. Ask me anything about the business.</p>
+      <div class="needs">
+        <span class="label">Needs you</span>
+        <button class="chip red" type="button" data-open="health">2 checks failing</button>
+        <button class="chip amber" type="button" data-open="comms">8 unread</button>
+        <button class="chip" type="button" data-open="coming">Van service Thursday</button>
+      </div>
+    </div>
+    <div class="col log" id="log" aria-live="polite">
+      <details class="auto">
+        <summary><span>Pull request watch &middot; 7 scheduled checks since 09:30, no change</span><u>Show</u></summary>
+        <div><span>09:30 All merged. PR 68 closed, no open pull requests.</span><span>09:40 No change.</span><span>09:50 No change.</span><span>10:00 No change. RAM Tracking fix not yet raised.</span><span>10:10 No change.</span><span>10:20 No change.</span><span>10:30 No change.</span></div>
+      </details>
+      <div class="msg you"><span class="label">Alex &middot; 10:21</span><p>How is the team performing this week? Is anyone falling short?</p></div>
+      <div class="msg j"><span class="label">Jarvis &middot; 10:21</span><p>I can't give you a fair answer this week, sir, because the data isn't there. Salts FSM shows no completed jobs yet and the staff review still runs against the demo register.</p></div>
+      <div class="msg you"><span class="label">Alex &middot; 10:30</span><p>Jarvis are you there</p></div>
+      <div class="msg j"><span class="label">Jarvis &middot; 10:30</span><p>I'm here, sir. Can you hear me all right? If you can't, the fault is probably in the voice playback and not in me.</p></div>
+    </div>
+    <form class="col composer" id="composer">
+      <div id="menu" hidden></div>
+      <button class="ghost sq" type="button" id="menuBtn" aria-label="Shortcuts" aria-expanded="false" title="Shortcuts">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+      </button>
+      <input class="field" id="say" type="text" placeholder="Message Jarvis" aria-label="Message Jarvis" autocomplete="off">
+      <button class="ghost sq mic" type="button" id="mic" aria-label="Microphone">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button class="btn" type="submit">SEND</button>
+    </form>
+  </main>
+</div>
+
+<dialog id="dlg" aria-labelledby="dTitle">
+  <div class="dhead"><h2 id="dTitle"></h2><button class="ghost" type="button" id="dClose">Close</button></div>
+  <div class="dbody" id="dBody"></div>
+</dialog>
+
+
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id)};
+  var app=$('app'),login=$('login'),log=$('log'),dlg=$('dlg'),menu=$('menu');
+  var css=getComputedStyle(document.documentElement);
+  var COL={standby:css.getPropertyValue('--core-dim').trim(),listening:css.getPropertyValue('--core').trim(),
+           thinking:css.getPropertyValue('--ember').trim(),speaking:css.getPropertyValue('--ok').trim()};
+  var state='standby',still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var TEXT={standby:['Online','Live. Ask me anything about the business.'],listening:['Listening','Go ahead, sir.'],
+            thinking:['Working','One moment.'],speaking:['Speaking','Tap the core to interrupt.']};
+  function setState(s){state=s;app.dataset.state=s;$('stateText').textContent=TEXT[s][0];$('stateHint').textContent=TEXT[s][1];if(still)frame(0)}
+
+  /* The core: rotating arcs plus a waveform ring whose energy follows the agent's state. */
+  function draw(cv,st,t){
+    var c=cv.getContext('2d'),w=cv.width,r=w/2,col=COL[st],energy={standby:.15,listening:.6,thinking:.35,speaking:1}[st];
+    c.clearRect(0,0,w,w);c.save();c.translate(r,r);
+    var g=c.createRadialGradient(0,0,0,0,0,r*.5);g.addColorStop(0,col);g.addColorStop(1,'transparent');
+    c.globalAlpha=.25+.15*Math.sin(t*2)*energy;c.fillStyle=g;c.beginPath();c.arc(0,0,r*.5,0,7);c.fill();
+    c.globalAlpha=1;c.strokeStyle=col;c.lineCap='round';c.lineWidth=w*.008;c.beginPath();
+    for(var i=0;i<=120;i++){var a=i/120*Math.PI*2,rr=r*.36+r*.07*energy*Math.sin(a*6+t*5)*Math.sin(a*3-t*3),x=Math.cos(a)*rr,y=Math.sin(a)*rr;i?c.lineTo(x,y):c.moveTo(x,y)}
+    c.closePath();c.stroke();
+    [[.58,.012,1,.9,3],[.72,.006,-.6,.5,5],[.88,.004,.35,.35,2]].forEach(function(p){
+      c.lineWidth=w*p[1];c.globalAlpha=p[3];var n=p[4],sp=st==='thinking'?3:1;
+      for(var k=0;k<n;k++){var s=t*p[2]*sp+k*Math.PI*2/n;c.beginPath();c.arc(0,0,r*p[0],s,s+Math.PI*2/n*.7);c.stroke()}});
+    c.restore();
+  }
+  var vstate='listening';
+  function frame(ms){var t=ms/1000;if(!login.hidden)draw($('orbLogin'),'standby',t);else draw($('orb'),state,t);if(!still)requestAnimationFrame(frame)}
+  requestAnimationFrame(frame);
+
+  function tick(){var d=new Date();$('clock').textContent=d.toLocaleTimeString('en-GB')+' · '+d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})}
+  tick();setInterval(tick,1000);
+
+  function show(c){login.hidden=c;app.hidden=!c;if(still)frame(0)}
+  $('loginForm').addEventListener('submit',function(e){e.preventDefault();$('pw').value='';show(true)});
+  if(location.hash==='#console')show(true);
+
+  /* ---------- Pop-up content (snapshot of the live dashboard, 2 Oct 10:37) ---------- */
+  function rows(list,split){return '<ul class="rows">'+list.map(function(r){return '<li'+(split?' class="split"':'')+'><span>'+r[0]+'</span><small'+(r[2]?' class="'+r[2]+'"':'')+'>'+r[1]+'</small></li>'}).join('')+'</ul>'}
+  function sec(title,right,html){return '<section><h3 class="label"><span>'+title+'</span><span>'+(right||'')+'</span></h3>'+html+'</section>'}
+  function stats(list){return '<div class="stats">'+list.map(function(s){return '<div><b>'+s[0]+'</b><small>'+s[1]+'</small></div>'}).join('')+'</div>'}
+  var eng=['Dave Austin','Gary Firth','Ian Frost','Jez Culpan','Liam Fletcher','Liam Nicholson','Louis Beattie','Matt Mitchell','Oliver Drury','Richard Caspell','Russell Mungovin','Sam Swales'];
+  var P={
+    approvals:['Approvals',function(){return sec('Awaiting your approval','0','<p class="empty">Nothing is waiting for you.</p>')+sec('Suggestions','3 new','<p class="empty">Jarvis has 3 new suggestions. Ask "what do you suggest?" to hear them.</p>')}],
+    comms:['Comms',function(){return sec('Inbox','8 unread',rows([['Re: 8 Lilac Court','Cassidy Hickey, Salts Fire and Security &middot; 10:24'],['New Q4 Prices Slashed in Half! Take a Fresh Look At The SAC Clearance List!','S.A.C. Electronics &middot; 08:49'],['Alarm Report: Customer Activity','arc@bradfordcctv.co.uk &middot; 08:30'],['Alarm Report: Customer Activity','arc@bradfordcctv.co.uk &middot; 08:01'],['Alarm Report: Customer Activity','arc@bradfordcctv.co.uk &middot; 08:01'],['Re: 3 things I found','Aleks Majka &middot; 07:00'],['Alarm Systems - Daily Report','First County Monitoring &middot; 06:18'],['Sites currently in Line Fault','First County Monitoring &middot; 06:02']]))}],
+    issues:['Issues and fixes',function(){return sec('Open','12',rows([['#15 Approved Jarvis writes to Salts FSM not appearing (jobs and customer)','Alex &middot; triaged'],['#14 Design estimator in FSM quote builder: fire alarm and CCTV, with camera field-of-view on plans','Alex &middot; triaged'],['#13 Enable Browser Use plugin for Jarvis research','Alex &middot; needs human','amber'],['#12 FSM job report prints phone UTC time as UK time and leaves finish time blank','Alex &middot; triaged'],['#11 RAM Tracking showing demo data, credentials not detected','Alex &middot; needs human','amber'],['#10 Routine test failing: Speech-to-text','Routine tests &middot; needs human','amber'],['#9 Routine test failing: RAM Tracking','Routine tests &middot; needs human','amber'],['#8 Question pop-up: options not selectable','Alex &middot; needs human','amber']]))}],
+    health:['Health',function(){return sec('Routine tests','13/15 passing',rows([['Integration: RAM Tracking','404 from the vehicle API','red'],['Integration: Speech-to-text','No OpenAI API key set','red'],['Contracts past renewal date','none','ok'],['Contracts renewing in 45 days','none','ok'],['Engineer qualifications','all current for 30+ days','ok'],['FSM data','loaded','ok'],['Overdue jobs / call-outs','none','ok'],['Service visits due in 14 days','none due','ok'],['Service visits overdue','none overdue','ok'],['FSM TLS certificate','expires in 177 days','ok']],true)+'<p><button class="ghost" type="button">Run tests now</button></p>')+sec('Alerts','',rows([['Recovered: FSM data','10:17','ok'],['Action #72 failed','09:18','red'],['Action #71 failed','09:18','red'],['Done: merge main into PR #68 branch and run tests','09:18'],['PR #68: refused','09:18'],['3 new suggestions','09:05']],true))}],
+    ops:['Operations',function(){return sec('Today','',stats([['0','Jobs today'],['0','On site now'],['0','Late starts'],['0','Overdue jobs']]))+sec('Engineers','12 available',rows(eng.map(function(n){return [n,'available','ok']}),true))}],
+    fleet:['Fleet',function(){return '<p class="empty">RAM Tracking is not connected, so there are no live vehicle positions. See issue #11.</p>'}],
+    finance:['Finance',function(){return sec('Position','demo',stats([['£73,214','Cash at bank'],['£68,992','Owed to us'],['£27,539','Overdue (22)'],['51.4','Debtor days'],['£14,322','We owe'],['£501','VAT due 7 Feb']]))+sec('Customer watch','1 to watch',rows([['Kestrel Retail','Work down 100% on the previous 3 months; £4,056 overdue, oldest 75 days','amber']]))+'<p class="empty">Demo figures until Sage is connected.</p>'}],
+    presence:['Presence',function(){return sec('Followers','demo',rows([['Facebook 437','+9 this week'],['Instagram 681','+4 this week'],['LinkedIn 319','+8 this week'],['TikTok 1,201','+8 this week'],['Google reviews 4.8★','+2 this week']],true))}],
+    coming:['Coming up',function(){return rows([['Van YD72 SFS, service due','8 Oct &middot; 6 days','amber'],['Ladders and steps (all vans), inspection due','15 Oct &middot; 13 days'],['CIS monthly return','19 Oct &middot; 17 days'],['Van YD71 SFS, service due','20 Oct &middot; 18 days'],['PAYE/NIC payment to HMRC','22 Oct &middot; 20 days'],['Data protection / GDPR policy, annual review','1 Nov &middot; 30 days'],['Van YD71 SFS, MOT due','2 Nov &middot; 31 days'],['VAT return and payment (Jul to Sep 2026)','7 Nov &middot; 36 days']],true)}],
+    demo:['Demo data',function(){return '<p class="empty">Figures from these three sources are samples until the real systems are connected.</p>'+rows([['Accounts','Connect Sage in Settings'],['Socials / Google','Not connected'],['Stores / stock','Not connected']],true)}],
+    connections:['Connections',function(){return connList()}],
+    settings:['Settings',function(){function s(id,l,o){return '<label class="set" for="'+id+'"><span class="label">'+l+'</span><select id="'+id+'">'+o.map(function(x){return '<option>'+x+'</option>'}).join('')+'</select></label>'}
+      return s('sListen','Listening',['Tap the mic (or hold Space) to talk','Always listening - say "Jarvis"'])+s('sSpeak','Speak replies',['When I talk to Jarvis','Always','Never'])+s('sOver','Talk over Jarvis',['On - say "Jarvis" to interrupt him','Off - only "Jarvis, stop" interrupts'])+s('sVoice','Voice',['Default (British)'])+s('sTone','How Jarvis talks',['Natural - plain English, uses your name','Formal - calls you sir'])+'<p style="display:flex;gap:8px;flex-wrap:wrap;margin:0"><button class="ghost" type="button">Test voice</button><button class="ghost" type="button" data-open="connections">Connections</button><button class="ghost" type="button" id="signOut">Sign out</button></p>'}]
+  };
+  var CONN=[
+    ['You and the business','Connected','ok','Who Jarvis works for, and what it should know from day one.',['Your first name','What Jarvis calls you','Your email','Business partner\'s name','Business partner\'s email','Company name','Things Jarvis should know']],
+    ['Claude','Connected','ok','The AI behind Jarvis. Your Claude Max plan, or an Anthropic API key.',['Claude Max token','Model','Model for spoken replies','Thinking for spoken replies','Thinking for typed chat']],
+    ['Microsoft 365','Connected','ok','Reads and sends email, checks calendars and Teams meeting transcripts.',['Directory (tenant) ID','Application (client) ID','Client secret','Your mailbox','Folder for Jarvis\'s emails to you','Out-of-hours reports mailbox','Out-of-hours reports come from']],
+    ['Shared inbox (info@)','Filtered','','Keeps the shared inbox for important operational items only. Everything else goes to Teams and the display.',['Shared inbox address','Lowest importance emailed to it']],
+    ['Teams updates','Connected','ok','Jarvis posts your updates and alerts to a Teams channel.',['Channel webhook URL','Fix and pull request alerts']],
+    ['Teams chat','Not set up','','Message Jarvis from your phone in Teams, and get a real reply back.',['Bot app ID','Bot app secret','Directory (tenant) ID']],
+    ['Salts FSM','Working','ok','Jobs, engineers, sites, systems, contracts, quotes, stock and timesheets.',['FSM web address','API key']],
+    ['Sage Accounting','Not set up','','Invoices, bank balances, debtors and profit and loss.',[]],
+    ['RAM Tracking','Test failed','red','Van locations, set-off and home times, journeys and timesheet checks.',[]],
+    ['Voice','Connected','ok','How Jarvis sounds, and how it hears you.',[]],
+    ['Google and socials','','','Reviews, followers, search rankings and review requests.',[]],
+    ['Auto-fix','','','Lets Jarvis prepare Salts FSM bug fixes as pull requests for you to approve.',[]],
+    ['Self-improvement','','','Lets Jarvis propose changes to its own source code as a pull request. It never merges or deploys these itself.',[]],
+    ['Plugins and MCP tools','','','Optional extras, each with its own switch. None of them can approve or send anything.',[]],
+    ['Jarvis speaking up','','','Lets Jarvis post into the open chat when a background job finishes or something he is watching changes.',[]],
+    ['Report archive','','','Keeps a copy of reports and documents in Azure Storage.',[]],
+    ['Finance and targets','','','Year end, VAT and the targets Jarvis measures the business against.',[]],
+    ['Schedules','','','When Jarvis does its regular jobs. Times are UK time.',[]],
+    ['Standing approvals','Off','','Things you let Jarvis do without asking each time. Only you can change these.',[]],
+    ['Security and staff','','','Your display password and the staff issue-report link.',[]]];
+  function connList(){return '<ul class="rows">'+CONN.map(function(c,i){return '<li><button class="crow" type="button" data-conn="'+i+'"><span>'+c[0]+'</span><small'+(c[2]?' class="'+c[2]+'"':'')+'>'+(c[1]||'Set up')+' &rsaquo;</small></button></li>'}).join('')+'</ul>'}
+  function connOpen(i){var c=CONN[i];$('dTitle').textContent=c[0];
+    $('dBody').innerHTML='<p><button class="chip" type="button" data-open="connections">&lsaquo; All connections</button></p><p class="empty">'+c[3]+'</p>'
+      +(c[1]?'<p><span class="label">Status</span> <span class="'+c[2]+'">'+c[1]+'</span></p>':'')
+      +(c[4].length?c[4].map(function(f,k){return '<label class="set" for="cf'+k+'"><span class="label">'+f+'</span><input class="field" id="cf'+k+'" type="text" placeholder="Filled in from your live settings" autocomplete="off"></label>'}).join('')
+        :'<p class="empty">The setup form for this one carries over from the current app. I haven\'t laid out its fields in this preview yet.</p>')
+      +'<p style="display:flex;gap:8px;flex-wrap:wrap;margin:0"><button class="ghost" type="button" id="cTest">Test connection</button><button class="btn" type="button" id="cSave" style="padding:8px 14px">Save</button></p><p class="empty" id="cNote"></p>';
+    dlg.scrollTop=0}
+  function open(k){dlg.classList.remove('pop');$('dTitle').textContent=P[k][0];$('dBody').innerHTML=P[k][1]();if(!dlg.open)dlg.showModal();dlg.scrollTop=0}
+  document.addEventListener('click',function(e){
+    var b=e.target.closest('[data-open]');if(b)open(b.dataset.open);
+    var cr=e.target.closest('[data-conn]');if(cr)connOpen(+cr.dataset.conn);
+    if(e.target.id==='cTest'||e.target.id==='cSave')$('cNote').textContent='Preview only. Nothing is tested or saved from this mockup.';
+    var q=e.target.closest('[data-ask]');if(q){if(dlg.open)dlg.close();ask(q.dataset.ask)}
+    var a=e.target.closest('[data-done]');if(a){var c=a.closest('.draft');c.innerHTML='';var s=document.createElement('span');s.textContent=a.dataset.done;c.append(s)}
+    if(e.target.id==='signOut'){dlg.close();show(false)}
+    if(e.target===dlg)dlg.close();
+    if(!e.target.closest('#menu,#menuBtn'))toggleMenu(false);
+  });
+  $('dClose').addEventListener('click',function(){dlg.close()});
+
+  /* ---------- Shortcuts menu ---------- */
+  ['Briefing','Wrap-up','Team review','Business health','Cash flow',"Where's everyone?",'Stock','Customers','Marketing'].forEach(function(t){
+    var b=document.createElement('button');b.type='button';b.textContent=t;b.addEventListener('click',function(){toggleMenu(false);ask(t)});menu.append(b)});
+  function toggleMenu(on){menu.hidden=!on;$('menuBtn').setAttribute('aria-expanded',on)}
+  $('menuBtn').addEventListener('click',function(){toggleMenu(menu.hidden)});
+
+  /* ---------- Conversation: real Claude via the page's sample capability ---------- */
+  function now(){return new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
+  function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text)e.textContent=text;return e}
+  function shell(who){var d=el('div','msg '+(who==='you'?'you':'j'));d.append(el('span','label',(who==='you'?'Alex':'Jarvis')+' · '+now()));log.append(d);return d}
+  function down(){log.scrollTop=log.scrollHeight}
+  function snapshot(){var t=el('div'),out=[];Object.keys(P).forEach(function(k){if(k==='settings')return;t.innerHTML=P[k][1]().replace(/<\/(li|h3|div|p|small|span)>/g,' </$1>');out.push('['+k+'] '+P[k][0]+': '+t.textContent.replace(/\s+/g,' ').trim())});return out.join('\n')}
+  var RULES='You are Jarvis, the AI assistant for Salts Fire and Security, a fire and security company in Baildon (fire alarms, intruder alarms, extinguishers, access control, emergency lighting). You are talking with Alex, the owner, inside a design preview of your new console.\n\n'
+    +'How to talk: like a capable, friendly colleague. Plain conversational British English, short sentences, lead with the answer, no markdown, no bullet lists, no headings. Usually two to four sentences. Use his name occasionally, never "sir". Ask a follow-up question only when it helps.\n\n'
+    +'What you know: only the dashboard snapshot below (taken 2 Oct, 10:37) and general knowledge. Figures marked demo are sample data; say so when you quote them. If something is not in the snapshot, say you cannot see it from here rather than guessing. In this preview you cannot send email, change jobs or act on anything; you can offer to draft text.\n\n'
+    +'After your answer you may add up to two extra lines, each on its own line and only when useful:\nPANEL: <one key from the snapshot in square brackets, e.g. comms> to offer the matching pop-up.\nNEXT: <short follow-up question Alex might ask> | <another>\nCHOICES: <answer> | <answer> | <answer> - use this instead of NEXT whenever your reply ends by asking Alex a question he could answer by picking. Give two to four short answers written as Alex would say them.\n\nDashboard snapshot:\n';
+  var turns=[],ctl=null,sample=null,busy=false,sendBtn=$('composer').querySelector('.btn');
+  if(window.claude&&claude.use)claude.use('sample').then(function(s){sample=s});
+  function choose(s){$('dTitle').textContent='Jarvis is asking';var b=$('dBody');b.textContent='';b.append(el('p','',s.body));
+    var w=el('div','picks');s.choices.forEach(function(c){var x=el('button','ghost',c);x.type='button';x.dataset.ask=c;w.append(x)});b.append(w);
+    var o=el('button','chip','Type my own answer');o.type='button';o.addEventListener('click',function(){dlg.close();$('say').focus()});b.append(o);
+    dlg.classList.add('pop');if(!dlg.open)dlg.showModal()}
+  var COPY={not_granted:'Live replies are switched off for this page. Reload and allow it to use Claude.',sampling_disabled:'Claude is not available on this account.',rate_limited:'Too many requests just now. Give it a minute and try again.',session_expired:'Your session has expired. Sign in to Claude again and reload.',refused:'I can\'t help with that one. Try asking a different way.'};
+  function split(text){var body=[],panel=null,next=[],choices=[];text.split('\n').forEach(function(l){var m;
+    if(m=l.match(/^\s*PANEL:\s*\[?([a-z]+)/i)){if(P[m[1].toLowerCase()])panel=m[1].toLowerCase()}
+    else if(m=l.match(/^\s*NEXT:\s*(.+)/i)){next=m[1].split('|').map(function(x){return x.trim()}).filter(Boolean).slice(0,2)}
+    else if(m=l.match(/^\s*CHOICES:\s*(.+)/i)){choices=m[1].split('|').map(function(x){return x.trim()}).filter(Boolean).slice(0,4)}
+    else body.push(l)});return {body:body.join('\n').trim(),panel:panel,next:next,choices:choices}}
+  function setBusy(b){busy=b;sendBtn.textContent=b?'STOP':'SEND'}
+  function ask(text){text=text.trim();if(!text||busy)return;
+    shell('you').append(el('p','',text));var d=shell('jarvis'),step=el('span','step','Thinking…'),p=el('p');d.append(step);down();
+    if(!sample){step.remove();p.textContent='Live replies only work when this page is open inside Claude. Open it from your Claude artifacts and try again.';d.append(p);down();return}
+    turns.push({role:'user',content:text});if(turns.length>24)turns=turns.slice(-24);while(turns[0].role!=='user')turns.shift();
+    setBusy(true);setState('thinking');ctl=new AbortController();var started=false;
+    sample([{role:'user',content:RULES+snapshot()}].concat(turns),{cache:false,modelTier:'quick',signal:ctl.signal,
+      onText:function(u){if(!started){started=true;step.remove();d.append(p);setState('speaking')}p.textContent=split(u.text).body;down()}
+    }).then(function(r){turns.push({role:'assistant',content:r.text});var s=split(r.text);if(!started){step.remove();d.append(p)}p.textContent=s.body;
+      var ex=el('div','extras');
+      if(s.panel){var b=el('button','chip','Open '+P[s.panel][0]);b.type='button';b.dataset.open=s.panel;ex.append(b)}
+      s.next.forEach(function(f){var b=el('button','chip',f);b.type='button';b.dataset.ask=f;ex.append(b)});
+      if(s.choices.length){var ab=el('button','chip','Answer');ab.type='button';ab.style.color='var(--core)';ab.addEventListener('click',function(){choose(s)});ex.append(ab);choose(s)}
+      if(ex.children.length)d.append(ex);speak(s.body);
+    }).catch(function(e){step.remove();if(!p.isConnected)d.append(p);
+      if(e&&e.text&&e.code!=='refused')p.textContent=split(e.text).body;else p.textContent='';
+      if(turns.length&&turns[turns.length-1].role==='user')turns.pop();
+      if(!e||e.code!=='cancelled')d.append(el('span','src',COPY[e&&e.code]||'Something went wrong reaching Claude. Try again.'));
+      else if(!p.textContent)d.remove();
+    }).then(function(){setBusy(false);if(state!=='speaking'||!talking)setState('standby');down()})}
+  $('composer').addEventListener('submit',function(e){e.preventDefault();if(busy){if(ctl)ctl.abort();return}ask($('say').value);$('say').value=''});
+
+  /* Spoken replies: browser speech, off by default, only where the browser allows it */
+  var talking=false,synth=window.speechSynthesis,voiceOn=false,vb=$('voiceOut');
+  if(!synth)vb.hidden=true;
+  vb.addEventListener('click',function(){voiceOn=!voiceOn;vb.setAttribute('aria-pressed',voiceOn);vb.textContent=voiceOn?'Voice on':'Voice off';if(!voiceOn&&synth){synth.cancel();talking=false;setState('standby')}});
+  function speak(t){if(!voiceOn||!synth||!t)return;try{synth.cancel();var u=new SpeechSynthesisUtterance(t);u.lang='en-GB';
+    var v=synth.getVoices().filter(function(x){return x.lang==='en-GB'})[0];if(v)u.voice=v;
+    u.onstart=function(){talking=true;setState('speaking')};u.onend=u.onerror=function(){talking=false;if(!busy)setState('standby')};synth.speak(u)}catch(e){}}
+  function listen(){$('stateHint').textContent='The microphone is blocked inside this preview. Type your message instead; turn on Voice to hear replies.'}
+  $('core').addEventListener('click',listen);$('mic').addEventListener('click',listen);
+  $('speaks').addEventListener('click',function(){var on=this.getAttribute('aria-pressed')!=='true';this.setAttribute('aria-pressed',on);this.textContent=on?'Speaks up':'Muted'});
+  log.scrollTop=log.scrollHeight;
+})();
+</script>

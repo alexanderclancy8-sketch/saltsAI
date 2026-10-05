@@ -126,7 +126,10 @@ Do these in any order; each one replaces demo data as soon as it's set.
      `sales_invoices.csv`, `purchase_invoices.csv` and `bank.csv`. Sage's usual column names are recognised.
 4. **RAM Tracking.** In the RAM Tracking portal, go to profile > integrations > API Keys for the Client ID and
    Client secret, and set up a dedicated username/password for the API (RAM's own recommendation - don't use
-   your own login). Put all four on the Settings page. Put each engineer's van registration in the staff register.
+   your own login; give it no two-step verification). Put all four on the Settings page (the API address stays as
+   `https://api.qaifn.co.uk`; only the host is ever used). RAM allows 3 requests a minute per kind of request, so Jarvis
+   caches vehicle positions for a minute and journeys for a few; "rate limited" in the Fleet pop-up is that limit, not a
+   fault. Put each engineer's van registration in the staff register.
 5. **Staff register.** Copy `staff_roles.example.yaml` to `data/staff_roles.yaml` and describe everyone's role,
    duties and targets, or just tell Jarvis ("Jarvis, Josh should be sending 14 quotes a week").
 6. **Accreditations.** Copy `accreditations.example.yaml` to `data/accreditations.yaml` and add your real
@@ -257,6 +260,13 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
 - **Staff monitoring:** tell staff in writing what is monitored and why (job data, timesheets, vehicle tracking
   during working hours, Microsoft 365 activity *counts*, never message content). This keeps you within UK GDPR
   and ICO employment guidance. Jarvis treats flags as prompts for a conversation, not verdicts.
+- **Van locations outside working hours (Mon-Fri 07:00-18:30) are hidden by default.** Only the owner can change
+  Settings > RAM Tracking > "Show van locations outside working hours" to *On-call only* (just the engineers on
+  the on-call roster - ask Jarvis to add or remove periods; each change waits for approval) or *Always*. Keep your
+  staff notice and contracts in line with whichever you choose. Every out-of-hours look-up (who asked, when, which
+  tool, which engineer) is written to the `location_lookup_log` table and shown by the `location_lookup_log` tool;
+  if the record can't be written, nothing is shown. Background jobs that don't name who is asking never see
+  out-of-hours positions.
 - **This repository is public.** Never commit `.env`, `data/`, `finance_data/` or `knowledge/private/` (all
   git-ignored). Better still, make the repo private.
 - Financial and legal outputs are management estimates and research. Have your accountant or solicitor check
