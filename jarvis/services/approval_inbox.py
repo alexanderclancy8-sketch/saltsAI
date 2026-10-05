@@ -31,7 +31,7 @@ MAX_RECIPIENTS = 20
 _ADDRESS = re.compile(r"[^@\s<>,;\"'()\[\]\\]{1,64}@[A-Za-z0-9][A-Za-z0-9.\-]{0,200}\.[A-Za-z]{2,24}", re.ASCII)
 _CONTROL = re.compile("[" + "".join(re.escape(chr(a)) + "-" + re.escape(chr(b)) for a, b in (
     (0, 8), (11, 12), (14, 31), (127, 159), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0xFEFF, 0xFEFF))) + "]")  # control and invisible characters; keeps tab, newline, carriage return
- 
+
 
 _MARKERS = (REDACTED, _GITHUB_REDACTED)
 
