@@ -1648,6 +1648,8 @@ function send(text, mode = "typed", opts = {}) {
     [[satTiles, sat], [labelTiles, sat], [tiles, !sat]].forEach(([l, on]) => { if (on && !map.hasLayer(l)) l.addTo(map); else if (!on && map.hasLayer(l)) map.removeLayer(l); });
   }
   $("#map-toggle").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-basemap]"); if (b) setBasemap(b.dataset.basemap, true); });
+  // Space on a focused button is its native click; keep the console's hold-Space-to-talk (a window listener) out of it, as ask.js does.
+  $("#map-toggle").addEventListener("keydown", (e) => { if (e.key === " ") e.stopPropagation(); });
   setBasemap(basemap, false);
   // The Fleet pop-up: real vehicles when RAM Tracking is connected, otherwise a clear "not connected" state.
   // live: RAM answers. failing: its details are entered but it is not answering (why = the reason, in words). Otherwise
