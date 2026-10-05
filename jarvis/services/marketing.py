@@ -12,6 +12,7 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+from .. import demo_guard
 from ..brain import llm
 
 log = logging.getLogger(__name__)
@@ -123,6 +124,8 @@ class MarketingTracker:
         since = (date.today() - timedelta(days=days)).isoformat()
         week_ago = (date.today() - timedelta(days=7)).isoformat()
         demo = self.demo
+        if demo:
+            demo_guard.touch(demo_guard.SOCIALS)  # sample follower counts: never handed to the model as real
         out: dict[str, Any] = {"demo": demo, "connected": self.src.configured(), "platforms": {}}
         for platform in self.PLATFORMS:
             metrics = ("rating", "reviews") if platform == "google_reviews" else ("followers",)

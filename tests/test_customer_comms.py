@@ -130,7 +130,17 @@ async def test_event_filter_and_unknown_events(tmp_path):
     await j.http.aclose()
 
 
-async def test_tool_is_registered_and_only_drafts(tmp_path):
+async def test_tool_is_registered_and_only_drafts(tmp_path, monkeypatch):
+    # The tool takes no date, so it uses the real "today". The fixtures are built around TODAY, so pin the module's
+    # clock to it - otherwise this passes on the day it was written and fails every day after.
+    import jarvis.services.customer_comms as comms
+
+    class PinnedDate(date):
+        @classmethod
+        def today(cls):
+            return TODAY
+
+    monkeypatch.setattr(comms, "date", PinnedDate)
     tool = TOOLS_BY_NAME["draft_customer_emails"]
     assert tool.approval is False  # it only queues; the email_send approval gate is untouched
     assert TOOLS_BY_NAME["email_send"].approval is True

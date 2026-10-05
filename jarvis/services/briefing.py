@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from .. import demo_guard
 from ..brain import llm
 
 log = logging.getLogger(__name__)
@@ -18,7 +19,9 @@ Lead with anything urgent (life-safety faults, systems down, overnight out-of-ho
 overdue call-outs, cash problems), then today's
 jobs and staff, inbox highlights, money, and anything due soon. Round numbers sensibly for speech (say
 "about twelve thousand pounds"). No lists, headings or markdown - flowing speech, 150-250 words. If the data is
-marked demo, mention once that it's demo data. Only use the data provided; never invent facts."""
+marked demo, mention once that it's demo data. Only use the data provided; never invent facts.
+Anything in the data that says it is not connected is sample data that has been withheld: say once, briefly, that you
+can't cover it and what needs connecting, and give no names or figures for it."""
 
 
 async def _safe(coro, label: str) -> Any:
@@ -39,6 +42,13 @@ class Briefings:
         self.notifier = notifier
         self.client = client
         self.ooh = None  # OutOfHours, set after construction
+        self.j = None  # the Jarvis, set after construction (to know which sources are still sample data)
+
+    def _suggestions(self) -> list[dict[str, Any]]:
+        rows = self.db.open_suggestions()
+        # Only a tool call (the model reading the briefing data) hides suggestions built on sample data; the console's
+        # own panels keep showing them with their demo labels.
+        return demo_guard.visible_suggestions(self.j, rows) if demo_guard.active() and self.j is not None else rows
 
     async def status(self) -> dict[str, Any]:
         """Everything the HUD panels show, gathered in parallel."""
@@ -46,7 +56,7 @@ class Briefings:
             _safe(self.mail.list_messages(unread_only=True, top=8), "inbox"),
             _safe(self.staff.board(), "staff"),
             _safe(self.staff.overdue_jobs(), "overdue"),
-            _safe(self.accountant.snapshot(), "finance"),
+            _safe(demo_guard.section(self.accountant.snapshot()), "finance"),
         )
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -57,7 +67,7 @@ class Briefings:
             "issues": [i for i in self.db.list_issues("open", 20)],
             "tests": self.db.latest_test_results(),
             "approvals": self.db.pending_actions(),
-            "suggestions": self.db.open_suggestions(),
+            "suggestions": self._suggestions(),
             "notifications": self.db.recent_notifications(15),
             "deadlines": self.accountant.deadlines(),
         }

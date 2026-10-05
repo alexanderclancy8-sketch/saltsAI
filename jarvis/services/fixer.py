@@ -212,7 +212,7 @@ class Fixer:
     async def run_engineer(self, issue: dict[str, Any], ws: Workspace) -> dict[str, Any]:
         if self.s.effective_llm_backend == "max":
             return await self._run_engineer_max(issue, ws)
-        params = llm.request_params(self.s, self.s.engineer_effort)
+        params = llm.request_params(self.s, self.s.engineer_effort, model=self.s.engineer_model_or_default())
         system = plugins.with_methodology(ENGINEER_SYSTEM.format(company=self.s.company_name), self.s)
         report =(f"<problem_report>\nIssue #{issue['id']} reported by {issue['reporter']}\nTitle: {issue['title']}\n\n"
                   f"{issue['description']}\n</problem_report>\n\nTriage notes: {issue.get('triage_json') or 'none'}\n\n"
@@ -291,7 +291,8 @@ class Fixer:
         docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
         system = plugins.with_methodology(system, self.s) + docs.prompt
         try:
-            result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort, tools=tools,
+            result = await run_once(self.s, system=system, prompt=prompt, effort=self.s.engineer_effort,
+                                    model=self.s.engineer_model_or_default(), tools=tools,
                                     disallowed_tools=ENGINEER_BLOCKED,
                                     output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
                                     mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)
