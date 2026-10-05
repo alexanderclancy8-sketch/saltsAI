@@ -177,7 +177,7 @@ class SecurityWatch:
         system = SECURITY_SYSTEM.format(company=self.s.company_name)
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": "Review the whole repository at /repo for security vulnerabilities."}]
-        params = llm.request_params(self.s, self.s.engineer_effort)
+        params = llm.request_params(self.s, self.s.engineer_effort, model=self.s.engineer_model_or_default())
         json_retries = 0
         for _ in range(MAX_TURNS):
             try:
@@ -241,6 +241,7 @@ class SecurityWatch:
         system = SECURITY_SYSTEM.format(company=self.s.company_name).replace("/repo", "the current directory")
         result = await run_once(self.s, system=system,
                                 prompt="Review the whole repository for security vulnerabilities.",
-                                effort=self.s.engineer_effort, tools=["Read", "Glob", "Grep"],
+                                effort=self.s.engineer_effort, model=self.s.engineer_model_or_default(),
+                                tools=["Read", "Glob", "Grep"],
                                 output_schema=SubmitFindings.model_json_schema(), max_turns=80, cwd=str(ws.root))
         return parse_structured(result, SubmitFindings)

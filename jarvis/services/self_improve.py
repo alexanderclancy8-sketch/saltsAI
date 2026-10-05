@@ -168,7 +168,7 @@ class SelfImprove:
     async def _engineer(self, request: str, ws: Workspace) -> dict[str, Any]:
         if self.s.effective_llm_backend == "max":
             return await self._engineer_max(request, ws)
-        params = llm.request_params(self.s, self.s.engineer_effort)
+        params = llm.request_params(self.s, self.s.engineer_effort, model=self.s.engineer_model_or_default())
         system = plugins.with_methodology(
             SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request), self.s)
         messages: list[dict[str, Any]] = [
@@ -239,7 +239,8 @@ class SelfImprove:
         docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
         system = plugins.with_methodology(system, self.s) + docs.prompt
         result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
-                                effort=self.s.engineer_effort, tools=["Read", "Edit", "Write", "Glob", "Grep"],
+                                effort=self.s.engineer_effort, model=self.s.engineer_model_or_default(),
+                                tools=["Read", "Edit", "Write", "Glob", "Grep"],
                                 disallowed_tools=ENGINEER_BLOCKED,
                                 output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
                                 mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)

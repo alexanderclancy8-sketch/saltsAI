@@ -26,6 +26,8 @@ log = logging.getLogger(__name__)
 OPUS = ("claude-opus-5-5", "Claude Opus 5.5 - most capable")
 SONNET = ("claude-sonnet-5-5", "Claude Sonnet 5.5 - quicker")
 EFFORT = (("low", "Quick"), ("medium", "Balanced"), ("high", "Thorough"))
+# The engineering agents also accept the two highest levels the Agent SDK and API support (see config.ENGINEER_EFFORT_LEVELS).
+ENGINEER_EFFORT = EFFORT + (("xhigh", "Extra thorough (some models only)"), ("max", "Maximum"))
 AZURE_VOICES = tuple((f"en-GB-{n}Neural", f"{n} ({g})") for n, g in (
     ("Ryan", "male"), ("Thomas", "male"), ("Oliver", "male"), ("Alfie", "male"), ("Elliot", "male"), ("Ethan", "male"),
     ("Noah", "male"), ("Sonia", "female"), ("Libby", "female"), ("Olivia", "female")))
@@ -96,6 +98,13 @@ SECTIONS: tuple[Section, ...] = (
                   options=EFFORT),
             Field("chat_effort", "Thinking for typed chat", "select", "Thorough takes longer but digs deeper.",
                   options=EFFORT),
+            Field("engineer_model", "Model for the engineering agents", "text",
+                  "Used by self-improvement, auto-fix and the security review. Paste the exact model ID. "
+                  "Blank = same as the model above. Only you can change this.",
+                  placeholder="blank = same as above", advanced=True),
+            Field("engineer_effort", "Thinking for the engineering agents", "select",
+                  "How hard they think when writing or reviewing code. Only you can change this.",
+                  options=ENGINEER_EFFORT, advanced=True),
             Field("web_search_enabled", "Let Jarvis search the web", "bool"),
         ),
         test=True,
@@ -509,7 +518,8 @@ FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
 OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
 OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
-    "staff_report_key", "van_locations_out_of_hours"})  # the last widens who can see where staff are out of hours
+    "staff_report_key", "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
+    "engineer_model", "engineer_effort"})  # which model / how hard the code-writing agents work: owner's call (cost)
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
