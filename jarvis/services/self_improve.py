@@ -122,8 +122,10 @@ class SelfImprove:
         task = asyncio.create_task(self.run(request))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return ("On it, sir - I'll open a pull request for you to review. I won't merge or deploy it myself, "
-                "whatever happens.")
+        from ..brain.prompts import address_for  # how he addresses the owner follows the "How Jarvis talks" setting
+
+        return (f"On it, {address_for(self.s)} - I'll open a pull request for you to review. I won't merge or deploy it "
+                "myself, whatever happens.")
 
     # ------------------------------------------------------------------ entry point
     async def run(self, request: str) -> dict[str, Any]:

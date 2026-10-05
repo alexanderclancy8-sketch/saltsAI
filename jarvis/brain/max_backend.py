@@ -102,6 +102,10 @@ def _tool_label(name: str) -> str:
         short, short)
 
 
+class _StopRequested(Exception):
+    """The owner pressed Stop before the question was sent to Claude Code."""
+
+
 class MaxBrain:
     """Same interface as JarvisBrain, backed by the Claude Agent SDK on a subscription.
 
@@ -123,6 +127,8 @@ class MaxBrain:
         self._client = None
         self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
+        self._in_turn = False          # a chat turn is being generated right now
+        self._stop_requested = False   # the owner pressed Stop during it: wind it down quietly, publish no reply
         self._repeats = RepeatDetector()
         self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
         self.refresh_system()
@@ -180,8 +186,10 @@ class MaxBrain:
 
     async def interrupt(self) -> bool:
         """Stop whatever Claude Code is currently doing, so the next message can start straight away."""
+        if self._in_turn:
+            self._stop_requested = True  # also covers Stop pressed while Claude Code is still starting up
         if self._client is None:
-            return False
+            return self._in_turn
         try:
             await self._client.interrupt()
             return True
@@ -281,9 +289,12 @@ class MaxBrain:
         first_words: float | None = None
         parts: list[str] = []
         result = None
+        self._in_turn, self._stop_requested = True, False
         try:
             client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
                                            self.s.model_for(mode))
+            if self._stop_requested:
+                raise _StopRequested()  # stopped before it even began: don't send the question at all
             await client.query(f"{tag}\n{repeat}{text}{note}")
             async for msg in client.receive_response():
                 if isinstance(msg, StreamEvent):
@@ -313,6 +324,10 @@ class MaxBrain:
             qt.finish("", ok=False, interrupted=True)  # the owner cut this turn off (Stop / barge-in / a new message)
             raise
         except Exception as e:  # noqa: BLE001
+            if self._stop_requested:  # the stop broke the connection on its way out: not an error worth showing
+                qt.finish("", ok=False, interrupted=True)
+                await self._disconnect()
+                return "".join(parts).strip()
             qt.finish("", ok=False)
             log.exception("Claude Agent SDK turn failed")
             await self._disconnect()
@@ -321,6 +336,13 @@ class MaxBrain:
                    else "Something went wrong talking to Claude. Please try again.")
             bus.publish("error", {"message": msg, "detail": redact_text(e)[:300]})
             return msg
+        finally:
+            self._in_turn = False
+        if self._stop_requested:
+            # Stop was pressed: the console already dropped this reply, so don't publish or store a half-answer.
+            qt.finish("", ok=False, interrupted=True)
+            log.info("%s reply stopped by the owner after %.1fs", mode, time.monotonic() - started)
+            return "".join(parts).strip()
         log.info("%s reply: first words after %s, finished after %.1fs", mode,
                  f"{first_words:.1f}s" if first_words is not None else "-", time.monotonic() - started)
         if result is not None and result.is_error:
@@ -338,7 +360,7 @@ class MaxBrain:
         reply = "".join(parts).strip() or (result.result if result else "") or ""
         db.add_transcript("assistant", reply)
         qt.finish(reply)
-        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id})
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **self.j.trace.finish()})
         return reply
 
 

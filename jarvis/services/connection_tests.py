@@ -86,10 +86,21 @@ async def _sage(j) -> tuple[bool, str]:
 
 
 async def _ram(j) -> tuple[bool, str]:
+    from ..integrations.ramtracking import RamError, missing_credentials
+
     if j.ram.demo:
-        return False, "Add the RAM Client ID, Client secret, API username and password first."
-    vehicles = await j.ram.vehicles()
-    return True, f"RAM Tracking answered: {len(vehicles)} vehicles."
+        missing = missing_credentials(j.settings)
+        return False, ("RAM Tracking still needs: " + ", ".join(missing) + ". All four are required: the Client ID and "
+                       "Client secret from RAM's API Keys page, and the dedicated API username and password."
+                       if missing else "RAM Tracking is not connected.")
+    note = (" " + j.ram.address_note) if getattr(j.ram, "address_note", "") else ""
+    try:
+        vehicles = await j.ram.vehicles()
+    except RamError as e:
+        if e.rate_limited:  # RAM answered, just not this often: signed in means the details are right
+            return j.ram.signed_in, (("Signed in to RAM. " if j.ram.signed_in else "") + str(e) + note)
+        return False, str(e) + note
+    return True, f"RAM Tracking answered: {len(vehicles)} vehicles.{note}"
 
 
 async def _github(j) -> tuple[bool, str]:

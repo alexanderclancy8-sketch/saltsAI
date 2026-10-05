@@ -19,7 +19,7 @@
     // Barge-in (talk over Jarvis with the wake word). On by default because the echo guards below are always in
     // place; the owner can switch it off in Settings if it misfires on speakers. See bargeInAllowed().
     bargeIn: store.get("bargein", "1") !== "0", captureUntil: 0,
-    dashOpen: store.get("dashboard", "0") === "1",
+    data: {}, // the latest panel data from /api/status, kept for the rail counts and the "Needs you" strip
     // Per-session mute for Jarvis-initiated messages (sessionStorage, so another tab or a fresh visit starts unmuted).
     // The server is told too (sendProactiveMute), so a muted session isn't sent them at all.
     proactiveMuted: (() => { try { return sessionStorage.getItem("jarvis.pmute") === "1"; } catch { return false; } })(),
@@ -129,102 +129,184 @@
   // ------------------------------------------------------------------ clock
   function tick() {
     const now = new Date();
-    $("#clock").innerHTML = `${now.toLocaleTimeString("en-GB")}<small>${now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</small>`;
+    $("#clock").textContent = `${now.toLocaleTimeString("en-GB")} · ${now.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}`;
   }
   setInterval(tick, 1000); tick();
 
   // ------------------------------------------------------------------ HUD state + reactor
-  const STATE_LABEL = { idle: "Online", listening: "Listening", thinking: "Thinking", speaking: "Speaking", awaiting: "Yes, sir?" };
+  // What he calls the owner follows the "How Jarvis talks" setting (the server sends it as status.address).
+  const address = () => S.status?.address || "sir";
+  const STATE_LABEL = { idle: "Online", listening: "Listening", thinking: "Working", speaking: "Speaking", get awaiting() { return `Yes, ${address()}?`; } };
   function setHud(state) {
     S.hudState = state;
     $("#state").textContent = STATE_LABEL[state] || state;
-    $("#btn-stop").hidden = !["thinking", "speaking"].includes(state);
+    document.body.dataset.hud = state; // the status chip and the core follow it (hud.css, core.js)
+    // Send becomes Stop for as long as a reply is being worked out or spoken.
+    const busy = ["thinking", "speaking"].includes(state);
+    $("#btn-stop").hidden = !busy;
+    $("#btn-send").hidden = busy;
     // A turn just started - don't let a sleep check meant for the *previous* lull fire part-way through it.
     if (state === "thinking") clearTimeout(sleepTimer);
   }
   function caption(text, interim = "") { const el = $("#caption"); el.classList.remove("error"); el.innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
   function captionError(text) { caption(text); $("#caption").classList.add("error"); }
 
-  // ------------------------------------------------------------------ dashboard reveal (orb-first HUD)
-  // Idle view is just the orb, caption and composer - the three panel columns and the conversation
-  // transcript are opt-in, remembered per-browser. The choice is also applied inline in <head> (same
-  // jarvis.dashboard key) so there's no flash of the wrong layout before this script runs.
-  function setDashOpen(open) {
-    S.dashOpen = open;
-    store.set("dashboard", open ? "1" : "0");
-    document.body.classList.toggle("dash-open", open);
-    fitMapSoon(); // the map is laid out at 0x0 while its column is hidden; re-measure once it can be seen
-    const btn = $("#btn-dashboard");
-    btn.setAttribute("aria-pressed", String(open));
-    btn.title = open ? "Hide dashboard" : "Show dashboard";
-  }
-  $("#btn-dashboard").addEventListener("click", () => setDashOpen(!S.dashOpen));
-  setDashOpen(S.dashOpen); // sync the button label/state with whatever <head> already applied to <body>
+  // ------------------------------------------------------------------ pop-up drawer
+  // ONE drawer component: every section of the console (and Settings / Connections) is a .pop inside #drawer-body.
+  // Drawer.show(name) reveals one and slides the drawer in from the right; it is closed by the Close button,
+  // Escape, or a click on the scrim (outside). It is never wider than the viewport (see .drawer in hud.css).
+  const POPS = ["approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming", "demo", "settings", "connections"];
+  const Drawer = {
+    current: null, opener: null,
+    isOpen() { return $("#drawer").classList.contains("open"); },
+    show(name, opener) {
+      if (!POPS.includes(name)) return;
+      const first = !this.isOpen();
+      if (first) this.opener = opener || document.activeElement;
+      this.current = name;
+      $$("#drawer-body .pop").forEach((p) => { p.hidden = p.id !== `pop-${name}`; });
+      $("#drawer-title").textContent = $(`#pop-${name}`).dataset.title;
+      $("#drawer-body").scrollTop = 0;
+      $("#drawer").classList.add("open"); $("#scrim").classList.add("open");
+      $("#drawer").setAttribute("aria-hidden", "false");
+      $$(".rail-item, .tb-btn[data-pop]").forEach((b) => b.classList.toggle("is-active", b.dataset.pop === name));
+      if (first) $("#drawer-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
+      if (name === "fleet") fitMapSoon();             // the map is laid out at 0x0 while hidden; re-measure now it can be seen
+      if (name === "demo") renderDemo();
+      if (name === "settings" || name === "connections") {
+        if (!Settings.loaded) Settings.load();
+        if (name === "connections") Settings.showList();
+      }
+    },
+    // Returns false if the owner chose to keep unsaved connection edits instead of closing.
+    close() {
+      if (!this.isOpen()) return true;
+      if (Settings.dirty() && !confirm("Discard unsaved connection changes?")) return false;
+      Settings.revert();
+      $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open");
+      $("#drawer").setAttribute("aria-hidden", "true");
+      $$(".rail-item, .tb-btn[data-pop]").forEach((b) => b.classList.remove("is-active"));
+      const back = this.opener; this.opener = null; this.current = null;
+      if (back && document.contains(back) && typeof back.focus === "function") back.focus({ preventScroll: true });
+      return true;
+    },
+  };
+  $("#drawer-close").addEventListener("click", () => Drawer.close());
+  $("#scrim").addEventListener("click", () => Drawer.close());
+  document.addEventListener("click", (e) => { const b = e.target.closest("[data-pop]"); if (b) Drawer.show(b.dataset.pop, b); });
+  // Keep Tab inside the open drawer.
+  $("#drawer").addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const els = $$("#drawer button:not([disabled]), #drawer a[href], #drawer input:not([disabled]), #drawer select, #drawer textarea, #drawer summary")
+      .filter((x) => x.offsetParent !== null);
+    if (!els.length) return;
+    const first = els[0], last = els[els.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 
-  // Below 1150px the open dashboard shows one section at a time (tab bar, see hud.css). "chat" is the phone's main
-  // screen; from 768px up the chat column is always visible beside the tabs, so there "chat" just means "comms".
-  // Not persisted: reopening always lands on the conversation.
-  const wideMQ = window.matchMedia("(min-width: 768px)");
-  function setDashTab(tab) {
-    if (tab === "chat" && wideMQ.matches) tab = "comms";
-    document.body.dataset.dashTab = tab;
-    $$("#dtabs .dtab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.dtab === tab)));
-    document.querySelectorAll(".col.left, .col.right").forEach((c) => { c.scrollTop = 0; });
-    if (tab === "fleet") fitMapSoon();
+  // ------------------------------------------------------------------ rail counts and the "Needs you" strip
+  // Both are computed from the same status data the pop-ups render. A rail count turns amber when that section needs a
+  // look and red when something is failing; "Needs you" shows the three most urgent things, each opening its pop-up.
+  function setRail(name, n, level, text) {
+    const item = $(`.rail-item[data-pop="${name}"]`), count = $(`#rc-${name}`);
+    if (!item || !count) return;
+    count.textContent = String(n);
+    item.dataset.level = level || "";
+    item.dataset.label = item.dataset.label || item.firstChild.textContent.trim();
+    item.setAttribute("aria-label", `${item.dataset.label}: ${text}`);
   }
-  $("#dtabs").addEventListener("click", (e) => { const b = e.target.closest(".dtab"); if (b) setDashTab(b.dataset.dtab); });
-  wideMQ.addEventListener?.("change", () => setDashTab(document.body.dataset.dashTab || "chat"));
-  setDashTab("chat");
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const within24h = (iso) => { const t = Date.parse(iso); return !Number.isNaN(t) && Date.now() - t < 86400000; };
+  function renderRail() {
+    const d = S.data || {};
+    const needs = [];
+    const add = (weight, level, text, pop) => needs.push({ weight, level, text, pop });
 
-  // Approvals/suggestions must never go silently unnoticed just because the dashboard is tucked away -
-  // a small pulsing badge on the orb itself covers that, and opens the real panels (with their working
-  // Approve/Cancel buttons) rather than duplicating that rendering here.
+    // Counts follow the design mockup: Approvals = actions waiting for a click (suggestions are listed inside the pop-up and
+    // in "Needs you"); Comms = unread; Issues = open; Health = passed/total; Ops = things needing attention; Fleet reads
+    // "off" when vehicle tracking is not connected; Finance = customers to watch; Presence has no count; Coming up = listed.
+    const na = S.approvals?.length || 0, ns = S.suggestions?.length || 0;
+    setRail("approvals", na, na ? "warn" : "", na ? `${plural(na, "action", "actions")} waiting for your approval` : "nothing waiting for you");
+    if (na) add(80, "warn", `${plural(na, "action", "actions")} waiting for your approval`, "approvals");
+    if (ns) add(35, "warn", `${plural(ns, "suggestion", "suggestions")} from Jarvis`, "approvals");
+
+    const unread = Array.isArray(d.inbox?.unread) ? d.inbox.unread : [];
+    const hot = unread.filter((m) => m.importance === "high").length;
+    setRail("comms", unread.length, unread.length ? "warn" : "", `${plural(unread.length, "unread message", "unread messages")}${hot ? `, ${hot} important` : ""}`);
+    if (unread.length) add(hot ? 40 : 20, "warn", `${unread.length} unread`, "comms");
+
+    const issues = d.issues || [];
+    const severe = issues.filter((i) => ["critical", "high"].includes(i.severity)).length;
+    setRail("issues", issues.length, severe ? "bad" : issues.length ? "warn" : "", `${issues.length} open${severe ? `, ${severe} serious` : ""}`);
+    if (severe) add(90, "bad", `${plural(severe, "serious issue", "serious issues")} open`, "issues");
+
+    const tests = d.tests || [];
+    const failing = tests.filter((t) => !t.ok).length;
+    const alerts = (d.notifications || []).filter((n) => (n.level === "critical" || n.level === "warning") && within24h(n.created_at)).length;
+    setRail("health", tests.length ? `${tests.length - failing}/${tests.length}` : "0", failing ? "bad" : alerts ? "warn" : "", tests.length ? `${tests.length - failing} of ${tests.length} routine tests passing${alerts ? `, ${plural(alerts, "alert", "alerts")}` : ""}` : "no test results yet");
+    if (failing) add(100, "bad", `${failing} ${failing === 1 ? "check" : "checks"} failing`, "health");
+    if (alerts && !failing) add(30, "warn", `${plural(alerts, "alert", "alerts")} in the last day`, "health");
+
+    const staff = d.staff && !d.staff.error ? d.staff : null;
+    const late = staff ? staff.late_starts.length : 0;
+    const overdue = Array.isArray(d.overdue_jobs) ? d.overdue_jobs.length : 0;
+    setRail("ops", late + overdue, late + overdue ? "warn" : "", staff ? `${plural(late, "late start", "late starts")}, ${overdue} overdue` : "unavailable");
+    if (overdue) add(70, "warn", `${plural(overdue, "job", "jobs")} overdue`, "ops");
+    if (late) add(60, "warn", `${plural(late, "late start", "late starts")} today`, "ops");
+
+    const vans = S.tracking?.engineers?.length || 0;
+    const fleet = fleetState();
+    const tracked = fleet.live;
+    setRail("fleet", tracked ? vans : fleet.failing ? "failing" : "off", fleet.failing ? "bad" : "",
+      tracked ? `${plural(vans, "vehicle", "vehicles")} reporting` : fleet.failing ? `vehicle tracking is not connected: ${fleet.why}` : "vehicle tracking is not connected");
+    if (fleet.failing) add(55, "bad", "RAM Tracking isn't connected", "fleet");
+
+    const f = d.finance && !d.finance.error ? d.finance : null;
+    const watch = d.customer_watch || [];
+    const atRisk = watch.filter((c) => c.status === "at risk").length;
+    setRail("finance", watch.length, watch.length ? "warn" : "", `${plural(watch.length, "customer", "customers")} to watch`);
+    if (f && f.debtors_overdue > 0.3 * f.debtors_total) add(50, "warn", `${money(f.debtors_overdue)} overdue from customers`, "finance");
+    if (atRisk) add(45, "warn", `${plural(atRisk, "customer", "customers")} at risk`, "finance");
+
+    const dl = deadlineItems(d.deadlines, d.accreditations);
+    const late2 = dl.filter((x) => x.days_left < 0).length;
+    setRail("upcoming", dl.length, late2 ? "bad" : "", `${plural(dl.length, "reminder", "reminders")}${late2 ? `, ${late2} overdue` : ""}`);
+    if (late2) add(75, "bad", `${plural(late2, "reminder", "reminders")} overdue`, "upcoming");
+    const next = dl.find((x) => x.days_left >= 0 && x.days_left <= 7);
+    if (next) add(10, "", next.what, "upcoming");
+
+    needs.sort((a, b) => b.weight - a.weight);
+    const top = needs.slice(0, 3);
+    $("#needs-list").innerHTML = !S.status ? `<span class="needs-clear">Loading…</span>`
+      : top.length ? top.map((n) => `<button type="button" class="need" data-pop="${n.pop}" data-level="${n.level}"><span class="need-dot" aria-hidden="true"></span><span class="need-text">${esc(n.text)}</span><span class="need-go" aria-hidden="true">›</span></button>`).join("")
+      : `<span class="needs-clear">Nothing needs you right now.</span>`;
+  }
+
+  // Approvals/suggestions must never go silently unnoticed - the rail count and "Needs you" cover it, and a small
+  // pulsing badge on the core itself opens the real Approvals pop-up (with its working Approve/Cancel buttons).
   function updateOrbBadge() {
     const n = (S.approvals?.length || 0) + (S.suggestions?.length || 0);
     const badge = $("#orb-badge");
     badge.hidden = n === 0;
     if (n) badge.textContent = String(n);
-    const tb = $("#dtab-comms-badge"); // same count on the Comms tab, where approvals and suggestions live
-    tb.hidden = n === 0; tb.textContent = String(n);
-    tb.setAttribute("aria-label", `${n} waiting`);
+    renderRail();
   }
-  $("#orb-badge").addEventListener("click", () => {
-    setDashOpen(true);
-    setDashTab("comms");
-    requestAnimationFrame(() => {
-      const target = (S.approvals?.length ? $("#approvals-panel") : $("#suggestions-panel"));
-      target?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
+  $("#orb-badge").addEventListener("click", () => Drawer.show("approvals", $("#orb-badge")));
 
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)"); // stop the tick ring turning
+  // The core: a canvas animation whose colour and energy follow the agent's state (core.js). Clicking it starts or
+  // stops listening exactly like the microphone button. Under prefers-reduced-motion it draws one static frame.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const canvas = $("#reactor");
-  const ctx = canvas.getContext("2d");
-  function drawReactor(t) {
-    const w = canvas.width, h = canvas.height, cx = w / 2, cy = h / 2;
-    S.level += (S.targetLevel - S.level) * 0.2;
-    if (S.hudState === "speaking" && speaker.browserSpeaking) S.targetLevel = 0.3 + 0.25 * Math.abs(Math.sin(t / 90));
-    const colour = { idle: "76,141,255", listening: "52,211,153", thinking: "245,185,66", speaking: "76,141,255", awaiting: "52,211,153" }[S.hudState] || "76,141,255";
-    const lvl = S.level;
-    ctx.clearRect(0, 0, w, h);
-    const speed = reduceMotion.matches ? 0 : S.hudState === "thinking" ? 1.4 : 1;
-    // A calm progress ring plus one slow-rotating tick ring - a status indicator, not a light show.
-    ctx.save(); ctx.translate(cx, cy);
-    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(255,255,255,0.06)";
-    ctx.beginPath(); ctx.arc(0, 0, 128, 0, Math.PI * 2); ctx.stroke();
-    ctx.lineWidth = 3; ctx.strokeStyle = `rgba(${colour},${0.55 + lvl * 0.35})`; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.arc(0, 0, 128, -Math.PI / 2, -Math.PI / 2 + (0.18 + lvl * 0.7) * Math.PI * 2); ctx.stroke();
-    ctx.rotate(t * 0.00025 * speed);
-    ctx.setLineDash([2, 16]); ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(${colour},0.3)`;
-    ctx.beginPath(); ctx.arc(0, 0, 108, 0, Math.PI * 2); ctx.stroke();
-    ctx.restore();
-    const core = 30 + lvl * 18;
-    const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, core);
-    g.addColorStop(0, "rgba(255,255,255,0.9)"); g.addColorStop(0.5, `rgba(${colour},0.75)`); g.addColorStop(1, `rgba(${colour},0)`);
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, core, 0, Math.PI * 2); ctx.fill();
-    requestAnimationFrame(drawReactor);
-  }
-  requestAnimationFrame(drawReactor);
+  window.JarvisCore?.mount(canvas, {
+    reduced: () => reduceMotion.matches,
+    frame(t) {
+      S.level += (S.targetLevel - S.level) * 0.2;
+      if (S.hudState === "speaking" && speaker.browserSpeaking) S.targetLevel = 0.3 + 0.25 * Math.abs(Math.sin(t / 90));
+      return { state: S.hudState, level: S.level };
+    },
+  });
+  $("#core-btn").addEventListener("click", () => $("#btn-mic").click());
 
   // ------------------------------------------------------------------ audio / speech output
   let audioCtx = null, analyser = null, levelData = null;
@@ -682,6 +764,7 @@ function send(text, mode = "typed", opts = {}) {
     // no-op when nothing is actually running - the listen() loop on the backend awaits it before touching the
     // chat message that follows, so ordering is guaranteed.
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
+    abandonCurrent();
     const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
     // Only text the owner typed into the chat box may be learned as a "usual reply" (never buttons or speech).
     if (opts.compose && mode === "typed") payload.compose = true;
@@ -696,21 +779,32 @@ function send(text, mode = "typed", opts = {}) {
   // The WebSocket is down (or hasn't connected yet) - falls back to the same conversation over a plain
   // POST, but still streamed word-by-word: each server-sent-event line is exactly the shape handle() already
   // knows how to render, so the experience matches the WebSocket path instead of waiting on the full reply.
+  // `streamCtl` lets Stop abort a reply that is still streaming over this fallback path (over the WebSocket the
+  // server is told to stop instead - see stopEverything()).
+  let streamCtl = null;
   async function streamChat(payload) {
-    const r = await api("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n");
-      buffer = chunks.pop();
-      for (const chunk of chunks) {
-        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
-        if (line) handle(JSON.parse(line.slice(6)));
+    const ctl = streamCtl = new AbortController();
+    try {
+      const r = await api("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: ctl.signal });
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop();
+        for (const chunk of chunks) {
+          const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (line) handle(JSON.parse(line.slice(6)));
+        }
       }
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // the owner pressed Stop - not an error
+      throw e;
+    } finally {
+      if (streamCtl === ctl) streamCtl = null;
     }
   }
 
@@ -789,11 +883,27 @@ function send(text, mode = "typed", opts = {}) {
   rsSoon();
   // Tapping one of these is standing in for asking it out loud - so it should get spoken back the same way,
   // not go silent just because the question arrived as a click rather than actual speech.
+  // The shortcuts menu sits on the message box: Briefing, Wrap-up, Team review, Business health, Cash flow, ...
+  const quickMenu = {
+    isOpen: () => !$("#quick").hidden,
+    open() { $("#quick").hidden = false; $("#btn-shortcuts").setAttribute("aria-expanded", "true"); $("#quick .chip-btn")?.focus(); },
+    close(refocus = false) {
+      if (!this.isOpen()) return;
+      $("#quick").hidden = true; $("#btn-shortcuts").setAttribute("aria-expanded", "false");
+      if (refocus) $("#btn-shortcuts").focus();
+    },
+  };
+  $("#btn-shortcuts").addEventListener("click", () => (quickMenu.isOpen() ? quickMenu.close() : quickMenu.open()));
+  document.addEventListener("click", (e) => { if (quickMenu.isOpen() && !e.target.closest("#quick, #btn-shortcuts")) quickMenu.close(); });
+  $("#quick").addEventListener("keydown", (e) => {
+    const items = $$("#quick .chip-btn"), i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === "ArrowUp" || e.key === "ArrowLeft") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+  });
   $("#quick").addEventListener("click", (e) => {
     const q = e.target.closest("[data-q]");
-    if (q) send(q.dataset.q, S.speakPref === "off" ? "typed" : "voice");
+    if (q) { quickMenu.close(); send(q.dataset.q, S.speakPref === "off" ? "typed" : "voice"); }
   });
-  $("#btn-briefing").addEventListener("click", () => send("Give me my briefing", S.speakPref === "off" ? "typed" : "voice"));
   $("#btn-new-convo").addEventListener("click", async () => { await api("/api/conversation/reset", { method: "POST" }); });
 
   // attachments
@@ -829,11 +939,12 @@ function send(text, mode = "typed", opts = {}) {
     const b = $("#btn-proactive-mute");
     if (!b) return;
     b.setAttribute("aria-pressed", S.proactiveMuted ? "true" : "false");
-    // Icon plus a .btn-label span, so the text can be hidden on narrow phones (see hud.css) without losing the button.
+    b.classList.toggle("is-on", !S.proactiveMuted); b.classList.toggle("is-off", S.proactiveMuted);
+    // Always a text label (never an icon alone): "Speaks up" when Jarvis may post by himself, "Muted" when not.
     const label = document.createElement("span");
     label.className = "btn-label";
-    label.textContent = S.proactiveMuted ? " Muted" : " Speaks up";
-    b.replaceChildren(S.proactiveMuted ? "🔕" : "🔔", label);
+    label.textContent = S.proactiveMuted ? "Muted" : "Speaks up";
+    b.replaceChildren(label);
     b.title = S.proactiveMuted ? "Jarvis won't post into this session by himself - click to allow it again"
                                 : "Mute Jarvis posting into this session by himself";
     b.setAttribute("aria-label", b.title);
@@ -859,10 +970,38 @@ function send(text, mode = "typed", opts = {}) {
   let refreshTimer = null;
   const refreshSoon = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 1500); };
 
+  // Working-line and reply extras (Phase 2: "how Jarvis talks"). The step line above a reply names what he is checking
+  // right now - it is fed only by real "tool" events from the server, never invented here. Once the reply is done,
+  // the line goes and a source-and-time line goes underneath, with a button for the matching pop-up when there is
+  // detail behind the answer and up to two follow-up questions (all of it sent by the server on the "reply" event).
+  const showStep = (msg, text) => { const st = msg?.querySelector(".step"); if (st) { st.textContent = text; st.hidden = false; } };
+  function replyExtras(msg, d, steps) {
+    if (!msg || d.replace) return;
+    if (typeof d.elapsed_ms === "number") {
+      const secs = (d.elapsed_ms / 1000).toFixed(1) + "s";
+      const src = d.sources?.length ? "Source: " + d.sources.join(", ") : "No systems checked";
+      msg.insertAdjacentHTML("beforeend", `<div class="src"${steps.length ? ` title="${esc(steps.join(" · "))}"` : ""}>${esc(src)} · ${esc(secs)}</div>`);
+    }
+    const chips = [];
+    if (window.JarvisAsk?.canReopen?.()) chips.push(`<button type="button" class="reply-chip answer" data-reask>Answer</button>`);
+    if (d.panel && POPS.includes(d.panel)) chips.push(`<button type="button" class="reply-chip panel" data-pop="${esc(d.panel)}">Open ${esc(d.panel_title || d.panel)}</button>`);
+    (Array.isArray(d.follow_ups) ? d.follow_ups : []).slice(0, 2).forEach((f) => { if (typeof f === "string" && f.trim()) chips.push(`<button type="button" class="reply-chip" data-follow="${esc(f)}">${esc(f)}</button>`); });
+    if (chips.length) msg.insertAdjacentHTML("beforeend", `<div class="extras">${chips.join("")}</div>`);
+  }
+  $("#conversation").addEventListener("click", (e) => {
+    const follow = e.target.closest("[data-follow]");
+    if (follow) { send(follow.dataset.follow, "typed"); return; } // an ordinary chat message, exactly as if typed
+    if (e.target.closest("[data-reask]")) window.JarvisAsk?.reopen?.();
+  });
+
   function handle(ev) {
     const d = ev.data;
+    // The owner pressed Stop: whatever the stopped turn still emits on its way out (a partial reply, a "problem" from
+    // being interrupted) must not appear. The next turn starts with its own user_message, which lifts this.
+    if (S.stopped && ["delta", "tool", "reply", "error"].includes(ev.type)) return;
     switch (ev.type) {
       case "user_message":
+        S.stopped = false; window.JarvisAsk?.forget?.(); $$("#conversation [data-reask]").forEach((b) => b.remove());
         window.JarvisAsk?.close(); // any new message (typed, spoken, from another tab) answers/supersedes an open question
         addMessage("user", d.text + (d.attachments?.length ? `\n📎 ${d.attachments.join(", ")}` : ""), d.mode === "voice" ? "spoken" : "");
         S.lastMode = d.mode;
@@ -871,21 +1010,28 @@ function send(text, mode = "typed", opts = {}) {
         setHud("thinking"); toolsSeen = [];
         turnClock.turnId = d.turn_id ?? null; // which server-side turn the first-audio measurement belongs to
         current = addMessage("assistant", ""); current.querySelector(".md").classList.add("typing");
+        current.querySelector(".md").insertAdjacentHTML("beforebegin", `<div class="step">Thinking…</div>`);
         current.dataset.raw = "";
         break;
       case "delta":
         if (!current) { current = addMessage("assistant", ""); current.dataset.raw = ""; }
+        current.querySelector(".step")?.setAttribute("hidden", ""); // the words have started - the "checking" line steps aside
         current.dataset.raw += d.text;
         current.querySelector(".md").innerHTML = md(current.dataset.raw);
         $("#conversation").scrollTop = 1e9;
         filler.block(); // the real reply has started - no filler, and drop one that hasn't begun playing
         if (shouldSpeak(d.mode)) speaker.feed(d.text);
         break;
-      case "tool":
-        if (d.state === "start") { $("#toolline").textContent = "› " + d.label + "…"; toolsSeen.push(d.label); }
-        else if (d.state === "error") $("#toolline").textContent = "› " + d.label + " - problem";
+      case "tool": {
+        const label = d.label || ""; // a bookkeeping tool (offer_next_steps) has no label and names nothing
+        const line = d.state === "error" ? label + " - problem" : label + "…";
+        if (label && (d.state === "start" || d.state === "error")) {
+          if (d.state === "start") toolsSeen.push(label);
+          if (current) { $("#toolline").textContent = ""; showStep(current, line); } else $("#toolline").textContent = "› " + line;
+        }
         filler.tool(d); // lets a still-pending filler name the running tool; never speaks by itself
         break;
+      }
       case "reply":
         filler.end(); // reply is ready: cancel the pending timer / unstarted filler (a playing one finishes first)
         $("#toolline").textContent = "";
@@ -893,14 +1039,19 @@ function send(text, mode = "typed", opts = {}) {
           if (d.replace || !current.dataset.raw) current.dataset.raw = d.text;
           const body = current.querySelector(".md");
           body.classList.remove("typing"); body.innerHTML = md(current.dataset.raw);
-          if (toolsSeen.length) current.insertAdjacentHTML("beforeend", `<div class="tools">${esc([...new Set(toolsSeen)].join(" · "))}</div>`);
+          current.querySelector(".step")?.remove();
+          replyExtras(current, d, [...new Set(toolsSeen)]);
           if (d.turn_id) current.insertAdjacentHTML("beforeend", feedbackHtml(d.turn_id));
-        } else addMessage("assistant", d.text);
+        } else {
+          const el = addMessage("assistant", d.text);
+          replyExtras(el, d, []);
+        }
         if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
         if (!speaker.active) { setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); }
         caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
         current = null;
+        $("#conversation").scrollTop = 1e9; // the source line and buttons add height under the reply
         refreshSoon();
         rsSoon(); // Jarvis's new reply changes the situation the suggestion is matched to
         break;
@@ -964,25 +1115,83 @@ function send(text, mode = "typed", opts = {}) {
     $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
   }
   $("#display-close").addEventListener("click", () => $("#display").classList.remove("open"));
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#display").classList.remove("open"); $("#drawer").classList.remove("open"); } });
+  // Escape closes the topmost thing first: the shortcuts menu, then the display overlay, then the drawer.
+  // preventDefault marks the key as used, so the Stop handler further down does not also stop a running reply.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (quickMenu.isOpen()) { e.preventDefault(); quickMenu.close(true); return; }
+    if ($("#display").classList.contains("open")) { e.preventDefault(); $("#display").classList.remove("open"); return; }
+    if (Drawer.isOpen()) { e.preventDefault(); Drawer.close(); }
+  });
 
   // ------------------------------------------------------------------ panels
   async function refresh() {
     try {
       const st = await (await api("/api/status")).json();
-      S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
+      S.status = st; S.voice = st.voice || S.voice; if (!stt.on) showSttEngine(sttEngine.next()); sttStatus.render(); S.approvals = st.approvals || []; S.suggestions = st.suggestions || [];
+      S.data = { inbox: st.inbox, issues: st.issues, tests: st.tests, notifications: st.notifications, staff: st.staff, overdue_jobs: st.overdue_jobs,
+        finance: st.finance, presence: st.presence, customer_watch: st.customer_watch, deadlines: st.deadlines, accreditations: st.accreditations };
       $("#company").textContent = (st.company || "").toUpperCase();
       renderPills(st.connections); renderInbox(st.inbox); renderIssues(st.issues); renderTests(st.tests);
       renderNotifications(st.notifications); renderOps(st.staff, st.overdue_jobs); renderFinance(st.finance);
       renderPresence(st.presence); renderCustomers(st.customer_watch); renderDeadlines(st.deadlines, st.accreditations); renderApprovals(); renderSuggestions(); renderSettings(st);
+      renderActivity(st.activity);
+      renderRail(); if (Drawer.current === "demo") renderDemo(); if (Drawer.current === "fleet") renderFleetStatus();
     } catch (e) { console.warn(e); }
   }
 
+  // ------------------------------------------------------------------ scheduled checks (activity log)
+  // A scheduled check that found nothing posts nothing into the chat. Every run is in the activity log and shows here as
+  // ONE collapsed line per check ("Pull request watch · 7 checks since 09:30, no change") that opens to list each run
+  // with its time. A check that did find something has also posted its message in the chat as usual.
+  const activityOpen = new Set();
+  function activityLine(job) {
+    const parts = [];
+    if (job.failed) parts.push(`${job.failed} failed`);
+    if (job.changed) parts.push(plural(job.changed, "change", "changes"));
+    return `${job.name} · ${plural(job.checks, "check", "checks")} since ${job.since}, ${parts.length ? parts.join(", ") : "no change"}`;
+  }
+  let activityShown = "";
+  function renderActivity(a) {
+    const box = $("#activity"); if (!box) return;
+    const jobs = (a && a.jobs) || [];
+    // Nothing new since the last look: leave the lines alone (a re-render would drop the focus and scroll of a line the
+    // owner has open and is reading).
+    const stamp = JSON.stringify(jobs); if (stamp === activityShown) return; activityShown = stamp;
+    box.hidden = !jobs.length;
+    box.innerHTML = jobs.map((job) => {
+      const open = activityOpen.has(job.key);
+      const runs = job.runs.map((r) => `<span class="${r.outcome === "changed" ? "changed" : r.outcome === "failed" ? "failed" : ""}">${esc(r.time)} ${esc(r.detail || (r.outcome === "no_change" ? "No change." : r.outcome))}</span>`).join("");
+      return `<details class="auto" data-job="${esc(job.key)}"${job.failed ? ' data-level="bad"' : job.changed ? ' data-level="warn"' : ""}${open ? " open" : ""}>` +
+        `<summary><span>${esc(activityLine(job))}</span><u>${open ? "Hide" : "Show"}</u></summary><div class="auto-runs">${runs}</div></details>`;
+    }).join("");
+  }
+  // `toggle` does not bubble, so listen in the capture phase on the container (it survives the re-renders above).
+  $("#activity")?.addEventListener("toggle", (e) => {
+    const d = e.target; if (!d.matches?.("details.auto")) return;
+    d.open ? activityOpen.add(d.dataset.job) : activityOpen.delete(d.dataset.job);
+    const u = d.querySelector("summary u"); if (u) u.textContent = d.open ? "Hide" : "Show";
+  }, true);
+
+  // The top-bar pill: how many sources are still samples. Opens the Demo data pop-up.
+  const isDemo = (v) => String(v).includes("DEMO");
   function renderPills(conns = {}) {
-    const demo = Object.entries(conns).filter(([, v]) => String(v).includes("DEMO")).map(([k]) => k);
+    const demo = Object.entries(conns).filter(([, v]) => isDemo(v)).map(([k]) => k);
     $("#pills").innerHTML = demo.length
-      ? `<span class="pill demo" title="${esc(demo.join(", "))}">Demo data: ${demo.length} source${demo.length > 1 ? "s" : ""}</span>`
-      : `<span class="pill live">All systems live</span>`;
+      ? `<button type="button" class="pill demo" data-pop="demo" title="${esc(demo.join(", "))}">Demo data: ${demo.length} source${demo.length > 1 ? "s" : ""}</button>`
+      : `<button type="button" class="pill live" data-pop="demo">All systems live</button>`;
+  }
+  // Demo data pop-up: which sources are still samples, and how to connect each one (the status text already says).
+  function renderDemo() {
+    const conns = S.status?.connections;
+    $("#demo-intro").hidden = !conns;
+    if (!conns) { $("#demo-list").innerHTML = `<p class="empty">Loading…</p>`; return; }
+    const rows = Object.entries(conns).filter(([, v]) => isDemo(v));
+    $("#demo-list").innerHTML = rows.length ? rows.map(([k, v]) => {
+      const how = (String(v).match(/DEMO[^-:)]*[-:]\s*(.+)$/) || [])[1] || "";
+      return `<div class="demo-row"><b>${esc(k)}</b><span>${how ? esc(how[0].toUpperCase() + how.slice(1)) : "Still showing sample figures"}</span></div>`;
+    }).join("") : `<p class="empty">Everything is connected - no sample data is being shown.</p>`;
+    $("#demo-intro").hidden = !rows.length;
   }
 
   function renderInbox(inbox) {
@@ -1012,6 +1221,7 @@ function send(text, mode = "typed", opts = {}) {
       const note = i.notes ? ` · ${esc(i.notes).slice(0, 140)}` : "";
       return `<li class="ok">#${i.id} ${esc(i.title)}<span class="sub">resolved${by}${note}</span><span class="sub"><button class="btn small" type="button" data-issue-act="reopen" data-id="${i.id}">Reopen</button></span></li>`;
     }).join("");
+    $("#issues-resolved-sec").hidden = !resolved.length;
   }
 
   async function issueAction(id, act) {
@@ -1030,15 +1240,16 @@ function send(text, mode = "typed", opts = {}) {
   $("#issues-resolved").addEventListener("click", (e) => { const b = e.target.closest("[data-issue-act]"); if (b) issueAction(b.dataset.id, b.dataset.issueAct); });
 
   function renderTests(tests = []) {
+    S.data.tests = tests; renderRail();
     const failing = tests.filter((t) => !t.ok);
     $("#tests-count").textContent = tests.length ? `${tests.length - failing.length}/${tests.length} passing` : "";
     const rows = [...failing, ...tests.filter((t) => t.ok)].slice(0, 10);
-    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="${t.ok ? "ok" : "bad"}">${esc(t.name)}<span class="sub">${esc(t.detail).slice(0, 140)}</span></li>`).join("")
+    $("#tests").innerHTML = rows.length ? rows.map((t) => `<li class="split ${t.ok ? "ok" : "bad"}"><span>${esc(t.name)}</span><small>${esc(t.detail).slice(0, 140)}</small></li>`).join("")
       : `<li class="empty">No results yet.</li>`;
   }
 
   function renderNotifications(list = []) {
-    $("#notifications").innerHTML = list.length ? list.slice(0, 6).map((n) => `<li class="${n.level === "critical" ? "bad" : n.level === "warning" ? "warn" : ""}">${esc(n.title)}<span class="sub">${time(n.created_at)}</span></li>`).join("")
+    $("#notifications").innerHTML = list.length ? list.slice(0, 6).map((n) => `<li class="split ${n.level === "critical" ? "bad" : n.level === "warning" ? "warn" : ""}"><span>${esc(n.title)}</span><small>${time(n.created_at)}</small></li>`).join("")
       : `<li class="empty">Nothing to report.</li>`;
   }
 
@@ -1051,7 +1262,7 @@ function send(text, mode = "typed", opts = {}) {
     $("#ops-kpis").innerHTML = kpi("Jobs today", `${staff.completed_today}/${staff.jobs_today}`) +
       kpi("On site now", onJob) + kpi("Late starts", staff.late_starts.length, staff.late_starts.length ? "warn" : "good") +
       kpi("Overdue jobs", Array.isArray(overdue) ? overdue.length : "-", overdue?.length ? "bad" : "good");
-    $("#ops").innerHTML = staff.engineers.map((e) => `<li class="${e.status === "on job" ? "ok" : ""}">${esc(e.name)}<span class="sub">${esc(e.current_job || e.status)}${e.next_job ? " · next " + esc(e.next_job) : ""}</span></li>`).join("");
+    $("#ops").innerHTML = staff.engineers.map((e) => `<li class="split ok"><span>${esc(e.name)}</span><small>${esc(e.current_job || e.status)}${e.next_job ? " · next " + esc(e.next_job) : ""}</small></li>`).join("");
   }
 
   function renderFinance(f) {
@@ -1069,7 +1280,7 @@ function send(text, mode = "typed", opts = {}) {
     const rows = Object.entries(p.platforms || {}).map(([k, v]) => {
       const m = v.followers || v.reviews; const r = v.rating;
       const change = m ? (m.change_7d > 0 ? `+${m.change_7d}` : m.change_7d) : "";
-      return `<li class="${m && m.change_7d > 0 ? "ok" : ""}">${names[k] || k}: <b>${m ? Math.round(m.current) : "-"}</b>${r ? ` · ${r.current}★` : ""}<span class="sub">${change} this week${p.demo ? " · demo" : ""}</span></li>`;
+      return `<li class="split"><span>${names[k] || k} ${m ? Math.round(m.current).toLocaleString("en-GB") : "-"}${r ? ` · ${r.current}★` : ""}</span><small>${change} this week${p.demo ? " · demo" : ""}</small></li>`;
     });
     $("#presence").innerHTML = rows.join("") || `<li class="empty">Connect socials in settings.</li>`;
   }
@@ -1081,15 +1292,20 @@ function send(text, mode = "typed", opts = {}) {
       : `<li class="empty">No customers showing warning signs.</li>`;
   }
 
-  function renderDeadlines(deadlines = [], accreditations = []) {
-    const items = [...(accreditations || []).map((a) => ({ what: a.what, due: a.date, days_left: a.days_left })), ...deadlines]
+  // Dated reminders: accreditations and deadlines together, soonest first (the Coming up pop-up and its rail count).
+  function deadlineItems(deadlines = [], accreditations = []) {
+    return [...(accreditations || []).map((a) => ({ what: a.what, due: a.date, days_left: a.days_left })), ...(deadlines || [])]
       .sort((a, b) => a.due < b.due ? -1 : 1).slice(0, 8);
-    $("#deadlines").innerHTML = items.map((d) => `<li class="${d.days_left < 0 ? "bad" : d.days_left <= 14 ? "warn" : ""}">${esc(d.what)}<span class="sub">${dayMonth(d.due)} · ${d.days_left < 0 ? Math.abs(d.days_left) + " days overdue" : d.days_left + " days"}</span></li>`).join("");
+  }
+  function renderDeadlines(deadlines = [], accreditations = []) {
+    const items = deadlineItems(deadlines, accreditations);
+    $("#deadlines").innerHTML = !items.length ? `<li class="empty">Nothing dated coming up.</li>` : items.map((d) => `<li class="split ${d.days_left < 0 ? "bad" : d.days_left <= 14 ? "warn" : ""}"><span>${esc(d.what)}</span><small>${dayMonth(d.due)} · ${d.days_left < 0 ? Math.abs(d.days_left) + " days overdue" : d.days_left + " days"}</small></li>`).join("");
   }
 
   function renderApprovals() {
     const list = S.approvals || [];
     $("#approvals-panel").hidden = !list.length;
+    $("#approvals-empty").hidden = !!(list.length || S.suggestions?.length);
     $("#approvals-count").textContent = list.length ? String(list.length) : "";
     $("#approvals").innerHTML = list.map((a) => `<div class="approval">#${a.id} ${esc(a.summary)}
       ${a.payload?.diff ? `<details class="diff"><summary>Show code change</summary><pre>${esc(a.payload.diff)}</pre></details>` : ""}
@@ -1103,6 +1319,7 @@ function send(text, mode = "typed", opts = {}) {
   function renderSuggestions() {
     const list = S.suggestions || [];
     $("#suggestions-panel").hidden = !list.length;
+    $("#approvals-empty").hidden = !!(list.length || S.approvals?.length);
     $("#suggestions-count").textContent = list.length ? String(list.length) : "";
     // Every other panel caps what it shows at once (issues 8, notifications 6) - suggestions didn't,
     // so a busy day's list of full-width action cards could bury COMMS/ISSUES/TESTS below the fold.
@@ -1128,10 +1345,42 @@ function send(text, mode = "typed", opts = {}) {
   $("#btn-run-tests").addEventListener("click", async () => { toast("Running routine tests…"); const r = await (await api("/api/tests/run", { method: "POST" })).json(); const bad = r.filter((t) => !t.ok).length; toast("Routine tests finished", bad ? `${bad} failing` : "All passing", bad ? "warning" : "info"); refresh(); });
 
   // ------------------------------------------------------------------ map
-  let map = null, layer = null;
+  let map = null, layer = null, tiles = null;
   const NO_LABEL = "no address label from RAM";
+  // Esri's canvas basemaps are free and keyless; pick the one that matches the theme that is showing.
+  const tileUrl = () => `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${window.JarvisTheme?.effective() === "light" ? "Light" : "Dark"}_Gray_Base/MapServer/tile/{z}/{y}/{x}`;
+  window.addEventListener("jarvis-theme", () => { if (tiles) tiles.setUrl(tileUrl()); });
+  // The Fleet pop-up: real vehicles when RAM Tracking is connected, otherwise a clear "not connected" state.
+  // live: RAM answers. failing: its details are entered but it is not answering (why = the reason, in words). Otherwise
+  // it is still on sample data (why = what is still missing). Only "live" ever shows vehicles.
+  function fleetState() {
+    const conn = S.status?.connections?.["Vehicle tracking"] || "";
+    const failing = /^NOT CONNECTED/.test(conn) || !!S.tracking?.ram_error;
+    const live = !!conn && !isDemo(conn) && !failing;
+    const detail = (String(conn).match(/^NOT CONNECTED\s*-\s*(?:RAM Tracking is failing:\s*)?(.+)$/) || [])[1] || S.tracking?.ram_error || "";
+    const missing = (String(conn).match(/DEMO[^-:)]*[-:]\s*(.+)$/) || [])[1] || "";
+    return { live, failing, why: failing ? detail : missing };
+  }
+  function renderFleetStatus() {
+    const el = $("#fleet-status"), data = S.tracking;
+    const conn = S.status?.connections?.["Vehicle tracking"] || "";
+    const fleet = fleetState(), connected = fleet.live;
+    const vans = data?.engineers?.length || 0;
+    el.className = "fleet-note";
+    if (!connected) {
+      // Not connected (still sample data, or entered but not answering): say so plainly, with the reason, and show no
+      // map (sample positions are not vehicles).
+      el.innerHTML = `<span>Vehicle tracking is not connected, so there are no live vehicle positions. ${fleet.failing ? esc(fleet.why) : fleet.why ? esc(fleet.why[0].toUpperCase() + fleet.why.slice(1)) : "Add the RAM Tracking details under Connections."}</span>`;
+      el.insertAdjacentHTML("beforeend", `<button class="btn small" type="button" data-pop="connections">Open Connections</button>`);
+    } else {
+      el.textContent = !data ? "Loading…" : data.rate_limited ? data.note : data.working_hours === false ? (data.note || "Outside working hours - locations are not shown.")
+        : vans ? `Live from ${conn}: ${plural(vans, "vehicle", "vehicles")} reporting.` : "Connected, but no vehicles are reporting right now.";
+    }
+    $("#map").hidden = !connected || !vans;
+  }
   function renderMap(data) {
     if (!data) return;
+    S.tracking = data; renderFleetStatus(); renderRail();
     if (!window.L) {  // map library blocked/offline: show a list instead
       $("#map").innerHTML = `<ul class="list" style="padding:8px">${(data.engineers || []).map((e) =>
         `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(e.address_label || NO_LABEL)}</span></li>`).join("") ||
@@ -1143,14 +1392,14 @@ function send(text, mode = "typed", opts = {}) {
       map = L.map("map", { zoomControl: false, attributionControl: true }).setView([53.83, -1.78], 10);
       // CARTO's basemaps now require a signed-up API key and render an "API KEY REQUIRED" watermark
       // without one - Esri's dark canvas is free, keyless, and still matches the dark theme.
-      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxZoom: 16 }).addTo(map);
+      tiles = L.tileLayer(tileUrl(), { attribution: "© Esri, HERE, Garmin, OpenStreetMap contributors", maxZoom: 16 }).addTo(map);
       layer = L.layerGroup().addTo(map);
     }
     layer.clearLayers();
     $("#map-note").textContent = data.working_hours === false
       ? (data.visible ? `outside hours · logged · ${data.engineers.length} vans` : "outside hours")
       : data.demo ? "demo" : `${data.engineers.length} vans`;
+    if (map && !$("#map").hidden) map.invalidateSize();
     const pts = [];
     (data.sites || []).forEach((s) => { L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {
@@ -1160,6 +1409,7 @@ function send(text, mode = "typed", opts = {}) {
     });
     const fleetList = $("#fleet-list");
     if (fleetList) {
+      fleetList.hidden = !fleetState().live;  // sample positions are not vehicles: no list until RAM is really connected
       const warnings = (data.warnings || []).map((w) => `<li class="warn">${esc(w)}</li>`).join("");
       fleetList.innerHTML = (data.engineers || []).map((e) =>
         `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(e.address_label || NO_LABEL)}${e.at_home ? "" : e.status ? " · " + esc(e.status) : ""}</span></li>`).join("") + warnings;
@@ -1222,10 +1472,29 @@ function send(text, mode = "typed", opts = {}) {
   };
   // Says which engine voice input is using right now (and why it changed), so a silent fallback is never a mystery.
   function showSttEngine(engine, note = "", warn = false) {
+    sttStatus.engine(engine, note, warn);
     const el = $("#stt-engine"); if (!el) return;
     el.hidden = false; el.classList.toggle("warn", warn);
     el.textContent = `Voice input: ${STT_LABEL[engine] || engine}${note ? ` - ${note}` : ""}`;
   }
+  // The top-bar label for voice input. Shown ONLY while it is not on the engine chosen in Settings (an engine with no
+  // key, or one that just failed), in words, with the reason - so a fallback to the browser's speech recognition is never
+  // silent. Hidden while everything is as chosen. (The line under the core says the same but hides once a chat starts.)
+  const sttStatus = {
+    runtime: "",
+    engine(engine, note, warn) {
+      const off = engine !== (S.voice && S.voice.stt);
+      const why = off && stt.lastError ? ` (${stt.lastError.replace(/\s+/g, " ").slice(0, 80)})` : "";
+      this.runtime = warn || off ? `Voice input: ${STT_LABEL[engine] || engine}${note ? ` - ${note}` : off ? " - switched automatically" : ""}${why}` : "";
+      this.render();
+    },
+    render() {
+      const el = $("#stt-status"); if (!el) return;
+      const problem = (S.voice && S.voice.stt_problem) || "";
+      const text = problem ? `Voice input: browser fallback - ${problem}` : this.runtime;
+      el.hidden = !text; el.textContent = text; el.title = text;
+    },
+  };
   const stt = {
     mode: null, lastError: "", on: false, stream: null, rec: null, ws: null, finals: "", recognition: null, chunks: [], silenceTimer: null,
     // null = not known (browser speech recognition manages its own echo cancellation); false = the browser told us
@@ -1629,7 +1898,7 @@ function send(text, mode = "typed", opts = {}) {
       }
       const cmd = text.slice(idx + wake.length).replace(/^[\s,.!?]+/, "");
       if (!cmd) {
-        setHud("awaiting"); extendFollowUp(); say("Yes, sir?");
+        setHud("awaiting"); extendFollowUp(); say(`Yes, ${address()}?`);
         // The wake word alone and Jarvis's prompt back is an exchange too - the next words are the request.
         if (S.speakPref === "off" || !speaker.active) finishVoiceTurn(); else S.voiceTurn = "replied";
         return;
@@ -1652,22 +1921,32 @@ function send(text, mode = "typed", opts = {}) {
   });
 
   // ------------------------------------------------------------------ stop
+  // Leave the reply that is still being written as it stands (or drop it if nothing has arrived yet), and ignore
+  // anything that turn still sends while it winds down - see handle(). Used by Stop and by sending a new message.
+  function abandonCurrent() {
+    S.stopped = true;
+    if (!current) return;
+    const msg = current;
+    current = null;
+    const body = msg.querySelector(".md");
+    body.classList.remove("typing");
+    msg.querySelector(".step")?.remove();
+    if (!msg.dataset.raw) { msg.remove(); return; }
+    body.innerHTML = md(msg.dataset.raw);
+    msg.insertAdjacentHTML("beforeend", `<div class="src">Stopped.</div>`);
+  }
   function stopEverything() {
     filler.end();
     speaker.stop(); // instant - halts audio/browser speech straight away
     S.captureUntil = 0;
-    if (current) {
-      const body = current.querySelector(".md");
-      body.classList.remove("typing");
-      if (!current.dataset.raw) current.remove(); else body.innerHTML = md(current.dataset.raw) + `<div class="tools">Stopped.</div>`;
-      current = null;
-    }
+    abandonCurrent();
     S.voiceTurn = false; // an interrupted turn is not a genuine exchange
     setHud("idle");
     $("#toolline").textContent = "";
     // Tell the backend too, so it actually stops generating and the next message doesn't queue behind it.
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     else api("/api/interrupt", { method: "POST" }).catch(() => {});
+    if (streamCtl) streamCtl.abort(); // the plain-HTTP fallback stream: drop the in-flight request too
   }
   // Barge-in by hand: pressing the mic (or holding Space) while Jarvis is speaking cuts him off - audio, queued
   // sentences and the turn still streaming the rest of the reply - and opens the mic for the owner instead of
@@ -1682,43 +1961,57 @@ function send(text, mode = "typed", opts = {}) {
     return true;
   }
   $("#btn-stop").addEventListener("click", stopEverything);
-  window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#btn-stop").hidden) stopEverything(); });
+  // Escape stops a running reply - unless an overlay (shortcuts menu, display, drawer) is open, where Escape closes that instead.
+  window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented && !$("#btn-stop").hidden) stopEverything(); });
   let spaceHeld = false;
   window.addEventListener("keydown", (e) => {
-    if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
-    e.preventDefault(); spaceHeld = true;
+    if (e.code !== "Space" || e.repeat || ["TEXTAREA", "INPUT", "SELECT", "SUMMARY"].includes(document.activeElement?.tagName) || S.listenMode === "wake") return;
+    e.preventDefault(); spaceHeld = true;  // (SUMMARY: Space opens and closes a scheduled check's line, as it does any disclosure)
     if (!micPressBargeIn()) stt.start();
   });
   window.addEventListener("keyup", (e) => { if (e.code === "Space" && spaceHeld) { spaceHeld = false; stt.stop(true); } });
 
-  // ------------------------------------------------------------------ settings drawer: voice/display tab
-  function openDrawer() {
-    $("#drawer").classList.add("open");
-    $("#drawer-close").focus({ preventScroll: true });
-    if (!Settings.loaded) Settings.load();
-  }
-  $("#btn-settings").addEventListener("click", openDrawer);
-  $("#drawer-close").addEventListener("click", () => {
-    if (Settings.dirty() && !confirm("Discard unsaved connection changes?")) return;
-    Settings.revert();
-    $("#drawer").classList.remove("open");
-  });
-  $("#drawer-tabs").addEventListener("click", (e) => {
-    const tab = e.target.closest(".drawer-tab");
-    if (!tab) return;
-    $$(".drawer-tab").forEach((t) => t.classList.toggle("active", t === tab));
-    $$(".drawer-pane").forEach((p) => { p.hidden = p.id !== `pane-${tab.dataset.pane}`; });
-  });
+  // ------------------------------------------------------------------ Settings pop-up: voice and display options
+  // (The drawer itself, and opening Settings / Connections, is Drawer above; the buttons carry data-pop.)
   $("#set-listen").value = S.listenMode; $("#set-speak").value = S.speakPref;
   $("#set-listen").addEventListener("change", (e) => {
     S.listenMode = e.target.value; store.set("listen", S.listenMode);
     if (S.listenMode === "wake") { enterWakeMode(); toast("Always listening", `Say "${S.voice.wake_word}…" to talk to me.`); } else exitWakeMode();
   });
-  $("#set-speak").addEventListener("change", (e) => { S.speakPref = e.target.value; store.set("speak", S.speakPref); if (S.speakPref === "off") speaker.stop(); });
+  // One place that changes the "speak replies" preference: the top-bar Voice button and the Settings select both use it.
+  function setSpeakPref(v) {
+    S.speakPref = v; store.set("speak", v);
+    if (v !== "off") store.set("speak_on", v);
+    $("#set-speak").value = v;
+    if (v === "off") speaker.stop();
+    renderVoiceButton();
+  }
+  function renderVoiceButton() {
+    const on = S.speakPref !== "off", b = $("#btn-voice");
+    b.setAttribute("aria-pressed", String(on));
+    b.classList.toggle("is-on", on); b.classList.toggle("is-off", !on);
+    b.textContent = on ? "Voice on" : "Voice off";
+    b.title = on ? "Jarvis speaks his replies - click to keep him silent" : "Jarvis is silent - click to let him speak again";
+  }
+  $("#set-speak").addEventListener("change", (e) => setSpeakPref(e.target.value));
+  $("#btn-voice").addEventListener("click", () => setSpeakPref(S.speakPref === "off" ? (store.get("speak_on", "voice") === "off" ? "voice" : store.get("speak_on", "voice")) : "off"));
+  renderVoiceButton();
   $("#set-bargein").value = S.bargeIn ? "1" : "0";
   $("#set-bargein").addEventListener("change", (e) => { S.bargeIn = e.target.value !== "0"; store.set("bargein", S.bargeIn ? "1" : "0"); if (!S.bargeIn) S.captureUntil = 0; });
   $("#set-voice").addEventListener("change", (e) => { S.voiceId = e.target.value; store.set("voice", S.voiceId); });
-  $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say("Good to go, sir. This is how I sound."); });
+  $("#btn-test-voice").addEventListener("click", () => { ensureAudio(); say(`Good to go, ${address()}. This is how I sound.`); });
+  // Theme: Auto follows the device, or force Light / Dark. Kept by theme.js in localStorage (wrapped in try/catch).
+  $("#set-theme").value = window.JarvisTheme?.get() || "auto";
+  $("#set-theme").addEventListener("change", (e) => window.JarvisTheme?.set(e.target.value));
+  // The staff report link carries a key, so it is never shown on screen: this copies it to the clipboard instead.
+  $("#btn-copy-report").addEventListener("click", async () => {
+    try {
+      const link = await Settings.staffReportLink();
+      if (!link) { toast("No staff report link yet", "Set a staff report key under Connections, then try again.", "warning"); return; }
+      await navigator.clipboard.writeText(link);
+      toast("Link copied", "The staff report link is on your clipboard.");
+    } catch { toast("Couldn't copy the link", "Your browser blocked clipboard access.", "warning"); }
+  });
   let voicesLoaded = false;
   async function renderSettings(st) {
     $("#btn-sage").hidden = !(st.sage?.configured && !st.sage?.connected);
@@ -1733,17 +2026,27 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ settings drawer: connections tab
+  // The browser and password managers must not fill these boxes by themselves. An "API username" box beside a password box
+  // looks like a sign-in form to them, and an autofilled value is saved as if it had been typed (with the wrong name or
+  // password in it, a connection that was entered correctly stops working and nothing says why).
+  const NO_AUTOFILL = 'autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-form-type="other"';
   const Settings = {
-    loaded: false, sections: [], edited: {}, cleared: new Set(), open: new Set(), advanced: new Set(), testing: new Set(),
+    loaded: false, sections: [], edited: {}, cleared: new Set(), advanced: new Set(), testing: new Set(),
+    view: null,            // null = the list of integrations; otherwise the id of the one whose setup form is showing
+    // The staff report link carries a key, so it is never in the settings data or on screen: "Copy staff report link"
+    // asks the server for it when pressed, copies it, and lets go of it.
+    async staffReportLink() { return (await (await api("/api/staff-report-address")).json()).link || ""; },
 
     async load() {
       try {
         const data = await (await api("/api/settings")).json();
         this.loaded = true;
         this.sections = data.sections;
-        if (data.context?.staff_report_link) $("#report-link").textContent = data.context.staff_report_link.replace(/^https?:\/\//, "");
         this.render(data.problem);
-      } catch { toast("Couldn't load settings", "Check the connection and try again.", "warning"); }
+      } catch {
+        toast("Couldn't load settings", "Check the connection and try again.", "warning");
+        if (!this.sections.length) $("#settings-sections").innerHTML = `<p class="empty">Couldn't load the connections. Close this and open it again to retry.</p>`;
+      }
     },
 
     dirty() { return Object.keys(this.edited).length > 0 || this.cleared.size > 0; },
@@ -1766,20 +2069,63 @@ function send(text, mode = "typed", opts = {}) {
     render(problem = "") {
       $("#settings-problem").innerHTML = problem
         ? `<div class="set-problem">${esc(problem)}</div>` : "";
-      $("#settings-sections").innerHTML = this.sections.map((s) => this.renderSection(s)).join("");
+      $("#settings-sections").innerHTML = this.renderConnections();
       this.updateSaveBar();
+      this.syncTalk();
     },
 
-    badge(sec) {
-      if (!sec.show_badge) return "";
+    // "How Jarvis talks" lives in Settings but is stored like every other setting here (talk_style, saved with the
+    // same Save changes bar and the same /api/settings call), so it also appears under Connections > You and the business.
+    syncTalk() {
+      const sel = $("#set-talk");
+      if (!sel) return;
+      sel.disabled = !this.loaded;
+      const style = this.currentValue("talk_style");
+      if (style) sel.value = style;
+      const name = (this.currentValue("owner_name") || "").trim(), salutation = (this.currentValue("owner_salutation") || "").trim();
+      $("#set-talk-note").textContent = !this.loaded ? "Loading…"
+        : sel.value === "formal" ? `Jarvis will call you "${salutation || name}" and keep a more formal tone.`
+          : `Jarvis will call you ${name || salutation} and keep it friendly and plain.`;
+    },
+    setTalk(value) {
+      const f = this.field("talk_style");
+      if (!f) return;
+      if (value === f.value) delete this.edited.talk_style; else this.edited.talk_style = value;
+      this.cleared.delete("talk_style");
+      this.updateSaveBar();
+      this.syncTalk();
+    },
+
+    // Connections: a list of every integration with its status; each row opens its own setup form, which has a back link.
+    showList() { this.view = null; this.render(); },
+    openSection(id) {
+      this.view = id; this.render();
+      $("#drawer-body").scrollTop = 0;
+      $("#settings-sections .back-link")?.focus({ preventScroll: true });
+    },
+    backToList() {
+      const was = this.view; this.view = null; this.render();
+      $("#drawer-body").scrollTop = 0;
+      $(`#settings-sections [data-open-section="${was}"]`)?.focus({ preventScroll: true });
+    },
+    renderConnections() {
+      if (!this.sections.length) return `<p class="empty">${this.loaded ? "Nothing to set up." : "Loading…"}</p>`;
+      const sec = this.view && this.sections.find((x) => x.id === this.view);
+      if (sec) return this.renderSection(sec);
+      const row = (x) => { const st = this.status(x);
+        return `<li><button type="button" class="conn-row" data-open-section="${esc(x.id)}"><span class="name">${esc(x.title)}</span><small class="${st.cls}">${esc(st.text)} ›</small></button></li>`; };
+      return `<ul class="conn-list">${this.sections.map(row).join("")}</ul>`;
+    },
+
+    // The status shown on a Connections row and at the top of its form.
+    status(sec) {
+      if (!sec.show_badge) return { text: "Set up", cls: "" };
       const test = sec.last_test;
-      if (test && !test.stale) return test.ok ? `<span class="set-badge on">Working</span>` : `<span class="set-badge fail">Test failed</span>`;
-      if (sec.configured) return `<span class="set-badge on">Connected</span>`;
-      return `<span class="set-badge off">Not set up</span>`;
+      if (test && !test.stale) return test.ok ? { text: "Working", cls: "ok" } : { text: "Test failed", cls: "red" };
+      return sec.configured ? { text: "Connected", cls: "ok" } : { text: "Not set up", cls: "" };
     },
 
     renderSection(sec) {
-      const isOpen = this.open.has(sec.id);
       const shown = sec.fields.filter((f) => this.visible(f));
       const basics = shown.filter((f) => !f.advanced);
       const advanced = shown.filter((f) => f.advanced);
@@ -1795,11 +2141,12 @@ function send(text, mode = "typed", opts = {}) {
         ${test ? `<div class="set-test-result ${test.ok ? "ok" : "fail"}">${esc(test.detail)}${test.stale ? '<span class="stale-note">Settings changed since this test - test again.</span>' : ""}</div>` : ""}
       ` : "";
       return `
-        <div class="set-section${isOpen ? " open" : ""}" data-section="${esc(sec.id)}">
-          <div class="set-section-head" data-toggle="${esc(sec.id)}">
-            <div class="set-section-titles"><h3>${esc(sec.title)}</h3><div class="blurb">${esc(sec.blurb)}</div></div>
-            ${this.badge(sec)}
-            <span class="set-chevron">▸</span>
+        <div class="set-section" data-section="${esc(sec.id)}">
+          <button type="button" class="chip back-link" data-back>‹ All connections</button>
+          <div class="form-head">
+            <h3>${esc(sec.title)}</h3>
+            <p class="blurb">${esc(sec.blurb)}</p>
+            ${sec.show_badge ? `<p class="status-line"><span class="label">Status</span> <span class="${this.status(sec).cls}">${esc(this.status(sec).text)}</span></p>` : ""}
           </div>
           <div class="set-section-fields">
             ${guide}
@@ -1833,7 +2180,7 @@ function send(text, mode = "typed", opts = {}) {
         } else {
           const hint = hasEdit ? "new value entered" : (f.is_set ? f.hint : "not set");
           control = `<div class="set-secret-row">
-            <input type="password" id="f-${f.key}" data-field="${f.key}" placeholder="${f.is_set ? "Leave blank to keep the current one" : esc(f.placeholder || "")}" autocomplete="new-password">
+            <input type="password" id="f-${f.key}" data-field="${f.key}" placeholder="${f.is_set ? "Leave blank to keep the current one" : esc(f.placeholder || "")}" autocomplete="new-password" ${NO_AUTOFILL}>
             <span class="set-hint">${esc(hint)}</span>
             ${f.is_set ? `<button class="btn small" data-clear="${f.key}" type="button">Clear</button>` : ""}
           </div>`;
@@ -1882,7 +2229,7 @@ function send(text, mode = "typed", opts = {}) {
         if (f.kind === "url" && !current) current = "https://";
         const type = f.kind === "number" ? "number" : f.kind === "email" ? "email" : f.kind === "url" ? "url" : "text";
         const step = f.kind === "number" ? ' step="any"' : "";  // some settings (voice stability etc.) are fractional
-        control = `<input type="${type}"${step} id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}">`;
+        control = `<input type="${type}"${step} id="f-${f.key}" data-field="${f.key}" value="${esc(current)}" placeholder="${esc(f.placeholder || "")}" autocomplete="off" ${NO_AUTOFILL}>`;
       }
       return `<div class="set-field${error ? " has-error" : ""}">
         <label for="f-${f.key}">${esc(f.label)}${sourceNote ? `<span class="set-source">${sourceNote}</span>` : ""}</label>
@@ -1948,8 +2295,9 @@ function send(text, mode = "typed", opts = {}) {
   };
 
   $("#settings-sections").addEventListener("click", (e) => {
-    const toggle = e.target.closest("[data-toggle]");
-    if (toggle) { const id = toggle.dataset.toggle; Settings.open.has(id) ? Settings.open.delete(id) : Settings.open.add(id); Settings.render(); return; }
+    const openRow = e.target.closest("[data-open-section]");
+    if (openRow) { Settings.openSection(openRow.dataset.openSection); return; }
+    if (e.target.closest("[data-back]")) { Settings.backToList(); return; }
     const test = e.target.closest("[data-test]");
     if (test) { Settings.test(test.dataset.test); return; }
     const showAdv = e.target.closest("[data-show-advanced]");
@@ -2035,6 +2383,7 @@ function send(text, mode = "typed", opts = {}) {
     // switching Voice provider swaps which provider's fields are visible without needing to save first.
     if (f.kind === "select" || f.kind === "bool") Settings.render(); else Settings.updateSaveBar();
   });
+  $("#set-talk").addEventListener("change", (e) => Settings.setTalk(e.target.value));
   $("#btn-settings-save").addEventListener("click", () => Settings.save());
   $("#btn-settings-cancel").addEventListener("click", () => Settings.revert());
 
