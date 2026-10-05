@@ -31,7 +31,7 @@ from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.standing_approvals import StandingApprovals
 from .services.teams_approvals import TeamsApprovals
-from .services.activity import ActivityLog
+from .services.activity import CHANGED, ActivityLog
 from .services.automations import AutomationService
 from .services.billing import Billing
 from .services.customer_comms import CustomerComms
@@ -75,6 +75,7 @@ from .services.team_access import TeamAccess
 from .services.team_sessions import TeamSessions
 from .services.verification import ActionVerifier
 from .services.wrapup import WrapUp
+from .services.engineer_homes import EngineerHomes
 from .services.tracking import Tracker
 
 log = logging.getLogger(__name__)
@@ -150,8 +151,11 @@ class Jarvis:
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
         # settings + db: the owner's out-of-hours van-location setting, its look-up log and the on-call roster
+        # The owner's engineer home points (a rounded map point each, never a postcode): what lets a van be "home" when RAM
+        # supplies no address labels. Owner-only routes in main.py; deliberately not a tool, so the model can't reach it.
+        self.homes = EngineerHomes(self.db, self.http, self.fsm, self.register, self.ram)
         self.tracker = Tracker(self.fsm, self.http, self.ram, self.register, s.timesheet_tolerance_min,
-                               settings=s, db=self.db)
+                               settings=s, db=self.db, homes=self.homes)
         self.oncall = self.tracker.roster
         self.asked_by = ""  # who is asking in the current chat turn (set by the brains); "" outside a turn
         self.ppm = PPMPlanner(self.fsm, self.register)  # read-only advisory scheduling plan
@@ -172,6 +176,8 @@ class Jarvis:
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.activity = ActivityLog(self)  # every scheduled check's runs; the chat shows one quiet line per check
+        # Owner set / clear of an engineer's home point: engineer name and time only, never a postcode or a point.
+        self.homes.audit = lambda action, detail: self.activity.record("engineer_homes", "Engineer homes", CHANGED, detail)
         self.proactive = Proactive(self)  # Jarvis posting into the open chat by himself; tells, never acts
         self.async_tools = AsyncTools(self)  # slow tools run in the background; results delivered via self.proactive
         self.automations = AutomationService(self)

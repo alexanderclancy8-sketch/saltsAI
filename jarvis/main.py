@@ -36,6 +36,7 @@ from .redact import install_log_redaction, redact_text
 from .services import approval_inbox, connection_tests, documents, images
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
+from .services.engineer_homes import DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, HomeError
 from .services.team_access import CodeRejected
 from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
@@ -500,7 +501,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data["inbox"] = {**data.get("inbox", {}), "service": await _safe(j.service_inbox.unread(), "service inbox")}
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     approvals=approval_inbox.pending_for_display(j.db),
-                    activity=j.activity.summary(),
+                    activity=j.activity.summary(owner=caller.role == access.OWNER),
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
                     resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
@@ -1103,6 +1104,57 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         log.info("Team access switched off by the owner.")
         await j.team_sessions.close()
         return {**j.team_access.info(), "sessions": len(j.team_sessions)}
+
+    # ---- engineer homes: where each engineer lives, kept as a rounded map point so Fleet / who_is_home can say "home". The
+    # principal owner only (access.ROUTE_POLICY), a same-origin click for every change, and deliberately NOT a brain tool.
+    # The owner types a postcode once; it is looked up server-side and dropped - the database, these responses and the logs
+    # never hold it, and no response ever carries a point either (only "set" / "not set" and when). The request body is read
+    # by hand (not a pydantic model) so a validation error can never echo the postcode back.
+    async def homes_view(j: Jarvis, **extra: Any) -> JSONResponse:
+        homes = j.homes
+        data = {**extra, "radius_m": homes.radius_m, "default_radius_m": DEFAULT_RADIUS_M, "min_radius_m": MIN_RADIUS_M,
+                "max_radius_m": MAX_RADIUS_M, "engineers": homes.listing(await homes.known_engineers())}
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+    async def json_object(request: Request) -> dict[str, Any]:
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001 - not JSON: treated as an empty request, never echoed
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @app.get("/api/engineer-homes", dependencies=[Depends(principal)])
+    async def engineer_homes_info(request: Request):
+        return await homes_view(J(request))
+
+    @app.post("/api/engineer-homes", dependencies=[Depends(principal), Depends(human_click)])
+    async def engineer_home_set(request: Request):
+        j = J(request)
+        body = await json_object(request)
+        try:
+            await j.homes.set_from_postcode(body.get("engineer"), body.get("postcode"), "the owner")
+        except HomeError as e:
+            raise HTTPException(e.status, str(e)) from None
+        return await homes_view(j)
+
+    @app.post("/api/engineer-homes/radius", dependencies=[Depends(principal), Depends(human_click)])
+    async def engineer_homes_radius(request: Request):
+        j = J(request)
+        try:
+            j.homes.set_radius((await json_object(request)).get("metres"), "the owner")
+        except HomeError as e:
+            raise HTTPException(e.status, str(e)) from None
+        return await homes_view(j)
+
+    @app.delete("/api/engineer-homes/{engineer}", dependencies=[Depends(principal), Depends(human_click)])
+    async def engineer_home_clear(engineer: str, request: Request):
+        j = J(request)
+        return await homes_view(j, removed=j.homes.clear(engineer, "the owner"))
+
+    @app.delete("/api/engineer-homes", dependencies=[Depends(principal), Depends(human_click)])
+    async def engineer_homes_clear_all(request: Request):
+        j = J(request)
+        return await homes_view(j, removed=j.homes.clear_all("the owner"))
 
     @app.post("/api/settings", dependencies=[Depends(owner)])
     async def save_settings(body: SettingsIn, request: Request):

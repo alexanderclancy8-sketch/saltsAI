@@ -190,7 +190,7 @@
       if (name === "fleet") fitMapSoon();             // the map is laid out at 0x0 while hidden; re-measure now it can be seen
       if (name === "demo") renderDemo();
       if (name === "memory") window.JarvisMemory?.load();
-      if (name === "settings" && ROLE === "owner") TeamAccess.load();
+      if (name === "settings" && ROLE === "owner") { TeamAccess.load(); Homes.load(); }
       if ((name === "settings" || name === "connections") && !TEAM) {
         if (!Settings.loaded) Settings.load();
         if (name === "connections") Settings.showList();
@@ -1713,6 +1713,9 @@ function send(text, mode = "typed", opts = {}) {
   // ------------------------------------------------------------------ map
   let map = null, layer = null, tiles = null, satTiles = null, labelTiles = null;
   const NO_LABEL = "no address label from RAM";
+  // Where a van is, in words: "home" (the owner's home point for that engineer, or RAM's label - never a street or a point),
+  // "away" (plus RAM's label when it sends one), or "no home set" (no point for them and no label from RAM, so it can't be told).
+  const homeParts = (e) => e.at_home ? ["home"] : e.at_home === false ? ["away", e.address_label] : ["no home set", NO_LABEL];
   // Two keyless Esri basemaps. "satellite" (the default) is World Imagery with Esri's place-name labels over it so towns and
   // roads stay readable; "street" is Esri's grey canvas, picked to match the theme that is showing. The choice is kept in
   // localStorage (jarvis.basemap, through store, which is wrapped in try/catch) and the page works without it.
@@ -1778,7 +1781,7 @@ function send(text, mode = "typed", opts = {}) {
     S.tracking = data; renderFleetStatus(); renderRail();
     if (!window.L) {  // map library blocked/offline: show a list instead
       $("#map").innerHTML = `<ul class="list" style="padding:8px">${(data.engineers || []).map((e) =>
-        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(e.address_label || NO_LABEL)}</span></li>`).join("") ||
+        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(homeParts(e).filter(Boolean).join(" · "))}</span></li>`).join("") ||
         `<li class="empty">${esc(data.note || "No vehicles reporting.")}</li>`}</ul>`;
       $("#map").style.height = "auto";
       return;
@@ -1805,7 +1808,7 @@ function send(text, mode = "typed", opts = {}) {
     (data.engineers || []).forEach((e) => {
       halo(e.lat, e.lng, 7);
       L.circleMarker([e.lat, e.lng], { radius: 7, color: e.status === "driving" ? "#ffb020" : "#26d9ff", weight: 2, fillOpacity: 0.85 })
-        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(e.address_label || NO_LABEL)}`).addTo(layer);
+        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(homeParts(e).filter(Boolean).join(" · "))}`).addTo(layer);
       pts.push([e.lat, e.lng]);
     });
     const fleetList = $("#fleet-list");
@@ -1813,7 +1816,7 @@ function send(text, mode = "typed", opts = {}) {
       fleetList.hidden = !fleetState().live;  // sample positions are not vehicles: no list until RAM is really connected
       const warnings = (data.warnings || []).map((w) => `<li class="warn">${esc(w)}</li>`).join("");
       fleetList.innerHTML = (data.engineers || []).map((e) =>
-        `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(e.address_label || NO_LABEL)}${e.at_home ? "" : e.status ? " · " + esc(e.status) : ""}</span></li>`).join("") + warnings;
+        `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(homeParts(e).filter(Boolean).join(" · "))}${e.at_home ? "" : e.status ? " · " + esc(e.status) : ""}</span></li>`).join("") + warnings;
     }
     if (pts.length) map.fitBounds(pts, { padding: [20, 20], maxZoom: 12 });
   }
@@ -2843,6 +2846,75 @@ function send(text, mode = "typed", opts = {}) {
   });
   $("#btn-team-off")?.addEventListener("click", async () => {
     if (confirm("Switch off team sign-in? Everyone signed in as team will be signed out.") && await TeamAccess.send("DELETE")) toast("Team sign-in is off", "Nobody can sign in as team now.");
+  });
+
+  // ------------------------------------------------------------------ engineer homes (the owner's Settings)
+  // Where each engineer lives, so Fleet can say "home". Owner only (/api/engineer-homes refuses everyone else). The owner types a
+  // postcode, the server looks it up once and keeps a ROUNDED map point; the postcode is never stored or sent back, so a saved
+  // row shows only "Home set (date)" and the postcode box is empty again. The box is cleared as soon as the request is sent.
+  const Homes = {
+    info: null,
+    async load() {
+      if (!$("#homes-list") || ROLE !== "owner") return;
+      try { const r = await api("/api/engineer-homes"); this.info = r.ok ? await r.json() : null; } catch { this.info = null; }
+      this.render();
+    },
+    render() {
+      const i = this.info, list = $("#homes-list"), status = $("#homes-status");
+      if (!list) return;
+      if (!i) { status.textContent = "Couldn't read the engineer homes."; list.innerHTML = ""; return; }
+      const n = i.engineers.filter((e) => e.set).length;
+      status.textContent = !i.engineers.length ? "Jarvis doesn't have a list of engineers yet (connect Salts FSM or the staff register)."
+        : n ? `${plural(n, "home", "homes")} set.` : "No homes set yet. A van with no home set is shown as \"no home set\".";
+      const radius = $("#homes-radius");
+      if (radius && document.activeElement !== radius) radius.value = i.radius_m;
+      radius.min = i.min_radius_m; radius.max = i.max_radius_m;
+      const date = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); };
+      // A re-render (after any save or remove) must not eat what the owner is typing in another engineer's box.
+      const typed = {}, active = document.activeElement;
+      list.querySelectorAll("[data-home-pc]").forEach((b) => { if (b.value) typed[b.closest("li").dataset.eng] = b.value; });
+      const focusEng = active && list.contains(active) && active.matches("[data-home-pc]") ? active.closest("li").dataset.eng : null;
+      list.innerHTML = i.engineers.map((e, k) => `<li data-eng="${esc(e.engineer)}">
+        <div class="home-head"><b>${esc(e.engineer)}</b><span class="home-state ${e.set ? "ok" : ""}">${e.set ? `Home set${e.set_at ? " (" + esc(date(e.set_at)) + ")" : ""}${e.in_list ? "" : " - not in the staff list"}` : "Not set"}</span></div>
+        <div class="home-edit">
+          <input type="text" id="home-pc-${k}" data-home-pc autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="10" data-1p-ignore data-lpignore="true" aria-label="${e.set ? "New" : "Home"} postcode for ${esc(e.engineer)}" placeholder="${e.set ? "New postcode to replace it" : "Home postcode"}">
+          <button class="btn small" type="button" data-home-act="save">Save</button>
+          ${e.set ? `<button class="btn small" type="button" data-home-act="remove">Remove</button>` : ""}
+        </div></li>`).join("");
+      list.querySelectorAll("li").forEach((li) => {
+        const box = li.querySelector("[data-home-pc]");
+        if (typed[li.dataset.eng]) box.value = typed[li.dataset.eng];
+        if (focusEng === li.dataset.eng) box.focus({ preventScroll: true });
+      });
+      $("#btn-homes-clear-all").hidden = !n;
+    },
+    async send(method, path, body) {
+      const r = await api(path, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { toast("Engineer homes didn't change", data.detail || "Try again.", "warning"); return null; }
+      this.info = data; this.render(); return data;
+    },
+  };
+  $("#homes-list")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-home-act]"); if (!btn) return;
+    const row = btn.closest("li"), name = row.dataset.eng, box = row.querySelector("[data-home-pc]");
+    if (btn.dataset.homeAct === "save") {
+      const postcode = box.value.trim();
+      if (!postcode) { toast("Type a postcode first", `Enter ${name}'s home postcode.`, "warning"); box.focus(); return; }
+      box.value = ""; btn.disabled = true;     // the postcode leaves the page as soon as it is sent
+      const ok = await Homes.send("POST", "/api/engineer-homes", { engineer: name, postcode });
+      btn.disabled = false;
+      if (ok) toast("Home saved", `${name}'s van will show "home" when it is there. Only a rounded point was kept.`);
+    } else if (confirm(`Remove ${name}'s home? Their van will show "no home set".`)) {
+      if (await Homes.send("DELETE", `/api/engineer-homes/${encodeURIComponent(name)}`)) toast("Home removed", `${name}'s home point is deleted.`);
+    }
+  });
+  $("#btn-homes-radius")?.addEventListener("click", async () => {
+    const v = Number($("#homes-radius").value);
+    if (await Homes.send("POST", "/api/engineer-homes/radius", { metres: v })) toast("Distance saved", `A van within ${$("#homes-radius").value} m counts as home.`);
+  });
+  $("#btn-homes-clear-all")?.addEventListener("click", async () => {
+    if (confirm("Remove every engineer's home? This deletes all the stored points and can't be undone.") && await Homes.send("DELETE", "/api/engineer-homes")) toast("All homes removed", "Every home point is deleted.");
   });
 
   // The role, shown subtly in the top bar ("Team - Sam", "Owner", "Manager").

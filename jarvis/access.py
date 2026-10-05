@@ -89,11 +89,14 @@ def role_meets(role: str | None, level: str) -> bool:
 # --- what each role can see in the console -------------------------------------------------------------------------------
 FEATURES = {
     OWNER: {"approvals": True, "finance": True, "connections": True, "memory": True, "comms": True, "issues": True,
-            "health": True, "settings_admin": True, "attachments": True, "feedback": True, "team_access": True},
+            "health": True, "settings_admin": True, "attachments": True, "feedback": True, "team_access": True,
+            "engineer_homes": True},
     MANAGER: {"approvals": True, "finance": True, "connections": True, "memory": True, "comms": True, "issues": True,
-              "health": True, "settings_admin": True, "attachments": True, "feedback": True, "team_access": False},
+              "health": True, "settings_admin": True, "attachments": True, "feedback": True, "team_access": False,
+              "engineer_homes": False},
     TEAM: {"approvals": False, "finance": False, "connections": False, "memory": False, "comms": False, "issues": False,
-           "health": False, "settings_admin": False, "attachments": False, "feedback": False, "team_access": False},
+           "health": False, "settings_admin": False, "attachments": False, "feedback": False, "team_access": False,
+           "engineer_homes": False},
 }
 
 # Keys of /api/status a team session receives. An allowlist, so a key added to the status later is withheld from team
@@ -224,6 +227,13 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/team-access": OWNER_ONLY,
     "POST /api/team-access": OWNER_ONLY,
     "DELETE /api/team-access": OWNER_ONLY,
+    # ---- the principal owner only: where each engineer lives (a rounded map point, never the postcode). Sensitive personal
+    # data: not for a manager, not for team, and deliberately not a tool.
+    "GET /api/engineer-homes": OWNER_ONLY,
+    "POST /api/engineer-homes": OWNER_ONLY,
+    "DELETE /api/engineer-homes": OWNER_ONLY,
+    "POST /api/engineer-homes/radius": OWNER_ONLY,
+    "DELETE /api/engineer-homes/{engineer}": OWNER_ONLY,
 }
 
 

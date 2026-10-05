@@ -266,6 +266,15 @@ CREATE TABLE IF NOT EXISTS location_lookup_log (
     engineer TEXT NOT NULL,
     mode TEXT NOT NULL
 );
+-- Where each engineer lives, as a ROUNDED map point (4 decimal places, about 11 m) - never the postcode, which is discarded
+-- as soon as it has been looked up (services/engineer_homes.py). Owner-only, never read by a tool, never exported.
+CREATE TABLE IF NOT EXISTS engineer_homes (
+    engineer TEXT PRIMARY KEY COLLATE NOCASE,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    set_by TEXT NOT NULL DEFAULT '',
+    set_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS false_alarm_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -331,6 +340,8 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         with self._lock:
+            # A deleted row (an engineer's home point, a cleared team code) is overwritten, not just unlinked.
+            self._conn.execute("PRAGMA secure_delete = ON")
             self._conn.executescript(SCHEMA)
             self._migrate()
             self._conn.commit()
@@ -770,6 +781,34 @@ class Database:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
         return self.query("SELECT created_at, asked_by, tool, engineer, mode FROM location_lookup_log "
                           "WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))
+
+    # -- engineer home points (services/engineer_homes.py) -------------------------------------
+    # Only EngineerHomes may call these. The listing method never selects the coordinates.
+    def set_engineer_home(self, engineer: str, lat: float, lng: float, by: str) -> None:
+        self.execute("INSERT INTO engineer_homes (engineer, lat, lng, set_by, set_at) VALUES (?,?,?,?,?) "
+                     "ON CONFLICT(engineer) DO UPDATE SET lat = excluded.lat, lng = excluded.lng, "
+                     "set_by = excluded.set_by, set_at = excluded.set_at", (engineer, lat, lng, by, now_iso()))
+
+    def engineer_homes_set(self) -> list[dict[str, Any]]:
+        """Who has a home point and when it was set. No coordinates."""
+        return self.query("SELECT engineer, set_by, set_at FROM engineer_homes ORDER BY engineer")
+
+    def engineer_home_points(self) -> list[dict[str, Any]]:
+        """Name and rounded point of every home - for the matcher inside the tracker only."""
+        return self.query("SELECT engineer, lat, lng FROM engineer_homes")
+
+    def _delete_count(self, sql: str, params: tuple = ()) -> int:
+        """Rows really deleted (execute() would hand back a stale lastrowid for a DELETE)."""
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur.rowcount
+
+    def delete_engineer_home(self, engineer: str) -> int:
+        return self._delete_count("DELETE FROM engineer_homes WHERE engineer = ?", (engineer,))
+
+    def delete_all_engineer_homes(self) -> int:
+        return self._delete_count("DELETE FROM engineer_homes")
 
     # -- transcript --------------------------------------------------------------------
     def add_transcript(self, role: str, text: str) -> None:

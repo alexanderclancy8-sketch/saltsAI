@@ -136,6 +136,28 @@ server-side (`<!--role:...-->` regions in `index.html`). A team request that que
 human, never consults the standing approvals, and is stamped "asked for by NAME (team)" on the card. When you add a route, add
 it to `ROUTE_POLICY`; when you add a tool, it is denied to team until you add it to `TEAM_TOOLS` on purpose.
 
+*Engineer home points (`services/engineer_homes.py`; tests `tests/test_engineer_homes.py`, `tests/test_engineer_homes_browser.py`).* RAM's
+public API has no address labels (only lat/lng, registration, driver), so "home" in Fleet / `who_is_home` / `van_day` comes from a point
+the OWNER sets per engineer in Settings > Engineer homes: a van within the owner's radius (100 m default, 50-300 m, kv
+`engineer_home_radius_m`) of its driver's point is `at_home` (`tracking.combine_home`; a RAM label containing "home" is only a fallback;
+no point and no label = unknown, which `home_status` lists under `no_address_label`). Where someone lives is sensitive personal data,
+so: the owner types a UK postcode ONCE; the server POSTs it to postcodes.io (in the request body, never a URL), rounds the answer to 4 dp
+(~11 m) and stores ONLY engineer, lat, lng, set_by, set_at in the `engineer_homes` table - the postcode is discarded (not in the
+database, any response, log or audit line; error messages never repeat it; the request body is read by hand so a 422 can't echo it).
+The five `/api/engineer-homes...` routes are OWNER_ONLY (`access.ROUTE_POLICY`: a manager or team session gets 403) with a same-origin
+click for changes, and it is deliberately NOT a tool: nothing under `brain/`, `services/` or `integrations/` except the tracker's matcher,
+the service itself and the nightly retention job may mention it (a grep test pins that). The model only gets the derived answer: a van at
+home is shown as just "home", `engineer_locations` strips its lat/lng, and `van_day` prints "home" instead of the home coordinates.
+Set / clear / radius changes go in the activity log (engineer name, time, who - no coordinates). Nothing exports it: there is no
+whole-database dump, backup or table export in the code (a test fails if one appears - it must then exclude `engineer_homes`), the memory
+pop-up, staff report, status, settings and the Azure archive tool never read it, and `PRAGMA secure_delete` is on so a deleted point is
+overwritten in the file. *Retention and erasure:* Remove (one) and Remove all in the Settings section delete rows; the nightly 03:25 job
+(`engineer_homes_retention`) deletes the home of anyone who has left the staff list (and does nothing if the list could not be read).
+To purge by hand: `sqlite3 data/jarvis.db "DELETE FROM engineer_homes; DELETE FROM kv WHERE key = 'engineer_home_radius_m';"` (on Azure the
+file is `/home/data/jarvis.db`). A copy of `jarvis.db` taken before a removal still holds the old points (the rounded point only - never a
+postcode), so treat database file backups as holding home locations and delete old ones when someone asks. Tell engineers before you set
+their home (the Settings note says so).
+
 *Standing approvals (the one deliberate exception to "queue, then a human clicks").* `services/standing_approvals.py`
 lets the OWNER, in Settings only, pre-approve two narrow classes: "Record keeping" (a `fsm_write` POST creating a
 customer/site/contact/note/task/reminder, exact path shapes and body keys) and "Routine acknowledgements" (the
