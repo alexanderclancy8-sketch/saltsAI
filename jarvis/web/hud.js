@@ -12,6 +12,10 @@
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
+    // sent: what THIS tab has sent whose "user_message" has not come back yet. mine: whether the turn now streaming in
+    // is one of them. Every open tab/device gets every event, so without this each one read the same reply aloud - two
+    // (or more) overlapping voices. Only the tab that asked speaks the answer; the others just show it.
+    sent: [], mine: true,
     // followUpUntil: until when a heard utterance may skip the wake word - only ever set by grantFollowUp(), i.e.
     // after a genuine exchange. micUntil: until when the real mic is kept open (extendFollowUp) - says nothing
     // about whether the wake word may be skipped. voiceTurn: false | "pending" (accepted spoken request, no reply
@@ -29,6 +33,8 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (n) => (n === null || n === undefined || isNaN(n)) ? "-" : "£" + Math.round(n).toLocaleString("en-GB");
   const time = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); };
+  // How a message is recognised when the server announces it ("user_message"): the same words, whatever the spacing.
+  const turnKey = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 300);
   const dayMonth = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }); };
 
   // A schedule setting is stored as a crontab string ("45 7 * * 1-5", or "5 9,13,16 * * 1-5" for a few times a
@@ -348,6 +354,7 @@
   const speaker = {
     queue: [], buffer: "", active: false, browserSpeaking: false, onIdle: null, lastSpokeAt: 0, recent: [],
     playingFiller: false, // the item most recently taken off the queue was a thinking-time filler (see `filler`)
+    item: null,           // the queue item being voiced right now (its callbacks settle it exactly once)
     // Bumped by stop(). Every async callback (audio fetch, play(), onended, speechSynthesis onend) remembers the
     // generation it started in and does nothing if it has changed - otherwise a cancelled sentence's late
     // callback either re-speaks it in the browser voice (a play() aborted by pause() rejects, which used to fall
@@ -411,25 +418,42 @@
           return;
         }
         item.started = true;
+        this.item = item;
         if (!item.filler) noteFirstAudio(); // a thinking-time filler isn't the answer, so it doesn't count
         if (url) {
+          // ONE way on per sentence. The clip ending, the clip erroring, a rejected play() and the browser-voice
+          // fallback below can all report on the same sentence, and every one of them used to move the queue along:
+          // a clip that could not be played did it twice (its `error` event AND the rejected play()), so the browser
+          // voice read that sentence while the rest of the queue started over the top of it - two voices at once.
+          const finish = () => { URL.revokeObjectURL(url); if (item.done || gen !== this.gen) return; item.done = true; this.next(); };
+          player.onended = finish;
+          player.onerror = () => {
+            if (item.done || gen !== this.gen) return;
+            if (item.playing) { finish(); return; }  // it was playing and broke part-way: move on to the next sentence
+            item.errored = true;                      // it never started: the rejected play() below falls back to the browser voice
+          };
           player.src = url;
-          player.onended = () => { URL.revokeObjectURL(url); if (gen === this.gen) this.next(); };
-          player.onerror = () => { if (gen === this.gen) this.next(); };
-          try { await player.play(); } catch {
-            if (gen !== this.gen) return; // stopped while the audio was starting - not a blocked-autoplay problem
+          try { await player.play(); item.playing = true; if (item.errored) finish(); } catch {
+            if (gen !== this.gen || item.done) return; // stopped while the audio was starting - not a blocked-autoplay problem
+            player.onended = player.onerror = null; // the browser voice reads this sentence now; the dead clip must not advance the queue as well
             voiceProblem("the browser blocked the audio - click anywhere on the page and try again"); this.speakBrowser(item.text);
           }
         } else this.speakBrowser(item.text);
       },
     speakBrowser(text) {
       if (!("speechSynthesis" in window)) { this.next(); return; }
-      const gen = this.gen;
+      const gen = this.gen, item = this.item;
       const u = new SpeechSynthesisUtterance(text);
       const v = pickBrowserVoice(); if (v) u.voice = v;
       u.lang = "en-GB"; u.rate = 1.02; u.pitch = 0.95;
       this.browserSpeaking = true;
-      u.onend = u.onerror = () => { if (gen !== this.gen) return; this.browserSpeaking = false; this.next(); };
+      // Same rule as the clip: end and error can both arrive for one utterance, and only the first moves the queue on.
+      u.onend = u.onerror = () => {
+        if (gen !== this.gen || (item && item.done)) return;
+        if (item) item.done = true;
+        this.browserSpeaking = false; this.next();
+      };
+      player.pause(); // never over a clip that is still sounding
       speechSynthesis.speak(u);
     },
     stop() {
@@ -443,11 +467,15 @@
   };
   const shouldSpeak = (mode) => S.speakPref === "always" || (S.speakPref === "voice" && mode === "voice");
 
-  function say(text) { if (S.speakPref !== "off") { speaker.feed(text + " "); speaker.flush(); } }
+  // What this tab says for a turn only when it is the tab that asked (see S.mine).
+  const speaksThisTurn = (mode) => S.mine && shouldSpeak(mode);
+  // Whatever reply text is still waiting for its full stop is its own sentence: it must not be glued onto this one
+  // ("The letter is ready." + "Send it now or hold it?" was read as a single sentence).
+  function say(text) { if (S.speakPref !== "off") { speaker.flush(); speaker.feed(text + " "); speaker.flush(); } }
 
   // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
   // as ordinary chat text - never through decide()/the approvals path.
-  window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode), mode: () => S.lastMode });
+  window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => speaksThisTurn(S.lastMode), mode: () => S.lastMode });
 
   // ------------------------------------------------------------------ self-echo guard
   // Without headphones the mic hears Jarvis's own voice. Nothing heard while he's talking, or in the short tail
@@ -768,10 +796,13 @@ function send(text, mode = "typed", opts = {}) {
     // Only text the owner typed into the chat box may be learned as a "usual reply" (never buttons or speech).
     if (opts.compose && mode === "typed") payload.compose = true;
     S.attachments = []; renderAttachments();
+    S.sent = S.sent.filter((x) => Date.now() - x.at < 120000).slice(-4);
+    S.sent.push({ key: turnKey(payload.text), at: Date.now() }); S.mine = true; // this turn is ours: we speak its answer
     filler.begin(spoken && mode === "voice"); // after speaker.stop() above, which ended any previous turn's filler
     turnClock.sentAt = spoken && mode === "voice" ? performance.now() : 0; turnClock.turnId = null;
-    if (S.ws && S.ws.readyState === 1) { S.ws.send(JSON.stringify(payload)); return; }
+    if (S.ws && S.ws.readyState === 1) { httpTurnUntil = 0; S.ws.send(JSON.stringify(payload)); return; }
     setHud("thinking");
+    if (streamCtl) streamCtl.abort(); // an older reply still streaming over the fallback: drop it, or its end would cut this one short
     streamChat(payload).catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
   }
 
@@ -780,7 +811,11 @@ function send(text, mode = "typed", opts = {}) {
   // knows how to render, so the experience matches the WebSocket path instead of waiting on the full reply.
   // `streamCtl` lets Stop abort a reply that is still streaming over this fallback path (over the WebSocket the
   // server is told to stop instead - see stopEverything()).
-  let streamCtl = null;
+  let streamCtl = null, httpTurnUntil = 0;
+  // While a reply is coming over the plain-HTTP stream - and for a moment after it ends, because the socket's copy of the
+  // turn's last events lands just behind the stream's - the stream is what carries the turn.
+  const httpCarriesTurn = () => streamCtl !== null || Date.now() < httpTurnUntil;
+  const TURN_EVENTS = new Set(["user_message", "thinking", "delta", "tool", "reply", "error", "stopped", "ask"]); // main.py CHAT_STREAM_EVENTS
   async function streamChat(payload) {
     const ctl = streamCtl = new AbortController();
     try {
@@ -803,7 +838,7 @@ function send(text, mode = "typed", opts = {}) {
       if (e && e.name === "AbortError") return; // the owner pressed Stop - not an error
       throw e;
     } finally {
-      if (streamCtl === ctl) streamCtl = null;
+      if (streamCtl === ctl) { streamCtl = null; httpTurnUntil = Date.now() + 3000; }
     }
   }
 
@@ -925,7 +960,10 @@ function send(text, mode = "typed", opts = {}) {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
     S.ws = ws;
     ws.onopen = () => sendProactiveMute();
-    ws.onmessage = (e) => handle(JSON.parse(e.data));
+    // While a reply is coming in over the plain-HTTP fallback, that stream carries the whole turn. The live connection
+    // coming back part-way through hears the rest of the same turn as well: handling it twice fed every remaining word
+    // to the speaker twice.
+    ws.onmessage = (e) => { const ev = JSON.parse(e.data); if (httpCarriesTurn() && TURN_EVENTS.has(ev.type)) return; handle(ev); };
     ws.onclose = (e) => { if (e.code === 4401) { location.href = "/login"; return; } setTimeout(connect, 2500); };
     setInterval(() => { if (ws.readyState === 1) ws.send(JSON.stringify({ type: "ping" })); }, 25000);
   }
@@ -958,11 +996,32 @@ function send(text, mode = "typed", opts = {}) {
   // A message that can't be spoken right now is shown, not queued - Jarvis never talks over anyone.
   const proactiveMaySpeak = () => S.lastMode === "voice" && shouldSpeak("voice") && S.hudState === "idle" && !speaker.active
     && !S.voiceTurn && !$("#input").value.trim() && !filler.inFlight();
+  // Several tabs of the same browser each get every proactive message; the first to claim one reads it, the rest only show it.
+  // Every tab writes its own mark, waits a moment for the others to write theirs, and the mark that is left wins.
+  function claimSpeech(id) {
+    if (!id) return Promise.resolve(true);
+    let key, mine;
+    try {
+      key = "jarvis.spoke." + id; mine = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+      if (localStorage.getItem(key)) return Promise.resolve(false); // another tab got there first and has settled it
+      localStorage.setItem(key, mine);
+    } catch { return Promise.resolve(true); } // no storage: speak (a doubled voice is better than a silent Jarvis)
+    return new Promise((resolve) => setTimeout(() => {
+      try {
+        const won = localStorage.getItem(key) === mine;
+        for (let i = localStorage.length - 1; i >= 0; i--) { // claims are only needed for seconds: tidy the old ones away
+          const k = localStorage.key(i);
+          if (k && k !== key && k.startsWith("jarvis.spoke.") && Date.now() - Number(String(localStorage.getItem(k)).split(":")[0]) > 60000) localStorage.removeItem(k);
+        }
+        resolve(won);
+      } catch { resolve(true); }
+    }, 250));
+  }
   function proactive(d) {
     if (S.proactiveMuted) return; // the server doesn't send these to a muted session; this is only a safety net
     addMessage("assistant", d.text, "on my own").classList.add("proactive");
     caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
-    if (d.speak && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280));
+    if (d.speak && proactiveMaySpeak()) claimSpeech(d.id).then((won) => { if (won && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280)); });
   }
 
   let toolsSeen = [];
@@ -1002,6 +1061,7 @@ function send(text, mode = "typed", opts = {}) {
       case "user_message":
         S.stopped = false; window.JarvisAsk?.forget?.(); $$("#conversation [data-reask]").forEach((b) => b.remove());
         window.JarvisAsk?.close(); // any new message (typed, spoken, from another tab) answers/supersedes an open question
+        { const i = S.sent.findIndex((x) => x.key === turnKey(d.text)); S.mine = i >= 0; if (i >= 0) S.sent.splice(i, 1); } // ours, or another tab's?
         addMessage("user", d.text + (d.attachments?.length ? `\n📎 ${d.attachments.join(", ")}` : ""), d.mode === "voice" ? "spoken" : "");
         S.lastMode = d.mode;
         break;
@@ -1019,7 +1079,7 @@ function send(text, mode = "typed", opts = {}) {
         current.querySelector(".md").innerHTML = md(current.dataset.raw);
         $("#conversation").scrollTop = 1e9;
         filler.block(); // the real reply has started - no filler, and drop one that hasn't begun playing
-        if (shouldSpeak(d.mode)) speaker.feed(d.text);
+        if (speaksThisTurn(d.mode)) speaker.feed(d.text);
         break;
       case "tool": {
         const label = d.label || ""; // a bookkeeping tool (offer_next_steps) has no label and names nothing
@@ -1032,6 +1092,8 @@ function send(text, mode = "typed", opts = {}) {
         break;
       }
       case "reply":
+        if (d.turn_id && d.turn_id === S.lastReplyTurn) break; // the same reply delivered twice (stream and socket): once is enough
+        S.lastReplyTurn = d.turn_id;
         filler.end(); // reply is ready: cancel the pending timer / unstarted filler (a playing one finishes first)
         $("#toolline").textContent = "";
         if (current) {
@@ -1045,7 +1107,7 @@ function send(text, mode = "typed", opts = {}) {
           const el = addMessage("assistant", d.text);
           replyExtras(el, d, []);
         }
-        if (shouldSpeak(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
+        if (speaksThisTurn(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
         if (!speaker.active) { setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); }
         caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
