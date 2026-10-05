@@ -35,3 +35,18 @@ def stt_chain(settings: Settings) -> list[str]:
     order = [selected] + [e for e in DEFAULT_ORDER if e != selected]
     chain = [e for e in order if e in SERVER_ENGINES and engine_configured(settings, e)]
     return chain + ["browser"]
+
+
+KEY_NAMES = {"deepgram": "DEEPGRAM_API_KEY", "whisper": "OPENAI_API_KEY"}  # the setting that holds each key
+
+
+def stt_problem(settings: Settings) -> str:
+    """Why the engine chosen in Settings can't be used right now, as one short plain sentence ("" when it can).
+
+    The console shows this in the top bar next to the status, so a speech-to-text engine that is selected but has no key
+    is never a silent fallback: voice input still works through the browser's own speech recognition, and the owner is
+    told why it is not the engine they picked and what to set."""
+    selected = settings.effective_stt
+    if selected in SERVER_ENGINES and not engine_configured(settings, selected):
+        return f"{ENGINE_LABELS[selected]} has no API key"
+    return ""

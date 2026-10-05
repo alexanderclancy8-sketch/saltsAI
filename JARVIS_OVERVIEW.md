@@ -9,7 +9,7 @@ breakdown of what he can do, and the operating rules that don't change no matter
 
 This is the live system prompt from `jarvis/brain/prompts.py`, sent to Claude at the start of every
 conversation. `{owner}`, `{company}`, `{salutation}` etc. are filled in from Settings (currently: owner Alex,
-company Salts Fire and Security, salutation "sir").
+company Salts Fire and Security, salutation "sir"). Since the console redesign's "How Jarvis talks" setting, `{salutation}` is the owner's first name by default (Natural) or the "what Jarvis calls you" value (Formal); the text below is the pre-redesign wording, kept for reference - the live persona now asks for plain conversational British English, short sentences, no markdown or lists in chat, usually two to four sentences.
 
 > You are JARVIS, the AI assistant to {owner}, director of {company} - a fire and security company based in
 > Baildon, West Yorkshire that designs, installs and maintains fire alarm systems, emergency lighting,
