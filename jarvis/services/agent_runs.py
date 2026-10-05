@@ -26,6 +26,7 @@ STALL_AFTER = timedelta(minutes=30)  # a "running" run with no activity for this
 MAX_TRAIL = 60  # steps kept per run (the newest); `steps` still counts them all
 KEEP_RUNS = 200  # rows kept in total
 LINE_CHARS = 140
+NO_RESULT_NOTE = "The run finished without submitting a change or recording an analysis."
 
 # The run the current task is working on, so the engineer loops can record steps without it being threaded through
 # their signatures. Each background run is its own asyncio task and so has its own value.
@@ -117,7 +118,9 @@ class AgentRuns:
     @contextmanager
     def track(self, kind: str, request: str) -> Iterator[int | None]:
         """Wrap a whole run: records it as running, makes steps recorded inside it land on it, and marks it failed if
-        it raises (or ends without an outcome). Exceptions are re-raised untouched."""
+        it raises. A run that ends normally without anyone recording how it went (e.g. a fixer pass that neither
+        submitted a fix nor gave an analysis) is closed as gave_up with a neutral note - it did not fail, it just
+        produced nothing. Exceptions are re-raised untouched."""
         try:
             run_id: int | None = self.start(kind, request)
         except Exception:  # noqa: BLE001
@@ -131,7 +134,7 @@ class AgentRuns:
                         only_if_running=True)
             raise
         else:
-            self.finish("failed", "Ended without recording an outcome.", run_id, only_if_running=True)
+            self.finish("gave_up", NO_RESULT_NOTE, run_id, only_if_running=True)
         finally:
             _current.reset(token)
 

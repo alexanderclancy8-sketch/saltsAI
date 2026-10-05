@@ -10,7 +10,7 @@ import pytest
 
 from jarvis.brain.tools import TOOLS_BY_NAME, AgentRunsIn
 from jarvis.core import Jarvis
-from jarvis.services.agent_runs import MAX_TRAIL, STALL_AFTER, AgentRuns, describe_call
+from jarvis.services.agent_runs import MAX_TRAIL, NO_RESULT_NOTE, STALL_AFTER, AgentRuns, describe_call
 from jarvis.services.security_watch import SecurityWatch
 from jarvis.services.self_improve import SelfImprove
 from tests.fakes import FakeClient, message, tool_block
@@ -71,6 +71,23 @@ async def test_a_run_that_raises_is_marked_failed_and_the_error_still_propagates
             raise RuntimeError("github fell over")
     r = runs.recent()[0]
     assert r["status"] == "failed" and "github fell over" in r["outcome"] and r["steps"] == 1
+    await j.http.aclose()
+
+
+async def test_a_run_that_ends_without_a_recorded_outcome_is_not_labelled_a_failure(settings):
+    """A fixer pass that neither submits nor gives up and doesn't raise produced nothing - that is not a failure,
+    and must not carry the old 'Ended without recording an outcome' label."""
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    with runs.track("fixer", "Issue #2: quiet end"):
+        runs.step("grep", {"pattern": "x"})
+    r = runs.recent()[0]
+    assert r["status"] == "gave_up" and r["steps"] == 1
+    assert r["outcome"] == NO_RESULT_NOTE and "recording an outcome" not in r["outcome"]
+    # an outcome recorded inside the run is never overwritten by the neutral note
+    with runs.track("fixer", "Issue #3: ok"):
+        runs.finish("submitted", "https://github.com/o/r/pull/9")
+    assert runs.recent()[0]["status"] == "submitted"
     await j.http.aclose()
 
 
