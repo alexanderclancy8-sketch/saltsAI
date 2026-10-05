@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +29,9 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import connection_tests, documents, images
+from .services import approval_inbox, connection_tests, documents, images
+from .services.actions import ActionRefused
+from .services.memory_book import MemoryBook, MemoryEditError
 from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
 from .settings_store import AZURE_VOICES, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
@@ -65,6 +68,14 @@ class IssueResolveIn(BaseModel):
 
 class ForgetIn(BaseModel):
     text: str = Field(min_length=1, max_length=200)
+
+
+class EditActionIn(BaseModel):
+    changes: dict[str, Any]
+
+
+class MemoryTextIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
 
 
 class TTSIn(BaseModel):
@@ -137,6 +148,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     def owner(request: Request) -> None:
         auth.require_owner(settings, request)
+
+    def human_click(request: Request) -> None:
+        """CSRF guard (auth.require_same_origin) for every endpoint that changes what Jarvis does or knows."""
+        auth.require_same_origin(settings, request)
 
     def speaker(conn: Request | WebSocket) -> str | None:
         email = auth.signed_in_manager(settings, conn)
@@ -333,6 +348,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data, presence, customers = await asyncio.gather(
             j.briefings.status(), _safe(j.marketing.overview(30), "marketing"), _safe(j.customers.scores(), "customers"))
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
+                    approvals=approval_inbox.pending_for_display(j.db),
                     activity=j.activity.summary(),
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
@@ -542,11 +558,41 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return {"saved": True, "message": "Logo saved - it will be used on every graphic from now on."}
 
     # ------------------------------------------------------------------ approvals
+    # Every route below that DECIDES or CHANGES something needs the owner's session (401 otherwise) and a same-origin
+    # browser click (403 otherwise). Approve / Don't send / Edit / Retry are reachable only from here and from the Teams
+    # webhook (Approve / Deny only): no brain tool, standing approval or scheduled job can call them.
     @app.get("/api/approvals", dependencies=[Depends(owner)])
     async def approvals(request: Request):
-        return J(request).db.pending_actions()
+        return approval_inbox.pending_for_display(J(request).db)
 
-    @app.post("/api/approvals/{action_id}/{decision}", dependencies=[Depends(owner)])
+    @app.get("/api/approvals/inbox", dependencies=[Depends(owner)])
+    async def approvals_inbox(request: Request):
+        """The Approvals pop-up and the chat cards: what is waiting, what failed (retryable), what was decided lately.
+        Drawn from redacted `view()`s of the stored actions, so a card shows exactly what will happen, minus secrets."""
+        now = datetime.now(timezone.utc)
+        return approval_inbox.inbox(J(request).db, (now - timedelta(days=14)).isoformat(timespec="seconds"),
+                                    (now - timedelta(hours=24)).isoformat(timespec="seconds"))
+
+    @app.post("/api/approvals/{action_id}/edit", dependencies=[Depends(owner), Depends(human_click)])
+    async def edit_action(action_id: int, body: EditActionIn, request: Request):
+        """Edit a pending action: queues the validated, edited payload as a NEW pending action (never auto-run) and
+        closes the old one. The person still has to press Approve on the new one."""
+        try:
+            new_id, message = J(request).actions.edit(action_id, body.changes, by=speaker(request))
+        except ActionRefused as e:
+            raise HTTPException(e.status, str(e)) from None
+        return {"id": new_id, "result": message}
+
+    @app.post("/api/approvals/{action_id}/retry", dependencies=[Depends(owner), Depends(human_click)])
+    async def retry_action(action_id: int, request: Request):
+        """Retry a failed action: queues a copy as a NEW pending action. Nothing runs until Approve is pressed on it."""
+        try:
+            new_id, message = J(request).actions.retry(action_id, by=speaker(request))
+        except ActionRefused as e:
+            raise HTTPException(e.status, str(e)) from None
+        return {"id": new_id, "result": message}
+
+    @app.post("/api/approvals/{action_id}/{decision}", dependencies=[Depends(owner), Depends(human_click)])
     async def decide(action_id: int, decision: str, request: Request):
         j = J(request)
         if decision == "approve":
@@ -554,6 +600,45 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if decision == "deny":
             return {"result": await j.actions.deny(action_id, by=speaker(request))}
         raise HTTPException(400, "decision must be approve or deny")
+
+    # ------------------------------------------------------------------ memory (the Memory pop-up)
+    # What Jarvis has learned: list / reword / delete. Console-only (owner session + same-origin click); not a brain
+    # tool. The "Things Jarvis should know" setting is rewritten through the same SettingsStore the Settings page uses.
+    def memory_book(request: Request) -> MemoryBook:
+        def save_notes(lines: list[str]) -> None:
+            errors = store.update({"jarvis_notes": "\n".join(lines)}, [])
+            if errors:
+                raise MemoryEditError(next(iter(errors.values())))
+
+        return MemoryBook(J(request), save_notes)
+
+    def memory_call(fn, *args):
+        try:
+            return fn(*args)
+        except MemoryEditError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    @app.get("/api/memory", dependencies=[Depends(owner)])
+    async def memory_list(request: Request):
+        return memory_book(request).listing()
+
+    @app.post("/api/memory/facts/{fact_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def memory_edit_fact(fact_id: int, body: MemoryTextIn, request: Request):
+        return memory_call(memory_book(request).edit_fact, fact_id, body.text)
+
+    @app.delete("/api/memory/facts/{fact_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def memory_delete_fact(fact_id: int, request: Request):
+        memory_call(memory_book(request).delete_fact, fact_id)
+        return {"deleted": fact_id}
+
+    @app.post("/api/memory/replies/{reply_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def memory_edit_reply(reply_id: int, body: MemoryTextIn, request: Request):
+        return memory_call(memory_book(request).edit_reply, reply_id, body.text)
+
+    @app.delete("/api/memory/replies/{reply_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def memory_delete_reply(reply_id: int, request: Request):
+        memory_call(memory_book(request).delete_reply, reply_id)
+        return {"deleted": reply_id}
 
     # ------------------------------------------------------------------ suggestions
     @app.post("/api/suggestions/refresh", dependencies=[Depends(owner)])

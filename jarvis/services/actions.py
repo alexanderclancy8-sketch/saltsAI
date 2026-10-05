@@ -23,9 +23,18 @@ from typing import Any
 from ..db import Database
 from ..events import EventBus
 from ..integrations.microsoft365 import text_to_html
+from . import approval_inbox as inbox
 from . import standing_approvals as sa
 
 log = logging.getLogger(__name__)
+
+
+class ActionRefused(Exception):
+    """A human's Edit / Retry could not be carried out. `status` is the HTTP status the console endpoint answers with."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
 
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f]")
 RATE_WARNING_EVERY_S = 15 * 60  # at most one "automatic actions paused" warning per this long
@@ -89,11 +98,11 @@ class ActionExecutor:
             action_id = self.db.create_action(kind, summary, payload, status="approved",
                                               approved_by=sa.APPROVER_PREFIX + decision.category)
             action = self.db.get_action(action_id)
-            self.bus.publish("approvals", self.db.pending_actions())
+            self.bus.publish("approvals", inbox.pending_for_display(self.db))
             self._spawn(self._run(action))
             return action_id
         action_id = self.db.create_action(kind, summary, payload)
-        self.bus.publish("approvals", self.db.pending_actions())
+        self.bus.publish("approvals", inbox.pending_for_display(self.db))
         if decision is not None and decision.rate_limited:
             self._warn_rate_limited(kind)
         self._offer_to_teams(action_id)
@@ -223,7 +232,7 @@ class ActionExecutor:
             self.db.set_action_status(action["id"], "failed", str(e)[:1000])
             await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning",
                                        importance="normal")
-        self.bus.publish("approvals", self.db.pending_actions())
+        self.bus.publish("approvals", inbox.pending_for_display(self.db))
 
     async def _announce_automatic(self, action: dict[str, Any], category: str, result: str) -> None:
         """The visible marker that this ran without anyone clicking: a display notice and a Teams message to the
@@ -255,7 +264,7 @@ class ActionExecutor:
                 action_id, "approved", who):
             return self._already(self.db.get_action(action_id), action_id)
         log.info("Action #%s approved by %s", action_id, who)
-        self.bus.publish("approvals", self.db.pending_actions())
+        self.bus.publish("approvals", inbox.pending_for_display(self.db))
         action = {**action, "status": "approved", "approved_by": who}  # what the verifier is told: a person approved
         self._spawn(self._run(action))
         self._cards_decided(action, "Approved", who)
@@ -267,9 +276,62 @@ class ActionExecutor:
         if not action or action["status"] != "pending" or not self.db.decide_pending_action(
                 action_id, "denied", who, f"Denied by {who}"):
             return self._already(self.db.get_action(action_id), action_id)
-        self.bus.publish("approvals", self.db.pending_actions())
+        self.bus.publish("approvals", inbox.pending_for_display(self.db))
         self._cards_decided(action, "Denied", who)
         return f"Cancelled action #{action_id}."
+
+    # ------------------------------------------------------------------ Edit and Retry (humans only, never auto-run)
+    # Both are reached only from main.py's owner-authenticated, same-origin endpoints (the console's Edit and Retry
+    # buttons). No brain tool, standing approval, Teams message or scheduled job calls them, and neither one ever
+    # runs anything: each leaves a PLAIN pending action that still waits for its own Approve click.
+    def edit(self, action_id: int, changes: Any, by: str | None = None) -> tuple[int, str]:
+        """Edit a PENDING action. The stored payload is never changed in place: the edited payload is validated
+        (services/approval_inbox.apply_edit - a closed list of kinds and fields) and queued as a NEW pending action,
+        and the old one is closed as 'denied' in the same database transaction, so it can no longer be approved. What
+        gets approved is therefore always exactly the payload that was on the card. The new action is inserted directly as a
+        plain pending row, never through `queue()`: standing approvals are not consulted, so an edit can never auto-run. Returns (new action id, message); raises ActionRefused."""
+        action = self.db.get_action(action_id)
+        if not action:
+            raise ActionRefused(f"Action #{action_id} doesn't exist.", 404)
+        if action["status"] != "pending":
+            raise ActionRefused(self._already(action, action_id), 409)
+        try:
+            payload = inbox.apply_edit(action["kind"], action["payload"], changes)
+        except inbox.EditError as e:
+            raise ActionRefused(str(e), 422) from None
+        who = self._who(by)
+        summary = re.sub(r"( \(edited\))+$", "", action["summary"])[:280] + " (edited)"
+        new_id = self.db.supersede_pending_action(action_id, action["kind"], summary, payload, who)
+        if new_id is None:  # someone decided it between our read and the write
+            raise ActionRefused(self._already(self.db.get_action(action_id), action_id), 409)
+        log.info("Action #%s edited by %s; queued as #%s", action_id, who, new_id)
+        self.bus.publish("approvals", inbox.pending_for_display(self.db))
+        self._cards_decided(action, "Edited", who)
+        self._offer_to_teams(new_id)
+        return new_id, (f"Saved your edit as action #{new_id}. Nothing has been sent - it is waiting for you to approve it.")
+
+    def retry(self, action_id: int, by: str | None = None) -> tuple[int, str]:
+        """Retry a FAILED action. This does NOT run it again: it queues a copy of the failed action's own stored kind and
+        payload as a new pending action (once - the failed row is marked as retried), which waits for a human Approve
+        click like anything else. Standing approvals are never consulted. Returns (new action id, message)."""
+        action = self.db.get_action(action_id)
+        if not action:
+            raise ActionRefused(f"Action #{action_id} doesn't exist.", 404)
+        if action["status"] != "failed":
+            raise ActionRefused(f"Action #{action_id} hasn't failed, so there is nothing to retry. "
+                                + self._already(action, action_id), 409)
+        if action.get("superseded_by"):
+            raise ActionRefused(f"Action #{action_id} has already been retried as action #{action['superseded_by']}.", 409)
+        who = self._who(by)
+        summary = f"Retry of #{action_id}: {re.sub(r'^Retry of #[0-9]+: ', '', action['summary'])}"[:300]
+        new_id = self.db.retry_failed_action(action_id, summary)
+        if new_id is None:
+            raise ActionRefused(f"Action #{action_id} has already been retried.", 409)
+        log.info("Action #%s retried by %s; queued as #%s", action_id, who, new_id)
+        self.bus.publish("approvals", inbox.pending_for_display(self.db))
+        self._offer_to_teams(new_id)
+        return new_id, (f"Queued a retry of #{action_id} as action #{new_id}. Nothing has run - it is waiting for you "
+                        "to approve it.")
 
     def _cards_decided(self, action: dict[str, Any], verb: str, who: str) -> None:
         """Whoever decided it, anywhere, the Teams cards for it stop offering buttons."""

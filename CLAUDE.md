@@ -77,6 +77,26 @@ separate from the brain: JWT check -> sender email -> `approver_emails()` allowl
 No brain tool can approve, and `tests/test_standing_approvals.py` greps the code to keep it that way (only `main.py`
 may call `approve()`/`deny()`).
 
+*Approvals inbox, Edit and Retry (console Phase 4a).* The Approvals pop-up and the chat both draw ONE card per action from
+`GET /api/approvals/inbox` (`services/approval_inbox.view()`: built from the stored payload, every string redacted; pending,
+failed + retryable, recently decided). Edit and Retry are `ActionExecutor.edit()` / `.retry()`, called only from
+`main.py`'s `/api/approvals/{id}/edit` and `/retry` (owner session + `auth.require_same_origin`, which also now guards
+approve/deny and the memory endpoints). Neither ever runs anything or consults standing approvals, and neither changes a
+stored payload: *Edit* validates the change (`approval_inbox.apply_edit` - a CLOSED list: `email_send` / `tool:email_send`
+to, cc, subject, body; `fsm_write` body only; other `tool:*` args re-validated by the tool's own model; money, bookings and
+deploys not editable), then in ONE transaction closes the old action as denied-by-edit and inserts the edited payload as a
+NEW plain `pending` action (`db.supersede_pending_action`), so what is approved is exactly what was on the card and the old
+card can no longer be approved. *Retry* of a `failed` action inserts a copy of its stored kind and payload as a NEW pending
+action once (`db.retry_failed_action`; the failed row stays as history, marked `superseded_by`); it re-enters the normal
+approval path and needs its own Approve click. `tests/test_approvals_inbox.py` pins all of this, including that no tool,
+service or standing path can call them. When you add an action kind, decide deliberately whether it belongs in
+`approval_inbox.editable_fields` (default: no).
+
+*Memory pop-up.* `services/memory_book.py` + `/api/memory...` (owner + same-origin, console only - deliberately not a brain
+tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (rewritten through the SettingsStore too, or
+`Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then
+`brain.refresh_system()` so the next turn reads the change. Tests: `tests/test_memory_popup.py`.
+
 *Standing approvals (the one deliberate exception to "queue, then a human clicks").* `services/standing_approvals.py`
 lets the OWNER, in Settings only, pre-approve two narrow classes: "Record keeping" (a `fsm_write` POST creating a
 customer/site/contact/note/task/reminder, exact path shapes and body keys) and "Routine acknowledgements" (the

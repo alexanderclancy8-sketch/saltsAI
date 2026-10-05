@@ -338,6 +338,12 @@ class Database:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pending_actions)").fetchall()}
         if "approved_by" not in cols:
             self._conn.execute("ALTER TABLE pending_actions ADD COLUMN approved_by TEXT DEFAULT ''")
+        # Edit / Retry (services/actions.py) never change a stored payload: they queue a NEW pending action and link the
+        # two. superseded_by is set on the old row (denied-by-edit, or a failed action that has been retried);
+        # supersedes / supersede_kind ('edit' | 'retry') on the new one.
+        for col, ddl in (("superseded_by", "INTEGER"), ("supersedes", "INTEGER"), ("supersede_kind", "TEXT DEFAULT ''")):
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE pending_actions ADD COLUMN {col} {ddl}")
         issue_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(issues)").fetchall()}
         for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
             if col not in issue_cols:
@@ -490,6 +496,16 @@ class Database:
     def memories(self) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM memory ORDER BY id")
 
+    def get_memory(self, memory_id: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM memory WHERE id = ?", (memory_id,))
+
+    def update_memory(self, memory_id: int, fact: str) -> bool:
+        """Replace the wording of one remembered fact. False if there is no such memory."""
+        with self._lock:
+            cur = self._conn.execute("UPDATE memory SET fact = ? WHERE id = ?", (fact.strip(), memory_id))
+            self._conn.commit()
+            return cur.rowcount == 1
+
     # -- automations ------------------------------------------------------------------
     def create_automation(self, description: str, cron: str, prompt: str) -> int:
         return self.execute("INSERT INTO automations (created_at, description, cron, prompt) VALUES (?,?,?,?)",
@@ -580,12 +596,60 @@ class Database:
         return rows
 
     def failed_actions(self, since_iso: str = "", limit: int = 20) -> list[dict[str, Any]]:
-        """Approved actions that then failed (newest first), optionally only those decided at/after `since_iso`."""
-        rows = self.query("SELECT * FROM pending_actions WHERE status = 'failed' AND decided_at >= ?"
+        """Approved actions that then failed (newest first), optionally only those decided at/after `since_iso`.
+        A failure the owner has already retried (a new pending action carries it forward) is not listed again."""
+        rows = self.query("SELECT * FROM pending_actions WHERE status = 'failed' AND superseded_by IS NULL"
+                          " AND decided_at >= ? ORDER BY id DESC LIMIT ?", (since_iso, limit))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json"))
+        return rows
+
+    def recent_decided_actions(self, since_iso: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Actions that left the queue (done / denied / failed / approved-and-running) at or after `since_iso`, newest first."""
+        rows = self.query("SELECT * FROM pending_actions WHERE status != 'pending' AND decided_at >= ?"
                           " ORDER BY id DESC LIMIT ?", (since_iso, limit))
         for row in rows:
             row["payload"] = json.loads(row.pop("payload_json"))
         return rows
+
+    def supersede_pending_action(self, old_id: int, kind: str, summary: str, payload: dict[str, Any],
+                                 by: str) -> int | None:
+        """Edit, atomically: close a still-PENDING action as denied-by-edit and queue its replacement as a new pending
+        action, in one transaction. None if the old one was no longer pending (someone approved, denied or edited it
+        first) - then nothing is created. The replacement is always a plain `pending` row: it is never auto-approved."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE pending_actions SET status = 'denied', decided_at = ?, approved_by = ?, result = ?"
+                " WHERE id = ? AND status = 'pending' AND superseded_by IS NULL",
+                (now_iso(), by, f"Edited by {by}: replaced by a new action awaiting approval", old_id))
+            if cur.rowcount != 1:
+                self._conn.commit()
+                return None
+            new_id = self._conn.execute(
+                "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at,"
+                " supersedes, supersede_kind) VALUES (?,?,?,?,'pending','','',?,'edit')",
+                (now_iso(), kind, summary, json.dumps(payload), old_id)).lastrowid
+            self._conn.execute("UPDATE pending_actions SET superseded_by = ?, result = ? WHERE id = ?",
+                               (new_id, f"Edited by {by}: replaced by action #{new_id}", old_id))
+            self._conn.commit()
+            return int(new_id)
+
+    def retry_failed_action(self, old_id: int, summary: str) -> int | None:
+        """Retry, atomically and once: queue a copy of a FAILED action's own stored kind and payload as a new pending
+        action. None if the row is not a failed action or has already been retried. The old row stays `failed` as
+        history, marked superseded so it drops out of the failed list; the copy is a plain `pending` row."""
+        with self._lock:
+            row = self._conn.execute("SELECT kind, payload_json FROM pending_actions WHERE id = ? AND status = 'failed'"
+                                     " AND superseded_by IS NULL", (old_id,)).fetchone()
+            if row is None:
+                return None
+            new_id = self._conn.execute(
+                "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at,"
+                " supersedes, supersede_kind) VALUES (?,?,?,?,'pending','','',?,'retry')",
+                (now_iso(), row["kind"], summary, row["payload_json"], old_id)).lastrowid
+            self._conn.execute("UPDATE pending_actions SET superseded_by = ? WHERE id = ?", (new_id, old_id))
+            self._conn.commit()
+            return int(new_id)
 
     def set_action_status(self, action_id: int, status: str, result: str = "") -> None:
         self.execute("UPDATE pending_actions SET status = ?, result = ?, decided_at = ? WHERE id = ?",

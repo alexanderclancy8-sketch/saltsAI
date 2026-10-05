@@ -250,7 +250,10 @@ def test_narrow_layout_turns_the_rail_into_a_scrolling_pill_strip():
     rail = re.search(r"\.rail \{([^}]*)\}", phone).group(1)
     assert "flex-direction: row" in rail and "overflow-x: auto" in rail
     assert ".rail .label { display: none; }" in phone and ".clock { display: none; }" in phone
-    assert "width: 110px" in phone                                  # the mockup's smaller core on phones
+    # Phase 4a: the phone core is no longer pinned to the mockup's 110px - it is LARGE ("a large core to talk to") and grows
+    # with the screen height, with the mockup's 110px kept as its floor. (Stricter: a floor AND a fluid size, not a constant.)
+    assert "--core-size: clamp(110px," in phone and "width: var(--core-size)" in phone
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in phone     # Voice / Speaks up / Connections / Settings: one row
     assert "grid-template-columns: minmax(0, 1fr)" in phone       # one column: no side rail
     assert "font-size: 16px" in phone                              # 16px: iOS zooms on focus below it
     assert "env(safe-area-inset-bottom)" in phone
