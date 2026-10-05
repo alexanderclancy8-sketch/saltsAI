@@ -30,6 +30,7 @@ from ..config import Settings
 from ..db import Database
 from ..events import EventBus
 from ..integrations.azure import strip_top_folder
+from .agent_runs import AgentRuns
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ class Fixer:
         self.tester = None  # set after construction
         self.issues = None  # set after construction
         self._tasks: set[asyncio.Task] = set()
+        self.runs = AgentRuns(db)
 
     @property
     def enabled(self) -> bool:
@@ -129,7 +131,8 @@ class Fixer:
         try:
             if self.s.fixer_mode == "claude_action":
                 return await self._via_claude_action(issue)
-            return await self._builtin(issue)
+            with self.runs.track("fixer", f"Issue #{issue_id}: {issue['title']}"):  # progress record only
+                return await self._builtin(issue)
         except Exception as e:  # noqa: BLE001
             log.exception("Fix attempt failed for issue %s", issue_id)
             self.db.update_issue(issue_id, status="needs_human", notes=f"Auto-fix failed: {e}")
@@ -160,6 +163,7 @@ class Fixer:
             changes = ws.changed_files()
             if outcome["kind"] != "submit" or not changes:
                 analysis = outcome.get("analysis") or "The engineering agent did not produce a change."
+                self.runs.finish("gave_up", analysis)
                 self.db.update_issue(issue_id, status="needs_human", notes=analysis[:4000])
                 self._publish(issue_id)
                 await self.notifier.notify(f"Issue #{issue_id} needs you", analysis[:800], level="warning",
@@ -174,6 +178,7 @@ class Fixer:
                 f"## Testing\n{fix.test_notes}\n\nRisk: **{fix.risk}**\n\n"
                 f"_Prepared automatically by Jarvis. Merge + deploy happens only after approval._")
         pr = await self.gh.open_pr(branch, fix.pr_title, body)
+        self.runs.finish("submitted", pr["url"])
         self.db.update_issue(issue_id, status="fix_ready", fix_pr_url=pr["url"], fix_pr_number=pr["number"],
                              fix_branch=branch, notes=f"{fix.change_summary}\n\nRisk: {fix.risk}")
         self._publish(issue_id)
@@ -247,7 +252,9 @@ class Fixer:
                     out, finished_now = self._engineer_tool(block.name, block.input, ws)
                     finished = finished or finished_now
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+                    self.runs.step(block.name, block.input)
                 except (WorkspaceError, ValidationError, ValueError, OSError) as e:
+                    self.runs.step(block.name, block.input, ok=False)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                     "content": json.dumps({"error": str(e)[:2000]})})
             if finished:
@@ -271,6 +278,7 @@ class Fixer:
             recommended_action: str = ""
 
         ws.snapshot()
+        self.runs.note("handed to Claude Code (subscription backend) - no per-step trail on this backend")
         system = ENGINEER_SYSTEM.format(company=self.s.company_name).replace("/repo", "the current directory").replace(
             "Finish by calling `submit_fix`. If there is no safe code fix (it's a data, training or infrastructure\n"
             "  problem, or you are not confident), call `give_up` with your analysis instead - that is a good outcome too.",

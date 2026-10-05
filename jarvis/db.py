@@ -274,15 +274,17 @@ CREATE TABLE IF NOT EXISTS false_alarm_log (
     reviewed_by TEXT DEFAULT '',
     review_date TEXT DEFAULT ''
 );
--- One row per self-improvement run, written the moment it starts (status 'running') and closed when it ends.
--- A row still 'running' after a restart means the run never finished. See services/self_improve.py.
-CREATE TABLE IF NOT EXISTS self_improve_runs (
+-- One row per background engineering-agent run (self_improve / fixer / security_watch): progress, not results.
+CREATE TABLE IF NOT EXISTS agent_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    request TEXT NOT NULL,
     started_at TEXT NOT NULL,
-    finished_at TEXT DEFAULT '',
+    updated_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'running',
-    request TEXT DEFAULT '',
-    detail TEXT DEFAULT ''
+    steps INTEGER NOT NULL DEFAULT 0,
+    trail TEXT NOT NULL DEFAULT '[]',
+    outcome TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -582,26 +584,6 @@ class Database:
     def set_kv(self, key: str, value: str) -> None:
         self.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                      (key, value))
-
-    # -- self-improvement run records ------------------------------------------------------
-    def start_self_improve_run(self, request: str) -> int:
-        return self.execute("INSERT INTO self_improve_runs (started_at, status, request) VALUES (?, 'running', ?)",
-                            (now_iso(), request[:2000]))
-
-    def finish_self_improve_run(self, run_id: int, status: str, detail: str = "") -> None:
-        self.execute("UPDATE self_improve_runs SET status = ?, finished_at = ?, detail = ? WHERE id = ?",
-                     (status, now_iso(), detail[:2000], run_id))
-
-    def interrupt_unfinished_self_improve_runs(self) -> list[dict[str, Any]]:
-        """Close every run still marked 'running' as 'interrupted' and return them. Called once at start-up: nothing
-        can legitimately still be running then, so these are runs a restart or crash cut off."""
-        rows = self.query("SELECT id, started_at, request FROM self_improve_runs WHERE status = 'running'")
-        for r in rows:
-            self.finish_self_improve_run(r["id"], "interrupted", "The process stopped before this run finished.")
-        return rows
-
-    def recent_self_improve_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        return self.query("SELECT * FROM self_improve_runs ORDER BY id DESC LIMIT ?", (limit,))
 
     # -- out-of-hours van location look-ups ---------------------------------------------------
     def log_location_lookup(self, asked_by: str, tool: str, engineer: str, mode: str) -> int:

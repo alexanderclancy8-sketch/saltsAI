@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from ..brain import llm, plugins
+from .agent_runs import AgentRuns
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -109,12 +110,7 @@ class SelfImprove:
         self.client = client
         self.gh = github
         self._tasks: set[asyncio.Task] = set()
-        try:  # a run still 'running' from before this process started was cut off by a restart/crash
-            for r in self.db.interrupt_unfinished_self_improve_runs():
-                log.warning("Self-improvement run #%s (started %s) never finished - the process stopped mid-run: %s",
-                            r["id"], r["started_at"], (r["request"] or "")[:200])
-        except Exception:  # noqa: BLE001
-            log.exception("Could not check for interrupted self-improvement runs")
+        self.runs = AgentRuns(db)
 
     @property
     def enabled(self) -> bool:
@@ -142,45 +138,27 @@ class SelfImprove:
         ends - result, error, cancellation - the record is closed and the owner is told if it didn't complete."""
         if not self.enabled:
             return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
-        run_id = self._record_start(request)
         try:
-            result = await self._run(request)
-        except BaseException as e:  # noqa: BLE001 - incl. CancelledError: nothing may leave without a trace
+            with self.runs.track("self_improve", request):  # agent_runs record: one row per run, closed however it ends
+                result = await self._run(request)
+                if "error" in result:
+                    self.runs.finish("failed", result["error"])
+                elif "pr_url" in result:
+                    self.runs.finish("submitted", result["pr_url"])
+                else:
+                    self.runs.finish("gave_up", result.get("analysis", ""))
+            return result
+        except BaseException as e:  # noqa: BLE001 - incl. CancelledError: track() has already closed the record
             interrupted = not isinstance(e, Exception)
-            log.exception("Self-improvement run #%s %s", run_id, "interrupted" if interrupted else "failed")
-            self._record_finish(run_id, "interrupted" if interrupted else "failed", f"{type(e).__name__}: {e}")
+            log.exception("Self-improvement run %s", "interrupted" if interrupted else "failed")
             await self._notify_incomplete(request, e, interrupted)
             if interrupted:
                 raise
             return {"error": str(e)[:500]}
-        if "error" in result:
-            self._record_finish(run_id, "failed", result["error"])
-        elif result.get("outcome") == "give_up":
-            self._record_finish(run_id, "gave_up", result.get("analysis", ""))
-        else:
-            self._record_finish(run_id, "pr_opened", result.get("pr_url", ""))
-        return result
-
-    def _record_start(self, request: str) -> int | None:
-        """Write the 'run started' row and log it. Never raises - a broken record must not stop the run itself,
-        but a failure to write it is logged loudly."""
-        try:
-            run_id = self.db.start_self_improve_run(request)
-        except Exception:  # noqa: BLE001
-            log.exception("Could not record the start of a self-improvement run")
-            return None
-        log.info("Self-improvement run #%s started: %s", run_id, request[:200])
-        return run_id
-
-    def _record_finish(self, run_id: int | None, status: str, detail: str = "") -> None:
-        if run_id is None:
-            return
-        try:
-            self.db.finish_self_improve_run(run_id, status, detail)
-        except Exception:  # noqa: BLE001
-            log.exception("Could not close self-improvement run #%s as %s", run_id, status)
 
     async def _notify_incomplete(self, request: str, exc: BaseException, interrupted: bool) -> None:
+        """Tell the owner a run died or was cancelled part-way (the engineering-flagged self_improve_failed kind).
+        Failures _run() handles itself already notify; this covers whatever escaped it."""
         title = "Self-improvement run interrupted" if interrupted else "Self-improvement attempt failed"
         body = f"Request: {request[:200]}\n{type(exc).__name__}: {exc}"[:500]
         try:
@@ -190,6 +168,8 @@ class SelfImprove:
             log.exception("Could not send the self-improvement failure notification")
 
     async def _run(self, request: str) -> dict[str, Any]:
+        if not self.enabled:
+            return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
         try:
             base_sha = await self.gh.branch_sha()
             with tempfile.TemporaryDirectory(prefix="jarvis-self-") as tmp:
@@ -268,7 +248,9 @@ class SelfImprove:
                     out, finished_now = self._tool_call(block.name, block.input, ws)
                     finished = finished or finished_now
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": out})
+                    self.runs.step(block.name, block.input)
                 except (WorkspaceError, ValidationError, ValueError, OSError) as e:
+                    self.runs.step(block.name, block.input, ok=False)
                     results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                     "content": json.dumps({"error": str(e)[:2000]})})
             if finished:
@@ -290,6 +272,7 @@ class SelfImprove:
             analysis: str = ""
 
         ws.snapshot()
+        self.runs.note("handed to Claude Code (subscription backend) - no per-step trail on this backend")
         system = SELF_IMPROVE_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name, request=request) \
             .replace("/repo", "the current directory").replace(
                 "Finish by calling `submit_change`. If what's being asked isn't safe, isn't a good idea, or "
