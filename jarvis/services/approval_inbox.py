@@ -159,6 +159,7 @@ def view(action: dict[str, Any]) -> dict[str, Any]:
     by = str(action.get("approved_by") or "")
     result = clean(str(action.get("result") or ""))[:1000]
     superseded = action.get("superseded_by")
+    dismissed_at, dismissed_by = str(action.get("dismissed_at") or ""), str(action.get("dismissed_by") or "")
     return {
         "id": action["id"], "kind": kind, "kind_label": label, "summary": clean(str(action.get("summary", "")))[:500],
         "status": status, "details": rows, "result": result,
@@ -167,8 +168,16 @@ def view(action: dict[str, Any]) -> dict[str, Any]:
         "automatic": by.startswith("standing approval: "),
         "supersedes": action.get("supersedes"), "superseded_by": superseded, "supersede_kind": action.get("supersede_kind") or "",
         "editable_fields": editable_fields(kind, payload) if status == "pending" else [],
-        "can_retry": status == "failed" and superseded is None,
+        "can_retry": status == "failed" and superseded is None and not dismissed_at,
+        "can_dismiss": status == "failed" and not dismissed_at,
+        "dismissed": bool(dismissed_at), "dismissed_at": dismissed_at, "dismissed_by": clean(dismissed_by)[:80],
+        "dismissed_label": f"dismissed by {clean(dismissed_by)[:80] or 'someone'} at {_when(dismissed_at)}" if dismissed_at else "",
     }
+
+
+def _when(iso: str) -> str:
+    """'2026-10-05 14:03 UTC' from a stored UTC timestamp (the console shows its own local time from the raw value)."""
+    return f"{iso[:10]} {iso[11:16]} UTC" if len(iso) >= 16 else iso
 
 
 def pending_for_display(db) -> list[dict[str, Any]]:
@@ -177,12 +186,20 @@ def pending_for_display(db) -> list[dict[str, Any]]:
     return [{**a, "payload": clean(a["payload"])} for a in db.pending_actions()]
 
 
+def history(db, limit: int = 100, dismissed_only: bool = False) -> list[dict[str, Any]]:
+    """The full record of actions, newest first, as redacted `view()`s. Dismissed failures are in it, flagged with
+    `dismissed` and `dismissed_label` ("dismissed by NAME at TIME"); they are never in `inbox()`."""
+    return [view(a) for a in db.action_history(limit, dismissed_only)]
+
+
 def inbox(db, failed_since: str, recent_since: str) -> dict[str, list[dict[str, Any]]]:
     """Everything the Approvals pop-up and the chat cards need in one go: what is waiting, what failed (and can be
     retried), and what was decided recently (so a chat card can turn into "Sent" / "Not sent" / "Failed")."""
     return {"pending": [view(a) for a in db.pending_actions()],
             "failed": [view(a) for a in db.failed_actions(failed_since, 20)],
-            "recent": [view(a) for a in db.recent_decided_actions(recent_since, 30)]}
+            "recent": [view(a) for a in db.recent_decided_actions(recent_since, 30)],
+            # ids only: lets the console drop the chat card of an action that was dismissed (here or in another tab)
+            "dismissed_ids": db.dismissed_action_ids(failed_since)}
 
 
 # ------------------------------------------------------------------------------------------------ editing

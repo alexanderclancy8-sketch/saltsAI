@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 
 class ActionRefused(Exception):
-    """A human's Edit / Retry could not be carried out. `status` is the HTTP status the console endpoint answers with."""
+    """A human's Edit / Retry / Dismiss could not be carried out. `status` is the HTTP status the console endpoint answers with."""
 
     def __init__(self, message: str, status: int = 409):
         super().__init__(message)
@@ -290,10 +290,11 @@ class ActionExecutor:
         self._cards_decided(action, "Denied", who)
         return f"Cancelled action #{action_id}."
 
-    # ------------------------------------------------------------------ Edit and Retry (humans only, never auto-run)
-    # Both are reached only from main.py's owner-authenticated, same-origin endpoints (the console's Edit and Retry
-    # buttons). No brain tool, standing approval, Teams message or scheduled job calls them, and neither one ever
-    # runs anything: each leaves a PLAIN pending action that still waits for its own Approve click.
+    # ------------------------------------------------------------------ Edit, Retry and Dismiss (humans only, never auto-run)
+    # All three are reached only from main.py's owner-authenticated, same-origin endpoints (the console's Edit, Retry and
+    # Dismiss buttons). No brain tool, standing approval, Teams message or scheduled job calls them. Edit and Retry never
+    # run anything: each leaves a PLAIN pending action that still waits for its own Approve click. Dismiss runs, queues
+    # and retries nothing at all - it only hides a failed action from the inbox (see `dismiss`).
     def edit(self, action_id: int, changes: Any, by: str | None = None) -> tuple[int, str]:
         """Edit a PENDING action. The stored payload is never changed in place: the edited payload is validated
         (services/approval_inbox.apply_edit - a closed list of kinds and fields) and queued as a NEW pending action,
@@ -330,6 +331,9 @@ class ActionExecutor:
         if action["status"] != "failed":
             raise ActionRefused(f"Action #{action_id} hasn't failed, so there is nothing to retry. "
                                 + self._already(action, action_id), 409)
+        if action.get("dismissed_at"):
+            raise ActionRefused(f"Action #{action_id} was dismissed by {action.get('dismissed_by') or 'someone'}, so it can't be "
+                                "retried. Ask Jarvis to do it again if it is still needed.", 409)
         if action.get("superseded_by"):
             raise ActionRefused(f"Action #{action_id} has already been retried as action #{action['superseded_by']}.", 409)
         who = self._who(by)
@@ -342,6 +346,46 @@ class ActionExecutor:
         self._offer_to_teams(new_id)
         return new_id, (f"Queued a retry of #{action_id} as action #{new_id}. Nothing has run - it is waiting for you "
                         "to approve it.")
+
+    def dismiss(self, action_id: int, by: str | None = None, *, publish: bool = True) -> tuple[bool, str]:
+        """Dismiss a FAILED action: hide it from the failed list, the rail count, "Needs you" and the chat cards, because
+        a person looked at it and it needs nothing more (e.g. it was for something that was never in the register).
+
+        It runs nothing, queues nothing, retries nothing and changes nothing about the action itself: the row stays
+        'failed' with its payload, error and retry link untouched, and only records who dismissed it and when
+        (`db.dismiss_failed_action`); it stays in the full history, flagged. Only a failed action can be dismissed
+        (anything else: ActionRefused 409). Dismissing twice is harmless: the first dismissal stands and (False, message)
+        comes back. No standing approval, executor, verifier or Teams call is involved. Returns (newly dismissed, message)."""
+        action = self.db.get_action(action_id)
+        if not action:
+            raise ActionRefused(f"Action #{action_id} doesn't exist.", 404)
+        if action["status"] != "failed":
+            raise ActionRefused(f"Action #{action_id} hasn't failed, so there is nothing to dismiss. "
+                                + self._already(action, action_id), 409)
+        if action.get("dismissed_at"):
+            return False, f"Action #{action_id} was already dismissed by {action.get('dismissed_by') or 'someone'}."
+        who = self._who(by)
+        if not self.db.dismiss_failed_action(action_id, who):  # dismissed by someone else between our read and the write
+            return False, f"Action #{action_id} was already dismissed."
+        log.info("Failed action #%s dismissed by %s", action_id, who)
+        if publish:
+            self.bus.publish("approvals", inbox.pending_for_display(self.db))   # other open consoles refresh their lists
+        return True, f"Dismissed action #{action_id}. It is hidden from the inbox and kept in the history."
+
+    def dismiss_many(self, action_ids: list[int], by: str | None = None) -> dict[str, list[int]]:
+        """Dismiss each of these FAILED actions (the ones a person saw listed and confirmed). Anything that is not a
+        failed action, or is already dismissed, is skipped untouched. Returns {"dismissed": [...], "skipped": [...]}."""
+        done: list[int] = []
+        skipped: list[int] = []
+        for action_id in dict.fromkeys(action_ids):
+            try:
+                newly, _ = self.dismiss(action_id, by, publish=False)
+            except ActionRefused:
+                newly = False
+            (done if newly else skipped).append(action_id)
+        if done:
+            self.bus.publish("approvals", inbox.pending_for_display(self.db))
+        return {"dismissed": done, "skipped": skipped}
 
     def _cards_decided(self, action: dict[str, Any], verb: str, who: str) -> None:
         """Whoever decided it, anywhere, the Teams cards for it stop offering buttons."""

@@ -19,7 +19,7 @@
     ws: null, approvals: [], suggestions: [], hudState: "idle", level: 0, targetLevel: 0,
     // Approvals inbox: pending / failed / recently decided actions as the server describes them (redacted), the ids that
     // have had a card in the conversation this session, and whether the chat history is in yet (cards go after it).
-    inbox: { pending: [], failed: [], recent: [] }, seenPending: new Set(), quietPending: new Set(), chatReady: false, inboxLoaded: false, chatInit: false, hasHistory: false,
+    inbox: { pending: [], failed: [], recent: [], dismissed: [] }, seenPending: new Set(), quietPending: new Set(), chatReady: false, inboxLoaded: false, chatInit: false, hasHistory: false,
     listenMode: store.get("listen", "ptt"), speakPref: store.get("speak", "voice"), voiceId: store.get("voice", ""),
     lastMode: "typed", followUpUntil: 0, micUntil: 0, voiceTurn: false, attachments: [],
     // sent: what THIS tab has sent whose "user_message" has not come back yet. mine: whether the turn now streaming in
@@ -1413,8 +1413,9 @@ function send(text, mode = "typed", opts = {}) {
   // Everything Jarvis wants to send or change waits here AND appears as a card in the conversation. ONE card renderer
   // (cardHtml) draws both, from /api/approvals/inbox: the server builds each card from the stored payload itself (so it
   // says exactly what will happen) and redacts secrets first. Buttons: Approve, Edit, Don't send; a failed action shows
-  // its error and Retry. Nothing here runs anything by itself - Approve is a click, Edit saves a NEW pending action that
-  // still needs its own Approve, and Retry queues a new pending action (the server never re-runs a failed one).
+  // its error, Retry and Dismiss. Nothing here runs anything by itself - Approve is a click, Edit saves a NEW pending
+  // action that still needs its own Approve, Retry queues a new pending action (the server never re-runs a failed one),
+  // and Dismiss only hides a failed action from these lists (the server keeps it in the history, flagged).
   const APPR_STATE = { pending: "Waiting for you", approved: "Approved - running", done: "Done", failed: "Failed", denied: "Not sent" };
 
   function detailsHtml(v) {
@@ -1447,10 +1448,11 @@ function send(text, mode = "typed", opts = {}) {
     } else if (st === "failed") {
       level = "bad";
       body = `<p class="appr-fail"><b>It didn't go through.</b> ${esc(v.error || "No reason was recorded.")}</p>`;
+      const dismiss = v.can_dismiss ? `<button type="button" class="btn" data-act="dismiss" data-id="${id}">Dismiss</button>` : "";
       foot = v.can_retry
-        ? `<p class="appr-note">Retry puts it back in your queue as a new request - nothing runs until you press Approve. Check first that it didn't partly go through.</p>
-           <div class="row"><button type="button" class="btn" data-act="retry" data-id="${id}">Retry</button></div>`
-        : (v.superseded_by ? `<p class="appr-note">Retried as #${v.superseded_by}.</p>` : "");
+        ? `<p class="appr-note">Retry puts it back in your queue as a new request - nothing runs until you press Approve. Check first that it didn't partly go through. Dismiss hides it from this list; nothing runs, and it stays in the history.</p>
+           <div class="row"><button type="button" class="btn" data-act="retry" data-id="${id}">Retry</button>${dismiss}</div>`
+        : (v.superseded_by ? `<p class="appr-note">Retried as #${v.superseded_by}.</p>` : "") + (dismiss ? `<div class="row">${dismiss}</div>` : "");
     } else if (st === "done") {
       level = "ok"; state = v.automatic ? "Done automatically" : "Done";
       body = v.result ? `<p class="appr-note">${esc(v.result)}</p>` : "";
@@ -1491,9 +1493,59 @@ function send(text, mode = "typed", opts = {}) {
     $("#failed-count").textContent = failed.length ? String(failed.length) : "";
     syncCards($("#approvals"), pending, "drawer");
     syncCards($("#failed-actions"), failed, "drawer");
+    $("#dismiss-all").hidden = !failed.some((v) => v.can_dismiss);
+    if (!failed.length) closeDismissConfirm();
+    renderHistory();
     syncChatCards();
     updateOrbBadge();
   }
+  // Dismissed failures: kept in the record, listed (lazily, when opened) under the inbox, each flagged with who put it away.
+  const when = (iso) => { try { return new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); } catch { return iso; } };
+  const dismissedFlag = (v) => `Dismissed by ${esc(v.dismissed_by || "someone")} at ${esc(when(v.dismissed_at))}`;
+  async function loadHistory() {
+    const box = $("#history-list");
+    try {
+      const list = await (await api("/api/approvals/history?dismissed=1&limit=100")).json();
+      $("#history-count").textContent = String(list.length);
+      box.innerHTML = list.length ? list.map((v) => `<div class="appr-hist-item" data-id="${v.id}" data-dismissed="${v.dismissed ? "1" : ""}">
+        <p class="appr-summary"><span class="appr-id">#${v.id}</span> ${esc(v.summary)}</p>
+        ${v.error ? `<p class="appr-note">${esc(v.error)}</p>` : ""}
+        <p class="appr-flag">${dismissedFlag(v)}</p></div>`).join("") : `<p class="empty">Nothing has been dismissed.</p>`;
+    } catch (e) { console.warn(e); box.innerHTML = `<p class="empty">Couldn't load the history. Close and reopen this to retry.</p>`; }
+  }
+  function renderHistory() {
+    const panel = $("#history-panel"), n = S.inbox.dismissed.length;
+    panel.hidden = !n;
+    if (n && !panel.open) $("#history-count").textContent = String(n);
+    if (n && panel.open) loadHistory();
+  }
+  $("#history-panel").addEventListener("toggle", (e) => { if (e.target.open) loadHistory(); });
+  // "Dismiss all failed" asks first, and says how many it will hide. It sends the ids that were on screen when you
+  // pressed it, so the number in the question is exactly what is dismissed.
+  let dismissIds = [];
+  function closeDismissConfirm() { dismissIds = []; $("#dismiss-confirm").hidden = true; }
+  $("#dismiss-all").addEventListener("click", () => {
+    dismissIds = S.inbox.failed.filter((v) => v.can_dismiss).map((v) => v.id);
+    if (!dismissIds.length) return;
+    const n = dismissIds.length, what = n === 1 ? "1 failed action" : `${n} failed actions`;
+    $("#dismiss-confirm-text").textContent = `Hide ${what} from this list? Nothing will run. They stay in the history, marked as dismissed by you.`;
+    $("#dismiss-all-yes").textContent = n === 1 ? "Dismiss it" : `Dismiss ${n}`;
+    $("#dismiss-confirm").hidden = false; $("#dismiss-all-yes").focus();
+  });
+  $("#dismiss-all-no").addEventListener("click", () => { closeDismissConfirm(); $("#dismiss-all").focus(); });
+  $("#dismiss-all-yes").addEventListener("click", async (e) => {
+    const btn = e.currentTarget, ids = dismissIds.slice();
+    if (!ids.length) return;
+    btn.disabled = true;
+    try {
+      const r = await api("/api/approvals/dismiss-failed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) toast("Couldn't dismiss those", data.detail || "", "warning");
+      else toast("Dismissed", `${plural(data.dismissed.length, "failed action", "failed actions")} hidden${data.skipped.length ? `, ${data.skipped.length} skipped` : ""}. They stay in the history.`);
+      closeDismissConfirm(); await loadInbox();
+    } catch { toast("Couldn't dismiss those", "Try again in a moment.", "warning"); }
+    finally { btn.disabled = false; }
+  });
   // The conversation copy: one card per action that is queued while you are here (and, when there is already a
   // conversation on screen, every one still waiting when the page opens), updated in place as it is approved, sent, not
   // sent, edited or fails. In the empty "welcome" state those already waiting stay in the pop-up, the rail count and
@@ -1506,6 +1558,7 @@ function send(text, mode = "typed", opts = {}) {
     const all = new Map([...S.inbox.recent, ...S.inbox.failed, ...S.inbox.pending].map((v) => [String(v.id), v]));
     S.inbox.pending.forEach((v) => { if (!S.quietPending.has(String(v.id))) S.seenPending.add(String(v.id)); });
     for (const key of S.seenPending) {
+      if (S.inbox.dismissed.includes(Number(key))) { box.querySelector(`.appr-msg[data-id="${key}"]`)?.remove(); continue; }   // dismissed: its chat card goes too
       const v = all.get(key);
       if (!v) continue;                                   // older than the inbox window: leave whatever is there
       let wrap = box.querySelector(`.appr-msg[data-id="${key}"]`);
@@ -1522,7 +1575,7 @@ function send(text, mode = "typed", opts = {}) {
     if (TEAM) return; // no approvals inbox on a team console
     try {
       const data = await (await api("/api/approvals/inbox")).json();
-      S.inbox = { pending: data.pending || [], failed: data.failed || [], recent: data.recent || [] };
+      S.inbox = { pending: data.pending || [], failed: data.failed || [], recent: data.recent || [], dismissed: data.dismissed_ids || [] };
       S.approvals = S.inbox.pending;                       // the voice "approve" path and the rail read this
       S.inboxLoaded = true;
       renderApprovals(); renderSuggestions(); renderRail();
@@ -1557,6 +1610,7 @@ function send(text, mode = "typed", opts = {}) {
     switch (b.dataset.act) {
       case "approve": case "deny": decide(id, b.dataset.act); break;
       case "retry": retryAction(id, b); break;
+      case "dismiss": dismissAction(id, b); break;
       case "edit": {
         const form = card.querySelector(".appr-edit"); if (!form) break;
         form.hidden = !form.hidden; b.setAttribute("aria-expanded", String(!form.hidden));
@@ -1605,6 +1659,16 @@ function send(text, mode = "typed", opts = {}) {
       await loadInbox();
     } catch { toast("Couldn't retry that", "Try again in a moment.", "warning"); }
     finally { if (btn) btn.disabled = false; }
+  }
+  async function dismissAction(id, btn) {
+    setBusy(id, true);
+    try {
+      const r = await api(`/api/approvals/${id}/dismiss`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) toast("Couldn't dismiss that", data.detail || "", "warning"); else toast("Dismissed", data.result);
+      await loadInbox();
+    } catch { toast("Couldn't dismiss that", "Try again in a moment.", "warning"); }
+    finally { setBusy(id, false); }
   }
   const setBusy = (id, busy) => $$(`.appr-card [data-act][data-id="${id}"]`).forEach((b) => { b.disabled = busy; });
   async function decide(id, act) {
