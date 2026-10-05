@@ -44,6 +44,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 install_log_redaction()  # no secrets (webhook signatures, tokens, keys) in the log stream - see jarvis/redact.py
 log = logging.getLogger("jarvis")
 WEB = Path(__file__).parent / "web"
+LOGIN_DELAY_S = 1.5  # the pause after a wrong team code (the owner login has its own, fixed one)
 
 
 class ChatIn(BaseModel):
@@ -285,7 +286,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return RedirectResponse("/login?team=1&error=name", status_code=303)
         if not j.team_access.verify(code):
             window.append(now)
-            await asyncio.sleep(1.5)  # slow down guessing
+            await asyncio.sleep(LOGIN_DELAY_S)  # slow down guessing
             return RedirectResponse("/login?team=1&error=1", status_code=303)
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(auth.TEAM_COOKIE, auth.make_team_session(settings, j.team_access.digest(), who),

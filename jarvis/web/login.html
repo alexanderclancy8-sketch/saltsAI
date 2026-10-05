@@ -19,16 +19,38 @@
       <div class="login-core"><canvas id="login-core" width="360" height="360" role="img" aria-label="Jarvis core"></canvas></div>
       <div class="brand">J.A.R.V.I.S.<small>SALTS FIRE AND SECURITY</small></div>
       <h1>Identify yourself, sir.</h1>
-      <form method="post" action="/login">
+      <form method="post" action="/login" id="owner-form">
         <input class="field" id="pw" name="password" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required autofocus>
         <button class="btn-signin" type="submit">SIGN IN</button>
         <div class="err" id="err" role="alert"></div>
       </form>
+      <!-- Team sign-in: engineers and office staff, with the team access code the owner set in Settings. They get the
+           cut-down console (no Finance, Approvals or Connections). Hidden until asked for. -->
+      <form method="post" action="/login/team" id="team-form" hidden>
+        <input class="field" id="team-name" name="name" type="text" placeholder="Your name" aria-label="Your name" autocomplete="name" maxlength="40" required>
+        <input class="field" id="team-code" name="code" type="password" placeholder="Team access code" aria-label="Team access code" autocomplete="off" required>
+        <button class="btn-team-signin" type="submit">SIGN IN TO THE TEAM CONSOLE</button>
+        <div class="err" id="team-err" role="alert"></div>
+      </form>
+      <button type="button" class="linkish" id="team-toggle" aria-controls="team-form" aria-expanded="false">Team sign-in</button>
     </div>
   </main>
   <script src="/static/core.js"></script>
   <script>
-    if (new URLSearchParams(location.search).has("error")) document.getElementById("err").textContent = "That's not right. Try again.";
+    var qs = new URLSearchParams(location.search), teamMode = qs.has("team");
+    var ownerForm = document.getElementById("owner-form"), teamForm = document.getElementById("team-form"), toggle = document.getElementById("team-toggle");
+    function showTeam(on) {
+      teamForm.hidden = !on; ownerForm.hidden = on;
+      toggle.textContent = on ? "Owner sign-in" : "Team sign-in"; toggle.setAttribute("aria-expanded", on ? "true" : "false");
+      document.getElementById(on ? "team-name" : "pw").focus();
+    }
+    toggle.addEventListener("click", function () { showTeam(teamForm.hidden); });
+    if (teamMode) {
+      showTeam(true);
+      var why = qs.get("error");
+      document.getElementById("team-err").textContent = why === "name" ? "Type your name so Jarvis knows who is asking."
+        : why === "wait" ? "Too many tries. Wait a few minutes, then try again." : why ? "That name or code isn't right. Ask the office for the team code." : "";
+    } else if (qs.has("error")) document.getElementById("err").textContent = "That's not right. Try again.";
     // The core idles on the sign-in page; it wakes up (listening) while a password is being typed.
     (function () {
       var pw = document.getElementById("pw"), typing = false;
