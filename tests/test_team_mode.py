@@ -180,6 +180,7 @@ def test_the_levels_are_what_the_spec_says(world):
     # approvals, connections/settings, memory, finance links and the staff-report key are never team
     for key in ("GET /api/approvals", "GET /api/approvals/inbox", "POST /api/approvals/{action_id}/edit",
                 "POST /api/approvals/{action_id}/retry", "POST /api/approvals/{action_id}/{decision}",
+                "POST /api/approvals/{action_id}/dismiss", "POST /api/approvals/dismiss-failed", "GET /api/approvals/history",
                 "GET /api/settings", "POST /api/settings", "POST /api/settings/test/{section}", "GET /api/memory",
                 "POST /api/memory/facts/{fact_id}", "DELETE /api/memory/facts/{fact_id}",
                 "POST /api/memory/replies/{reply_id}", "DELETE /api/memory/replies/{reply_id}",
@@ -240,7 +241,9 @@ FINANCE_ENDPOINTS = [("GET", "/auth/sage/start"), ("GET", "/auth/sage/callback")
                      ("POST", "/api/wrapup"), ("GET", "/api/digests"), ("POST", "/api/digests/now")]
 APPROVAL_ENDPOINTS = [("GET", "/api/approvals"), ("GET", "/api/approvals/inbox"), ("POST", "/api/approvals/1/approve"),
                       ("POST", "/api/approvals/1/deny"), ("POST", "/api/approvals/1/edit"),
-                      ("POST", "/api/approvals/1/retry"), ("POST", "/api/suggestions/refresh"),
+                      ("POST", "/api/approvals/1/retry"), ("POST", "/api/approvals/1/dismiss"),
+                      ("POST", "/api/approvals/dismiss-failed"), ("GET", "/api/approvals/history"),
+                      ("POST", "/api/suggestions/refresh"),
                       ("POST", "/api/suggestions/unbilled/done")]
 CONNECTION_ENDPOINTS = [("GET", "/api/settings"), ("POST", "/api/settings"), ("POST", "/api/settings/test/claude"),
                         ("GET", "/api/staff-report-address"), ("POST", "/api/brand/logo"), ("POST", "/api/tts/sample")]
@@ -266,8 +269,22 @@ def test_a_team_member_cannot_approve_even_a_real_pending_action(clients):
     for how in ("approve", "deny"):
         assert team_c.post(f"/api/approvals/{action}/{how}").status_code == 403
     assert team_c.post(f"/api/approvals/{action}/edit", json={"changes": {"body": {"name": "X"}}}).status_code == 403
+    assert team_c.post(f"/api/approvals/{action}/dismiss").status_code == 403
+    assert team_c.post("/api/approvals/dismiss-failed", json={"ids": [action]}).status_code == 403
     assert w.j.db.get_action(action)["status"] == "pending"  # untouched
     assert owner_c.post(f"/api/approvals/{action}/deny").status_code == 200  # a person with the right can
+
+
+def test_a_team_member_cannot_dismiss_a_failed_action_or_read_the_history(clients):
+    owner_c, team_c, w = clients
+    failed = w.j.db.create_action("fsm_write", "Remove van", {"method": "POST", "path": "/vehicles/remove", "body": {}})
+    w.j.db.set_action_status(failed, "failed", "HTTP 404")
+    assert team_c.post(f"/api/approvals/{failed}/dismiss").status_code == 403
+    assert team_c.post("/api/approvals/dismiss-failed", json={"ids": [failed]}).status_code == 403
+    assert team_c.get("/api/approvals/history").status_code == 403
+    assert w.j.db.get_action(failed)["dismissed_at"] is None            # untouched
+    assert owner_c.post(f"/api/approvals/{failed}/dismiss").status_code == 200  # a person with the right can
+    assert w.j.db.get_action(failed)["status"] == "failed"
 
 
 def test_the_teams_webhook_ignores_a_team_session_cookie(clients):
