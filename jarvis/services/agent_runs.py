@@ -26,6 +26,12 @@ STALL_AFTER = timedelta(minutes=30)  # a "running" run with no activity for this
 MAX_TRAIL = 60  # steps kept per run (the newest); `steps` still counts them all
 KEEP_RUNS = 200  # rows kept in total
 LINE_CHARS = 140
+# No wall-clock timeout exists on a run (they are bounded by turns: 60 API turns / 80 Claude Code turns), so this is
+# the assumed ceiling on how long one can legitimately take. A row still 'running' after twice that, with no
+# heartbeat (updated_at is bumped by every step) in the last STALL_AFTER, belongs to a process that is gone.
+MAX_RUN_TIME = timedelta(hours=1)
+INTERRUPTED_AFTER = 2 * MAX_RUN_TIME
+INTERRUPTED_NOTE = "The process stopped before this run finished (restart, crash or cancellation)."
 NO_RESULT_NOTE = "The run finished without submitting a change or recording an analysis."
 
 # The run the current task is working on, so the engineer loops can record steps without it being threaded through
@@ -71,7 +77,34 @@ class AgentRuns:
         self.db = db
 
     # ------------------------------------------------------------------ recording
+    def interrupt_stale(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Close rows still 'running' that no live process can own, as 'interrupted', and return them.
+
+        Called once at start-up (and whenever a new run starts). It deliberately does NOT close every running row:
+        during a rolling deploy two processes share this database, and the old one may be mid-run - marking its row
+        interrupted would be wrong. So a row is only closed when it started more than INTERRUPTED_AFTER ago AND has
+        had no step recorded within STALL_AFTER. A run that was actually alive can still overwrite the status with
+        its real outcome when it finishes. Never raises."""
+        now = now or datetime.now(timezone.utc)
+        closed: list[dict[str, Any]] = []
+        try:
+            for r in self.db.query("SELECT id, kind, request, started_at, updated_at FROM agent_runs "
+                                   "WHERE status = 'running'"):
+                started, beat = _parse(r["started_at"], now), _parse(r["updated_at"], now)
+                if now - started < INTERRUPTED_AFTER or now - beat < STALL_AFTER:
+                    continue
+                self.db.execute("UPDATE agent_runs SET status = 'interrupted', outcome = ?, updated_at = ? "
+                                "WHERE id = ? AND status = 'running'",
+                                (INTERRUPTED_NOTE, now_iso(), r["id"]))
+                log.warning("Engineering run #%s (%s, started %s) never finished - the process stopped mid-run: %s",
+                            r["id"], r["kind"], r["started_at"], (r["request"] or "")[:200])
+                closed.append(dict(r))
+        except Exception:  # noqa: BLE001 - observability must never break start-up or a run
+            log.warning("Could not check for interrupted agent runs", exc_info=True)
+        return closed
+
     def start(self, kind: str, request: str) -> int:
+        self.interrupt_stale()
         ts = now_iso()
         run_id = self.db.execute(
             "INSERT INTO agent_runs (kind, request, started_at, updated_at, status) VALUES (?,?,?,?,'running')",
@@ -103,7 +136,7 @@ class AgentRuns:
             log.warning("Could not record agent run step", exc_info=True)
 
     def finish(self, status: str, outcome: str = "", run_id: int | None = None, only_if_running: bool = False) -> None:
-        """status is submitted / gave_up / failed."""
+        """status is submitted / gave_up / failed / interrupted."""
         run_id = run_id or _current.get()
         if not run_id:
             return
@@ -118,7 +151,7 @@ class AgentRuns:
     @contextmanager
     def track(self, kind: str, request: str) -> Iterator[int | None]:
         """Wrap a whole run: records it as running, makes steps recorded inside it land on it, and marks it failed if
-        it raises. A run that ends normally without anyone recording how it went (e.g. a fixer pass that neither
+        it raises (or interrupted if it is cancelled). A run that ends normally without anyone recording how it went (e.g. a fixer pass that neither
         submitted a fix nor gave an analysis) is closed as gave_up with a neutral note - it did not fail, it just
         produced nothing. Exceptions are re-raised untouched."""
         try:
@@ -130,8 +163,11 @@ class AgentRuns:
         try:
             yield run_id
         except BaseException as e:
-            self.finish("failed", f"{type(e).__name__}: {e}" if str(e) else type(e).__name__, run_id,
-                        only_if_running=True)
+            what = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            if isinstance(e, Exception):
+                self.finish("failed", what, run_id, only_if_running=True)
+            else:  # cancelled (CancelledError) or the process is being stopped: not an error in the run itself
+                self.finish("interrupted", f"Cancelled before it finished ({what}).", run_id, only_if_running=True)
             raise
         else:
             self.finish("gave_up", NO_RESULT_NOTE, run_id, only_if_running=True)

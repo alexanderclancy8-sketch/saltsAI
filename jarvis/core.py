@@ -116,6 +116,9 @@ class Jarvis:
         self.fixer.issues, self.fixer.tester = self.issues, self.tester
         self.security_watch = SecurityWatch(s, self.db, self.bus, self.notifier, self.client, self.github, self.issues)
         self.self_improve = SelfImprove(s, self.db, self.bus, self.notifier, self.client, self.self_github)
+        # Engineering runs a restart/crash cut off stay 'running' forever; close the ones no live process can own
+        # (age-gated, so a second process during a rolling deploy keeps its own run). Never raises.
+        self.self_improve.runs.interrupt_stale()
         self.actions = ActionExecutor(self.db, self.bus, self.notifier, self.mail, self.fixer, self.fsm)
         self.billing = Billing(s, self.db, self.fsm, self.finance, self.actions, self.notifier)
         self.actions.billing = self.billing

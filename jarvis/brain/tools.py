@@ -2079,7 +2079,7 @@ TOOLS: list[Tool] = [
                         "few minutes.", SelfImproveIn, self_improve, "Working on myself"),
     Tool("agent_runs", "Read-only progress report on the background engineering agents (self_improve changes to "
                        "Jarvis's own code, issue auto-fixes, security reviews): current and recent runs with "
-                       "status (running / submitted / gave_up / failed / stalled), when each started, when it "
+                       "status (running / submitted / gave_up / failed / interrupted / stalled), when each started, when it "
                        "last did anything, and the trail of what it has done so far. 'stalled' means it's "
                        "still marked running but has been silent for 30+ minutes. Use it when the owner asks "
                        "what an agent is up to, whether it's stuck, or why nothing has come back yet.",

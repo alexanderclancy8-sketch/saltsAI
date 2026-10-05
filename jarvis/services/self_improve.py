@@ -27,7 +27,14 @@ from .agent_runs import AgentRuns
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
-MAX_TURNS = 60
+MAX_TURNS = 60  # API backend: model turns before the loop gives up
+MAX_TURNS_MAX = 80  # Claude subscription backend: max_turns handed to run_once()
+
+
+def _budget_message(turns: int) -> str:
+    return (f"Stopped after {turns} turns without finishing: the engineering agent used its whole turn budget "
+            "without calling submit_change or give_up, so no change was proposed.")
+
 
 SELF_IMPROVE_SYSTEM = """You are the software engineer inside Jarvis, the AI assistant of {company} - and this \
 time the code you are changing is your OWN source, checked out at /repo. {owner} asked for this:
@@ -129,17 +136,38 @@ class SelfImprove:
 
     # ------------------------------------------------------------------ entry point
     async def run(self, request: str) -> dict[str, Any]:
+        """Record that the run started (before anything else can fail), then do it, and make sure that however it
+        ends - result, error, cancellation - the record is closed and the owner is told if it didn't complete."""
         if not self.enabled:
             return {"error": "Not configured (needs a GitHub token and JARVIS_REPO)."}
-        with self.runs.track("self_improve", request):  # progress record for the agent_runs tool; changes nothing
-            result = await self._run(request)
-            if "error" in result:
-                self.runs.finish("failed", result["error"])
-            elif "pr_url" in result:
-                self.runs.finish("submitted", result["pr_url"])
-            else:
-                self.runs.finish("gave_up", result.get("analysis", ""))
-        return result
+        try:
+            with self.runs.track("self_improve", request):  # agent_runs record: one row per run, closed however it ends
+                result = await self._run(request)
+                if "error" in result:
+                    self.runs.finish("failed", result["error"])
+                elif "pr_url" in result:
+                    self.runs.finish("submitted", result["pr_url"])
+                else:
+                    self.runs.finish("gave_up", result.get("analysis", ""))
+            return result
+        except BaseException as e:  # noqa: BLE001 - incl. CancelledError: track() has already closed the record
+            interrupted = not isinstance(e, Exception)
+            log.exception("Self-improvement run %s", "interrupted" if interrupted else "failed")
+            await self._notify_incomplete(request, e, interrupted)
+            if interrupted:
+                raise
+            return {"error": str(e)[:500]}
+
+    async def _notify_incomplete(self, request: str, exc: BaseException, interrupted: bool) -> None:
+        """Tell the owner a run died or was cancelled part-way (the engineering-flagged self_improve_failed kind).
+        Failures _run() handles itself already notify; this covers whatever escaped it."""
+        title = "Self-improvement run interrupted" if interrupted else "Self-improvement attempt failed"
+        body = f"Request: {request[:200]}\n{type(exc).__name__}: {exc}"[:500]
+        try:
+            await self.notifier.notify(title, body, level="warning", importance="normal", engineering=True,
+                                       kind="self_improve_failed")
+        except BaseException:  # noqa: BLE001 - the notification itself failing (or being cancelled) must not hide the error
+            log.exception("Could not send the self-improvement failure notification")
 
     async def _run(self, request: str) -> dict[str, Any]:
         if not self.enabled:
@@ -230,12 +258,12 @@ class SelfImprove:
             if finished:
                 return finished
             messages.append({"role": "user", "content": results})
-        return {"kind": "give_up", "analysis": f"Stopped after {MAX_TURNS} steps without finishing."}
+        return {"kind": "give_up", "analysis": _budget_message(MAX_TURNS)}
 
     async def _engineer_max(self, request: str, ws: Workspace) -> dict[str, Any]:
         """Same job on the Claude subscription: Claude Code's own Read/Edit/Glob/Grep tools, confined to the
         checkout (no shell, no web). Changes are found by comparing with a pristine copy."""
-        from ..brain.max_backend import ENGINEER_BLOCKED, parse_structured, run_once
+        from ..brain.max_backend import ENGINEER_BLOCKED, MaxTurnsExceeded, parse_structured, run_once
 
         class Outcome(BaseModel):
             outcome: Literal["submit", "give_up"]
@@ -256,12 +284,16 @@ class SelfImprove:
                 "'give_up' with your analysis if there's no safe change to make - that is a good outcome too.")
         docs = plugins.engineering_setup(self.s)  # Context7, read-only docs - only if on and pinned
         system = plugins.with_methodology(system, self.s) + docs.prompt
-        result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
-                                effort=self.s.engineer_effort, model=self.s.engineer_model_or_default(),
-                                tools=["Read", "Edit", "Write", "Glob", "Grep"],
-                                disallowed_tools=ENGINEER_BLOCKED,
-                                output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
-                                mcp_servers=docs.mcp_servers, extra_allowed=docs.allowed_tools)
+        try:
+            result = await run_once(self.s, system=system, prompt="Make the requested change to this repository.",
+                                    effort=self.s.engineer_effort, model=self.s.engineer_model_or_default(),
+                                    tools=["Read", "Edit", "Write", "Glob", "Grep"],
+                                    disallowed_tools=ENGINEER_BLOCKED,
+                                    output_schema=Outcome.model_json_schema(), max_turns=MAX_TURNS_MAX,
+                                    cwd=str(ws.root), mcp_servers=docs.mcp_servers,
+                                    extra_allowed=docs.allowed_tools)
+        except MaxTurnsExceeded:
+            return {"kind": "give_up", "analysis": _budget_message(MAX_TURNS_MAX)}
         out = parse_structured(result, Outcome)
         if out.outcome == "submit" and ws.changed_files():
             return {"kind": "submit", "fix": SubmitInput(pr_title=out.pr_title or "Self-improvement",

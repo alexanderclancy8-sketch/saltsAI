@@ -118,11 +118,17 @@ or starting another background job itself.
 
 **Progress visibility for engineer loops (`services/agent_runs.py`, the `agent_runs` tool).** `self_improve.run()`,
 `Fixer.attempt()` (built-in mode) and `SecurityWatch.run()` each wrap their run in `AgentRuns.track(...)`, which
-keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`) and a
+keeps one `agent_runs` row per run: request, start time, status (`running`/`submitted`/`gave_up`/`failed`/`interrupted`) and a
 trail of one-line tool-call summaries (`editor view <path>`, `grep '<pattern>'`, ...) added after every tool call
 in the loop - never file contents or edit text; the newest 60 steps are kept. The read-only `agent_runs` tool lists
 recent runs; a run still `running` with no activity for 30 minutes (`STALL_AFTER`) is reported as `stalled` (worked
-out when read, not stored). Recording is observability only: it swallows its own errors and never alters what an
+out when read, not stored). A run cancelled mid-flight is closed `interrupted`; at start-up (and when a new run
+starts) `AgentRuns.interrupt_stale()` closes `running` rows left by a crash or restart as `interrupted` - but only
+rows that started over `INTERRUPTED_AFTER` (2h, twice the assumed `MAX_RUN_TIME`) ago with no step in the last 30
+minutes, so a second process sharing the database during a rolling deploy never has its live run marked dead.
+`SelfImprove.run()` also notifies the owner (`self_improve_failed`, engineering-flagged) when a run raises or is
+cancelled, and a Claude Code run that hits `max_turns` (`MaxTurnsExceeded`) is a `gave_up` with a plain message,
+not a parse error. Recording is observability only: it swallows its own errors and never alters what an
 agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
 (Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
 
