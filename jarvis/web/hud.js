@@ -2752,6 +2752,10 @@ function send(text, mode = "typed", opts = {}) {
       if (radius && document.activeElement !== radius) radius.value = i.radius_m;
       radius.min = i.min_radius_m; radius.max = i.max_radius_m;
       const date = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); };
+      // A re-render (after any save or remove) must not eat what the owner is typing in another engineer's box.
+      const typed = {}, active = document.activeElement;
+      list.querySelectorAll("[data-home-pc]").forEach((b) => { if (b.value) typed[b.closest("li").dataset.eng] = b.value; });
+      const focusEng = active && list.contains(active) && active.matches("[data-home-pc]") ? active.closest("li").dataset.eng : null;
       list.innerHTML = i.engineers.map((e, k) => `<li data-eng="${esc(e.engineer)}">
         <div class="home-head"><b>${esc(e.engineer)}</b><span class="home-state ${e.set ? "ok" : ""}">${e.set ? `Home set${e.set_at ? " (" + esc(date(e.set_at)) + ")" : ""}${e.in_list ? "" : " - not in the staff list"}` : "Not set"}</span></div>
         <div class="home-edit">
@@ -2759,6 +2763,11 @@ function send(text, mode = "typed", opts = {}) {
           <button class="btn small" type="button" data-home-act="save">Save</button>
           ${e.set ? `<button class="btn small" type="button" data-home-act="remove">Remove</button>` : ""}
         </div></li>`).join("");
+      list.querySelectorAll("li").forEach((li) => {
+        const box = li.querySelector("[data-home-pc]");
+        if (typed[li.dataset.eng]) box.value = typed[li.dataset.eng];
+        if (focusEng === li.dataset.eng) box.focus({ preventScroll: true });
+      });
       $("#btn-homes-clear-all").hidden = !n;
     },
     async send(method, path, body) {

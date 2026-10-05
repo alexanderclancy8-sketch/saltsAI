@@ -771,3 +771,9 @@ def test_the_staff_report_the_memory_book_the_status_and_the_archive_carry_none_
     assert "53.9123" not in json.dumps(app.app.state.j.__dict__.get("memory_book", ""), default=str)
     upload = TOOLS_BY_NAME["archive_to_azure"]
     assert "homes" not in upload.description.lower()
+
+
+def test_claude_md_documents_the_data_and_how_to_purge_it():
+    text = " ".join((ROOT / "CLAUDE.md").read_text(encoding="utf-8").split())
+    assert "Engineer home points" in text and "DELETE FROM engineer_homes" in text and "engineer_homes_retention" in text
+    assert "never a postcode" in text and "NOT a tool" in text
