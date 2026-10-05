@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from .. import demo_guard
 from ..config import Settings
 from ..db import Database
 
@@ -333,14 +334,21 @@ class DemoFinance:
                                           d + timedelta(days=30), total, round(net * 0.2, 2),
                                           0.0 if paid else total, "paid" if paid else "authorised"))
 
+    def _sample(self) -> None:
+        if self.demo:
+            demo_guard.touch(demo_guard.ACCOUNTS)
+
     async def invoices(self, kind: str, outstanding_only: bool = True, since: date | None = None) -> list[Invoice]:
+        self._sample()  # sample invoices: never handed to the model as the company's own
         return [i for i in self._invoices if i.kind == kind and (not outstanding_only or i.amount_due > 0)
                 and (not since or i.date >= since)]
 
     async def bank_balances(self) -> list[BankAccount]:
+        self._sample()
         return [BankAccount("Business Current Account", 48213.55), BankAccount("Business Reserve", 25000.00)]
 
     async def profit_and_loss(self, date_from: date, date_to: date) -> dict[str, Any] | None:
+        self._sample()
         return None
 
     async def check(self) -> str:
