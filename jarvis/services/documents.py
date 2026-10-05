@@ -81,6 +81,15 @@ def brand_logo(path: Any) -> Path | None:
     return None
 
 
+def header_logo(path: Any) -> Path | None:
+    """The logo for the header of PDF / Word documents. With COMPANY_LOGO_PATH unset it is the Salts logo bundled with
+    the app (web/assets/salts-logo.jpg). A path that IS set but doesn't work (missing, wrong type, too big) is not
+    silently swapped for the default: that stays 'no logo' so the owner is told, via the same size/type checks."""
+    if not path or not str(path).strip():
+        return brand_logo(LOGO_PATH)
+    return brand_logo(path)
+
+
 def valid_doc_id(doc_id: str) -> bool:
     return bool(DOC_ID_RE.fullmatch(doc_id or ""))
 
@@ -1351,7 +1360,7 @@ class Documents:
                                                "Download it from the display; sending anything is a separate step "
                                                "that needs the owner's approval.")
         if "error" not in out and fmt in ("pdf", "docx"):
-            if brand_logo(getattr(self.j.settings, "company_logo_path", "")) is None:
+            if header_logo(getattr(self.j.settings, "company_logo_path", "")) is None:
                 out["branding_note"] = ("No company logo has been set yet, so this is branded with the company name "
                                         "and Salts navy only - tell the owner, and it will pick the logo up once one "
                                         "is supplied.")

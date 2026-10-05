@@ -148,7 +148,8 @@ def test_brand_logo_only_accepts_a_small_real_image(tmp_path, monkeypatch):
 async def test_tool_says_when_no_logo_is_set(tmp_path):
     from jarvis.brain.tools import OfficeDocumentIn, draft_office_document
 
-    j = _jarvis(tmp_path)
+    # A configured path that doesn't work is "no logo" (an UNSET path now falls back to the bundled Salts logo)
+    j = _jarvis(tmp_path, company_logo_path=str(tmp_path / "gone.png"))
     out = await draft_office_document(j, OfficeDocumentIn(format="pdf", title="Report", content=MARKDOWN))
     assert "no company logo" in out["branding_note"].lower() and "navy" in out["branding_note"]
     out = await draft_office_document(j, OfficeDocumentIn(format="docx", title="Report", content=MARKDOWN))
@@ -165,6 +166,40 @@ async def test_tool_reports_the_logo_when_one_is_set(tmp_path):
     out = await draft_office_document(j, OfficeDocumentIn(format="pdf", title="Report", content=MARKDOWN))
     assert "logo" in out["branding_note"].lower() and "no company logo" not in out["branding_note"].lower()
     await j.http.aclose()
+
+
+def test_header_logo_defaults_to_the_bundled_salts_logo_when_unset(tmp_path, monkeypatch):
+    assert documents.LOGO_PATH.name == "salts-logo.jpg" and documents.LOGO_PATH.is_file()
+    assert documents.header_logo("") == documents.LOGO_PATH and documents.header_logo(None) == documents.LOGO_PATH
+    good = make_logo(tmp_path)
+    assert documents.header_logo(str(good)) == good  # an explicit logo wins
+    # a path that is set but doesn't work is NOT replaced by the default, so the owner is told
+    assert documents.header_logo(str(tmp_path / "missing.png")) is None
+    svg = tmp_path / "logo.svg"
+    svg.write_text("<svg/>")
+    assert documents.header_logo(str(svg)) is None
+    monkeypatch.setattr(documents, "MAX_LOGO_BYTES", 10)  # the size check still applies to the default too
+    assert documents.header_logo("") is None and documents.header_logo(str(good)) is None
+
+
+async def test_unset_logo_path_uses_the_default_logo_and_shows_no_missing_logo_note(tmp_path):
+    from jarvis.brain.tools import OfficeDocumentIn, draft_office_document
+
+    j = _jarvis(tmp_path)  # COMPANY_LOGO_PATH unset
+    for fmt in ("pdf", "docx"):
+        out = await draft_office_document(j, OfficeDocumentIn(format=fmt, title="Report", content=MARKDOWN))
+        assert "no company logo" not in out["branding_note"].lower() and "logo" in out["branding_note"].lower()
+    await j.http.aclose()
+
+
+def test_download_pdf_carries_the_default_logo_when_unset(settings):
+    settings.company_logo_path = ""
+    j = Jarvis(settings, client=FakeClient())
+    j.db.add_document(GOOD_ID, "report", "Quarterly report", MARKDOWN)
+    with TestClient(create_app(settings, j)) as c:
+        r = c.get(f"/api/documents/{GOOD_ID}/pdf")
+        assert r.status_code == 200
+        assert image_count(r.content) > image_count(documents.render_pdf(make_doc(), settings.company_name))
 
 
 async def test_a_logo_path_that_does_not_work_counts_as_no_logo(tmp_path):
