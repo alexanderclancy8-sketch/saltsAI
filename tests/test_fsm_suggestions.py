@@ -636,6 +636,18 @@ def test_the_console_prepare_button_runs_the_same_handler_and_is_idempotent(sett
     assert j.db.get_action(r.json()["approval_id"])["status"] == "pending"
 
 
+def test_a_console_prepare_of_a_suggestion_the_fsm_has_tells_the_fsm(settings):
+    j, server, app = app_for(settings)
+    asyncio.run(j.fsm_suggestions.sync(force_hours=True))                     # Q1 and Q4 are in the FSM now
+    with TestClient(app) as c:
+        assert c.post(f"/api/suggestions/{Q1}/prepare").json()["status"] == "prepared"
+        assert c.post(f"/api/suggestions/{Q4}/prepare").json()["status"] == "failed"
+    aid = j.db.pending_actions()[0]["id"]
+    assert server.patches(Q1)[-1][1] == {"status": "prepared", "note": "Draft ready in Jarvis, waiting for approval.",
+                                         "approval_ref": str(aid)}
+    assert server.patches(Q4)[-1][1]["status"] == "failed"
+
+
 def test_prepare_and_snooze_need_the_signed_in_owner_and_a_same_origin_click(settings):
     j, server, app = app_for(settings, jarvis_owner_password="a-long-password", public_base_url="https://jarvis.example.test")
     asyncio.run(j.fsm_suggestions.sync(force_hours=True))

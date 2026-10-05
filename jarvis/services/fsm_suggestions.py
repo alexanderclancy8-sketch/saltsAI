@@ -395,10 +395,17 @@ class FsmSuggestions:
         except ValueError:
             return None
 
-    async def prepare_suggestion(self, ext: str, by: str = "") -> dict[str, Any]:
+    async def prepare_suggestion(self, ext: str, by: str = "", report: bool = False) -> dict[str, Any]:
         """Draft the work for ONE suggestion and queue it for approval. Idempotent: a suggestion is prepared once.
 
-        Returns {"status": "prepared"|"failed"|"resolved", "note", "approval_id"}. Only DRAFTS: nothing is approved, sent or run here."""
+        Returns {"status": "prepared"|"failed"|"resolved", "note", "approval_id"}. Only DRAFTS: nothing is approved, sent or run here.
+        ``report`` (the console's button) also tells the FSM what happened, if the FSM has this suggestion; the poller reports for itself."""
+        result = await self._prepare_once(ext, by)
+        if report and self.active() and self._pushed().get(_clip(ext, 200)):
+            await self._report(_clip(ext, 200), result)
+        return result
+
+    async def _prepare_once(self, ext: str, by: str) -> dict[str, Any]:
         j = self.j
         ext = _clip(ext, 200)
         kind_name, record_id = split_external_id(ext)

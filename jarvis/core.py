@@ -327,6 +327,7 @@ class Jarvis:
             await self.tester.run("all")
             await self.marketing.snapshot()
             await self.suggestions.sweep(announce=False)
+            await self.fsm_suggestions.sync()  # (the 15-minute job's first run would otherwise be a quarter of an hour away)
         except Exception:  # noqa: BLE001
             log.exception("Initial routine test run failed")
 

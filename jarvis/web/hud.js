@@ -1640,7 +1640,7 @@ function send(text, mode = "typed", opts = {}) {
         const r = await api(`/api/suggestions/${encodeURIComponent(key)}/${b.dataset.sug}`, { method: "POST" });
         const d = r.ok ? await r.json() : null;
         if (b.dataset.sug === "prepare" && d && d.status === "prepared") {
-          toast("Draft ready", "It is in your approvals below - nothing has been sent.");
+          toast("Draft ready", "It is waiting in your approvals - nothing has been sent.");
           await loadInbox();
         } else if (b.dataset.sug === "prepare") {
           say((d && d.note) || "Jarvis couldn't prepare that just now.");

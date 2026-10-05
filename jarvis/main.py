@@ -843,7 +843,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         row = j.db.get_suggestion(key)
         if not row or not row.get("kind"):
             raise HTTPException(404, "No such suggestion")
-        return await j.fsm_suggestions.prepare_suggestion(key, by="the console")
+        return await j.fsm_suggestions.prepare_suggestion(key, by="the console", report=True)
 
     @app.post("/api/suggestions/{key:path}/snooze", dependencies=[Depends(owner), Depends(human_click)])
     async def snooze_suggestion(key: str, request: Request):

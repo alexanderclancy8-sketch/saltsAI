@@ -107,6 +107,50 @@ tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (r
 `Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then
 `brain.refresh_system()` so the next turn reads the change. Tests: `tests/test_memory_popup.py`.
 
+*Suggestions with a Prepare button (`services/fsm_suggestions.py`, `j.fsm_suggestions`; tests `tests/test_fsm_suggestions.py`,
+`tests/test_console_browser_suggestions.py`).* "One step ahead": Jarvis offers to do the groundwork, in its own Approvals drawer AND in
+the Salts FSM Action Centre (the office's inbox). Stage 1 is one kind, `quote_followup`: a SENT quote with no response for 7 to 60 days
+-> Prepare queues the existing approval-gated customer chase email for that ONE quote (`CustomerComms.draft_quote_followup`, the same
+draft and `comms:quote_followup:<id>` marker as the scheduled customer-email sweep, so the two can never both draft it). Everything lives
+in that one module; **a new kind is one `Kind(name, lane, record_type, detect, prepare)` entry in `KINDS`** (service-due chase, completed
+jobs with no report sent, ...). A suggestion row (`suggestions` table, new `kind`/`meta` columns) has `key` = the contract's
+`external_id` = `<kind>:<record id>` (`quote_followup:Q1180`).
+- **Contract (Jarvis -> FSM only, the existing FSM key via `FSMClient.jarvis_call`; the FSM never calls Jarvis; paths are absolute
+  `/api/jarvis/suggestions...` under the FSM base URL whatever `FSM_API_PREFIX` is):** `PUT /api/jarvis/suggestions/{external_id}`
+  (upsert, idempotent; body `kind, lane ("money"|"operations"|"compliance"), title, detail, reason, record_type, record_id,
+  record_label, created_at`); `PATCH /api/jarvis/suggestions/{external_id}` (`{status: "prepared"|"failed"|"resolved", note,
+  approval_ref}`, and `{status: "snoozed", snoozed_until, note}` for the console's Not now); `GET /api/jarvis/suggestions?status=requested`
+  (a list of `{external_id, requested_by, requested_at, snoozed_until?...}`; a row with a future `snoozed_until` is skipped). Status:
+  open -> requested (an FSM user pressed Prepare) -> prepared (Jarvis queued the draft; `approval_ref` = the Jarvis action id) ->
+  resolved (the condition cleared, or the approved action completed). "Resolved" is always a PATCH, never a DELETE.
+- **Schedule (`scheduler.py`):** `fsm_suggestions` (interval `suggestions_fsm_interval_min`, 15) detects, keeps the drawer true and
+  publishes; in working hours (`suggestions_fsm_hours_start`/`_end`, Mon-Fri, `TIMEZONE`) every run, outside them hourly and quiet - no NEW
+  push off-hours (the next working-hours run does it), only resolutions. A first run pushes at most 20 new ones. It is a quiet `_check`
+  (one collapsed activity line, never a chat message or notification). `fsm_suggestion_requests` (every `suggestions_fsm_poll_s`, 60)
+  is one cheap GET and, for each request, runs the kind's prepare handler and PATCHes `prepared` (with `approval_ref`) or `failed` (with
+  a plain note, no stack trace or secret). The older `suggestions` sweep (3x a day) is untouched, except that it leaves rows with a kind
+  alone (`fsm_suggestions.sync` keeps them true).
+- **Switch:** `suggestions_publish_to_fsm` (Settings > Schedules, default ON, **owner-only** via `OWNER_ONLY_KEYS`). Off = nothing is
+  pushed or polled; Jarvis's own drawer and its Prepare button still work. A FSM that is down, refuses the key (401/403/5xx) or does not
+  have the endpoints yet (404/405 on the list or on PUT) is logged ONCE per outage and backed off (1 to 15 minutes; 5 to 60 for a 404);
+  nothing reaches the UI. Sample data is never a source: with the demo FSM (`j.fsm.demo`) nothing is detected, pushed, polled or prepared.
+- **Safety:** Prepare ONLY drafts. A handler queues through `ActionExecutor.queue` (`email_send`, which no standing approval can ever
+  match - `standing_approvals` only looks at `fsm_write` and `po_acknowledgement`), so the draft waits for a human in the console or on
+  Teams, even with both standing switches on (a test pins it). The module never approves, denies or sends (a test greps it). A request
+  from the FSM is only a request to PREPARE. **Idempotent:** kv `fsmsug:prepared:<id>` is a one-time marker (a second request, from
+  anyone, re-reports the same `approval_ref` and queues nothing; a per-suggestion lock covers two at once); a failure leaves no marker so
+  it can be pressed again once fixed; a PATCH the FSM did not accept is repeated without redoing the work. FSM-requested prepares are
+  capped at `suggestions_prepare_max_per_hour` (20; the rest stay `requested` for the next hour). An edited or retried draft is a new
+  pending action: `approval_phase` follows `superseded_by`, so editing the wording never reads as "dealt with"; when the draft is approved
+  or denied the suggestion becomes resolved (PATCH `resolved`).
+- **Console:** `POST /api/suggestions/{key}/prepare` and `/snooze` (owner/manager + same-origin, `MANAGER_OK`, registered before the
+  catch-all `/{decision}` route, so a team session gets 403). Prepare runs the same handler and also PATCHes the FSM if it has the
+  suggestion; Not now sets the row `dismissed` (quiet for 20 hours, as before) and PATCHes `snoozed` with `snoozed_until`. In the
+  Suggestions section of the Approvals drawer a suggestion with a kind shows **Prepare** and **Not now** (older ones keep Do it);
+  more than four are behind "Show all"; the "Needs you" strip says "N suggestions from Jarvis - ready to prepare" and opens the drawer.
+  `prepare_suggestion`/`snooze_suggestion` are called only from `main.py` and the poller - there is no brain tool (the `suggestions` tool
+  only lists, and its text says a person has to press Prepare); a test greps for it.
+
 *Daily rhythm (`services/daily_rhythm.py`).* The morning briefing (09:00) and end-of-day wrap-up (17:30), Monday to Friday, UK
 time, are intentional scheduled posts (not "checks": they always say something). `briefing_enabled` / `briefing_cron` /
 `wrapup_enabled` / `wrapup_cron` are in Settings > Schedules. Each text has a word budget enforced in code
