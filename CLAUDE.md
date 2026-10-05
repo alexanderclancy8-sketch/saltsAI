@@ -159,6 +159,29 @@ with no change returns `NOTHING_TO_REPORT`. Everything it reads is untrusted dat
 `FSMClient.write` raises for any non-2xx (including 3xx) and the executor's `_fsm_ok` fails any result carrying a non-2xx status,
 so a rejected approved write shows as failed with the error rather than done.
 
+**Out-of-hours triage: keyholder notices (`services/ooh.py`, `j.ooh`, tool `out_of_hours_calls`; tests `tests/test_ooh_keyholder_notice.py`).**
+Each event from the monitoring-centre reports gets a `follow_up_kind`: `engineer_visit` (genuine fault - comms/signalling failure, panel
+fault, tamper, CCTV, battery/mains - or other work; sets `needs_job` when no FSM job exists, as before), `keyholder_notice` or `none`. Owner's
+rule: when a call/signal was handled with no keyholder reached, the site/keyholders didn't answer, or the keyholder list is out of date or
+missing, that is a customer conversation, NOT an engineer job - `needs_job` is False and `follow_up_needed` is reported False. A real fault always
+wins (`genuine_fault` from the extraction, or fault words in `problem`), so keyholder wording can't talk a fault out of needing a job. So does a
+real activation or emergency (`urgency == "emergency"`, or intruder/fire/break-in/activation wording in `problem` - `ooh._ACTIVATION`): with
+no keyholder reached the site may be unsecured, so it stays `engineer_visit` (`needs_job` when no FSM job, listed in `needing_a_job` and the
+suggestions) and gets no customer email; only the benign cases (e.g. keyholder list out of date, late to set) become notices. The reason
+is the extraction's `keyholder_issue` (`not_reached`/`no_answer`/`list_out_of_date`/`list_missing`), backstopped by regexes on the report wording.
+`calls()` is pure classification (also used by the briefing and suggestions); only the `out_of_hours_calls` tool then calls
+`OutOfHours.draft_keyholder_notices()`, which queues ONE `email_send` action per notice (so it waits for the owner's approval like any email;
+nothing here sends, approves or touches standing approvals) and de-duplicates with kv `comms:keyholder:<report id>:<site>:<time>`. The email is
+plain British English: what happened and when, what the monitoring centre did (fixed wording per reason, not the report's own words), a request
+to confirm the keyholder list and send changes, and a no-pressure offer to quote for the 24/7 keyholder response service; no prices. The recipient
+is only ever the contract contact on record in Salts FSM (`contracts()` `contact_email`) for a contract whose SITE matches the event's site
+(there is no customer-name-only fall-back, so the report can't choose a contact by naming a customer); an address from the report is never
+used, and a shared inbox (`mail_guard.is_shared_mailbox`) or malformed address counts as no contact. With none, NOTHING is queued: the draft comes back under
+`keyholder_drafts.needs_recipient` with `to: ""` and a "no contact on record" flag, for the owner to supply the address (sending it then goes
+through `email_send` and approval as usual). Report text is untrusted: the draft only carries site/time/problem after `_clean()` (no links,
+addresses, phone-number-like digit runs, National Insurance numbers, markup, short) and the report can choose a category and name a site (which
+must match a contract site on record), never a recipient or an instruction.
+
 **GitHub PR tools for Jarvis's own repo (`jarvis/brain/pr_tools.py`, `jarvis/integrations/github_pr.py`,
 `jarvis/services/pr_resolver.py`; full list and rules in `docs/github-pr-tools.md`).** Reads: `pr_list`, `pr_detail`,
 `repo_read`, `repo_search`, `run_tests`. Writes, all `approval=True`: `pr_comment`, `pr_resolve_conflicts`, `pr_merge`,
