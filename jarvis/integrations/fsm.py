@@ -262,6 +262,18 @@ class FSMClient:
                                         request=r.request, response=r)
         return r.json() if r.content else {"status": r.status_code}
 
+    async def jarvis_call(self, method: str, path: str, body: dict[str, Any] | None = None,
+                          params: dict[str, Any] | None = None) -> httpx.Response:
+        """One call to the FSM's `/api/jarvis/*` surface, with the same key as every other call. Used only by
+        services/fsm_suggestions.py (push suggestions, poll Prepare requests, report back). The path is absolute under the
+        FSM's base URL - independent of `fsm_api_prefix`, so the contract path is the same whatever the prefix is - and the
+        response is handed back WITHOUT raising for an HTTP error, because the caller decides what a 404 or a 5xx means."""
+        if (method.upper() not in ("GET", "PUT", "PATCH", "DELETE") or ".." in path or "://" in path
+                or not path.startswith("/api/jarvis/")):
+            raise ValueError("Only GET/PUT/PATCH/DELETE to an /api/jarvis/ path is allowed")
+        return await self.http.request(method.upper(), f"{self.s.fsm_base_url.rstrip('/')}{path}", json=body,
+                                       params=params, headers=self._headers(), timeout=15)
+
     async def _list(self, kind_key: str, kind: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         payload = await self.get(self.endpoints[kind_key], params)
         return [normalise(kind, row) for row in _unwrap(payload)]

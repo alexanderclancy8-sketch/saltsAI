@@ -862,6 +862,23 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def refresh_suggestions(request: Request):
         return await J(request).suggestions.sweep(announce=False)
 
+    # Prepare and Not now on a suggestion (services/fsm_suggestions.py). Registered BEFORE the catch-all below. Each needs the
+    # signed-in owner/manager AND a click from this console (same-origin); the model has no tool for either. Prepare only DRAFTS and
+    # queues an approval - it approves, sends and runs nothing, and standing approvals are not consulted.
+    @app.post("/api/suggestions/{key:path}/prepare", dependencies=[Depends(owner), Depends(human_click)])
+    async def prepare_suggestion(key: str, request: Request):
+        j = J(request)
+        row = j.db.get_suggestion(key)
+        if not row or not row.get("kind"):
+            raise HTTPException(404, "No such suggestion")
+        return await j.fsm_suggestions.prepare_suggestion(key, by="the console", report=True)
+
+    @app.post("/api/suggestions/{key:path}/snooze", dependencies=[Depends(owner), Depends(human_click)])
+    async def snooze_suggestion(key: str, request: Request):
+        if not await J(request).fsm_suggestions.snooze_suggestion(key):
+            raise HTTPException(404, "No such suggestion")
+        return {"snoozed": key}
+
     @app.post("/api/suggestions/{key:path}/{decision}", dependencies=[Depends(owner)])
     async def decide_suggestion(key: str, decision: str, request: Request):
         if decision not in ("done", "dismissed"):

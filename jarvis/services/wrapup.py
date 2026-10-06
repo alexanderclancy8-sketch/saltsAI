@@ -87,7 +87,8 @@ class WrapUp:
             "issues_fixed_today": [i["title"] for i in issues if i["status"] == "resolved" and i["updated_at"][:10] == today_iso],
             "awaiting_approval": [a["summary"] for a in j.db.pending_actions()],
             "suggestions": [s["title"] for s in (demo_guard.visible_suggestions(j, j.db.open_suggestions())
-                                                 if demo_guard.active() else j.db.open_suggestions())],
+                                                 if demo_guard.active() else j.db.open_suggestions())
+                            if not s.get("kind")],  # the Prepare-button ones live in the Approvals drawer / Salts FSM, not in the wrap-up
             "unread_email": {"count": len(unread),
                              "important": [m["subject"] for m in unread if m.get("importance") == "high"][:5]},
             "money": {k: finance.get(k) for k in ("cash_at_bank", "debtors_overdue", "vat_due")}

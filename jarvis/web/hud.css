@@ -296,6 +296,10 @@ p.empty { margin: 0; }
 .suggestion.p1 { border-left-color: var(--ember); }
 .suggestion .sub { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .approval .row, .suggestion .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.suggestion .sug-note { margin-top: 8px; }   /* "Preparing the draft…" / why it could not be prepared */
+.suggestion .sug-note[hidden] { display: none; }
+.suggestion .btn:disabled { opacity: .55; cursor: default; }
+.sug-more { width: 100%; margin-bottom: 12px; }
 details.diff summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin-top: 6px; }
 details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; background: var(--navy); padding: 8px; border-radius: 6px; border: 1px solid var(--line); }
 #map { height: 300px; z-index: 0; border-radius: var(--r); border: 1px solid var(--line); background: var(--navy); margin-top: 12px; }
@@ -588,7 +592,7 @@ input.mem-input { min-height: 0; }
   .appr-row dt { padding-top: 0; }
   .appr-msg .appr-row.block dd { max-height: 4.6em; }   /* in the conversation: a few lines, scroll for the rest */
   .appr-msg .appr-safe { display: none; }
-  .appr-card .row .btn, .mem-item .row .btn { flex: 1 1 auto; }
+  .appr-card .row .btn, .mem-item .row .btn, .suggestion .row .btn { flex: 1 1 auto; }
   .appr-bulk > .btn { width: 100%; }
   .appr-confirm .row .btn { flex: 1 1 auto; }
 }

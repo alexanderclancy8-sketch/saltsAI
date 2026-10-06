@@ -253,7 +253,8 @@
       (na ? `${plural(na, "action", "actions")} waiting for your approval` : "nothing waiting for you") + (nf ? `, ${nf} failed - retry?` : ""));
     if (nf) add(95, "bad", `${plural(nf, "action", "actions")} failed - needs a look`, "approvals");
     if (na) add(80, "warn", `${plural(na, "action", "actions")} waiting for your approval`, "approvals");
-    if (ns) add(35, "warn", `${plural(ns, "suggestion", "suggestions")} from Jarvis`, "approvals");
+    const nk = (S.suggestions || []).filter((x) => x.kind).length;
+    if (ns) add(35, "warn", `${plural(ns, "suggestion", "suggestions")} from Jarvis${nk ? " - ready to prepare" : ""}`, "approvals");
 
     const own = Array.isArray(d.inbox?.unread) ? d.inbox.unread : [];
     // The shared service@ inbox (Bradford Council portal requests) counts too, but is always named, so the two stay apart.
@@ -1716,6 +1717,9 @@ function send(text, mode = "typed", opts = {}) {
     } catch (e) { console.warn(e); }
   }
   const loadInboxSoon = () => { clearTimeout(inboxTimer); inboxTimer = setTimeout(loadInbox, 120); };
+  // A suggestion with a kind (a quote to chase, ...) has Prepare and Not now: Prepare DRAFTS the work and queues it in the
+  // Approvals list above for the owner to approve - it sends nothing. Others keep Do it (hands the prompt to Jarvis) and Not now.
+  const SUG_CAP = 4;
   function renderSuggestions() {
     const list = S.suggestions || [];
     $("#suggestions-panel").hidden = !list.length;
@@ -1723,15 +1727,39 @@ function send(text, mode = "typed", opts = {}) {
     $("#suggestions-count").textContent = list.length ? String(list.length) : "";
     // Every other panel caps what it shows at once (issues 8, notifications 6) - suggestions didn't,
     // so a busy day's list of full-width action cards could bury COMMS/ISSUES/TESTS below the fold.
-    $("#suggestions").innerHTML = list.slice(0, 4).map((s) => `<div class="suggestion p${s.priority}">${esc(s.title)}
+    const shown = S.sugAll ? list : list.slice(0, SUG_CAP);
+    $("#suggestions").innerHTML = shown.map((s) => `<div class="suggestion p${s.priority}${s.kind ? " has-kind" : ""}" data-key="${esc(s.key)}">${esc(s.title)}
       ${s.detail ? `<span class="sub">${esc(s.detail)}</span>` : ""}
-      <div class="row"><button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button></div></div>`).join("");
+      <div class="row">${s.kind
+        ? `<button class="btn go" data-sug="prepare" data-key="${esc(s.key)}">Prepare</button><button class="btn" data-sug="snooze" data-key="${esc(s.key)}">Not now</button>`
+        : `<button class="btn go" data-sug="done" data-key="${esc(s.key)}">Do it</button><button class="btn" data-sug="dismissed" data-key="${esc(s.key)}">Not now</button>`}</div>
+      <span class="sug-note sub" role="status" aria-live="polite" hidden></span></div>`).join("")
+      + (list.length > SUG_CAP ? `<button type="button" class="btn sug-more" data-sug-more="1">${S.sugAll ? "Show fewer" : `Show all ${list.length}`}</button>` : "");
     updateOrbBadge();
   }
   $("#suggestions").addEventListener("click", async (e) => {
+    if (e.target.closest("[data-sug-more]")) { S.sugAll = !S.sugAll; renderSuggestions(); return; }
     const b = e.target.closest("[data-sug]");
-    if (!b) return;
-    const r = await api(`/api/suggestions/${encodeURIComponent(b.dataset.key)}/${b.dataset.sug}`, { method: "POST" });
+    if (!b || b.disabled) return;
+    const key = b.dataset.key, card = b.closest(".suggestion"), note = card?.querySelector(".sug-note");
+    const say = (text) => { if (note) { note.textContent = text; note.hidden = !text; } };
+    if (b.dataset.sug === "prepare" || b.dataset.sug === "snooze") {
+      card.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      say(b.dataset.sug === "prepare" ? "Preparing the draft…" : "");
+      try {
+        const r = await api(`/api/suggestions/${encodeURIComponent(key)}/${b.dataset.sug}`, { method: "POST" });
+        const d = r.ok ? await r.json() : null;
+        if (b.dataset.sug === "prepare" && d && d.status === "prepared") {
+          toast("Draft ready", "It is waiting in your approvals - nothing has been sent.");
+          await loadInbox();
+        } else if (b.dataset.sug === "prepare") {
+          say((d && d.note) || "Jarvis couldn't prepare that just now.");
+          card.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+        }
+      } catch { say("Jarvis couldn't reach the server. Try again."); card.querySelectorAll("button").forEach((x) => { x.disabled = false; }); }
+      return;
+    }
+    const r = await api(`/api/suggestions/${encodeURIComponent(key)}/${b.dataset.sug}`, { method: "POST" });
     if (b.dataset.sug === "done" && r.ok) send((await r.json()).prompt, S.speakPref === "always" ? "voice" : "typed");
   });
 

@@ -533,6 +533,11 @@ SECTIONS: tuple[Section, ...] = (
                   "(asking for the wrap-up in the chat still works)."),
             Field("wrapup_cron", "End-of-day wrap-up", "cron"),
             Field("suggestions_cron", "Suggestion sweeps", "cron"),
+            Field("suggestions_publish_to_fsm", "Offer suggestions in Salts FSM", "bool",
+                  "ON shows Jarvis's suggestions (a quote that has gone quiet, for now) in the Salts FSM Action Centre, so the "
+                  "office can press Prepare there. Prepare only DRAFTS the work and queues it in Jarvis for your approval - "
+                  "nothing is sent or changed until you approve it. Checked every 15 minutes in working hours, hourly outside "
+                  "them. Only you can change this."),
             Field("billing_check_cron", "Unbilled jobs check", "cron"),
             Field("review_requests_cron", "Review requests", "cron"),
             Field("staff_review_cron", "Weekly team review", "cron"),
@@ -593,7 +598,8 @@ FIELDS: dict[str, Field] = {f.key: f for s in SECTIONS for f in s.fields}
 OWNER_IDENTITY_KEYS = frozenset({"owner_email", "partner_email", "manager_emails"})  # who the approvers are
 OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f in s.fields) | frozenset({
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
-    "staff_report_key", "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
+    "staff_report_key", "suggestions_publish_to_fsm",  # the switch that lets the FSM's Prepare button reach Jarvis
+    "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
     "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
     "engineer_model", "engineer_effort"}) | frozenset(  # which model / how hard the code-writing agents work: owner's call (cost)
     f.key for s in SECTIONS if s.id == "serviceinbox" for f in s.fields)  # which extra mailbox Jarvis may read, and what counts as a council request
