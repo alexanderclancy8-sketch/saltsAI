@@ -284,6 +284,16 @@ CREATE TABLE IF NOT EXISTS location_lookup_log (
     engineer TEXT NOT NULL,
     mode TEXT NOT NULL
 );
+-- FSM TEST BROWSER audit: one row per call the browser was asked to make (allowed or refused) - when (UTC), which tool, the
+-- web address it named ('' for a click/type that names none) and the outcome. Never holds typed text or any login.
+CREATE TABLE IF NOT EXISTS fsm_test_browser_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT ''
+);
 -- Where each engineer lives, as a ROUNDED map point (4 decimal places, about 11 m) - never the postcode, which is discarded
 -- as soon as it has been looked up (services/engineer_homes.py). Owner-only, never read by a tool, never exported.
 CREATE TABLE IF NOT EXISTS engineer_homes (
@@ -803,6 +813,16 @@ class Database:
     def location_lookups(self, days: int = 7, limit: int = 200) -> list[dict[str, Any]]:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
         return self.query("SELECT created_at, asked_by, tool, engineer, mode FROM location_lookup_log "
+                          "WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))
+
+    # -- FSM TEST BROWSER audit (brain/plugins.py) ----------------------------------------------
+    def log_fsm_test_call(self, tool: str, url: str, outcome: str, reason: str = "") -> int:
+        return self.execute("INSERT INTO fsm_test_browser_log (created_at, tool, url, outcome, reason) VALUES (?,?,?,?,?)",
+                            (now_iso(), tool, url, outcome, reason))
+
+    def fsm_test_calls(self, days: int = 7, limit: int = 100) -> list[dict[str, Any]]:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        return self.query("SELECT created_at, tool, url, outcome, reason FROM fsm_test_browser_log "
                           "WHERE created_at >= ? ORDER BY id DESC LIMIT ?", (since, limit))
 
     # -- engineer home points (services/engineer_homes.py) -------------------------------------

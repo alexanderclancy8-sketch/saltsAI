@@ -135,6 +135,18 @@ class Settings(BaseSettings):
     plugin_browser_use_enabled: bool = False  # conversational Jarvis only, read-only browsing, domain allowlist
     plugin_browser_allowed_domains: str = ""  # comma-separated; Browser Use may only visit these (and subdomains)
     plugin_thoughtproof_enabled: bool = False  # extra verification in front of approved write actions
+    # FSM TEST BROWSER (mcp_plugins.yaml `fsm_test_browser`, jarvis/brain/plugins.py): click/type browsing of the Salts FSM
+    # TEST site ONLY, conversational Jarvis on the Max backend only. Off by default; the switch is owner-only on the
+    # Settings page. The address and the four test logins below are ENVIRONMENT-ONLY on purpose (not on the Settings page,
+    # so nothing saved or shown there can widen the one allowed host or expose a login). They are never sent to the
+    # model, never logged and never stored in the chat history: the model only names a slot, the PreToolUse hook swaps
+    # the value in. They must be throwaway TEST accounts - never a production login.
+    plugin_fsm_test_browser_enabled: bool = False
+    fsm_test_base_url: str = ""  # FSM_TEST_BASE_URL: the FSM TEST deployment; its hostname is the ONE host allowed
+    fsm_test_office_user: str = ""
+    fsm_test_office_pass: str = ""
+    fsm_test_engineer_user: str = ""
+    fsm_test_engineer_pass: str = ""
 
     # --- Microsoft 365 (Graph, app-only) --------------------------------
     ms_tenant_id: str = ""

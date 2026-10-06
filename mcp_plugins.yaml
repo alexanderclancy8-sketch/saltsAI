@@ -99,6 +99,83 @@ browser_use:
                           paypal, stripe, gocardless, payroll, salts-fsm, sharepoint, onedrive, outlook, office365]
   max_url_length: 256              # a ceiling in code too (256): this file can only lower it
 
+fsm_test_browser:
+  # FSM TEST BROWSER. A SEPARATE entry from browser_use above, which stays read-only and keeps salts-fsm on its blocked-host
+  # list - nothing in this entry loosens it. This is the only place in Jarvis where click and typing tools are ever
+  # permitted, and only for ONE host: the Salts FSM TEST deployment. Conversational Jarvis only (never a team session),
+  # Max backend only (the API backend has no MCP). See FsmTestPolicy in jarvis/brain/plugins.py.
+  #
+  # OFF by default. Its own switch: `plugin_fsm_test_browser_enabled` (Settings > Plugins and MCP tools > "FSM TEST BROWSER",
+  # owner-only, or env PLUGIN_FSM_TEST_BROWSER_ENABLED=true). Even switched on it stays INERT, and Settings shows "on but
+  # inactive (reason)", until ALL of these are true:
+  #   - `version` below is an exact x.y.z that a human looked up, and `package`, `command` and `args` are filled in,
+  #   - `read_tools` lists at least the navigation/reading tools (click_tools / type_tools are optional),
+  #   - `sandbox_confirmed` is true (a human confirmed the sandbox below - the code can't create one),
+  #   - env FSM_TEST_BASE_URL is an https address AND env FSM_BASE_URL (production) is set and is a different host.
+  # NOTHING HERE HAS BEEN VERIFIED AGAINST npm / PyPI. Package, version and tool names are blank on purpose and must never
+  # be invented: look the release up, read its changelog and its tool list, and commit the exact values here.
+  scope: chat
+  backend: max
+  command: npx                     # unverified: npx or uvx, whichever the pinned package needs
+  package: ""                      # PIN ME: the browser MCP package (name unverified)
+  version: ""                      # PIN ME: exact x.y.z. Blank = inert. Never "latest".
+  args: ["-y", "{spec}"]           # {spec} becomes package@version (npx) or package==version (uvx); check for the release
+  server_name: fsm_test_browser    # must differ from browser_use / context7 / jarvis (the code refuses a clash)
+  # REQUIRED / OPTIONAL: only these tools are exposed and only these can ever be called; everything else the server might
+  # offer is denied. Names depend on the pinned release, so they are blank until verified. Blank read_tools = inert.
+  read_tools: []                   # open a URL, read page text / snapshot, screenshot
+  click_tools: []                  # click. Permitted ONLY here, and only on the one test host (see below)
+  type_tools: []                   # type into a field. Text may ONLY be a login slot, never free text (see below)
+  # Tools whose name contains one of these words are refused and stop the plugin starting if listed. The list in code
+  # (script, eval, exec, javascript, run code, download, upload, cookie, storage, agent, submit, pdf) always applies; entries
+  # here only add.
+  denied_tool_keywords: []
+  # OPTIONAL, filled in when the version is pinned: the only argument names each listed tool may be given, e.g.
+  #   tool_arguments: {navigate: [url], type: [ref, text]}
+  # Anything else is refused. Without it, EVERY string in a call is still searched for hosts and has to pass the host guard.
+  # Typed text: the model never types free text and never sees a login. A typing call may carry ONLY one of these slot
+  # names, written exactly (double braces included), and the code swaps in the real value from the ENVIRONMENT just before
+  # the call reaches the browser:
+  #   {{FSM_TEST_OFFICE_USER}}  {{FSM_TEST_OFFICE_PASS}}  {{FSM_TEST_ENGINEER_USER}}  {{FSM_TEST_ENGINEER_PASS}}
+  # The values are environment secrets (FSM_TEST_OFFICE_USER / _PASS, FSM_TEST_ENGINEER_USER / _PASS). They are not on the
+  # Settings page, are never put in chat, logs, memory, the audit table or conversation history, and are scrubbed out of
+  # what the browser returns. They must be THROWAWAY accounts on the test site - never a production login. Any other typed
+  # text, boolean or number (except an element number) is refused. The argument shape is unverified: when pinning, check the
+  # real typing tool's arguments fit (any argument that is not a slot, an element number or an address is refused).
+  #
+  # The ONE allowed host: the hostname of env FSM_TEST_BASE_URL - exact match, no subdomains, https only, no port. It is
+  # HARD-REFUSED if it is, or sits next to (parent or child of), the hostname of the production FSM (FSM_BASE_URL), and if
+  # FSM_BASE_URL isn't set the plugin doesn't start. Every other host - and the production FSM - is refused for every tool,
+  # including clicks. The web address of a call is parsed strictly (ASCII hostnames only: no backslash, @, port, IP, %
+  # escape or punycode; no .. paths, no file/download extensions; query strings of at most 64 characters made of short plain
+  # values, so no open-redirect parameter can name another site).
+  # Page content is untrusted DATA: it can never trigger another tool or approve anything (the hook can only deny, or fill
+  # in a login slot), and nothing from the test site is passed to Sage, email, memory or production by this code.
+  #
+  # Audit: EVERY call (allowed or refused) is written to the `fsm_test_browser_log` table (time, tool, url, outcome, reason)
+  # BEFORE it goes ahead; if the row can't be written the call is refused. Alex reads it by asking Jarvis for the "FSM test
+  # browser log" (read-only tool `fsm_test_browser_log`). Typed text and logins are never recorded.
+  #
+  # SANDBOX REQUIREMENTS (documented, NOT enforced by code, which is why `sandbox_confirmed` stays false): the browser must
+  # run on a THROWAWAY, CREDENTIAL-FREE, SEPARATE machine or GitHub Actions runner - not the Jarvis App Service container.
+  # No saved logins, cookies, extensions or company SSO; no access to Jarvis's files, database, secrets or network; a fresh
+  # profile per run; and a network EGRESS ALLOWLIST that permits ONLY the FSM TEST hostname. That egress allowlist is the
+  # SECOND WALL: the PreToolUse hook sees only the call about to be made (tool and arguments), never where a click or a
+  # redirect took the page, so a redirect or link off the test host can be stopped only by the sandbox's egress allowlist
+  # failing to connect. The production FSM must be unreachable from the sandbox. Set `sandbox_confirmed` to true only once a
+  # human has confirmed all of that; do not set it on the strength of this file alone.
+  # NOTE: the shipped Dockerfile (python:3.12-slim) has NEITHER npx nor uvx, so the server cannot start on the current Azure
+  # image anyway (reported as "isn't installed", never silently ignored). Running it needs the sandbox above, wired up by a
+  # human; this repository does not do that.
+  # Residual risk: updatedInput (how a slot becomes its value) is applied by the Claude Code runtime - verify with the pinned
+  # versions that the value reaches the browser and is not written to Claude Code's own session files on the Jarvis host.
+  sandbox_confirmed: false
+  # Hostnames containing any of these words are refused even as the test host. (salts-fsm is deliberately NOT here: the
+  # test site may legitimately contain it. The production host is excluded by comparison with FSM_BASE_URL instead.)
+  blocked_host_keywords: [sage, bank, barclays, lloyds, hsbc, natwest, santander, monzo, starling, xero, quickbooks,
+                          paypal, stripe, gocardless, payroll, sharepoint, onedrive, outlook, office365]
+  max_url_length: 256              # a ceiling in code too (256): this file can only lower it
+
 thoughtproof:
   # A local MCP server that judges a proposed action against the written mandates in mandates.yaml and answers
   # ALLOW or BLOCK. Runs as a child process on the same machine; nothing is sent anywhere by Jarvis except to it.

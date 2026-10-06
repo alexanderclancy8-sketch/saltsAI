@@ -468,6 +468,12 @@ SECTIONS: tuple[Section, ...] = (
                   "Optional. Comma-separated, e.g. bsigroup.com, gov.uk. Subdomains are included. Can only narrow "
                   "the approved list in mcp_plugins.yaml, never widen it; blank means the whole approved list. "
                   "Finance, Sage and bank sites are always refused, even if listed.", advanced=True),
+            Field("plugin_fsm_test_browser_enabled", "FSM TEST BROWSER (click and type on the FSM test site)", "bool",
+                  "Off by default - its own switch, separate from Browser Use. Lets Jarvis click and type, but ONLY "
+                  "on the one Salts FSM TEST site (FSM_TEST_BASE_URL), signing in with the throwaway test logins "
+                  "held in environment secrets. It refuses the production FSM and every other host. Needs a pinned "
+                  "install, a confirmed throwaway sandbox and an egress allowlist in mcp_plugins.yaml before it "
+                  "does anything. Every call is logged; ask Jarvis for the FSM test browser log."),
             Field("plugin_thoughtproof_enabled", "ThoughtProof (extra check before approved actions run)", "bool",
                   "Off by default. When on, every action you approve is first checked against the rules in "
                   "mandates.yaml; a BLOCK cancels it and tells you. If the checker can't be reached the action is "
@@ -601,6 +607,7 @@ OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f 
     "staff_report_key", "suggestions_publish_to_fsm",  # the switch that lets the FSM's Prepare button reach Jarvis
     "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
     "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
+    "plugin_fsm_test_browser_enabled",  # whether Jarvis may click and type on the FSM test site
     "engineer_model", "engineer_effort"}) | frozenset(  # which model / how hard the code-writing agents work: owner's call (cost)
     f.key for s in SECTIONS if s.id == "serviceinbox" for f in s.fields)  # which extra mailbox Jarvis may read, and what counts as a council request
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}

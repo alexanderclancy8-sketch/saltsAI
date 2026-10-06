@@ -374,6 +374,20 @@ vehicle-enquiry host are listed individually, never all of `gov.uk`. The single 
 (with `plugin_browser_allowed_domains`, both owner-only in `settings_store.OWNER_ONLY_KEYS`). Never add a plugin tool that can change something without going through
 `dispatch()`'s approval gate.
 
+**FSM TEST BROWSER** (`fsm_test_browser` in `mcp_plugins.yaml`, `FsmTestPolicy` / `fsm_test_setup` in `plugins.py`; tests
+`tests/test_fsm_test_browser.py`) is a SEPARATE plugin from Browser Use, which stays read-only with `salts-fsm` on its blocked-host
+list. It is the only place click and typing tools are ever permitted, and only on ONE exact host: the hostname of env
+`FSM_TEST_BASE_URL`, hard-refused if it is (or is next to) the production host from `FSM_BASE_URL`, and it doesn't start without
+that. Its own owner-only switch is `plugin_fsm_test_browser_enabled` (off by default); the address and the four test logins
+(`FSM_TEST_OFFICE_USER/PASS`, `FSM_TEST_ENGINEER_USER/PASS`) are environment-only, deliberately not on the Settings page. Typed
+text is only ever a login slot name (`{{FSM_TEST_OFFICE_PASS}}`): the PreToolUse hook swaps in the value from the environment
+(`updatedInput`), the PostToolUse hook scrubs the values from what the browser returns, and every audit row is scrubbed. Every
+call (allowed or refused) is written to the `fsm_test_browser_log` table first - if that fails the call is refused - and Alex
+reads it through the read-only `fsm_test_browser_log` tool. Inert until an exact pinned version, tool lists and a human-confirmed
+sandbox exist (all blank/false in the shipped yaml - never invent them). The hook cannot see redirects or where a click went:
+the sandbox (a throwaway, credential-free, separate machine or GitHub Actions runner; the Dockerfile has neither npx nor uvx)
+with an egress allowlist of just the test host is the second wall. A team session never gets it.
+
 **Everything not in the local SQLite (`jarvis/db.py`) is read live from its source system**, normalised through
 alias tables so small API differences don't break things - e.g. `jarvis/integrations/fsm.py`'s `ALIASES` maps
 `jobNumber`/`job_number`/`reference`/`number` all onto one `ref` field. `jarvis/db.py` itself only holds Jarvis's

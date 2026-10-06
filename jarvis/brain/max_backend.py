@@ -247,7 +247,8 @@ class MaxBrain:
     async def _connected(self, effort: str, model: str):
         """The running Claude Code client, restarted only if effort, model, instructions or the conversation changed."""
         # read-only browsing, only if switched on AND every safeguard is met; never for a team session
-        extra = plugins.PluginSetup() if self.team else plugins.chat_setup(self.s)
+        # (the FSM TEST BROWSER's calls are recorded through the audit callback; a team session never gets either plugin)
+        extra = plugins.PluginSetup() if self.team else plugins.chat_setup(self.s, audit=self.j.db.log_fsm_test_call)
         key = (effort, model, self.system, extra.signature)
         if self._client is not None and self._client_key == key and not self._fresh_start:
             return self._client
@@ -256,7 +257,8 @@ class MaxBrain:
         await self._disconnect()
         if self._fresh_start:
             self.session_id, self._fresh_start = None, False
-        more: dict[str, Any] = {"hooks": extra.hooks()} if extra.guard is not None else {}
+        hooks = extra.hooks()
+        more: dict[str, Any] = {"hooks": hooks} if hooks else {}
         options = base_options(
             self.s, model=model, system_prompt=self.system + extra.prompt, effort=effort,
             tools=[] if self.team else CHAT_BUILTINS, mcp_servers={SERVER: self.server, **extra.mcp_servers},
