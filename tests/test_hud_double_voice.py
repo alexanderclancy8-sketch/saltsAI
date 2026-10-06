@@ -311,9 +311,14 @@ def test_the_websocket_joining_a_fallback_stream_part_way_does_not_deliver_the_r
 
 
 # ---------------------------------------------------------------- Jarvis speaking up on his own
-def test_a_proactive_message_is_read_by_one_tab_only(browser, chat):
+def test_a_proactive_message_is_read_by_one_tab_only(browser, chat, monkeypatch):
+    from jarvis import access
+
     srv, j, client, gate = chat([message([text_block(TEXT)])], delay=0.005)
     app = srv.server.config.app
+    # Every route has to be classified in access.ROUTE_POLICY (default deny, team mode): without this entry the helper
+    # route below answered 403, so the proactive message was never published and neither tab ever showed it.
+    monkeypatch.setitem(access.ROUTE_POLICY, "POST /__test/proactive", access.PUBLIC)
 
     @app.post("/__test/proactive")
     async def _proactive():  # runs on the server's own event loop, like a scheduled check posting into the open chat
@@ -333,8 +338,19 @@ def test_a_proactive_message_is_read_by_one_tab_only(browser, chat):
         first.evaluate("fetch('/__test/proactive', {method: 'POST'})")
         for page in (first, second):
             page.wait_for_function("document.body.innerText.includes('The pull request was merged.')", timeout=15000)
-        time.sleep(1.5)
-        said = first.evaluate("__voice.speech") + second.evaluate("__voice.speech")
+
+        def spoken():
+            return first.evaluate("__voice.speech") + second.evaluate("__voice.speech")
+
+        # How long the winning tab takes to start reading is not fixed: it waits ~250 ms for the other tab's claim, then tries
+        # the server voice (a stubbed 503) before the browser voice, and a background tab's timers are throttled - on a loaded
+        # machine that overran the old fixed 1.5 s sleep, so nobody had "spoken" yet when it was counted. Wait until someone has
+        # read it, THEN give a second reader time to show up (both tabs settle their claim within a throttled second).
+        deadline = time.monotonic() + 20
+        while "The pull request was merged." not in spoken() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        time.sleep(2.5)
+        said = spoken()
         assert said.count("The pull request was merged.") == 1, said
         assert len(said) == before + 1
     finally:
