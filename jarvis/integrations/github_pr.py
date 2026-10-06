@@ -176,6 +176,7 @@ class PRClient:
                 "mergeable": full.get("mergeable"), "merge_status": _conflict_state(full),
                 "ci": ci["state"], "ci_failed": ci["failed"], "ci_pending": ci["pending"],
                 "files_changed": full.get("changed_files"), "head_sha": full["head"]["sha"],
+                "created_at": full.get("created_at") or "", "updated_at": full.get("updated_at") or "",
             })
         return {"notice": UNTRUSTED_NOTICE, "count": len(out), "pull_requests": out}
 

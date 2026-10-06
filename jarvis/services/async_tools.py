@@ -70,7 +70,7 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "run_in_background", "background_results", "engineer_locations", "who_is_home", "nearest_engineer", "van_day",
     "timesheet_check",
     # push to the display or the owner directly
-    "show_on_display", "send_update_to_owner", "ask_user", "offer_next_steps",
+    "show_on_display", "send_update_to_owner", "ask_user", "offer_next_steps", "doctor",
     # write a document, report or letter and show it on the display (and/or notify)
     "generate_image", "business_advice", "issue_report", "false_alarm_evidence_report", "audit_evidence_pack",
     "meeting_actions", "prepare_renewal", "draft_customer_emails", "draft_credit_control", "draft_sales_followup",

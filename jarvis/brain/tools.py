@@ -1174,6 +1174,13 @@ async def agent_runs(j, a: AgentRunsIn):
     return {"runs": runs, "stalled_after_minutes": int(STALL_AFTER.total_seconds() // 60)}
 
 
+async def doctor(j, a: NoInput):
+    """Read-only self-diagnostics: one line per item (ok / amber / red + next step), also put on the display."""
+    from ..services.doctor import Doctor
+
+    return await Doctor(j).diagnose()
+
+
 async def log_job(j, a: LogJobIn):
     body: dict[str, Any] = {"site": a.site, "type": a.type, "description": a.description, "created_by": "Jarvis"}
     for key, value in (("priority", a.priority), ("engineer", a.engineer),
@@ -2200,6 +2207,14 @@ TOOLS: list[Tool] = [
                        "still marked running but has been silent for 30+ minutes. Use it when the owner asks "
                        "what an agent is up to, whether it's stuck, or why nothing has come back yet.",
          AgentRunsIn, agent_runs, "Checking on the engineering agents"),
+    Tool("doctor", "Read-only self-diagnostics: what in Jarvis is quietly broken. One line per item with a status "
+                   "(ok / amber / red) and a suggested next step, shown on the display: plugins switched on but "
+                   "inert, data sources still on demo data, which keys are set (names only, never values), "
+                   "automations (last run, endless NOTHING_TO_REPORT, running too often out of hours), stalled or "
+                   "failed engineering-agent runs, requests untouched for 24h, pull requests red or conflicted, "
+                   "failing routine tests and issues needing a human. A check that can't run says so and the rest "
+                   "still do. Use it when the owner asks 'is anything broken?', 'run the doctor' or 'health check'. "
+                   "It changes nothing.", NoInput, doctor, "Running a self-check"),
     Tool("log_job", "Log a new job in Salts FSM from a plain description - a fault report, call-out or booking. "
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "
