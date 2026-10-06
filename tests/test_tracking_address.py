@@ -194,8 +194,11 @@ async def test_van_day_prefers_the_registered_van_over_another_van_with_the_same
 
 
 async def test_van_day_flags_no_journeys_when_the_van_reported_a_position_that_day():
-    ram = FakeRam([_van(2, "SA51 LTS", "Ian Frost", "Ian Frost home", minutes_ago=5)])
-    van = await Tracker(FakeFSM(), http=None, ram=ram).van_day("Ian Frost", date.today())
+    vehicle = _van(2, "SA51 LTS", "Ian Frost", "Ian Frost home", minutes_ago=5)
+    # "That day" is the day of the position itself: in the first five minutes after midnight a position from five minutes
+    # ago is yesterday's, and comparing it with date.today() made this fail then.
+    day = datetime.fromisoformat(vehicle["timestamp"]).date()
+    van = await Tracker(FakeFSM(), http=None, ram=FakeRam([vehicle])).van_day("Ian Frost", day)
     assert van["summary"].startswith("No journeys recorded")
     assert any("position" in w and "no journeys" in w.lower() for w in van["warnings"])
 
