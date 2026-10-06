@@ -915,10 +915,18 @@ class CreateAutomationIn(BaseModel):
                                     "runs, e.g. 'Check for jobs scheduled today with no engineer assigned and "
                                     "tell the owner if there are any' - write it as if telling yourself what "
                                     "to go and look at, using whatever tools that needs")
+    never_slow_down: bool = Field(False, description="True only if the owner says this must keep running at its full "
+                                                     "schedule even when it keeps finding nothing")
 
 
 class DeleteAutomationIn(BaseModel):
     automation_id: int = Field(description="The automation's number, from list_automations")
+
+
+class AutomationOptionsIn(BaseModel):
+    automation_id: int = Field(description="The automation's number, from list_automations")
+    never_slow_down: bool = Field(description="True: never slow it down, skip it overnight or ask about it. "
+                                              "False: let it back off when it keeps finding nothing")
 
 
 class WatchCIIn(BaseModel):
@@ -2019,7 +2027,7 @@ async def search_conversation_history(j, a: HistorySearchIn):
 
 
 async def create_automation(j, a: CreateAutomationIn):
-    return j.automations.create(a.description, a.cron, a.prompt)
+    return j.automations.create(a.description, a.cron, a.prompt, a.never_slow_down)
 
 
 async def list_automations(j, a: NoInput):
@@ -2028,6 +2036,10 @@ async def list_automations(j, a: NoInput):
 
 async def delete_automation(j, a: DeleteAutomationIn):
     return j.automations.delete(a.automation_id)
+
+
+async def set_automation_options(j, a: AutomationOptionsIn):
+    return j.automations.set_never_slow_down(a.automation_id, a.never_slow_down)
 
 
 async def watch_ci(j, a: WatchCIIn):
@@ -2580,8 +2592,15 @@ TOOLS: list[Tool] = [
          create_automation, "Setting up an automation"),
     Tool("list_automations", "Every automation the owner has set up, its schedule, and what it found last time "
                              "it ran. Each one has a 'schedule' field in plain English (e.g. 'every weekday at "
-                             "8am') - read that back, not the raw 'cron' field.", NoInput, list_automations,
+                             "8am') - read that back, not the raw 'cron' field. A check that keeps finding "
+                             "nothing is slowed down automatically: 'effective_interval', 'no_change_streak' and "
+                             "'slowed_because' say how and why.", NoInput, list_automations,
          "Checking your automations"),
+    Tool("set_automation_options", "Set the owner's 'never slow down' override on one automation (by its number): "
+                                   "it then always runs at its full schedule, is not skipped overnight and is not "
+                                   "asked about. Use it when the owner answers 'keep it' to a keep/slow down/delete "
+                                   "question.", AutomationOptionsIn, set_automation_options,
+         "Updating that automation"),
     Tool("delete_automation", "Remove one of the owner's automations by its number.", DeleteAutomationIn,
          delete_automation, "Removing that automation"),
     Tool("watch_ci", "Keep following the GitHub Actions (CI) result on a branch of your own repository in the "

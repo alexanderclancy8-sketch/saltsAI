@@ -518,6 +518,22 @@ approval path), and every message is run through `history.redact_history` (the s
   sweeps). Automations now ALWAYS run as a `quiet_turn` and are always told to start with `NOTHING_TO_REPORT` when there is nothing new;
   a finding goes through `Proactive.tell()` (= `announce()` when speaking up is on; otherwise one message in the open chat, once, or a
   quiet notification if no chat is open). A check that DOES find a change still posts normally and is logged as `changed`.
+- **Heartbeat stop rules** (`services/heartbeat.py`, applied by `AutomationService`): an automation that keeps returning
+  `NOTHING_TO_REPORT` backs off instead of running forever. `automations` columns `nochange_streak` / `nochange_since` /
+  `last_asked_at` / `never_slow` (migrated in `Database._migrate`). Every 6 consecutive no-change runs slows the *effective*
+  interval one step up 10 min -> 30 min -> hourly -> 3 h -> daily (only steps above the owner's cron interval, which is the shortest
+  gap between its next fires); it is done by `_run_guarded` skipping cron fires that come too soon after `last_run_at`, never by
+  rewriting the schedule, so it can't go faster than configured. Any real change resets the streak. After 12 h with no change, ONE
+  Teams-only message (subject `[Jarvis] ...`, via `notifier.send_owner_update(..., channels=("teams",))`) asks keep / slow down /
+  delete, not repeated for 24 h, not overnight, and only for automations configured to run more often than every 12 h. Overnight
+  (22:00-06:00 `TIMEZONE`) a non-urgent automation runs at most hourly. Exempt from all of it: a description/prompt mentioning
+  life-safety, lone worker, out-of-hours alarms or keyholder (`EXEMPT_RE`), or the owner's `never_slow` flag (`create_automation`
+  `never_slow_down`, or the `set_automation_options` tool - the answer to "keep it"). `list_automations` shows `effective_interval`,
+  `no_change_streak`, `slowed_because`. The clock is `AutomationService.clock` so tests use a fake one. This covers owner-created
+  automations only; the built-in pull request watch (`proactive_pr_watch_min`) is a separate interval job and is not slowed.
+- **`HEARTBEAT.md`** (optional): house rules read at the start of every automation run (`heartbeat.read_checklist`: `<data_dir>/HEARTBEAT.md`,
+  else the repo-root one; first 2000 chars) and appended to the run's prompt as guidance that never overrides the approval rules.
+  Edit it to change rules like "only message on change" without a deploy.
 - **Pull request watch**: `pr_watch()` (scheduled every `proactive_pr_watch_min` only when proactive is on and the Jarvis repo is
   connected) lists the open PRs read-only, compares with the last snapshot (kv `proactive:pr_watch`) and announces new PRs, CI
   passing/failing, conflicts and closed PRs. The first look only records a baseline.

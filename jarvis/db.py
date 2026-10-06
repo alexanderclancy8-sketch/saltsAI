@@ -231,7 +231,11 @@ CREATE TABLE IF NOT EXISTS automations (
     prompt TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_at TEXT DEFAULT '',
-    last_result TEXT DEFAULT ''
+    last_result TEXT DEFAULT '',
+    nochange_streak INTEGER NOT NULL DEFAULT 0,
+    nochange_since TEXT DEFAULT '',
+    last_asked_at TEXT DEFAULT '',
+    never_slow INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS reply_habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -392,6 +396,13 @@ class Database:
         for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
             if col not in issue_cols:
                 self._conn.execute(f"ALTER TABLE issues ADD COLUMN {col} TEXT DEFAULT ''")
+        # Heartbeat stop rules (services/heartbeat.py): the no-change streak, when it began, when the owner was last asked
+        # whether to keep the automation, and the owner's "never slow down" flag.
+        auto_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(automations)").fetchall()}
+        for col, ddl in (("nochange_streak", "INTEGER NOT NULL DEFAULT 0"), ("nochange_since", "TEXT DEFAULT ''"),
+                         ("last_asked_at", "TEXT DEFAULT ''"), ("never_slow", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in auto_cols:
+                self._conn.execute(f"ALTER TABLE automations ADD COLUMN {col} {ddl}")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
