@@ -1752,6 +1752,21 @@ async def remedial_quotes(j, a: NoInput):
     return await remedial_pipeline(j.fsm)
 
 
+async def upsell_opportunities(j, a: NoInput):
+    """Read-only: the open Upsell Opportunities in the FSM, as a short spoken-style answer. Approving, editing, declining and sending
+    all happen in the FSM Action Centre by a person - there is deliberately nothing here that can do any of them."""
+    from ..services.upsell_drafts import spoken_answer
+
+    items, why = await j.upsell_drafts.list_open()
+    if why == "demo":  # sample data is never an answer (demo_guard): without a real FSM there is nothing to look at
+        return "I can't see any real upsell data yet: Salts FSM isn't connected to me, so I won't guess from sample figures."
+    if why == "missing":
+        return "The FSM doesn't have the upsell opportunities feature yet, so I can't see any."
+    if why:
+        return "I couldn't reach the FSM just now to look at the upsell opportunities. Try me again in a minute."
+    return spoken_answer(items)
+
+
 async def suggestions_list(j, a: NoInput):
     if demo_guard.suggestions_rest_on_sample_data(j):
         # A source the suggestions are built from is still sample data. Sweeping now would build suggestions from the sample figures (and send them to
@@ -2407,6 +2422,13 @@ TOOLS: list[Tool] = [
     Tool("remedial_quotes", "Remedial quotes Salts FSM raised from service-visit defects: open pipeline and value, "
                             "which need chasing (7 and 21 days), and win rate.", NoInput, remedial_quotes,
          "Checking remedial quotes"),
+    Tool("upsell_opportunities", "Upsell Opportunities from the Salts FSM: sites where Salts maintains only some of fire alarm, "
+                                 "intruder alarm, fire extinguishers, access control and emergency lighting. Use for 'any upsell "
+                                 "opportunities?'. Read-only; returns a short spoken-style answer (how many, then up to five sites "
+                                 "and what we don't maintain yet) - say it as given, in a sentence or two. A person approves, edits or "
+                                 "declines each one in the FSM Action Centre, and the FSM sends the email when they click; you "
+                                 "cannot approve, decline, send or edit them. Never claim a customer lacks a system or is "
+                                 "non-compliant.", NoInput, upsell_opportunities, "Checking upsell opportunities"),
     Tool("suggestions", "Refresh and list your current proactive suggestions (unbilled work, quotes to chase, "
                         "overdue jobs to assign, debts to chase, stock to reorder, expiring qualifications, audits). Read-only. Quotes "
                         "to chase also appear in the Salts FSM Action Centre; each has a Prepare button there and in the "

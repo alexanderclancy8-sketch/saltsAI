@@ -374,6 +374,10 @@ class Settings(BaseSettings):
     suggestions_fsm_hours_start: int = 7  # working hours, Monday-Friday, in TIMEZONE: start hour (inclusive)...
     suggestions_fsm_hours_end: int = 19  # ...and end hour (exclusive)
     suggestions_prepare_max_per_hour: int = 20  # most prepares started by FSM requests per rolling hour
+    # Upsell Opportunities (services/upsell_drafts.py): Jarvis rewords the FSM's template draft email for an upsell item. It only
+    # PATCHes the draft wording - it never sends, approves or declines (a person does that in the FSM Action Centre). OWNER-ONLY switch.
+    upsell_drafts_enabled: bool = True
+    upsell_drafts_interval_min: int = 10  # poll for template drafts this often in working hours (hourly outside them)
     lone_worker_check_min: int = 30  # how often to look for jobs running dangerously long
     wrapup_cron: str = "30 17 * * 1-5"  # end-of-day wrap-up, 17:30 Monday to Friday (after the billing and review checks)
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval

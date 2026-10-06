@@ -73,6 +73,7 @@ from .services.site_access import SiteAccessCodes
 from .services.staff import StaffMonitor
 from .services.stores import Stores
 from .services.fsm_suggestions import FsmSuggestions
+from .services.upsell_drafts import UpsellDrafts
 from .services.suggestions import Suggestions
 from .services.team_access import TeamAccess
 from .services.team_sessions import TeamSessions
@@ -178,6 +179,7 @@ class Jarvis:
         self.images = ImageGenerator(self)  # draft social media graphics; never posted anywhere
         self.suggestions = Suggestions(self)
         self.fsm_suggestions = FsmSuggestions(self)  # suggestions with a Prepare button, shared with the FSM Action Centre
+        self.upsell_drafts = UpsellDrafts(self)  # better wording for the FSM's upsell draft emails (never sends or approves)
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.activity = ActivityLog(self)  # every scheduled check's runs; the chat shows one quiet line per check
@@ -333,6 +335,10 @@ class Jarvis:
             await self.fsm_suggestions.sync()  # (the 15-minute job's first run would otherwise be a quarter of an hour away)
         except Exception:  # noqa: BLE001
             log.exception("Initial routine test run failed")
+        try:
+            await self.upsell_drafts.run()  # (the 10-minute job's first run would otherwise be ten minutes away)
+        except Exception:  # noqa: BLE001
+            log.exception("Initial upsell draft run failed")
 
     async def stop(self) -> None:
         await self.proactive.stop()
