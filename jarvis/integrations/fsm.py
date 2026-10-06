@@ -378,8 +378,11 @@ _SYSTEM_TYPES = [("fire_alarm", "Gent Vigilon 4-loop", 6), ("fire_alarm", "Kente
 class DemoFSM:
     demo = True
 
-    def __init__(self, today: date | None = None):
-        self.today = today or date.today()
+    def __init__(self, today: date | None = None, now: datetime | None = None):
+        # `now` is when the demo day is "happening": a job scheduled today is completed / in progress / still to come
+        # relative to it. Tests pass it so the data does not depend on the hour the suite happens to run.
+        self.now = now or datetime.now()
+        self.today = today or (now.date() if now else date.today())
         self._new_customers: list[dict[str, Any]] = []  # created through write(), so a demo session can dedupe them
         self._new_sites: list[dict[str, Any]] = []
         rng = random.Random(self.today.toordinal())
@@ -400,13 +403,13 @@ class DemoFSM:
             eng = _ENGINEERS[n % len(_ENGINEERS)]
             site, customer = _SITES[n % len(_SITES)]
             sched = start + timedelta(hours=(n // len(_ENGINEERS)) * 4 + rng.choice([0, 0, 1]))
-            now = datetime.now()
+            late_start = rng.choice([5, 15, 70])  # always drawn, so the random stream (and every value after it) doesn't depend on the hour
             status = "scheduled"
             started = completed = None
-            if sched + timedelta(hours=3) < now:
+            if sched + timedelta(hours=3) < self.now:
                 status, started, completed = "completed", sched + timedelta(minutes=10), sched + timedelta(hours=3)
-            elif sched < now:
-                status, started = "in_progress", sched + timedelta(minutes=rng.choice([5, 15, 70]))
+            elif sched < self.now:
+                status, started = "in_progress", sched + timedelta(minutes=late_start)
             self._jobs.append({
                 "id": f"J{24100 + n}", "ref": f"J{24100 + n}", "type": job_types[n % len(job_types)],
                 "status": status, "customer": customer, "site": site, "engineer": eng[1],

@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
@@ -131,10 +131,25 @@ def test_knowledge_search_finds_standards():
     assert "Salts FSM" in kb.core_documents()
 
 
-async def test_unbilled_jobs_and_invoice_approval(tmp_path):
+async def test_unbilled_jobs_and_invoice_approval(tmp_path, monkeypatch):
+    import jarvis.services.billing as billing_module
     from jarvis.config import Settings
     from jarvis.integrations.finance import DemoFinance
     from jarvis.services.billing import Billing
+
+    # The demo FSM completes today's jobs as the day goes on (08:00 starts, three hours each), so before ~11:00 none of
+    # them are done and only the few history jobs that "slipped through" are unbilled - on some dates just 4, which made
+    # `queued == 5` fail only when the suite ran in the morning. Pin the demo day to the evening (everything completed)
+    # and the billing module's date to the same day, so the result no longer depends on when the suite runs.
+    day = date.today()  # read inside the test, then pinned for the whole test
+
+    class PinnedDate(date):
+        @classmethod
+        def today(cls):
+            return day
+
+    monkeypatch.setattr(billing_module, "date", PinnedDate)
+    evening = datetime.combine(day, time(18, 0))
 
     class Actions:
         def __init__(self):
@@ -146,7 +161,7 @@ async def test_unbilled_jobs_and_invoice_approval(tmp_path):
 
     settings = Settings(data_dir=tmp_path, _env_file=None)
     actions = Actions()
-    billing = Billing(settings, Database(tmp_path / "db"), DemoFSM(), DemoFinance(), actions, None)
+    billing = Billing(settings, Database(tmp_path / "db"), DemoFSM(today=day, now=evening), DemoFinance(), actions, None)
     unbilled = await billing.unbilled_jobs(30)
     assert unbilled["count"] > 0 and unbilled["net_total"] > 0
     result = await billing.queue_invoices(30, limit=5)
@@ -154,6 +169,32 @@ async def test_unbilled_jobs_and_invoice_approval(tmp_path):
     msg = await billing.create_invoices(actions.queued[0][1]["jobs"])
     assert "raise it manually" in msg  # demo accounts can't create invoices
     assert (await billing.queue_review_requests())["queued"] == 0  # no review link configured
+
+
+def test_demo_fsm_history_does_not_change_with_the_hour_of_the_day():
+    """Today's demo jobs move scheduled -> in progress -> completed as the day goes on. That must only change those
+    statuses: every value after them in the seeded random stream (the 60 days of history, quotes, contracts) used to shift
+    with the hour, so the demo - and any test built on it - looked different at 10:00 and at 15:00."""
+    day = date(2026, 10, 6)  # a Tuesday
+
+    def snapshot(hour):
+        fsm = DemoFSM(today=day, now=datetime.combine(day, time(hour, 0)))
+        jobs = [{k: v for k, v in j.items() if k not in ("status", "started_at", "completed_at")} for j in fsm._jobs]
+        return jobs, fsm._timesheets, fsm._contracts, fsm._systems, fsm._quotes
+
+    assert snapshot(7) == snapshot(10) == snapshot(13) == snapshot(23)
+
+
+def test_demo_fsm_completes_todays_jobs_as_the_given_time_passes():
+    day = date(2026, 10, 6)
+
+    def today_status(hour):
+        fsm = DemoFSM(today=day, now=datetime.combine(day, time(hour, 0)))
+        return [j["status"] for j in fsm._jobs if j["scheduled_start"].startswith(day.isoformat())]
+
+    assert set(today_status(7)) == {"scheduled"}
+    assert "in_progress" in today_status(10)
+    assert set(today_status(23)) == {"completed"}
 
 
 async def test_elevenlabs_request_and_deepgram_url():
