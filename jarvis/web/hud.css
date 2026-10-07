@@ -530,7 +530,9 @@ input.mem-input { min-height: 0; }
 .act-field > span { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
 .act-field select, .act-field input[type=search] { width: 100%; min-width: 0; background: var(--navy-deepest); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 .act-field select:focus, .act-field input[type=search]:focus { outline: none; border-color: var(--core); }
-.act-toggle { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); }
+.drawer .act-toggle { flex-direction: row; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); margin-top: 10px; }
+.act-fold > summary { cursor: pointer; font-family: var(--f-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); padding: 6px 0; }
+.act-fold[open] > summary { margin-bottom: 6px; }
 .act-toggle input { width: 18px; height: 18px; flex: none; accent-color: var(--core); }
 .act-quiet { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
 .act-quiet[hidden], .act-quiet-list[hidden], .act-detail[hidden], .act-more .btn[hidden], .act-error[hidden], .act-note[hidden] { display: none; }
@@ -676,7 +678,7 @@ input.mem-input { min-height: 0; }
   .icon-btn { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .btn, .btn.small { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .pill, .need, .rail-item { display: inline-flex; align-items: center; }
-  .cron-day, .linkish, .set-advanced-toggle, details.diff summary, .appr-history summary, .back-link, .conn-row, .chip { min-height: 44px; }
+  .cron-day, .linkish, .set-advanced-toggle, details.diff summary, .appr-history summary, .act-fold > summary, .back-link, .conn-row, .chip { min-height: 44px; }
   .chip { display: inline-flex; align-items: center; }
   .linkish { min-width: 44px; }
   details.diff summary { display: flex; align-items: center; }

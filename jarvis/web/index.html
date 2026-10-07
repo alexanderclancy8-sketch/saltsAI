@@ -175,6 +175,9 @@
           <button type="button" class="chip act-range" data-range="7d" aria-pressed="false">7 days</button>
           <button type="button" class="chip act-range" data-range="30d" aria-pressed="false">30 days</button>
         </div>
+        <label class="act-field act-search"><span>Search</span>
+          <input type="search" id="activity-search" maxlength="100" placeholder="Search what Jarvis did" autocomplete="off" enterkeyhint="search"></label>
+        <details class="act-fold" id="activity-filters"><summary id="activity-filters-summary">More filters</summary>
         <div class="act-selects">
           <label class="act-field"><span>Kind</span>
             <select id="activity-kind">
@@ -194,9 +197,8 @@
           <label class="act-field"><span>Who</span>
             <select id="activity-who"><option value="">Anyone</option></select></label>
         </div>
-        <label class="act-field act-search"><span>Search</span>
-          <input type="search" id="activity-search" maxlength="100" placeholder="Search what Jarvis did" autocomplete="off" enterkeyhint="search"></label>
         <label class="act-toggle"><input type="checkbox" id="activity-everything"> <span>Include everything, even checks with nothing to report</span></label>
+        </details>
       </div>
       <div class="act-quiet" id="activity-quiet" hidden>
         <button type="button" class="act-quiet-btn" id="activity-quiet-btn" aria-expanded="false" aria-controls="activity-quiet-list"></button>

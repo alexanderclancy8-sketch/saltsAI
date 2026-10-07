@@ -835,6 +835,8 @@ def summary_line(c: dict[str, Any]) -> str:
         for key, word in (("edited", "edited"), ("dismissed", "dismissed")):
             if s.get(key):
                 parts.append(f"{s[key]} {word}")
+    if not c["proposals"] and not c["other_changes"]:
+        parts.append("nothing proposed or changed")
     if c["other_changes"]:
         parts.append(_n(c["other_changes"], "other change"))
     if c["quiet_checks"]:

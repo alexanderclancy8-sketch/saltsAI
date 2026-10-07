@@ -50,6 +50,11 @@ def _open_activity(page):
     page.wait_for_function("document.querySelectorAll('#activity-list .act-item').length > 0 || !document.getElementById('activity-empty').hidden", timeout=10000)
 
 
+def _filters(page):
+    """The filters are folded away on a phone (so the list is what you see first); open them."""
+    page.evaluate("document.getElementById('activity-filters').open = true")
+
+
 def _rows(page):
     return page.locator("#activity-list .act-item")
 
@@ -66,6 +71,9 @@ def test_the_activity_pop_up_lists_what_jarvis_did(serve, browser, width, height
         assert labels[:2] == ["approvals", "activity"]
         _open_activity(page)
         assert page.inner_text("#drawer-title") == "What Jarvis did"
+        folded = width < 760
+        assert page.evaluate("document.getElementById('activity-filters').open") == (not folded)   # open on a wide screen, folded on a phone
+        _shot(page, f"activity-first-view-{width}-{scheme}")
         summary = page.inner_text("#activity-summary")
         assert summary.startswith("Today: 5 proposed, 2 approved (1 automatically), 1 declined, 1 waiting, 1 failed, 2 other changes, 6 checks with nothing to report"), summary
         rows = _rows(page)
@@ -89,6 +97,7 @@ def test_the_activity_pop_up_lists_what_jarvis_did(serve, browser, width, height
         mail = page.locator(f'.act-item[data-id="action:{ids["mail"]}"]')
         mail.locator(".act-row").click()
         assert "Approved by Sam Taylor" in mail.locator(".act-detail").inner_text() and "Email" in mail.inner_text()
+        _filters(page)
         # nothing secret reaches the page
         assert SECRET not in page.content() and SECRET not in page.inner_text("body")
         # the only thing a row can do is open Approvals
@@ -107,6 +116,11 @@ def test_the_activity_pop_up_lists_what_jarvis_did(serve, browser, width, height
                 assert b["height"] >= 43.5, (sel, b)
         page.evaluate("document.getElementById('drawer-body').scrollTop = 0")
         _shot(page, f"activity-list-{width}-{scheme}")
+        quiet.click()
+        assert page.text_content("#activity-filters-summary") == "More filters"
+        page.select_option("#activity-status", "failed")
+        page.wait_for_function("document.querySelectorAll('#activity-list .act-item').length === 1")
+        assert page.text_content("#activity-filters-summary") == "More filters (1 on)"
         assert page.errors == []
     finally:
         ctx.close()
@@ -123,6 +137,7 @@ def test_the_filters_search_and_the_include_everything_toggle(serve, browser, sc
     ctx, page = _page(browser, srv.url, 1280, 800, scheme)
     try:
         _open_activity(page)
+        _filters(page)
         count = lambda: _rows(page).count()  # noqa: E731
 
         def settle():
@@ -153,8 +168,7 @@ def test_the_filters_search_and_the_include_everything_toggle(serve, browser, sc
         assert _rows(page).first.get_attribute("data-status") == "declined"
         page.select_option("#activity-who", "")
         page.fill("#activity-search", "brightwell")
-        page.wait_for_function("document.querySelectorAll('#activity-list .act-item').length === 1")
-        assert "Brightwell" in page.inner_text("#activity-list")
+        page.wait_for_function("document.getElementById('activity-list').textContent.includes('Brightwell') && document.querySelectorAll('#activity-list .act-item').length === 1")
         page.fill("#activity-search", "zzzz nothing like this")
         page.wait_for_function("!document.getElementById('activity-empty').hidden")
         assert "Nothing matches those filters" in page.inner_text("#activity-empty")
@@ -271,6 +285,7 @@ def test_export_csv_link_carries_the_filters_and_downloads_a_clean_file(serve, b
     ctx, page = _page(browser, srv.url, 1280, 800, "dark")
     try:
         _open_activity(page)
+        _filters(page)
         page.select_option("#activity-status", "failed")
         page.wait_for_function("document.querySelectorAll('#activity-list .act-item').length === 1")
         href = page.get_attribute("#activity-export", "href")

@@ -85,6 +85,10 @@
     if (cur && ![...sel.options].some((o) => o.value === cur)) sel.insertAdjacentHTML("beforeend", `<option value="${esc(cur)}">${esc(cur)}</option>`);
     sel.value = cur;
   }
+  function updateFold() {
+    const on = ["#activity-kind", "#activity-status", "#activity-who"].filter((s) => $(s).value).length + ($("#activity-everything").checked ? 1 : 0);
+    $("#activity-filters-summary").textContent = on ? `More filters (${on} on)` : "More filters";
+  }
   function updateExport() {
     const a = $("#activity-export");
     if (a) a.href = `/api/activity/export.csv?${params()}`;
@@ -137,7 +141,7 @@
     const ex = $("#activity-export"); if (ex) ex.hidden = !data.can_export;
   }
 
-  function reload() { updateExport(); return fetchPage(true); }
+  function reload() { updateExport(); updateFold(); return fetchPage(true); }
   function load() { return reload(); }
 
   document.addEventListener("click", (e) => {
@@ -183,5 +187,6 @@
     S.observer.observe(sentinel);
   }
 
-  window.JarvisActivity = { init(h) { host = h; watchEnd(); }, load };
+  // The filters sit open on a wide screen and folded away on a phone, so the list itself is what you see first.
+  window.JarvisActivity = { init(h) { host = h; watchEnd(); if (!window.matchMedia("(max-width: 760px)").matches) $("#activity-filters").open = true; }, load };
 })();
