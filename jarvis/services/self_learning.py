@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 
+from .. import access
+
 log = logging.getLogger(__name__)
 LAST_ID_KEY = "self_learning:last_transcript_id"
 BATCH_LIMIT = 400  # generous - a busy day's worth of turns, kept bounded so the prompt doesn't balloon
@@ -77,7 +79,13 @@ class SelfLearning:
             f"<transcript>\n{transcript}\n</transcript>"
             f"{quality_part}"
         )
-        reply = await j.brain.ask(prompt, "typed")
+        # The transcript it reads holds what a manager typed too, so the reflection runs with a manager's access, never the owner's: text
+        # in a chat message can't make it read the owner-only FSM data (finance, pay, HR) or use an owner-only tool.
+        who = access.current_caller.set(access.REFLECTION_CALLER)
+        try:
+            reply = await j.brain.ask(prompt, "typed")
+        finally:
+            access.current_caller.reset(who)
         if newest_turn is not None:
             try:
                 j.quality.mark_reflected(newest_turn, newest_event, reply if brief else "")

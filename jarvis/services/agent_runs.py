@@ -18,6 +18,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
+from .. import access
 from ..db import Database, now_iso
 
 log = logging.getLogger(__name__)
@@ -106,9 +107,10 @@ class AgentRuns:
     def start(self, kind: str, request: str) -> int:
         self.interrupt_stale()
         ts = now_iso()
+        # who asked (the owner's own turn - no caller - is the owner's): recorded so a run can be seen to be a manager's request
         run_id = self.db.execute(
-            "INSERT INTO agent_runs (kind, request, started_at, updated_at, status) VALUES (?,?,?,?,'running')",
-            (kind, _clip(request, 500), ts, ts))
+            "INSERT INTO agent_runs (kind, request, started_at, updated_at, status, requested_role) VALUES (?,?,?,?,'running',?)",
+            (kind, _clip(request, 500), ts, ts, access.role_of(access.current_caller.get())))
         self.db.execute("DELETE FROM agent_runs WHERE id <= ?", (run_id - KEEP_RUNS,))
         return run_id
 
@@ -192,7 +194,7 @@ class AgentRuns:
                 "id": r["id"], "kind": r["kind"], "request": r["request"], "status": status,
                 "started_at": r["started_at"], "last_activity_at": r["updated_at"],
                 "idle_minutes": max(0, int(idle.total_seconds() // 60)), "steps": r["steps"],
-                "outcome": r["outcome"],
+                "outcome": r["outcome"], "requested_role": r["requested_role"] or None,
                 "trail": trail if run_id is not None else trail[-10:],
             })
         return out

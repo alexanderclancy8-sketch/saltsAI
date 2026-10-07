@@ -44,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from .. import demo_guard
+from .. import access, demo_guard
 from ..history import redact_history
 from ..integrations.redact import redact as redact_secrets
 from ..redact import REDACTED, is_sensitive_param, redact_text
@@ -262,16 +262,22 @@ def _classify_action(kind: str, payload: dict[str, Any], status: str) -> str:
     return "other"
 
 
+def _by_role(base: str, role: Any) -> str:
+    """'Jarvis' -> 'Jarvis (asked by a manager)' when a manager's turn was behind it. The owner's, and a row from before roles were
+    recorded, keep the plain wording."""
+    return f"{base} (asked by a manager)" if str(role or "") == access.MANAGER else base
+
+
 def _requester(kind: str, payload: dict[str, Any], row: dict[str, Any], clean: Cleaner) -> str:
     asker = payload.get("requested_by")
     if isinstance(asker, str) and asker.strip():
         return clean.text(asker, 80)
     base = "Jarvis (purchase order inbox)" if kind in (sa.PO_ACK_KIND, "accept_quote_from_po") else "Jarvis"
     if row.get("supersede_kind") == "retry" and row.get("supersedes"):
-        return f"Jarvis (retry of #{row['supersedes']})"
+        return _by_role(f"Jarvis (retry of #{row['supersedes']})", row.get("requested_role"))
     if row.get("supersede_kind") == "edit" and row.get("supersedes"):
-        return f"{base} (edited from #{row['supersedes']})"
-    return base
+        return _by_role(f"{base} (edited from #{row['supersedes']})", row.get("requested_role"))
+    return _by_role(base, row.get("requested_role"))
 
 
 def _src_actions(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
@@ -369,6 +375,10 @@ def _src_checks(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
         params += sorted(OWNER_ONLY_JOBS)
     rows = ctx.db.query(sql + " ORDER BY ran_at DESC, id DESC LIMIT ?", tuple(params + [limit]))
     out = []
+    # An automation's runs say who set it up (it ran with that role's permissions): one small read of the roles, only if any run is one.
+    made_by: dict[str, str] = {}
+    if any(str(r["job_key"]).startswith("automation_") for r in rows):
+        made_by = {f"automation_{a['id']}": access.stored_role(a["role"]) for a in ctx.db.query("SELECT id, role FROM automations")}
     for r in rows:
         clean, name = ctx.clean, ctx.clean.text(r["job_name"], 80)
         detail = clean.text(r.get("detail"), 200)
@@ -385,8 +395,10 @@ def _src_checks(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
             status, what, error, quiet = "done", f"{name}: nothing to report", "", True
         else:
             status, what, error, quiet = "done", f"{name} found something" + (f": {detail}" if detail else ""), "", False
+        creator = made_by.get(str(r["job_key"]), "")
+        by = "Scheduled job" if creator in ("", access.OWNER) else f"Scheduled job (created by a {creator})"
         out.append(_item(ctx, id=f"check:{r['id']}", when=when, kind="scheduled_check", what=what, status=status, source="check",
-                         ref=f"check run #{r['id']}", requested_by="Scheduled job", created_at=when, error=error, quiet=quiet,
+                         ref=f"check run #{r['id']}", requested_by=by, created_at=when, error=error, quiet=quiet,
                          attention=status == "failed", detail=[_row("Outcome", r["outcome"]), _row("Note", detail)] if detail else None))
     return out, len(rows) < limit
 
@@ -420,7 +432,8 @@ def _src_background(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
         tool = clean.text(r["tool"], 80)
         label = clean.text(_tool_label(str(r["tool"])), 80)
         who = str(r.get("requester") or "")
-        who = f"{clean.text(who.removeprefix('team:').title(), 40)} (team)" if who.startswith("team:") else "Jarvis"
+        who = (f"{clean.text(who.removeprefix('team:').title(), 40)} (team)" if who.startswith("team:")
+               else _by_role("Jarvis", r.get("role")))
         when = utc(r.get("finished_at") or r["created_at"])
         try:
             args = clean.obj(json.loads(r.get("args_json") or "{}"))
@@ -461,7 +474,8 @@ def _src_agent_runs(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
         link = {"href": str(r["outcome"]), "label": "Open the pull request"} if st == "submitted" and _PR_URL.match(str(r["outcome"] or "")) else None
         err = ("It stopped reporting progress - check whether it is still running." if stalled else outcome) if status == "failed" else ""
         out.append(_item(ctx, id=f"run:{r['id']}", when=updated, kind="code_change" if kind_name in ("self_improve", "fixer") else "other",
-                         what=what, status=status, source="agent_run", ref=f"engineering run #{r['id']}", requested_by="Jarvis",
+                         what=what, status=status, source="agent_run", ref=f"engineering run #{r['id']}",
+                         requested_by=_by_role("Jarvis", r.get("requested_role")),
                          created_at=utc(r["started_at"]), error=err, link=link, attention=status == "failed", quiet=st == "gave_up",
                          detail=[_row("Request", request), _row("Outcome", outcome), _row("Steps", str(r["steps"]))]))
     return out, len(rows) < limit
@@ -572,12 +586,23 @@ def _src_upsell(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
 
 def _src_automations(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
     q = ctx.q
-    sql = "SELECT id, created_at, description, cron FROM automations WHERE created_at >= ?" + (" AND created_at < ?" if q.until else "")
+    sql = ("SELECT id, created_at, description, cron, role, created_by FROM automations WHERE created_at >= ?"
+           + (" AND created_at < ?" if q.until else ""))
     rows = ctx.db.query(sql + " ORDER BY id DESC LIMIT ?", tuple([q.since] + ([q.until] if q.until else []) + [limit]))
-    return [_item(ctx, id=f"automation:{r['id']}", when=utc(r["created_at"]), kind="other",
-                  what=f"Set up a scheduled automation: {ctx.clean.text(r['description'], 160)}", status="done", source="automation",
-                  ref=f"automation #{r['id']}", requested_by="Jarvis", created_at=utc(r["created_at"]),
-                  detail=[_row("Schedule", ctx.clean.text(r["cron"], 60))]) for r in rows], len(rows) < limit
+    out = []
+    for r in rows:
+        role = access.stored_role(r["role"])    # who created it, and so what it runs with (a row nobody recorded is a manager's)
+        who = ctx.clean.text(r["created_by"], 60)
+        creator = ("the owner" if role == access.OWNER else
+                   f"a {role}" + (f" ({who})" if who else " (set up before roles were recorded)" if role == access.MANAGER else ""))
+        out.append(_item(ctx, id=f"automation:{r['id']}", when=utc(r["created_at"]), kind="other",
+                         what=f"Set up a scheduled automation: {ctx.clean.text(r['description'], 160)}", status="done", source="automation",
+                         ref=f"automation #{r['id']}", requested_by="Jarvis" if role == access.OWNER else f"Jarvis (created by {creator})",
+                         created_at=utc(r["created_at"]),
+                         detail=[_row("Schedule", ctx.clean.text(r["cron"], 60)), _row("Created by", creator),
+                                 _row("Runs with", "the owner's permissions" if role == access.OWNER else
+                                      f"a {role}'s permissions: no owner-only FSM data (finance, pay, HR) or owner-only tools")]))
+    return out, len(rows) < limit
 
 
 class _Source:

@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     payload_json TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     result TEXT DEFAULT '',
-    decided_at TEXT DEFAULT ''
+    decided_at TEXT DEFAULT '',
+    requested_role TEXT NOT NULL DEFAULT ''
 );
 -- "What Jarvis did" lists actions by when they last changed (decided, else created): an index on that very expression keeps the
 -- newest-first page cheap however many thousands of actions there are.
@@ -238,7 +239,11 @@ CREATE TABLE IF NOT EXISTS automations (
     nochange_streak INTEGER NOT NULL DEFAULT 0,
     nochange_since TEXT DEFAULT '',
     last_asked_at TEXT DEFAULT '',
-    never_slow INTEGER NOT NULL DEFAULT 0
+    never_slow INTEGER NOT NULL DEFAULT 0,
+    -- The role of whoever created it (owner | manager | team) and who that was. It is run with that role's permissions, never the
+    -- owner's by default: the default is 'manager' (least privilege), so a row nobody recorded a creator for is read as a manager's.
+    role TEXT NOT NULL DEFAULT 'manager',
+    created_by TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS reply_habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -357,7 +362,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     status TEXT NOT NULL DEFAULT 'running',
     steps INTEGER NOT NULL DEFAULT 0,
     trail TEXT NOT NULL DEFAULT '[]',
-    outcome TEXT NOT NULL DEFAULT ''
+    outcome TEXT NOT NULL DEFAULT '',
+    requested_role TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -420,6 +426,20 @@ class Database:
                          ("last_asked_at", "TEXT DEFAULT ''"), ("never_slow", "INTEGER NOT NULL DEFAULT 0")):
             if col not in auto_cols:
                 self._conn.execute(f"ALTER TABLE automations ADD COLUMN {col} {ddl}")
+        # Who created an automation, so it runs with THEIR permissions (see access.py, "the role a piece of stored work runs with").
+        # Nothing recorded who created the rows that already exist, so none can be shown to be the owner's: ADD COLUMN gives every
+        # one of them the default 'manager' (least privilege), and the UPDATE below (safe to repeat on every start) repairs any
+        # value that is empty or not a role. It never touches a valid role, so an owner who has since taken one over keeps it.
+        for col, ddl in (("role", "TEXT NOT NULL DEFAULT 'manager'"), ("created_by", "TEXT NOT NULL DEFAULT ''")):
+            if col not in auto_cols:
+                self._conn.execute(f"ALTER TABLE automations ADD COLUMN {col} {ddl}")
+        self._conn.execute("UPDATE automations SET role = 'manager' WHERE role IS NULL OR role NOT IN ('owner', 'manager', 'team')")
+        # Who asked for an approval-gated action / an engineering run ('' = before roles were kept: an approved action of that kind
+        # then runs as a manager's, never the owner's).
+        for table in ("pending_actions", "agent_runs"):
+            cols_now = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "requested_role" not in cols_now:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN requested_role TEXT NOT NULL DEFAULT ''")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -579,9 +599,10 @@ class Database:
             return cur.rowcount == 1
 
     # -- automations ------------------------------------------------------------------
-    def create_automation(self, description: str, cron: str, prompt: str) -> int:
-        return self.execute("INSERT INTO automations (created_at, description, cron, prompt) VALUES (?,?,?,?)",
-                            (now_iso(), description, cron, prompt))
+    def create_automation(self, description: str, cron: str, prompt: str, role: str = "manager", created_by: str = "") -> int:
+        """``role`` is the creator's (owner | manager | team); it defaults to the least privileged that may create one."""
+        return self.execute("INSERT INTO automations (created_at, description, cron, prompt, role, created_by) VALUES (?,?,?,?,?,?)",
+                            (now_iso(), description, cron, prompt, role, created_by))
 
     def get_automation(self, automation_id: int) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM automations WHERE id = ?", (automation_id,))
@@ -592,8 +613,13 @@ class Database:
     def update_automation(self, automation_id: int, **fields: Any) -> None:
         if not fields:
             return
+        if "role" in fields or "created_by" in fields:  # a role is only ever changed on purpose, through set_automation_role
+            raise ValueError("An automation's role is not changed through update_automation - use set_automation_role.")
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.execute(f"UPDATE automations SET {cols} WHERE id = ?", (*fields.values(), automation_id))
+
+    def set_automation_role(self, automation_id: int, role: str, created_by: str = "") -> None:
+        self.execute("UPDATE automations SET role = ?, created_by = ? WHERE id = ?", (role, created_by, automation_id))
 
     def delete_automation(self, automation_id: int) -> None:
         self.execute("DELETE FROM automations WHERE id = ?", (automation_id,))
@@ -625,14 +651,14 @@ class Database:
 
     # -- approvals ------------------------------------------------------------------
     def create_action(self, kind: str, summary: str, payload: dict[str, Any], status: str = "pending",
-                      approved_by: str = "") -> int:
+                      approved_by: str = "", requested_role: str = "") -> int:
         """`status`/`approved_by` are only ever set to "approved"/"standing approval: ..." by ActionExecutor.queue(),
         when the owner's own standing approval (services/standing_approvals.py) covers this exact action."""
         return self.execute(
-            "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at, requested_role)"
+            " VALUES (?,?,?,?,?,?,?,?)",
             (now_iso(), kind, summary, json.dumps(payload), status, approved_by,
-             now_iso() if status != "pending" else ""))
+             now_iso() if status != "pending" else "", requested_role))
 
     def count_standing_runs_since(self, cutoff_iso: str) -> int:
         row = self.query_one("SELECT COUNT(*) AS n FROM pending_actions WHERE approved_by LIKE 'standing approval:%'"
@@ -737,10 +763,12 @@ class Database:
             if cur.rowcount != 1:
                 self._conn.commit()
                 return None
+            # (the replacement keeps the role of whoever asked for the original: an edit never raises it)
             new_id = self._conn.execute(
                 "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at,"
-                " supersedes, supersede_kind) VALUES (?,?,?,?,'pending','','',?,'edit')",
-                (now_iso(), kind, summary, json.dumps(payload), old_id)).lastrowid
+                " supersedes, supersede_kind, requested_role) SELECT ?,?,?,?,'pending','','',?,'edit', requested_role"
+                " FROM pending_actions WHERE id = ?",
+                (now_iso(), kind, summary, json.dumps(payload), old_id, old_id)).lastrowid
             self._conn.execute("UPDATE pending_actions SET superseded_by = ?, result = ? WHERE id = ?",
                                (new_id, f"Edited by {by}: replaced by action #{new_id}", old_id))
             self._conn.commit()
@@ -751,14 +779,14 @@ class Database:
         action. None if the row is not a failed action, has already been retried, or was dismissed. The old row stays `failed` as
         history, marked superseded so it drops out of the failed list; the copy is a plain `pending` row."""
         with self._lock:
-            row = self._conn.execute("SELECT kind, payload_json FROM pending_actions WHERE id = ? AND status = 'failed'"
+            row = self._conn.execute("SELECT kind, payload_json, requested_role FROM pending_actions WHERE id = ? AND status = 'failed'"
                                      " AND superseded_by IS NULL AND dismissed_at IS NULL", (old_id,)).fetchone()
             if row is None:
                 return None
             new_id = self._conn.execute(
                 "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at,"
-                " supersedes, supersede_kind) VALUES (?,?,?,?,'pending','','',?,'retry')",
-                (now_iso(), row["kind"], summary, row["payload_json"], old_id)).lastrowid
+                " supersedes, supersede_kind, requested_role) VALUES (?,?,?,?,'pending','','',?,'retry',?)",
+                (now_iso(), row["kind"], summary, row["payload_json"], old_id, row["requested_role"])).lastrowid
             self._conn.execute("UPDATE pending_actions SET superseded_by = ? WHERE id = ?", (new_id, old_id))
             self._conn.commit()
             return int(new_id)
