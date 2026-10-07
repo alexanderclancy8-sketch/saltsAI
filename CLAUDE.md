@@ -368,6 +368,39 @@ not a parse error. Recording is observability only: it swallows its own errors a
 agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
 (Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
 
+**Pre-quote Companies House check (`integrations/companies_house.py`, `services/company_check.py`, the read-only `company_check` tool;
+tests `tests/test_company_check.py`).** "Is this new commercial customer a live company, are its accounts overdue, how long has it
+existed." Free Public Data API (`https://api.company-information.service.gov.uk`, HTTP Basic with the key as username and an empty
+password): `/search/companies?q=...&items_per_page=5`, `/company/{number}` and only the COUNTS from `/company/{number}/charges` (called only
+when the profile says `has_charges`; a 404 there means 0). Officers, PSC and "persons entitled" are never requested or read: `parse_profile`
+copies an allowlist of company-level fields and cuts the registered office to town + outward postcode, so no individual's data is stored,
+cached or returned (a test feeds profiles that carry such data and asserts none surfaces). `approval=False`, no write path, NOT in
+`access.TEAM_TOOLS`; in `async_tools.NOT_BACKGROUND` (it puts its report card on the display, like `doctor`) and `UNTRUSTED_TOOLS` (register
+text is someone else's). **Matching is by company number**: a number (8 chars, e.g. `01234567`, `SC123456`; 6-7 digits get their zeros
+back) runs the check; a name is only a search and runs the check only when exactly ONE result matches exactly (`name_key`: case,
+punctuation, `&`=`and`, Ltd=Limited; a dropped suffix is NOT equal) - otherwise up to 5 candidates (name, number, status, incorporated, town)
+come back with an instruction to ask the owner to confirm by number. The profile is cached in `kv` under `company_check:{number}` for 6 hours
+(searches are never cached; the age is recomputed from the injected `now` each time); the client keeps its own sliding window (500 / 5 min,
+under Companies House's 600) and stops asking for 60 s after a 429. Every failure is a `CHError` with a plain message that carries no key
+(not connected / key refused / limiting requests / not answering). Register text is untrusted: `clean_text` strips control and invisible
+characters, URLs, e-mail addresses and link/tag syntax and caps the length before it reaches the model, the display card or the feed.
+The report (`build_report`): status (anything but `active` is a RED FLAG), incorporation date and "existed for N years M months" (always
+said to be the incorporation date, not proof of trading), accounts next due / overdue / last made up to and type, confirmation statement,
+insolvency flag, charges outstanding (count), type, SIC codes, registered-office town + postcode area, a "things to check" list (not
+active, strike-off proposed, accounts overdue, confirmation statement overdue, incorporated under 12 months ago, dormant accounts,
+insolvency history, charges outstanding) and ALWAYS the limit sentence "Companies House shows filing status only - it is not a credit
+score, and sole traders and partnerships aren't on it."; creditworthiness is never stated. `today` is the UK date of the injectable
+`CompanyCheck._now` (tests never read the clock). **Approval-card line**: `create_customer` calls `CompanyCheck.card_line(name)` just before
+`actions.queue` and appends it to the SUMMARY only (exact-name look-up: one match -> status/age/flags; several -> "ambiguous - ask me to run
+company_check"; none -> "no exact name match / sole traders aren't on it"); the payload judged by the standing approvals and sent to the FSM
+is untouched, the look-up is capped at `CARD_TIMEOUT_S` (6 s) and any failure or timeout becomes a short "not checked" note - queueing is
+never blocked. It needs the key and the owner-only `companies_house_on_new_customers` switch (default ON). Settings: owner-only
+`companies_house_api_key` (secret kind, so `doctor.secret_fields` scrubs it automatically) and the switch, in the "companieshouse" section with
+a Test button (`connection_tests._companieshouse` -> `CompanyCheck.test`, one profile look-up of Tesco PLC `00445790`, chosen as a large,
+long-established active company; its number is a constant to change if it ever stops being suitable). The `doctor` Keys check reports
+`COMPANIES_HOUSE_API_KEY` set / not set (name only). Look-ups are logged to "What Jarvis did" (`activity_feed.record("company_check", ...)`:
+company name and number only). Not verified against the live API in CI (every call is a `httpx.MockTransport`).
+
 **Self-diagnostics (`services/doctor.py`, the read-only `doctor` tool; tests `tests/test_doctor.py`).** "What is quietly broken?": one
 line per item, each `ok` / `amber` / `red` with a next step, put on the display (`bus.publish("display", ...)`, so `doctor` is in
 `async_tools.NOT_BACKGROUND`) and returned as `{summary, items, shown_on_display}`. `approval=False`, deliberately NOT in

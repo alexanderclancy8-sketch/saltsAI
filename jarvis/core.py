@@ -63,6 +63,7 @@ from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
 from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
+from .services.company_check import CompanyCheck
 from .services.service_inbox import ServiceInbox
 from .services.routine_tests import RoutineTester
 from .services.fsm_engineer import FsmEngineer
@@ -142,6 +143,7 @@ class Jarvis:
         self.job_intake = JobIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm, self.actions)
         # the second shared mailbox (service@): read for Comms / the Test button; council portal requests in it -> proposed jobs
         self.service_inbox = ServiceInbox(self)
+        self.company_check = CompanyCheck(self)  # read-only Companies House look-ups (the company_check tool, the new-customer card line)
         self.council_intake = CouncilIntake(s, self.db, self.bus, self.notifier, self.client, self.mail, self.fsm,
                                             self.actions)
         self.verifier = ActionVerifier(s)  # optional ThoughtProof check on approved actions (off by default)

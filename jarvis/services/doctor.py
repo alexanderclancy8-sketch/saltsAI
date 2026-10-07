@@ -4,7 +4,7 @@ The read-only ``doctor`` tool runs eight checks and puts the result on the displ
 
 1. plugins switched on in Settings but inert (``mcp_plugins.yaml``), or on with no entry there at all,
 2. data sources still on DEMO sample data (``demo_guard``),
-3. which keys are set - by NAME only (never a value),
+3. which keys are set - by NAME only (never a value; includes the free Companies House key),
 4. the owner's automations: last run, a long run of NOTHING_TO_REPORT, running too often out of hours,
 5. engineering-agent runs that are stalled, failed or gave up in the last 24 hours,
 6. open requests (issues, approvals) nobody has touched for over 24 hours,
@@ -278,6 +278,12 @@ class Doctor:
                             "Set ELEVENLABS_API_KEY in Settings, or choose another voice."))
         else:
             out.append(Item(name, OK, "ELEVENLABS_API_KEY: not set (optional - another voice is used)"))
+        if _is_set(s, "companies_house_api_key"):
+            out.append(Item(name, OK, "COMPANIES_HOUSE_API_KEY: set" + ("" if s.companies_house_on_new_customers
+                                                                       else " (new-customer approval line switched off)")))
+        else:
+            out.append(Item(name, OK, "COMPANIES_HOUSE_API_KEY: not set (optional - the pre-quote company check says it "
+                                      "isn't connected yet)"))
         missing = [n for n, field in RAM_KEYS if not _is_set(s, field)]
         if not missing:
             out.append(Item(name, OK, "RAM Tracking: " + ", ".join(n for n, _ in RAM_KEYS) + " are all set"))

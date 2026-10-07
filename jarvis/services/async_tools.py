@@ -76,13 +76,15 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "meeting_actions", "prepare_renewal", "draft_customer_emails", "draft_credit_control", "draft_sales_followup",
     "draft_job_summary", "draft_quote_scope", "regulatory_watch", "technical_watch",
     # send or notify the owner (display, push, Teams, email) when they run
+    # puts its report card on the display (same reason as doctor): a SILENT background call must really be silent
+    "company_check",
     "suggestions", "morning_briefing", "end_of_day_wrap_up", "weekly_digest_now", "fsm_engineer_audit",
 }
 
 # Tools whose output includes text written by someone else (an email, a repository file, a customer's note in the FSM,
 # a web page, a document): never put it into chat/transcript text, only a pointer to the stored result.
 UNTRUSTED_PREFIXES = ("email_", "repo_", "fsm_", "knowledge_", "web_", "pr_")
-UNTRUSTED_TOOLS = {"run_tests", "search_rankings", "seo_audit", "competitor_audit", "regulatory_watch",
+UNTRUSTED_TOOLS = {"company_check", "run_tests", "search_rankings", "seo_audit", "competitor_audit", "regulatory_watch",
                    "technical_watch", "job_detail", "search_conversation_history", "issues_list", "answer_questionnaire",
                    "capture_supplier_bill", "bid_assessment", "bid_document", "audit_evidence", "edit_office_document",
                    "draft_office_document", "action_items", "what_did_you_do"}

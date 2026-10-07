@@ -27,6 +27,7 @@ voice ⇄  │ Piper/ElevenLabs voice ◀─ Jarvis ─▶ Azure / Deepgram mic 
 | **Recruiting agents** | For a one-off chunk of work worth doing on its own - a focused piece of research, a draft, an analysis - Jarvis can recruit a fresh sub-agent with its own narrow brief and tools, and report back with what it found. Same rules apply to it as to Jarvis: anything it proposes writing queues for your approval, never happens on its own, and it can never recruit further agents or start another background job itself. |
 | **Word & Excel** | Reads `.docx` / `.xlsx` attachments on emails, builds Word and Excel deliverables (reports, schedules, tender documents, stock and finance exports) and edits an attachment or earlier draft into a new copy. Everything is saved as a draft on the display with a download link (PDF / Word / Excel) for you to review - nothing is ever emailed without your approval, and the original file is never changed. PDF and Word documents are Salts-branded: `COMPANY_ADDRESS` is printed in the footer, and the header shows the bundled Salts logo unless `COMPANY_LOGO_PATH` points at another PNG/JPEG (max 2 MB). Edited copies are rebuilt from text and tables, so formulas, images and styling aren't carried over. |
 | **Out-of-hours calls** | Reads your answering service's / monitoring centre's emailed reports (including PDF attachments) - calls taken plus alarm faults, comms failures and activations - tells you in the morning briefing what came in overnight and what was done, and suggests booking a call-out for anything that still needs a visit but has no job in Salts FSM. |
+| **Company check before a quote** | Free Companies House look-up of a new commercial customer by name or number: active or not, how long it has existed, accounts or confirmation statement overdue, dormant accounts, insolvency history, charges outstanding. Filing status only - not a credit score, and sole traders and partnerships aren't on it. Read-only; needs the free API key (Settings → Companies House). |
 | **Email & updates** | Reads, searches and summarises Outlook. Drafts replies. Sends you updates on Teams or email when you ask, a spoken morning briefing at 9am and an end-of-day wrap-up at 5:30pm on weekdays (each under a minute: what got done, what slipped, what's waiting on you, tomorrow's first jobs), posted to the console and Teams; the times are editable in Settings > Schedules. |
 | **What Jarvis did** | One place to check everything Jarvis drafted, emailed, proposed or changed, and what you approved, declined or left waiting: **Activity** on the left of the console (or "See everything Jarvis did" in Approvals). A one-line summary for today ("Today: 4 proposed, 2 approved, 1 declined, 1 waiting, 0 failed, 3 checks with nothing to report"), filters for today / 7 / 30 days, kind, status ("Needs a look" = failed + waiting), who and a free-text search, newest first, expandable rows with the cleaned-up details, the error for a failure and who approved it and when. Quiet scheduled checks with nothing to report are one collapsed line unless you tick "Include everything". Only you (the owner) can **Export CSV** of what the filters show. It only reads: it can't approve, send or change anything. Ask "what did you do today / yesterday / this week?" and Jarvis answers aloud with the counts first and the few things worth a look. |
 | **Team mode** | A cut-down console for engineers and office staff: no Finance, Approvals or Connections, and a Jarvis limited to jobs, engineers, systems due, fleet (under the van-privacy rule) and logging a job (which only queues for a manager's approval). The owner turns it on in Settings > Team access by choosing a team access code - no code change - and the team signs in with their name and that code (login page > Team sign-in). Enforced on the server for every route, tool and live event, not just hidden in the page. |
@@ -106,6 +107,19 @@ Do these in any order; each one replaces demo data as soon as it's set.
      unread mail shows in **Comms** under a "service@" heading, and every few minutes Jarvis reads new Bradford Council portal
      emails there and *proposes* a job for each in your Approvals (nothing is created, sent, replied to or deleted without
      your click). What counts as a council email (sender domain, subject phrases) is configurable on the same card.
+   - **Companies House (free pre-quote company check).** Settings → *Companies House (free check on new customers)*. Only
+     you can change it. To get the free key: (1) go to **developer.company-information.service.gov.uk** and register for a
+     free account (or sign in); (2) choose **Create an application** (any name, e.g. "Salts Jarvis"); (3) in the application
+     choose **Create new key** and pick the key type **REST**; (4) copy the key into the box and save, then press **Test**,
+     which looks up one large public company and says plainly whether the key works. Then ask Jarvis "check Acme Fire Ltd at
+     Companies House" (a name or an 8-character company number). It reports whether the company is active, how long it has
+     existed (its incorporation date - not proof of trading), whether its accounts or confirmation statement are overdue,
+     dormant accounts, insolvency history and charges outstanding (counts only), and ends every answer with the limit:
+     *Companies House shows filing status only - it is not a credit score, and sole traders and partnerships aren't on it.*
+     A name that is not an exact unique match returns up to five candidates and Jarvis asks you to confirm one by number -
+     it never guesses. With the key set, each new customer Jarvis queues for your approval also carries one "Companies House"
+     line on the card (switch it off on the same card). It is read-only: it never changes what is sent to Salts FSM, and it
+     reads no directors' or individuals' details. Without a key Jarvis just says it isn't connected yet.
    - To see names in activity reports, turn off *"Display concealed user, group, and site names"* in the M365
      admin centre (Settings → Org settings → Reports).
    - For Teams updates (one-way, posted to a channel), create a Teams **Workflows** "post to a channel when a
@@ -231,6 +245,11 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   scan); it never sends from it, replies, marks, moves or deletes anything in it. Which address it reads is a setting only you can
   change - no tool, email or Teams message can point Jarvis at another mailbox - and engineers/office staff on the team console
   can't read it at all. Council requests only ever become *proposed* jobs for your approval, and no standing approval covers them.
+- **The Companies House check is read-only public data.** `company_check` only reads a company's own register entry (status,
+  filing dates, counts of insolvency history and charges). It never reads directors, officers or persons with significant control,
+  stores nothing about an individual (only a six-hour cache of the company profile, keyed by company number), and a name is never
+  trusted on its own: it only finds candidates and you confirm one by number. It never says whether a company is creditworthy.
+  The key is a secret only you can set, and the team console cannot use the tool.
 - **The Approvals inbox.** Everything Jarvis wants to send or change waits in the Approvals pop-up and shows up as a card
   in the chat, spelling out exactly what will happen (the real recipient, subject and message; the real change in Salts
   FSM), with **Approve**, **Edit** and **Don't send**. Nothing goes without a click. **Edit** (emails, Salts FSM changes
