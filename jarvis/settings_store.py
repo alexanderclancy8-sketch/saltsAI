@@ -317,6 +317,31 @@ SECTIONS: tuple[Section, ...] = (
         ),
     ),
     Section(
+        "companieshouse", "Companies House (free check on new customers)",
+        "A free look at the public company register before you quote a new commercial customer: is the company "
+        "active, are its accounts overdue, how long has it existed. It shows filing status only - it is not a credit "
+        "score, and sole traders and partnerships aren't on it. Read-only: Jarvis never changes anything with it. "
+        "Only you can change these.",
+        (
+            Field("companies_house_api_key", "Companies House API key", "secret",
+                  "Free. Leave blank and the check is simply switched off (Jarvis says it isn't connected yet)."),
+            Field("companies_house_on_new_customers", "Add a Companies House line to new-customer approvals", "bool",
+                  "On (recommended): when Jarvis queues a new customer for your approval it adds one line to the card "
+                  "saying what the register shows for that exact name. It never changes what is sent to Salts FSM and "
+                  "never holds the approval up. Off: the check runs only when you ask for it."),
+        ),
+        required=("companies_house_api_key",),
+        test=True,
+        guide=(
+            "Go to developer.company-information.service.gov.uk and register for a free account (or sign in).",
+            "Choose Create an application (any name, e.g. Salts Jarvis; the description can be \"checking new "
+            "customers\"). Then, in the application, choose Create new key and pick the key type REST.",
+            "Copy the API key it shows, paste it here and save. It is free; Companies House allows 600 requests every "
+            "5 minutes, far more than Jarvis uses.",
+            "Press Test: it looks up a large, well-known public company and says plainly whether the key works.",
+        ),
+    ),
+    Section(
         "voice", "Voice", "How Jarvis sounds, and how it hears you.",
         (
             Field("tts_provider", "Voice", "select", options=(
@@ -608,7 +633,8 @@ OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f 
     "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
     "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
     "engineer_model", "engineer_effort"}) | frozenset(  # which model / how hard the code-writing agents work: owner's call (cost)
-    f.key for s in SECTIONS if s.id == "serviceinbox" for f in s.fields)  # which extra mailbox Jarvis may read, and what counts as a council request
+    f.key for s in SECTIONS if s.id == "serviceinbox" for f in s.fields) | frozenset(  # which extra mailbox Jarvis may read, and what counts as a council request
+    f.key for s in SECTIONS if s.id == "companieshouse" for f in s.fields)  # the Companies House key, and whether new-customer cards carry its line
 SECTIONS_BY_ID = {s.id: s for s in SECTIONS}
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -733,6 +759,8 @@ class SettingsStore:
                     return None, "Enter a whole number, not less than " + ("1" if key == "proactive_pr_watch_min" else "0")
             except (TypeError, ValueError):
                 return None, "Enter a number."
+        if key == "companies_house_api_key" and value and not re.fullmatch(r"[A-Za-z0-9_\-]{8,100}", str(value)):
+            return None, "That doesn't look like a Companies House API key (letters, numbers and dashes only, no spaces)."
         if key == "jarvis_owner_password" and len(value) < 8:
             return None, "Use at least 8 characters."
         if key == "claude_code_oauth_token" and value and not value.startswith("sk-ant-oat"):

@@ -1275,7 +1275,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(403, "Only the owner can change standing approvals, who the owner and partner are, "
                                      "the display password and staff key, or whether van locations show outside "
                                      "working hours, or whether and where Jarvis may browse the web, or which "
-                                     "service inbox Jarvis reads.")
+                                     "service inbox Jarvis reads, or the Companies House key.")
         before = settings_snapshot(set(body.values) | set(body.clear))
         errors = store.update(body.values, body.clear)
         if errors:

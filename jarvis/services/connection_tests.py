@@ -108,6 +108,10 @@ async def _ram(j) -> tuple[bool, str]:
     return True, f"RAM Tracking answered: {len(vehicles)} vehicles.{note}"
 
 
+async def _companieshouse(j) -> tuple[bool, str]:
+    return await j.company_check.test()
+
+
 async def _github(j) -> tuple[bool, str]:
     if not j.github:
         return False, "Add the GitHub token and FSM repository first."
@@ -201,7 +205,7 @@ async def _marketing(j) -> tuple[bool, str]:
 
 
 TESTS = {
-    "claude": _claude, "microsoft365": _microsoft365, "serviceinbox": _serviceinbox, "teams": _teams, "teamsbot": _teamsbot, "fsm": _fsm,
+    "claude": _claude, "microsoft365": _microsoft365, "serviceinbox": _serviceinbox, "companieshouse": _companieshouse, "teams": _teams, "teamsbot": _teamsbot, "fsm": _fsm,
     "sage": _sage, "ram": _ram, "github": _github, "selfimprove": _selfimprove, "storage": _storage,
     "voice": _voice, "marketing": _marketing,
 }

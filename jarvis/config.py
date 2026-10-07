@@ -185,6 +185,10 @@ class Settings(BaseSettings):
     council_subject_patterns: str = ("work order,job request,service request,repair request,request for works,"
                                      "portal notification,new request")
     council_customer_name: str = "Bradford Council"  # the FSM customer a council job is proposed against ("" = none)
+    # Companies House (free Public Data API): the pre-quote company check (services/company_check.py). Blank key = not connected
+    # (Jarvis says so, it is not an error). Both are OWNER-ONLY (settings_store.OWNER_ONLY_KEYS); the key is a secret-kind field.
+    companies_house_api_key: str = ""
+    companies_house_on_new_customers: bool = True  # add a Companies House line to the create_customer approval card
     # The shared inbox is for OPERATIONAL items that matter only. Automated email to it is held back unless
     # the notification's importance (info < normal < important < urgent) reaches the minimum below - see
     # jarvis/services/notifier.py. Repeats of the same alert are collapsed and the inbox is rate-limited.

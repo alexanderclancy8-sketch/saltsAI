@@ -502,7 +502,9 @@ def _src_memory(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
     return out, len(rows) < limit
 
 
-_AUDIT_KINDS = {"settings": "settings_change", "team_access": "settings_change", "memory": "memory", "export": "other"}
+# "company_check": a Companies House look-up (the company's name and number only - never anything about a person)
+_AUDIT_KINDS = {"settings": "settings_change", "team_access": "settings_change", "memory": "memory", "export": "other",
+                "company_check": "other"}
 
 
 def _src_audit(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:

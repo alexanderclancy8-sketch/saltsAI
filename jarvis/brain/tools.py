@@ -1188,6 +1188,18 @@ async def agent_runs(j, a: AgentRunsIn):
     return {"runs": runs, "stalled_after_minutes": int(STALL_AFTER.total_seconds() // 60)}
 
 
+class CompanyCheckIn(BaseModel):
+    company: str = Field(max_length=160, description=(
+        "EITHER the Companies House company number (8 characters, e.g. 01234567 or SC123456) OR the company's name, e.g. "
+        "'Acme Fire Ltd'. A number is exact. A name is only a search: unless it matches exactly one company exactly you "
+        "get up to 5 candidates back and must ask the owner to confirm the right one by number - never pick for them."))
+
+
+async def company_check(j, a: CompanyCheckIn):
+    """Read-only pre-quote check of a company on the Companies House register (free public API)."""
+    return await j.company_check.run(a.company)
+
+
 async def doctor(j, a: NoInput):
     """Read-only self-diagnostics: one line per item (ok / amber / red + next step), also put on the display."""
     from ..services.doctor import Doctor
@@ -1314,8 +1326,16 @@ async def create_customer(j, a: CreateCustomerIn):
         if not namesake:
             summary += " - NOTE: similar to existing customer " + ", ".join(
                 f"'{str(c.get('name') or '')[:60]}'" for c in likely[:3]) + "; confirmed as a separate one"
+    # A read-only Companies House line for the human reading the card (exact-name look-up; fail-soft; short timeout). It goes
+    # into the SUMMARY only: the payload judged, stored and sent to the FSM above is not touched by it.
+    ch_line = await j.company_check.card_line(name)
+    if ch_line:
+        summary += " | " + ch_line
     action_id = j.actions.queue("fsm_write", summary, payload)
-    return {"queued_action": action_id, "customer": body, "note": _queued_note(j, action_id)}
+    result: dict[str, Any] = {"queued_action": action_id, "customer": body, "note": _queued_note(j, action_id)}
+    if ch_line:
+        result["companies_house"] = ch_line
+    return result
 
 
 async def create_site(j, a: CreateSiteIn):
@@ -2262,6 +2282,17 @@ TOOLS: list[Tool] = [
                    "failing routine tests and issues needing a human. A check that can't run says so and the rest "
                    "still do. Use it when the owner asks 'is anything broken?', 'run the doctor' or 'health check'. "
                    "It changes nothing.", NoInput, doctor, "Running a self-check"),
+    Tool("company_check", "Free pre-quote check of a new commercial customer on the Companies House register: whether the "
+                          "company is active, how long it has existed (incorporation date, not proof of trading), "
+                          "whether its accounts or confirmation statement are overdue, dormant accounts, insolvency "
+                          "history, charges outstanding (counts only), company type, SIC codes and registered-office "
+                          "town. Give a company number, or a name: a name that is not an exact unique match returns "
+                          "candidates and you MUST ask the owner to confirm one by number - never choose for them. "
+                          "Read-only; shows a card on the display. Speak the 'spoken' text and always include its "
+                          "closing limit: this is filing status only, not a credit score, and sole traders and "
+                          "partnerships aren't on it. Never say a company is or isn't creditworthy. If it says "
+                          "Companies House isn't connected, tell the owner to add the free API key in Settings.",
+         CompanyCheckIn, company_check, "Checking Companies House"),
     Tool("log_job", "Log a new job in Salts FSM from a plain description - a fault report, call-out or booking. "
                     "Use this rather than fsm_change whenever it's specifically about logging or booking a job; "
                     "give the site, what's wrong/needed, and the engineer and date if named. Queued for the "
