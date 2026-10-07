@@ -291,3 +291,38 @@ def test_touch_targets_and_motion_and_contrast_guards():
 def test_ask_popup_stays_on_screen_and_above_the_phone_composer():
     phone = ASK_CSS[ASK_CSS.index("@media (max-width: 760px)"):]
     assert "max-height: calc(100dvh" in phone and "overflow-y: auto" in phone
+
+
+# ------------------------------------------------------------------ scheduled checks: ONE summary row, a bounded panel
+def test_scheduled_checks_are_one_summary_row_in_the_conversation_head_with_a_separate_bounded_panel():
+    convo = INDEX[INDEX.index('<section class="convo"'):INDEX.index("</section>", INDEX.index('<section class="convo"'))]
+    head = convo[convo.index('<div class="convo-head">'):convo.index('<div class="activity"')]
+    assert 'id="activity-toggle"' in head and 'aria-controls="activity"' in head and 'aria-expanded="false"' in head   # the one row, above the log
+    assert convo.count('id="activity-toggle"') == 1
+    assert convo.index('id="activity"') < convo.index('id="conversation"')                # the panel is not a child of the chat log
+    log = convo[convo.index('id="conversation"'):]
+    assert "activity" not in log                                                           # ...and the lines are never inside it
+    panel = CSS[CSS.index(".activity {"):CSS.index("\n", CSS.index(".activity {") + 200)]
+    assert "position: absolute" in panel and "max-height: 40%" in panel and "overflow-y: auto" in panel   # bounded, scrolls inside itself
+    assert "overscroll-behavior: contain" in panel
+    assert ".activity[hidden] { display: none; }" in CSS
+    assert "max-height: 40vh" not in CSS                                                    # the old unbounded-in-flow list is gone
+
+
+def test_the_checks_summary_row_and_lines_are_44px_tap_targets_and_flag_trouble_in_the_accent_colours():
+    assert ".auto-all, .auto summary { min-height: 44px; }" in CSS[CSS.index("(pointer: coarse)"):]
+    assert '.auto-all[data-level="bad"] .auto-all-text { color: var(--warn); }' in CSS
+    assert '.auto-all[data-level="warn"] .auto-all-text { color: var(--ember); }' in CSS
+    assert "-webkit-line-clamp: 2" in CSS[CSS.index(".auto-all .auto-all-text"):]          # long text wraps to two lines, never a third
+
+
+def test_the_checks_refresh_never_moves_the_conversation_and_keeps_what_the_owner_opened():
+    body = HUD[HUD.index("function renderActivity("):HUD.index('$("#activity-toggle")?.addEventListener("click"')]
+    assert "#conversation" not in body and "scrollTop = 1e9" not in body                   # it does not touch the conversation's scroll
+    assert "const stamp = JSON.stringify(jobs); if (stamp === activityShown) return;" in body   # nothing new: nothing rebuilt
+    assert "const keep = box.scrollTop;" in body and "box.scrollTop = keep;" in body       # the panel's own scroll survives a rebuild
+    assert "activityOpen.has(job.key)" in body and "syncActivityOpen();" in body           # open lines and the open panel are restored
+    # the conversation sticks to its newest message across size changes, unless the owner scrolled up
+    assert "new ResizeObserver(() => { if (pinned) log.scrollTop = 1e9; })" in HUD
+    # the summary says which check needs a look
+    assert "needs a look" in HUD and "nothing to report" in HUD

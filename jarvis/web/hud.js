@@ -165,6 +165,9 @@
     if (state === "thinking") clearTimeout(sleepTimer);
   }
   function caption(text, interim = "") { const el = $("#caption"); el.classList.remove("error"); el.innerHTML = esc(text) + (interim ? ` <span class="interim">${esc(interim)}</span>` : ""); }
+  // The caption under the orb repeats the start of Jarvis's latest reply: markdown marks stripped, cut at 180 characters with an ellipsis
+  // (judged on the stripped text, so a short reply full of ** and # is not given a false "…").
+  function captionPreview(text) { const t = String(text).replace(/[#*_`|]/g, ""); return t.slice(0, 180) + (t.length > 180 ? "…" : ""); }
   function captionError(text) { caption(text); $("#caption").classList.add("error"); }
 
   // ------------------------------------------------------------------ pop-up drawer
@@ -1065,7 +1068,7 @@ function send(text, mode = "typed", opts = {}) {
   function proactive(d) {
     if (S.proactiveMuted) return; // the server doesn't send these to a muted session; this is only a safety net
     addMessage("assistant", d.text, "on my own").classList.add("proactive");
-    caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
+    caption(captionPreview(d.text));
     if (d.speak && proactiveMaySpeak()) claimSpeech(d.id).then((won) => { if (won && proactiveMaySpeak()) say(d.text.replace(/[#*_`|]/g, "").replace(/\s+/g, " ").trim().slice(0, 280)); });
   }
 
@@ -1155,7 +1158,7 @@ function send(text, mode = "typed", opts = {}) {
         if (speaksThisTurn(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
         if (!speaker.active) { setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); }
-        caption(d.text.replace(/[#*_`|]/g, "").slice(0, 180) + (d.text.length > 180 ? "…" : ""));
+        caption(captionPreview(d.text));
         current = null;
         $("#conversation").scrollTop = 1e9; // the source line and buttons add height under the reply
         refreshSoon();
@@ -1366,37 +1369,80 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ scheduled checks (activity log)
-  // A scheduled check that found nothing posts nothing into the chat. Every run is in the activity log and shows here as
-  // ONE collapsed line per check ("Pull request watch · 7 checks since 09:30, no change") that opens to list each run
-  // with its time. A check that did find something has also posted its message in the chat as usual.
-  const activityOpen = new Set();
+  // A scheduled check that found nothing posts nothing into the chat. Every run is in the activity log, and the console shows
+  // them as ONE slim summary row at the top of the conversation ("Scheduled checks - 9 jobs, 560 runs since 00:06, nothing to
+  // report"). Opening it lists one line per check ("Pull request watch · 7 checks since 09:30, no change"), each of which opens
+  // to list its runs, inside a bounded panel that scrolls on its own - it never pushes the conversation off screen. A check
+  // that did find something has also posted its message in the chat as usual; the summary then says which one needs a look.
+  const activityOpen = new Set();   // per-check lines the owner has open
+  let activityAllOpen = false;      // the summary's panel; kept here so a refresh never re-collapses (or re-opens) it
+  let activityHasJobs = false;
   function activityLine(job) {
     const parts = [];
     if (job.failed) parts.push(`${job.failed} failed`);
     if (job.changed) parts.push(plural(job.changed, "change", "changes"));
     return `${job.name} · ${plural(job.checks, "check", "checks")} since ${job.since}, ${parts.length ? parts.join(", ") : "no change"}`;
   }
+  // The one summary row for all the checks: { html, level } ("bad" when a check failed, "warn" when one found something).
+  function activitySummary(jobs) {
+    const look = jobs.filter((j) => j.failed || j.changed);
+    if (look.length) {
+      const names = look.slice(0, 2).map((j) => j.name).join(", ") + (look.length > 2 ? ` +${look.length - 2} more` : "");
+      return { html: esc(`Scheduled checks - ${look.length} ${look.length === 1 ? "needs" : "need"} a look: ${names}`), level: look.some((j) => j.failed) ? "bad" : "warn" };
+    }
+    const runs = jobs.reduce((n, j) => n + (j.checks || 0), 0), since = jobs.map((j) => j.since).sort()[0] || "";
+    return { html: esc(`Scheduled checks - ${plural(jobs.length, "job", "jobs")}, ${plural(runs, "run", "runs")}`) + `<span class="since">${esc(` since ${since}`)}</span>` + esc(", nothing to report"), level: "" };
+  }
+  function syncActivityOpen() {
+    const tog = $("#activity-toggle"), box = $("#activity"); if (!tog || !box) return;
+    const open = activityAllOpen && activityHasJobs;
+    box.hidden = !open; tog.setAttribute("aria-expanded", String(open));
+    const u = tog.querySelector("u"); if (u) u.textContent = open ? "Hide" : "Show";
+  }
   let activityShown = "";
   function renderActivity(a) {
-    const box = $("#activity"); if (!box) return;
+    const box = $("#activity"), tog = $("#activity-toggle"); if (!box || !tog) return;
     const jobs = (a && a.jobs) || [];
-    // Nothing new since the last look: leave the lines alone (a re-render would drop the focus and scroll of a line the
+    // Nothing new since the last look: leave everything alone (a re-render would drop the focus and scroll of a line the
     // owner has open and is reading).
     const stamp = JSON.stringify(jobs); if (stamp === activityShown) return; activityShown = stamp;
-    box.hidden = !jobs.length;
+    activityHasJobs = jobs.length > 0;
+    if (!activityHasJobs) activityAllOpen = false;
+    tog.hidden = !activityHasJobs; $("#transcript-wrap")?.classList.toggle("has-checks", activityHasJobs);
+    if (activityHasJobs) {
+      const sum = activitySummary(jobs);
+      tog.querySelector(".auto-all-text").innerHTML = sum.html;
+      sum.level ? tog.setAttribute("data-level", sum.level) : tog.removeAttribute("data-level");
+    }
+    // Only the panel's own scroll position is kept; the conversation's is never touched here.
+    const keep = box.scrollTop;
     box.innerHTML = jobs.map((job) => {
       const open = activityOpen.has(job.key);
       const runs = job.runs.map((r) => `<span class="${r.outcome === "changed" ? "changed" : r.outcome === "failed" ? "failed" : ""}">${esc(r.time)} ${esc(r.detail || (r.outcome === "no_change" ? "No change." : r.outcome))}</span>`).join("");
       return `<details class="auto" data-job="${esc(job.key)}"${job.failed ? ' data-level="bad"' : job.changed ? ' data-level="warn"' : ""}${open ? " open" : ""}>` +
         `<summary><span>${esc(activityLine(job))}</span><u>${open ? "Hide" : "Show"}</u></summary><div class="auto-runs">${runs}</div></details>`;
     }).join("");
+    syncActivityOpen();
+    box.scrollTop = keep;
   }
+  $("#activity-toggle")?.addEventListener("click", () => { activityAllOpen = !activityAllOpen; syncActivityOpen(); });
+  $("#transcript-wrap")?.addEventListener("keydown", (e) => {   // Escape closes the panel (and hands focus back to its row)
+    if (e.key !== "Escape" || !activityAllOpen || !e.target.closest?.("#activity, #activity-toggle")) return;
+    e.preventDefault(); e.stopPropagation(); activityAllOpen = false; syncActivityOpen(); $("#activity-toggle").focus();
+  });
   // `toggle` does not bubble, so listen in the capture phase on the container (it survives the re-renders above).
   $("#activity")?.addEventListener("toggle", (e) => {
     const d = e.target; if (!d.matches?.("details.auto")) return;
     d.open ? activityOpen.add(d.dataset.job) : activityOpen.delete(d.dataset.job);
     const u = d.querySelector("summary u"); if (u) u.textContent = d.open ? "Hide" : "Show";
   }, true);
+  // The conversation stays on its newest message whenever its box changes size (the checks row appearing, the panel opening
+  // or closing, the keyboard, a font loading) - unless the owner has scrolled up to read, which is left alone.
+  {
+    const log = $("#conversation"); let pinned = true;
+    log.addEventListener("scroll", () => { pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 48; }, { passive: true });
+    if (window.ResizeObserver) new ResizeObserver(() => { if (pinned) log.scrollTop = 1e9; }).observe(log);
+  }
 
   // The top-bar pill: how many sources are still samples. Opens the Demo data pop-up.
   const isDemo = (v) => String(v).includes("DEMO");
