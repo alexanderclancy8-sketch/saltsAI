@@ -171,7 +171,7 @@
   // ONE drawer component: every section of the console (and Settings / Connections) is a .pop inside #drawer-body.
   // Drawer.show(name) reveals one and slides the drawer in from the right; it is closed by the Close button,
   // Escape, or a click on the scrim (outside). It is never wider than the viewport (see .drawer in hud.css).
-  const POPS = ["approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming", "demo", "memory", "settings", "connections"];
+  const POPS = ["approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming", "demo", "memory", "settings", "connections"];
   const Drawer = {
     current: null, opener: null,
     isOpen() { return $("#drawer").classList.contains("open"); },
@@ -190,6 +190,7 @@
       if (name === "fleet") fitMapSoon();             // the map is laid out at 0x0 while hidden; re-measure now it can be seen
       if (name === "demo") renderDemo();
       if (name === "memory") window.JarvisMemory?.load();
+      if (name === "activity") window.JarvisActivity?.load();
       if (name === "settings" && ROLE === "owner") { TeamAccess.load(); Homes.load(); }
       if ((name === "settings" || name === "connections") && !TEAM) {
         if (!Settings.loaded) Settings.load();
@@ -513,6 +514,7 @@
   // Question prompt (ask_user) lives in ask.js; it only needs these four hooks. Its answers go back through send()
   // as ordinary chat text - never through decide()/the approvals path.
   if (!TEAM) window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
+  if (!TEAM) window.JarvisActivity?.init({ api: (p, o) => api(p, o), role: ROLE }); // the "What Jarvis did" pop-up (activity.js): a read-only list
   window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 
   // ------------------------------------------------------------------ self-echo guard

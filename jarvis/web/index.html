@@ -43,6 +43,7 @@
   <nav class="rail" id="rail" aria-label="Dashboard sections">
     <div class="label">On request</div>
     <!--role:manager--><button type="button" class="rail-item" data-pop="approvals">Approvals <span class="rail-count" id="rc-approvals">0</span></button><!--/role:manager-->
+    <!--role:manager--><button type="button" class="rail-item" data-pop="activity">Activity</button><!--/role:manager-->
     <!--role:manager--><button type="button" class="rail-item" data-pop="comms">Comms <span class="rail-count" id="rc-comms">0</span></button><!--/role:manager-->
     <!--role:manager--><button type="button" class="rail-item" data-pop="issues">Issues <span class="rail-count" id="rc-issues">0</span></button><!--/role:manager-->
     <!--role:manager--><button type="button" class="rail-item" data-pop="health">Health <span class="rail-count" id="rc-health">0</span></button><!--/role:manager-->
@@ -163,6 +164,51 @@
         <summary>Dismissed failures <span class="count" id="history-count"></span></summary>
         <div id="history-list"><p class="empty">Loading…</p></div>
       </details>
+      <p class="act-link"><button type="button" class="btn" data-pop="activity">See everything Jarvis did</button></p>
+    </section><!--/role:manager-->
+
+    <!--role:manager--><section class="pop" id="pop-activity" data-title="What Jarvis did" hidden>
+      <p class="act-summary" id="activity-summary" role="status" aria-live="polite">Loading…</p>
+      <div class="act-filters">
+        <div class="act-ranges" role="group" aria-label="Period">
+          <button type="button" class="chip act-range is-on" data-range="today" aria-pressed="true">Today</button>
+          <button type="button" class="chip act-range" data-range="7d" aria-pressed="false">7 days</button>
+          <button type="button" class="chip act-range" data-range="30d" aria-pressed="false">30 days</button>
+        </div>
+        <div class="act-selects">
+          <label class="act-field"><span>Kind</span>
+            <select id="activity-kind">
+              <option value="">All kinds</option><option value="draft">Drafts</option><option value="email">Emails sent</option>
+              <option value="job_proposal">Job proposals</option><option value="fsm_change">FSM changes</option>
+              <option value="settings_change">Settings changes</option><option value="memory">Memory</option>
+              <option value="code_change">Pull requests and code</option><option value="scheduled_check">Scheduled checks</option>
+              <option value="suggestion">Suggestions</option><option value="other">Other</option>
+            </select></label>
+          <label class="act-field"><span>Status</span>
+            <select id="activity-status">
+              <option value="">Any status</option><option value="needs_look">Needs a look</option><option value="waiting">Waiting for you</option>
+              <option value="approved">Approved</option><option value="auto_approved">Auto-approved (standing)</option>
+              <option value="declined">Declined</option><option value="failed">Failed</option><option value="done">Done</option>
+              <option value="edited">Edited</option><option value="dismissed">Dismissed</option>
+            </select></label>
+          <label class="act-field"><span>Who</span>
+            <select id="activity-who"><option value="">Anyone</option></select></label>
+        </div>
+        <label class="act-field act-search"><span>Search</span>
+          <input type="search" id="activity-search" maxlength="100" placeholder="Search what Jarvis did" autocomplete="off" enterkeyhint="search"></label>
+        <label class="act-toggle"><input type="checkbox" id="activity-everything"> <span>Include everything, even checks with nothing to report</span></label>
+      </div>
+      <div class="act-quiet" id="activity-quiet" hidden>
+        <button type="button" class="act-quiet-btn" id="activity-quiet-btn" aria-expanded="false" aria-controls="activity-quiet-list"></button>
+        <ul class="act-quiet-list" id="activity-quiet-list" hidden></ul>
+      </div>
+      <ul class="act-list" id="activity-list" aria-label="What Jarvis did"></ul>
+      <p class="empty" id="activity-empty" hidden></p>
+      <p class="empty act-error" id="activity-error" role="alert" hidden></p>
+      <div class="act-more"><button type="button" class="btn" id="activity-more" hidden>Show more</button><span id="activity-sentinel" aria-hidden="true"></span></div>
+      <p class="act-note" id="activity-note" hidden></p>
+      <!--role:owner--><div class="set-actions act-export"><a class="btn" id="activity-export" href="/api/activity/export.csv" download>Export CSV</a>
+        <span class="act-note" id="activity-export-note">Exports what the filters above are showing, cleaned of secrets and locations.</span></div><!--/role:owner-->
     </section><!--/role:manager-->
 
     <!--role:manager--><section class="pop" id="pop-comms" data-title="Comms" hidden>
@@ -397,6 +443,7 @@
 <script src="/static/core.js"></script>
 <script src="/static/ask.js"></script>
 <script src="/static/memory.js"></script>
+<script src="/static/activity.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

@@ -85,7 +85,7 @@ UNTRUSTED_PREFIXES = ("email_", "repo_", "fsm_", "knowledge_", "web_", "pr_")
 UNTRUSTED_TOOLS = {"run_tests", "search_rankings", "seo_audit", "competitor_audit", "regulatory_watch",
                    "technical_watch", "job_detail", "search_conversation_history", "issues_list", "answer_questionnaire",
                    "capture_supplier_bill", "bid_assessment", "bid_document", "audit_evidence", "edit_office_document",
-                   "draft_office_document", "action_items"}
+                   "draft_office_document", "action_items", "what_did_you_do"}
 
 
 def is_untrusted_output(tool_name: str) -> bool:

@@ -306,7 +306,7 @@ def test_the_owners_console_still_has_everything_and_the_team_controls(browser, 
     try:
         _sign_in_owner(page, srv.url)
         assert page.evaluate("[...document.querySelectorAll('.rail-item')].map(b => b.dataset.pop)") == [
-            "approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
+            "approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
         assert page.evaluate("[...document.querySelectorAll('.tb-btn')].map(b => b.textContent.trim())") == [
             "Voice on", "Speaks up", "Connections", "Settings"]
         assert page.text_content("#role-chip") == "Owner"

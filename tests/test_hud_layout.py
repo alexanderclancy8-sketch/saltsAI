@@ -14,10 +14,16 @@ CORE = (WEB / "core.js").read_text(encoding="utf-8")
 THEME = (WEB / "theme.js").read_text(encoding="utf-8")
 ASK_CSS = (WEB / "ask.css").read_text(encoding="utf-8")
 
-RAIL = ["approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
+# The rail inventory, in order. "Activity" (What Jarvis did) joined in the activity-page change, right after Approvals: the two are used
+# together (what is waiting, then what has been done), and the phone chip strip keeps Approvals pinned first. The roles are part of the
+# pin since then: a team console keeps exactly the four it always had, and Activity (like Approvals) is for owner and manager only.
+RAIL = ["approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
+RAIL_MANAGER_ONLY = ["approvals", "activity", "comms", "issues", "health", "finance"]
+RAIL_NO_COUNT = ["activity", "presence"]
 # Everything the old dashboard showed must be reachable in a pop-up: element id -> the pop-up that holds it.
 DASHBOARD_PANELS = {
     "approvals": ["approvals", "suggestions"],
+    "activity": ["activity-summary", "activity-list", "activity-kind", "activity-status", "activity-who", "activity-search", "activity-everything"],
     "comms": ["inbox"],
     "issues": ["issues"],
     "health": ["tests", "btn-run-tests", "notifications"],
@@ -137,11 +143,16 @@ def test_top_bar_buttons_are_all_text_labelled():
     assert '"Working"' in HUD and '"Listening"' in HUD and '"Speaking"' in HUD and '"Online"' in HUD
 
 
-def test_rail_has_the_nine_sections_each_with_one_count_and_a_popup():
+def test_rail_has_the_ten_sections_each_with_a_popup_and_the_right_roles():
     assert 'class="label">On request<' in INDEX
     items = re.findall(r'<button type="button" class="rail-item" data-pop="(\w+)">[^<]+?(?:<span class="rail-count" id="rc-(\w+)">[^<]*</span>)?</button>', INDEX)
     assert [a for a, _ in items] == RAIL
-    assert [a for a, b in items if not b] == ["presence"] and all(a == b for a, b in items if b)   # Presence has no count
+    assert len(RAIL) == len(set(RAIL)) == 10                                                      # the rail has grown from nine to ten, deliberately
+    assert [a for a, b in items if not b] == RAIL_NO_COUNT and all(a == b for a, b in items if b)   # Activity and Presence have no count
+    # who gets each item: exactly the manager-only ones sit inside a manager region, so a team console keeps ops, fleet, presence, coming up
+    for name in RAIL:
+        wrapped = re.search(rf'<!--role:manager--><button type="button" class="rail-item" data-pop="{name}">', INDEX) is not None
+        assert wrapped == (name in RAIL_MANAGER_ONLY), name
     for name in RAIL:
         assert f'id="pop-{name}"' in INDEX
     assert "function renderRail()" in HUD and "function setRail(" in HUD

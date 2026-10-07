@@ -241,6 +241,12 @@ class NextStepsIn(BaseModel):
         return v
 
 
+class WhatDidYouDoIn(BaseModel):
+    when: Literal["today", "yesterday", "7d", "30d"] = Field(
+        "today", description="Which period: 'today' (the default), 'yesterday', '7d' for this week (the last seven days) or '30d' for "
+                             "the last thirty days")
+
+
 class JobsIn(BaseModel):
     date_from: str | None = Field(None, description="YYYY-MM-DD, default today")
     date_to: str | None = Field(None, description="YYYY-MM-DD, default same as date_from")
@@ -1752,6 +1758,12 @@ async def remedial_quotes(j, a: NoInput):
     return await remedial_pipeline(j.fsm)
 
 
+async def what_did_you_do(j, a: WhatDidYouDoIn):
+    """Read-only: a short spoken-style summary of what Jarvis proposed, changed and had decided, from the same record as the console's
+    "What Jarvis did" page. Counts first, then up to five notable things (failures and waiting ones first), then where to see the rest."""
+    return j.activity_feed.spoken(a.when)
+
+
 async def upsell_opportunities(j, a: NoInput):
     """Read-only: the open Upsell Opportunities in the FSM, as a short spoken-style answer. Approving, editing, declining and sending
     all happen in the FSM Action Centre by a person - there is deliberately nothing here that can do any of them."""
@@ -2014,6 +2026,7 @@ async def remember(j, a: RememberIn):
 async def forget(j, a: ForgetIn):
     j.db.forget(a.memory_id)
     j.brain.refresh_system()
+    j.activity_feed.record("memory", "Jarvis", f"Forgot remembered fact #{a.memory_id}")  # shown in "What Jarvis did" (number only, never the text)
     return "Forgotten."
 
 
@@ -2422,6 +2435,13 @@ TOOLS: list[Tool] = [
     Tool("remedial_quotes", "Remedial quotes Salts FSM raised from service-visit defects: open pipeline and value, "
                             "which need chasing (7 and 21 days), and win rate.", NoInput, remedial_quotes,
          "Checking remedial quotes"),
+    Tool("what_did_you_do", "What Jarvis himself did: what he drafted, emailed, proposed or changed and what the owner approved, declined "
+                            "or still has waiting. Use for 'what did you do today / yesterday / this week?' and 'what's waiting on me?'. "
+                            "Read-only; returns a short spoken-style answer - the counts first, then up to five notable things, failed "
+                            "ones and waiting ones first, then where to see the full list (Activity in the console) - say it as given, "
+                            "in a few sentences. Never read out anything that sounds like a code, key or password. Items that only "
+                            "involved sample data are left out and the answer says so.",
+         WhatDidYouDoIn, what_did_you_do, "Checking what I did"),
     Tool("upsell_opportunities", "Upsell Opportunities from the Salts FSM: sites where Salts maintains only some of fire alarm, "
                                  "intruder alarm, fire extinguishers, access control and emergency lighting. Use for 'any upsell "
                                  "opportunities?'. Read-only; returns a short spoken-style answer (how many, then up to five sites "
