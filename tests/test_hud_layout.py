@@ -278,6 +278,19 @@ def test_phone_keeps_the_conversation_and_message_box_in_view():
     assert ".has-chat .core-btn" in CSS and ".composing .core-block" in CSS
     assert 'classList.add("composing")' in HUD
 
+def test_unpinning_the_core_waits_for_the_press_that_blurred_the_message_box():
+    """A tap above the box blurs it at mousedown; un-collapsing then (the core reappears and everything under it moves down) made
+    the release land on a different element, so the click was swallowed. The blur handler must defer while a press is open."""
+    block = HUD[HUD.index("const compose = {"):HUD.index('$("#input").addEventListener("keydown"')]
+    assert 'document.addEventListener(t, pressStart, true)' in block and 'document.addEventListener(t, pressEnd, true)' in block
+    assert '"pointerdown", "touchstart", "mousedown"' in block and '"click", "pointercancel", "touchcancel"' in block
+    assert "if (!compose.open || performance.now() - compose.at > 3000)" in block      # no press: un-collapse at once, as before
+    assert "setTimeout(() => finish(), 1200)" in block                                 # a press that never clicks cannot strand the core
+    assert 'classList.remove("composing")' in block and 'classList.add("composing")' in block
+    # the blur handler must not remove the class directly any more
+    assert '$("#input").addEventListener("blur", () => document.body.classList.remove("composing"))' not in HUD
+    assert ".composing .core-block { display: none; }" in CSS                        # the keyboard-open collapse itself is unchanged
+
 
 def test_touch_targets_and_motion_and_contrast_guards():
     assert "min-height: 44px" in CSS[CSS.index("(pointer: coarse)"):]

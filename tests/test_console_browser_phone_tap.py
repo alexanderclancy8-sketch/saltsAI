@@ -39,9 +39,10 @@ _COUNT_JS = """(controls) => {
     }, true);
 }"""
 # where is the control, and is it really what a finger there would hit (not hidden, not covered, above the message box)?
-_LOOK_JS = """(sel) => {
-    const els = [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length);
-    const el = els[els.length - 1]; if (!el) return null;
+_LOOK_JS = """([sel, first]) => {
+    const els = [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length)
+        .filter(e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 >= 0 && r.left + r.width / 2 <= innerWidth; });
+    const el = first ? els[0] : els[els.length - 1]; if (!el) return null;
     const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
     const hit = document.elementFromPoint(x, y);
     return { x, y, hit: !!(hit && el.contains(hit)), top: r.top, bottom: r.bottom, vh: innerHeight,
@@ -60,12 +61,12 @@ def _prepare(page, panel_open=False):
 
 
 def _keyboard_up(page, width, height):
-    """Focus the message box (a real tap), then let the 'keyboard' take the lower ~45% of the screen, like a phone does."""
+    """Focus the message box (a real tap), then let the 'keyboard' take the lower ~40% of the screen, like a phone does."""
     page.set_viewport_size({"width": width, "height": height})
     page.wait_for_timeout(150)
     page.touchscreen.tap(width / 2, page.evaluate("document.getElementById('input').getBoundingClientRect().top + 20"))
     page.wait_for_function("document.activeElement && document.activeElement.id === 'input'")
-    page.set_viewport_size({"width": width, "height": int(height * 0.55)})
+    page.set_viewport_size({"width": width, "height": int(height * 0.6)})
     page.wait_for_function(_COMPOSING)
     page.wait_for_timeout(250)
     assert page.evaluate("getComputedStyle(document.querySelector('.core-block')).display") == "none"   # the intended behaviour is intact
@@ -79,7 +80,7 @@ def _send(page, text, n):
 
 def _tap(page, key, hold_ms=0, mouse=False):
     """Press the control the way a finger (or, for `mouse`, a pointer) would; returns (clicks before, clicks after)."""
-    look = page.evaluate(_LOOK_JS, CONTROLS[key])
+    look = page.evaluate(_LOOK_JS, [CONTROLS[key], key == "need"])
     assert look, f"{key} is not on screen"
     assert look["hit"], f"{key} is covered by something else at its centre: {look}"
     assert 0 <= look["top"] and look["bottom"] <= look["composer"] and look["bottom"] <= look["vh"], (key, look)   # above the box

@@ -896,8 +896,33 @@ function send(text, mode = "typed", opts = {}) {
   const autosize = () => { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; };
   $("#input").addEventListener("input", () => { autosize(); rsSoon(); });
   // Phones: the welcome block (orb + quick buttons) gives way while the keyboard is up.
-  $("#input").addEventListener("focus", () => document.body.classList.add("composing"));
-  $("#input").addEventListener("blur", () => document.body.classList.remove("composing"));
+  // Un-collapsing is a layout change (the core comes back and everything under it moves down), so it must never happen
+  // BETWEEN the two halves of a tap. A tap on a control above the box blurs the box at its mousedown (touch: the compat
+  // mouse events come after touchend, so pointerup has already happened), and a browser click needs the press and the
+  // release to land on the same element - if the core reappears in between, the row under the finger has moved away and
+  // the tap is swallowed. So a blur that a press caused waits for that press's click (or cancel) to finish; any other blur
+  // (the keyboard's Done/Enter, Escape, a programmatic blur) un-collapses at once, as before.
+  const compose = { open: false, at: 0, timer: 0, release: null };
+  const composingOn = () => { compose.release?.(true); document.body.classList.add("composing"); };
+  const composingOff = () => { compose.release?.(true); document.body.classList.remove("composing"); };
+  const pressStart = () => { compose.open = true; compose.at = performance.now(); };
+  for (const t of ["pointerdown", "touchstart", "mousedown"]) document.addEventListener(t, pressStart, true);
+  const pressEnd = () => { compose.open = false; };
+  for (const t of ["click", "pointercancel", "touchcancel"]) document.addEventListener(t, pressEnd, true);
+  $("#input").addEventListener("focus", composingOn);
+  $("#input").addEventListener("blur", () => {
+    if (!compose.open || performance.now() - compose.at > 3000) { composingOff(); return; }
+    compose.release?.(true);
+    const finish = (now) => {
+      clearTimeout(compose.timer); compose.release = null;
+      for (const t of ["click", "pointercancel", "touchcancel", "dragstart"]) window.removeEventListener(t, later);
+      if (now !== true) document.body.classList.remove("composing");
+    };
+    const later = () => { clearTimeout(compose.timer); compose.timer = setTimeout(() => finish(), 0); };  // after the click's own handlers
+    compose.release = finish;
+    for (const t of ["click", "pointercancel", "touchcancel", "dragstart"]) window.addEventListener(t, later);
+    compose.timer = setTimeout(() => finish(), 1200);   // a press that never produces a click (released off-screen, a drag): never leave the core hidden
+  });
   // iOS Safari doesn't shrink the layout viewport for the on-screen keyboard (dvh stays full height), which hid the
   // composer behind it. Track the visual viewport instead and size the app shell to what's actually visible.
   if (window.visualViewport) {
