@@ -67,7 +67,7 @@ ARGS_CHARS = 1000
 # (a SILENT background call must really be silent, and these would reach the owner or a third party regardless of the
 # policy). Found by reading every handler (and the service call each makes) for bus.publish / notifier / send_mail.
 NOT_BACKGROUND = set(NO_RECURSE) | {
-    "run_in_background", "background_results", "engineer_locations", "who_is_home", "nearest_engineer", "van_day",
+    "run_in_background", "background_results", "engineer_locations", "fleet_diagnostics", "who_is_home", "nearest_engineer", "van_day",
     "timesheet_check",
     # push to the display or the owner directly
     "show_on_display", "send_update_to_owner", "ask_user", "offer_next_steps", "doctor",

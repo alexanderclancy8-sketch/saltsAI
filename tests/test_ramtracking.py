@@ -2,6 +2,7 @@
 response shapes for vehicles/positions/journeys, confirmed against their Swagger docs
 (https://api.qaifn.co.uk/swagger/docs). See jarvis/integrations/ramtracking.py's docstring."""
 
+import datetime as dt
 import json
 
 import httpx
@@ -9,6 +10,9 @@ import httpx
 from jarvis.config import Settings
 from jarvis.integrations.ramtracking import RamTracking
 
+# Judged at this moment (3 minutes after the fixtures' event_date), never the wall clock: an event older than 15 minutes no
+# longer counts as live motion, so a test that read the real time would flip when it was written.
+NOW = dt.datetime(2026, 10, 1, 9, 3, tzinfo=dt.timezone.utc)
 SETTINGS = dict(ram_client_id="Alex Clancy", ram_api_key="secret-123", ram_username="api-user",
                 ram_password="api-pass", _env_file=None)
 
@@ -57,11 +61,14 @@ async def test_vehicles_parses_rams_nested_shape():
 
     s = Settings(**SETTINGS)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        vehicles = await RamTracking(s, http).vehicles()
-    assert vehicles[0] == {"id": 101, "registration": "YD71 SFS", "driver": "Dan Harper", "lat": 53.83,
-                           "lng": -1.78, "address_label": None, "timestamp": "2026-10-01T09:00:00Z",
-                           "moving": True}
+        vehicles = await RamTracking(s, http).vehicles(now=NOW)
+    # Was an exact dict match; the row now also carries the raw event, engine RPM, GPS flag and the worked-out motion, so the
+    # original fields are compared one by one (nothing was dropped or changed) and the new ones are pinned below.
+    assert {k: vehicles[0][k] for k in ("id", "registration", "driver", "lat", "lng", "address_label", "timestamp", "moving")}         == {"id": 101, "registration": "YD71 SFS", "driver": "Dan Harper", "lat": 53.83, "lng": -1.78,
+            "address_label": None, "timestamp": "2026-10-01T09:00:00Z", "moving": True}
+    assert vehicles[0]["event"] == "TRANSIT_START" and vehicles[0]["motion"]["label"] == "Moving"
     assert vehicles[1]["driver"] == "Priya Shah" and vehicles[1]["moving"] is False
+    assert vehicles[1]["motion"]["label"] == "Stopped, engine on"  # IDLE_START: the engine is running, the van is not moving
 
 
 async def test_positions_reshapes_vehicles_since_ram_has_no_bulk_positions_endpoint():
@@ -75,9 +82,12 @@ async def test_positions_reshapes_vehicles_since_ram_has_no_bulk_positions_endpo
 
     s = Settings(**SETTINGS)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        positions = await RamTracking(s, http).positions()
+        positions = await RamTracking(s, http).positions(now=NOW)
     assert len(positions) == 1
-    assert positions[0]["vehicle_id"] == 101 and positions[0]["speed_mph"] == 15
+    # Stricter than before: RAM sends no speed and a lone reading has nothing to estimate one from, so there is none
+    # (it used to be an invented 15 mph).
+    assert positions[0]["vehicle_id"] == 101 and positions[0]["speed_mph"] is None
+    assert positions[0]["motion_label"] == "Moving"
 
 
 async def test_journeys_groups_raw_events_into_legs_between_transit_start_and_stop():

@@ -41,7 +41,7 @@ _TOOL_INFO: dict[str, tuple[tuple[str, ...], str | None]] = {
                                     "unbilled_jobs", "remedial_quotes", "contract_renewals", "out_of_hours_calls",
                                     "route_optimise_advice", "timesheet_check", "false_alarm_analysis", "upsell_opportunities")},
     **{n: (("Stock records",), None) for n in ("stock_levels", "stock_usage", "stock_job_materials")},
-    **{n: (("RAM Tracking",), "fleet") for n in ("engineer_locations", "nearest_engineer", "van_day")},
+    **{n: (("RAM Tracking",), "fleet") for n in ("engineer_locations", "nearest_engineer", "van_day", "fleet_diagnostics")},
     **{n: (("Sage",), "finance") for n in ("finance_snapshot", "finance_aged", "finance_vat", "finance_cashflow",
                                            "finance_corporation_tax", "finance_profit_and_loss",
                                            "finance_credit_control")},

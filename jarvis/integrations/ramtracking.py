@@ -37,6 +37,7 @@ import yaml
 from .. import demo_guard
 from ..config import ROOT_DIR, Settings
 from ..redact import redact_text
+from .ram_motion import MotionTracker
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +125,15 @@ def _event_name(x: Any) -> str:
     return ""
 
 
+def _rpm(*sources: Any) -> int | None:
+    """engineRpm from the first place that has a usable number (VehicleDTO has it on the vehicle). Anything else is None."""
+    for source in sources:
+        value = source.get("engineRpm") if isinstance(source, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            return int(value)
+    return None
+
+
 def _vehicle_row(v: Any) -> dict[str, Any] | None:
     """One vehicle from /api/v1/vehicle/for-account (RAM's VehicleDTO), or None when the entry is not a vehicle at all."""
     if not isinstance(v, dict):
@@ -139,18 +149,23 @@ def _vehicle_row(v: Any) -> dict[str, Any] | None:
         "lng": loc.get("longitude"),
         "address_label": _address_label(status, loc),
         "timestamp": status.get("event_date"),
-        # RAM's vehicle status doesn't include a live speed figure - the last ignition/transit
-        # event is the closest signal available for a driving-vs-parked guess.
-        "moving": _event_name(status.get("last_event")) in ("TRANSIT_START", "OVER_SPEED"),
+        # RAM's vehicle list has no speed, and last_event is only the NAME of the latest event. What is known about the
+        # van goes in raw; ram_motion.MotionTracker.apply() turns it, with the change in position between polls, into
+        # `motion` / `moving` / `status` (see that module for the rules).
+        "event": _event_name(status.get("last_event")) or None,
+        "engine_rpm": _rpm(v, status),
+        "gps_ok": status.get("sufficientGpsAccuracy") is not False,
     }
 
 
 class RamTracking:
     demo = False
 
-    def __init__(self, settings: Settings, http: httpx.AsyncClient):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, store: Any = None):
         self.s = settings
         self.http = http
+        self._wall = lambda: datetime.now(timezone.utc)  # the clock motion is judged by (a test replaces it)
+        self.motion = MotionTracker(store)  # store: anything with get_kv/set_kv (the database); None = memory only
         self.endpoints = dict(DEFAULT_ENDPOINTS)
         path = ROOT_DIR / "ram_endpoints.yaml"
         if path.exists():
@@ -407,17 +422,33 @@ class RamTracking:
     def _rows(raw: list[Any]) -> list[dict[str, Any]]:
         return [row for row in map(_vehicle_row, raw) if row is not None]
 
-    async def vehicles(self) -> list[dict[str, Any]]:
-        return self._rows(await self._vehicles_raw())
+    async def _moving_rows(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        """The vehicle list with each van's motion worked out. Reads the shared cached list: no extra request to RAM."""
+        rows = self._rows(await self._vehicles_raw())
+        return self.motion.apply(rows, now or self._wall())
 
-    async def positions(self) -> list[dict[str, Any]]:
+    async def vehicles(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        return await self._moving_rows(now)
+
+    async def positions(self, now: datetime | None = None) -> list[dict[str, Any]]:
         rows = []
-        for row in self._rows(await self._vehicles_raw()):
+        for row in await self._moving_rows(now):
             if row["lat"] is None or row["lng"] is None:
                 continue
-            rows.append({**row, "vehicle_id": row["id"], "speed_mph": 15 if row["moving"] else 0,
+            motion = row["motion"]
+            rows.append({**row, "vehicle_id": row["id"], "speed_mph": motion["speed_mph"],  # an estimate, or None
+                         "motion_label": motion["label"], "event_age_min": motion["event_age_min"],
                          "address": row["address_label"]})
         return rows
+
+    async def diagnostics(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Per van: how it was classified and why. No coordinates. ``driver`` is for the caller's privacy filter and is
+        dropped before anything is shown."""
+        return [{"registration": r["registration"], "driver": r["driver"], "last_event": r["event"],
+                 "event_age_min": r["motion"]["event_age_min"], "engine_rpm": r["engine_rpm"],
+                 "classification": r["motion"]["label"], "state": r["motion"]["state"],
+                 "event_class": r["motion"]["event_class"], "reason": r["motion"]["reason"]}
+                for r in await self._moving_rows(now)]
 
     async def journeys(self, vehicle_id: str, day: date) -> list[dict[str, Any]]:
         start = datetime.combine(day, time(0, 0))

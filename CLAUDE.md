@@ -595,6 +595,13 @@ the top bar's `#stt-status` shows "Voice input: browser fallback - <why>" (hud.j
 RAM's 3-requests-a-minute-per-endpoint limit (429 = "rate limited", never "not connected"), the API address reduced to its host (`origin_of`), all
 parsing defensive against RAM's published schema (`last_event` is a STRING). `Jarvis.vehicle_tracking_status()` feeds the Connections line and the Fleet
 pop-up ("DEMO ... still missing: ...", "NOT CONNECTED - ... <reason>", or live). Tests mock RAM; none has been run against the real API.
+*Is a van moving? (`integrations/ram_motion.py`; tests `tests/test_fleet_motion.py`, `tests/test_fleet_motion_browser.py`).* RAM's vehicle list has no speed and
+`last_event` is only the latest event's NAME, so "moving" is worked out, in order, from: (1) position change between two cached polls (> 50 m, >= 30 s apart, >= 2 mph, under
+100 mph implied; GPS drift, jumps and `sufficientGpsAccuracy: false` fixes are not movement; an estimated speed is shown to the nearest 5 mph and only ever as "about N mph"); (2) the
+class of `last_event` from the MOVING / STOPPED / neutral tables at the top of that module, counted only while the event is under 15 minutes old (older = "No recent position
+(last seen N min ago)"); (3) `engineRpm` > 0 with a neutral recent event = "Stopped, engine on". No extra RAM request is made (it reads the shared cached list); the last position per van
+is kept in memory and, only for vans seen moving in the last 5 minutes, in the kv table. Owner-only Fleet diagnostics (`GET /api/fleet/diagnostics`, tool `fleet_diagnostics`, a section in the Fleet
+drawer) list each van's raw event, its age, RPM, our classification and the reason - no coordinates, names or homes - for tuning the tables against RAM's portal. Never claim a speed we don't have.
 (5) The staff report key is never in any payload or page: the "Copy staff report link" button fetches `/api/staff-report-address` when pressed
 (`NO_TAIL_HINT` also stops the key's and the display password's last four characters showing). Tests: `tests/test_demo_guard.py`,
 `tests/test_activity_log.py`, `tests/test_stt_status.py`, `tests/test_ramtracking_connection.py`, `tests/test_ramtracking_schema.py`,

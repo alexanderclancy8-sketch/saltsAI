@@ -96,6 +96,11 @@ def _ts(value: Any) -> datetime | None:
         return None
 
 
+def motion_label(status: Any) -> str | None:
+    """Words for a position source that only says driving / parked (FSM's own positions): nothing more is claimed."""
+    return {"driving": "Moving", "parked": "Parked"}.get(str(status or "").lower())
+
+
 def requester_label(settings: Any, speaker: str | None, quiet: bool = False) -> str:
     """Who is asking, for the out-of-hours look-up log: the named person if the chat knows them, a background
     automation, or else the signed-in display (the owner's own session)."""
@@ -183,7 +188,8 @@ class Tracker:
                 continue
         return out
 
-    async def live(self, asked_by: str = "", tool: str = "engineer_locations") -> dict[str, Any]:
+    async def live(self, asked_by: str = "", tool: str = "engineer_locations",
+                   now: datetime | None = None) -> dict[str, Any]:
         """Where the vans are. `working_hours` is True in working hours (and for demo data); `visible` says whether
         positions are being shown at all - outside working hours that needs the owner's setting AND `asked_by`."""
         now = datetime.now()
@@ -207,7 +213,10 @@ class Tracker:
             positions = [{"engineer": p.get("driver") or await self._driver_for(p), "vehicle": p.get("registration"),
                           "lat": p.get("lat"), "lng": p.get("lng"), "timestamp": p.get("timestamp"),
                           "speed_mph": p.get("speed_mph"), "address_label": p.get("address_label"),
-                          "status": "driving" if (p.get("speed_mph") or 0) > 3 else "parked"}
+                          # ram.positions() works the state out (position change, last event class and age, engine RPM);
+                          # a position source that doesn't (a bare speed) falls back to the speed alone.
+                          "status": p.get("status") or ("driving" if (p.get("speed_mph") or 0) > 3 else "parked"),
+                          "motion_label": p.get("motion_label"), "event_age_min": p.get("event_age_min")}
                          for p in ram_positions]
         else:
             positions = await self.fsm.locations()
@@ -230,7 +239,11 @@ class Tracker:
             row = {"engineer": p.get("engineer"), "vehicle": p.get("vehicle"), "lat": here[0], "lng": here[1],
                    "address_label": label, "at_home": at_home,
                    "status": p.get("status"), "speed_mph": p.get("speed_mph"),
-                   "last_seen_mins": int((now - seen).total_seconds() // 60) if seen else None,
+                   # What to SAY: "Moving (about 30 mph)" / "Stopped, engine on" / "Parked" / "No recent position (...)".
+                   # speed_mph is an estimate from successive fixes (or None) - RAM supplies no speed.
+                   "motion_label": p.get("motion_label") or motion_label(p.get("status")),
+                   "last_seen_mins": p["event_age_min"] if p.get("event_age_min") is not None
+                   else int((now - seen).total_seconds() // 60) if seen else None,
                    "current_job": f"{current.get('ref')} {current.get('site')}" if current else None,
                    "next_job": f"{str(nxt.get('scheduled_start'))[11:16]} {nxt.get('site')}" if nxt else None}
             if current and current.get("site") in sites:
@@ -271,6 +284,36 @@ class Tracker:
                                          f"{', '.join(unknown)} - can't say whether they're at home.")
         return out
 
+    async def fleet_diagnostics(self, asked_by: str = "", now: datetime | None = None) -> dict[str, Any]:
+        """Per van, how "moving / stopped / parked" was decided, so the owner can check it against RAM's own portal and tune
+        the event tables (integrations/ram_motion.py): registration, RAM's raw last_event, its age, engineRpm, our
+        classification and the reason. No coordinates, no names and nothing about homes. It reads the cached vehicle list (no
+        extra RAM request) and follows the same out-of-hours rule as the map: outside working hours it shows nothing unless the
+        owner's setting allows it for the engineer, and then the look-up is logged under the tool name ``fleet_diagnostics``."""
+        now = now or datetime.now()
+        if self.ram is None or getattr(self.ram, "demo", True):
+            return {"connected": False, "vans": [], "note": "RAM Tracking isn't connected (sample data only), so there is "
+                                                            "nothing to check against the portal."}
+        out_of_hours = not self.in_working_hours(now) and not self.demo
+        mode, on_call = "working_hours", []
+        if out_of_hours:
+            mode, on_call = self._ooh_policy(now, asked_by)
+            if mode == "off" or (mode == "on_call" and not on_call):
+                return {**self._blocked(mode), "connected": True, "vans": []}
+        try:
+            rows = await self.ram.diagnostics()
+        except RamError as e:
+            return {"connected": True, "vans": [], "rate_limited": e.rate_limited, "note": str(e)}
+        if out_of_hours and mode == "on_call":
+            rows = [r for r in rows if self._on_call_match(on_call, r.get("driver") or await self._driver_for(r))]
+        if out_of_hours:
+            self._log_lookups(asked_by, "fleet_diagnostics",
+                              [str(r.get("driver") or await self._driver_for(r) or r.get("registration")) for r in rows], mode)
+        vans = [{k: v for k, v in r.items() if k != "driver"} for r in rows]
+        return {"connected": True, "working_hours": not out_of_hours, "vans": vans,
+                "note": "Compare with RAM's portal (Moving / Stopped). 'reason' says what decided each van. Speeds are never "
+                        "shown here: RAM supplies none, and any figure on the Fleet list is an estimate from two positions."}
+
     async def home_status(self, asked_by: str = "") -> dict[str, Any]:
         """Who is at home, who is out, who has no recent position (working hours, or outside them only when the
         owner's setting allows it - see live(), which also logs the look-up)."""
@@ -287,7 +330,7 @@ class Tracker:
         for e in live["engineers"]:
             seen_names.add(str(e.get("engineer")))
             entry = {"engineer": e.get("engineer"), "vehicle": e.get("vehicle"), "address_label": e.get("address_label"),
-                     "last_seen_mins": e.get("last_seen_mins")}
+                     "motion": e.get("motion_label"), "last_seen_mins": e.get("last_seen_mins")}
             mins = e.get("last_seen_mins")
             if mins is None or mins > STALE_POSITION_MINS:
                 res["no_recent_position"].append({**entry, "reason": "no timestamp on the last position" if mins is None
@@ -443,6 +486,8 @@ class Tracker:
                                           self._home_state(vehicle.get("engineer"), here))
             out["current_address_label"] = label
             out["at_home"] = at_home
+            if isinstance(vehicle.get("motion"), dict):  # RAM Tracking's own state for the van right now (not coordinates)
+                out["current_motion"] = vehicle["motion"]["label"]
             if at_home is None:
                 out["address_label_note"] = ("No home is set for this engineer and RAM Tracking supplied no address "
                                              "label for this van, so it can't be said whether they are at home.")

@@ -45,6 +45,10 @@ HISTORY = {"id": 101, "registration": "YD71 SFS", "history": [
 ]}
 
 
+# The moment the fixture vans are judged at (their event_date is 2026-10-02T09:00:00Z): pinned, never the wall clock.
+FIXED_NOW = dt.datetime(2026, 10, 2, 9, 3, tzinfo=dt.timezone.utc)
+
+
 class Clock:
     def __init__(self):
         self.t = 1000.0
@@ -90,6 +94,7 @@ def jarvis(settings, ram: Ram, **over) -> Jarvis:
     j = Jarvis(settings, client=FakeClient(), http=http)
     assert isinstance(j.ram, RamTracking)
     j.ram._now = Clock()
+    j.ram._wall = lambda: FIXED_NOW
     return j
 
 
