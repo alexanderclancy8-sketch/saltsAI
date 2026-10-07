@@ -39,7 +39,7 @@ _WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
 _DATE_TYPES = ("date", "datetime", "timestamp")
 DATEISH = {"due", "expiry", "expires", "expire", "expiration", "next", "until", "renewal", "by"}
 PAST = {"last", "previous", "prev", "tested", "done", "completed", "result", "status", "notes", "note", "reminder", "sent",
-        "issued", "created", "updated"}
+        "issued", "created", "updated", "paid", "payment", "taxed"}
 VEHICLE_WORDS = ("vehicle", "van", "car", "truck", "motor", "fleet", "lorry")
 EQUIPMENT_WORDS = ("equipment", "tool", "kit", "test", "ladder", "harness", "pat", "meter", "tester", "calibrat", "gauge")
 RETIRED_WORDS = {"sold", "scrapped", "disposed", "retired", "inactive", "archived", "written off", "written_off", "decommissioned",
@@ -112,7 +112,8 @@ def roles(res: Resource) -> Roles:
     taken = {mot, tax, service}
     cal = best(lambda w, n: bool(w & {"calibration", "calibrated", "calib", "cal"}) and n not in taken)
     taken.add(cal)
-    due = best(lambda w, n: bool(w & {"due", "expiry", "expires", "expire", "expiration", "next", "renewal"}) and n not in taken)
+    due = best(lambda w, n: bool(w & {"due", "expiry", "expires", "expire", "expiration", "next", "renewal"})
+               and not w & {"insurance", "vat", "mot", "tax", "service"} and n not in taken)
 
     def first(names: tuple[str, ...]) -> str | None:
         have = {n.lower(): n for n, _ in fields}
@@ -135,7 +136,7 @@ def classify_resource(res: Resource) -> tuple[bool, bool]:
     r = roles(res)
     blurb = f"{res.name} {res.description}"
     vehicles = bool(r.reg or (r.mot and r.tax)) or _text_has(blurb, VEHICLE_WORDS) and bool(r.mot or r.tax or r.service)
-    equipment = bool(r.cal or (r.due and r.name)) or (_text_has(blurb, EQUIPMENT_WORDS) and bool(r.due or r.cal))
+    equipment = bool(r.cal) or (bool(r.due) and (_text_has(blurb, EQUIPMENT_WORDS) or bool(r.kind)))
     return vehicles, equipment
 
 

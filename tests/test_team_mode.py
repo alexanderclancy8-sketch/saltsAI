@@ -533,7 +533,7 @@ def test_the_team_tools_are_a_short_explicit_allowlist_of_read_tools_plus_log_jo
     sensitive = re.compile(r"finance|staff_review|staff_update|staff_productivity|staff_roles|office_productivity|email|"
                            r"stock|quote|contract|renewal|invoice|payroll|pay|accreditation|site_access|vehicle|"
                            r"equipment|oncall|settings|connection|remember|forget|memory|approve|automation|recruit|"
-                           r"issue|pr_|repo_|self_improve|security|fsm_query|fsm_change|fsm_source|business|customer|"
+                           r"issue|pr_|repo_|self_improve|security|fsm_query|fsm_data|fsm_catalog|fsm_change|fsm_source|business|customer|"
                            r"credit|vat|cash|archive|show_on_display|send_update|ask_user|offer_next|conversation|"
                            r"who_is_home|van_day|timesheet|location_lookup|attendance|false_alarm|regulatory|"
                            r"briefing|wrap|digest|suggestion|hr_|bid_|rams|document|image", re.I)
@@ -549,7 +549,7 @@ def test_everything_else_is_denied_to_a_team_caller_by_default_and_nothing_chang
     assert len(denied) == len(TOOLS) - len(TEAM_TOOLS)
     for name in ("finance_snapshot", "finance_aged", "finance_vat", "finance_cashflow", "staff_review", "staff_productivity",
                  "staff_roles", "staff_update_role", "email_send", "email_inbox", "email_read", "send_update_to_owner",
-                 "fsm_change", "fsm_query", "stock_levels", "stock_move", "accreditation_update", "site_access_code",
+                 "fsm_change", "fsm_query", "fsm_data", "fsm_catalog", "stock_levels", "stock_move", "accreditation_update", "site_access_code",
                  "remember", "forget", "issue_fix", "self_improve", "pr_merge", "create_automation", "archive_to_azure",
                  "who_is_home", "van_day", "timesheet_check", "business_health", "raise_invoices", "show_on_display",
                  "ask_user", "morning_briefing", "end_of_day_wrap_up"):
