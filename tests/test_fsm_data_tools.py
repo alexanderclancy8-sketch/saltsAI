@@ -544,3 +544,101 @@ def test_the_new_modules_have_no_write_verb_and_no_way_to_queue_approve_or_send(
     for name in ("fsm_read.py", "fsm_assets.py", "../integrations/fsm_data.py"):
         code = (root / name).read_text(encoding="utf-8")
         assert ".write(" not in code and "record_stock_movement" not in code and "fsm_write" not in code
+
+
+# --------------------------------------------------------------------------- a manager's chat turn is marked as a manager's
+def _app_with_scripted_turns(settings, monkeypatch, turns: int):
+    """The real app (routes, role detection) over a Jarvis whose FSM is mocked and whose model asks for the invoices `turns` times."""
+    from fastapi.testclient import TestClient
+
+    from jarvis.main import create_app
+
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setattr("jarvis.main.LOGIN_DELAY_S", 0)
+    settings.jarvis_owner_password = "owner-pass-1234"
+    settings.manager_emails = "manager@salts.example"
+    script = []
+    for n in range(turns):
+        script += [message([tool_block("fsm_data", {"resource": "invoices"}, block_id=f"toolu_{n}")], "tool_use"),
+                   message([text_block("Done.")])]
+    j, _ = jarvis_with_fsm(settings, api_with_rows(), script)
+    return j, create_app(settings, j), TestClient
+
+
+def _tool_results_sent(j) -> str:
+    return json.dumps([c["messages"] for c in j.client.beta.messages.calls], default=str)
+
+
+MANAGER_HEADERS = {"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": "manager@salts.example"}
+
+
+def test_a_manager_chatting_gets_no_finance_but_the_owner_does(settings, monkeypatch):
+    j, app, TestClient = _app_with_scripted_turns(settings, monkeypatch, 3)
+    with TestClient(app) as base:
+        manager = TestClient(app)
+        assert manager.post("/api/chat", json={"text": "what do we owe?"}, headers=MANAGER_HEADERS).status_code == 200
+        sent = _tool_results_sent(j)
+        assert "owner_only" in sent and "48213" not in sent                    # the model that served the manager never saw it
+        streamed = manager.post("/api/chat/stream", json={"text": "and again?"}, headers=MANAGER_HEADERS)
+        assert streamed.status_code == 200 and "48213" not in _tool_results_sent(j)
+        owner = TestClient(app)
+        assert owner.post("/login", data={"password": "owner-pass-1234"}, follow_redirects=False).status_code == 303
+        assert owner.post("/api/chat", json={"text": "what do we owe?"}).status_code == 200
+        assert "48213" in _tool_results_sent(j)                                # ... the owner's own turn did
+        who = [r["actor"] for r in audit_lines(j)]
+        assert who[:2] == ["Manager", "Manager"] and len(who) == 3 and who[2] != "Manager"
+        assert base is not None
+
+
+def test_a_manager_on_the_websocket_gets_no_finance_either(settings, monkeypatch):
+    j, app, TestClient = _app_with_scripted_turns(settings, monkeypatch, 1)
+    with TestClient(app) as base:
+        with TestClient(app).websocket_connect("/ws", headers=MANAGER_HEADERS) as ws:
+            ws.send_json({"type": "chat", "text": "what do we owe?", "mode": "typed"})
+            while ws.receive_json()["type"] not in ("reply", "error"):
+                pass
+        sent = _tool_results_sent(j)
+        assert "owner_only" in sent and "48213" not in sent and base is not None
+
+
+async def test_the_brains_pass_the_askers_role_to_the_tool_layer(settings):
+    """JarvisBrain (no HTTP): a turn marked as a manager's refuses finance; an unmarked turn is the owner's."""
+    script = [message([tool_block("fsm_data", {"resource": "payslips"}, block_id="a")], "tool_use"), message([text_block("ok")]),
+              message([tool_block("fsm_data", {"resource": "payslips"}, block_id="b")], "tool_use"), message([text_block("ok")])]
+    j, _ = jarvis_with_fsm(settings, api_with_rows(), script)
+    try:
+        token = access.current_caller.set(MANAGER)
+        try:
+            await j.brain.ask("pay?")
+        finally:
+            access.current_caller.reset(token)
+        assert "owner_only" in _tool_results_sent(j) and "3120.5" not in _tool_results_sent(j)
+        await j.brain.ask("pay?")
+        assert "3120.5" in _tool_results_sent(j)
+    finally:
+        await j.http.aclose()
+
+
+async def test_the_max_brain_carries_a_managers_role_into_its_worker_turn(settings, monkeypatch):
+    from jarvis.brain.max_backend import MaxBrain
+
+    j = Jarvis(settings, client=FakeClient())
+    brain = MaxBrain(j)
+    seen = []
+
+    async def spy(text, mode, attachments, speaker=None):
+        seen.append(access.current_caller.get())
+        return "ok"
+
+    monkeypatch.setattr(brain, "_turn_events", spy)
+    try:
+        token = access.current_caller.set(MANAGER)
+        try:
+            await brain.ask("one")
+        finally:
+            access.current_caller.reset(token)
+        await brain.ask("two")
+        assert seen == [MANAGER, None] and access.current_caller.get() is None
+    finally:
+        await brain.close()
+        await j.http.aclose()

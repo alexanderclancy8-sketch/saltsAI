@@ -242,6 +242,15 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         email = auth.signed_in_manager(settings, conn)
         return settings.person(email) if email else None
 
+    def mark_manager(caller: access.Caller | None):
+        """Managers share the owner's brain, so nothing in the tool layer knows a manager is asking unless the turn says so. Mark it
+        (a context variable, copied into the task that runs the turn) so a role-dependent tool - fsm_data's finance / pay / HR
+        resources are the owner's alone - can tell. The owner's own turn stays unmarked (None), exactly as before. Returns the token
+        to reset, or None."""
+        if caller is not None and caller.role == access.MANAGER:
+            return access.current_caller.set(caller)
+        return None
+
     login_failures: dict[str, deque] = defaultdict(deque)  # client address -> times of recent wrong team codes
 
     # ------------------------------------------------------------------ pages
@@ -343,8 +352,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         team = caller_of(request).is_team
         if not team:  # a team member's typing is never learned as the owner's usual replies
             learn_reply(J(request), body.text, body.mode, body.compose, body.attachments)
-        reply = await brain.ask(body.text, "voice" if body.mode == "voice" else "typed", None if team else body.attachments,
-                                speaker=speaker(request))
+        token = mark_manager(caller_of(request))
+        try:
+            reply = await brain.ask(body.text, "voice" if body.mode == "voice" else "typed", None if team else body.attachments,
+                                    speaker=speaker(request))
+        finally:
+            if token is not None:
+                access.current_caller.reset(token)
         return {"reply": reply}
 
     # Same conversation, but for when the live WebSocket isn't available (e.g. it dropped and hasn't
@@ -362,7 +376,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if not team:
             learn_reply(j, body.text, mode, body.compose, body.attachments)
         q = bus.subscribe()
+        token = mark_manager(caller_of(request))
         task = asyncio.create_task(brain.ask(body.text, mode, None if team else body.attachments, speaker=speaker(request)))
+        if token is not None:
+            access.current_caller.reset(token)  # (the task has its own copy of the context)
 
         async def events():
             # The bus carries every turn. This stream is for THIS one, which starts with its own user_message: what comes
@@ -664,9 +681,12 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     if not team:
                         learn_reply(j, str(msg["text"])[:20000], "voice" if msg.get("mode") == "voice" else "typed",
                                     msg.get("compose") is True, msg.get("attachments"))
+                    token = mark_manager(caller)
                     task = asyncio.create_task(brain.ask(msg["text"][:20000],
                                                          "voice" if msg.get("mode") == "voice" else "typed",
                                                          None if team else (msg.get("attachments") or []), speaker=who))
+                    if token is not None:
+                        access.current_caller.reset(token)
                     running.add(task)
                     task.add_done_callback(running.discard)
                 elif msg.get("type") == "ping":
@@ -1029,7 +1049,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         return {"text": await J(request).wrapup.run(deliver=False)}
 
     # ------------------------------------------------------------------ Teams chat (Bot Framework webhook)
-    async def _handle_teams_message(j: Jarvis, service_url: str, conversation_id: str, text: str, name: str) -> None:
+    async def _handle_teams_message(j: Jarvis, service_url: str, conversation_id: str, text: str, name: str,
+                                    manager: bool = False) -> None:
+        if manager:  # the partner or another approver, not the owner themself (see mark_manager)
+            access.current_caller.set(access.Caller(access.MANAGER, name))
         try:
             reply = await j.brain.ask(text, "typed", speaker=name)
             await j.teamsbot.reply(service_url, conversation_id, reply)
@@ -1129,7 +1152,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
         # Everything else is an ordinary chat message for Jarvis.
         text = str(activity["text"]).strip()[:20000]
-        asyncio.create_task(_handle_teams_message(j, service_url, conversation_id, text, name))
+        asyncio.create_task(_handle_teams_message(j, service_url, conversation_id, text, name,
+                                                  manager=not (trusted_owner_email and email.lower() == trusted_owner_email)))
         return {}
 
     # ------------------------------------------------------------------ settings page
