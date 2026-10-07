@@ -484,8 +484,12 @@ def test_phone_message_box_controls_are_all_on_screen_and_the_keyboard_keeps_it_
         page.wait_for_timeout(200)
         page.wait_for_selector("#conversation .msg.assistant .fb", timeout=10000)
         assert page.evaluate(_TOUCH_JS, None) == []                                      # Good / Wrong under a reply are touch-sized too
+        # The layout settles through CSS transitions after the viewport change; a fixed 200-300 ms sleep was not always enough on a
+        # loaded machine (the conversation was still 22px tall). Wait for it to settle - the assertions below are unchanged.
+        page.wait_for_function("""() => { const c = document.getElementById('core-btn').getBoundingClientRect().width;
+            return c >= 72 && c <= 96 && document.getElementById('conversation').getBoundingClientRect().height >= 250; }""", timeout=10000)
         core = page.eval_on_selector("#core-btn", "e => e.getBoundingClientRect().width")
-        assert 72 <= core <= 96                                                         # in conversation the core makes room...
+        assert 72 <= core <= 96                                                       # in conversation the core makes room...
         assert page.eval_on_selector("#composer", "e => e.getBoundingClientRect().bottom") <= 820
         conv = page.eval_on_selector("#conversation", "e => e.getBoundingClientRect().height")
         assert conv >= 250, conv                                                       # ...and the conversation gets real height
