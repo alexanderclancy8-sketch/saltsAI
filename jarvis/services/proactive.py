@@ -226,13 +226,14 @@ class Proactive:
         self.j.db.set_kv(SEEN_KEY + key, fingerprint)
         return {"delivered": True, "reason": ""}
 
-    async def tell(self, key: str, title: str, body: str) -> dict[str, Any]:
-        """What a scheduled check found, for a check the owner asked for. With "Jarvis speaking up" on this is exactly
+    async def tell(self, key: str, title: str, body: str, *, teams: bool = True) -> dict[str, Any]:
+        """What a scheduled check found, for a check the owner asked for. ``teams=False`` keeps it in the console (a check set up by
+        a manager is never pushed on to Teams). With "Jarvis speaking up" on this is exactly
         ``announce`` (change-only, quiet hours, hourly limit, Teams). With it off the owner still wanted to hear about
         a change, so it is posted to the open chat as one message - once: the same finding as last time is not news -
         and, when no chat is open, kept as a quiet notification. Never speaks aloud when speaking up is off."""
         if self.enabled:
-            return await self.announce(key, title, body)
+            return await self.announce(key, title, body, teams=teams)
         clean = self._clean(body)
         if not clean or clean.upper().startswith(NOTHING):
             self.j.db.set_kv(SEEN_KEY + key, "")

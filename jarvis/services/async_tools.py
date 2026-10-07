@@ -187,7 +187,7 @@ class AsyncTools:
         timeout = min(max(float(timeout_s), 0.01), MAX_TIMEOUT_S)
         args_json = self._store(json.dumps(parsed.model_dump(), default=str, ensure_ascii=False), ARGS_CHARS)
         call_id = self.j.db.add_background_call(tool.name, args_json, chosen, requester=caller.requester if caller else "",
-                                                role=caller.role if caller else "")
+                                                role=access.role_of(caller))  # (the owner's own turn - no caller - is the owner's)
         task = asyncio.create_task(self._run(call_id, tool, parsed, chosen, timeout, caller))
         self._tasks[call_id] = task
         task.add_done_callback(lambda t, i=call_id: self._tasks.pop(i, None))
@@ -291,7 +291,7 @@ class AsyncTools:
         rows = self.j.db.background_calls(max(1, min(int(limit), 25)), call_id, requester=own)
         cap = STORE_CHARS if call_id is not None else LIST_CHARS
         calls = [{"id": r["id"], "tool": r["tool"], "policy": r["policy"], "status": r["status"],
-                  "requested_by": r["requester"] or None,
+                  "requested_by": r["requester"] or None, "requested_role": r.get("role") or None,
                   "started": r["created_at"], "finished": r["finished_at"] or None,
                   "delivery": r["delivery"] or None, "args": r["args_json"],
                   "result": self._delimit(r["id"], truncate(r["result"] or "", cap)[0])} for r in rows]

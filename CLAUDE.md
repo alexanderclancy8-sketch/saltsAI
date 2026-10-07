@@ -184,9 +184,39 @@ the modules for any other verb), and nothing here touches `actions.queue/approve
   (`RESULT_CHARS`) with a "narrow your filters" hint and the `next_offset` to carry on from. The system prompt gets a SHORT generated block
   (`FsmRead.prompt_block()`: group -> resource NAMES only, `*` = owner only), and `connections()` an "FSM data (read-only)" line.
 - **Who may hear what:** a resource the FSM flags `sensitive`, plus EVERY resource of the `finance` and `people` groups whatever the flag
-  says (default deny), is **owner-only** - the principal owner, the owner's own conversation, scheduled jobs and Jarvis himself (no caller).
+  says (default deny), is **owner-only** - the principal owner, the owner's own conversation, the owner's own automations and Jarvis himself's system jobs (no caller; a MANAGER's automation runs as a manager, see below).
   A **manager** gets every other resource (and sees that owner-only ones exist, never their fields). A **team** session gets neither tool
   (default-deny `TEAM_TOOLS`; the team tests stay strict). A refusal is recorded and nothing is fetched. Scope-off groups are reported by name.
+- **A manager's turn is marked, and so is everything a manager stores for later (`access.current_caller`, tests `tests/test_automation_roles.py`).**
+  Managers share the owner's brain, so `main.mark_manager` sets `access.current_caller` to the manager's `Caller` for chat, stream, WebSocket and
+  Teams chat turns (the owner's turn stays unmarked = None; MaxBrain's worker carries it in the `("ask", ...)` tuple). Role-dependent tools look in
+  that ONE place (`FsmRead.may_read_sensitive`, `fleet_diagnostics`). **Stored work must run as whoever created it**, or a manager could use it
+  to borrow the owner's context: an automation / a background call / a queued approval / a self-improvement run / the self-reflection each record
+  the creator's role (`access.role_of(caller)`: None = owner) and the run re-creates that caller in `current_caller` (`access.caller_for_role`;
+  always SET, even to None, so the context of whatever turn is running when the scheduler fires lends it nothing).
+  - **Automations** (`automations.role` `owner|manager|team` NOT NULL DEFAULT `'manager'`, `created_by` = the creator's name): `AutomationService.create`
+    reads the marker; `run()` sets the creator's caller around `brain.ask` (so MaxBrain's worker and the tool layer see it) and adds a line to the
+    prompt saying so. A manager's automation is refused `fsm_data` finance / pay / HR and `fleet_diagnostics` with the same plain messages as in
+    chat, whoever's turn or click fires it, and its finding is told in the console only (`Proactive.tell(..., teams=False)`; titled "(set up by a
+    manager)"), never pushed on to Teams. `team` can never create one (`create_automation`/`edit_automation` are not in `TEAM_TOOLS`, `create()` refuses,
+    and a row marked team is not run: "Not run: ..."). **Migration (`Database._migrate`, every start):** nothing recorded who created the rows that
+    existed, so none is provably the owner's - `ADD COLUMN ... DEFAULT 'manager'` backfills them all (least privilege) and an UPDATE repairs any
+    empty / unknown value to `manager`; it never touches a valid role. The owner takes an old one over on purpose: `edit_automation(take_over=True)`
+    (owner only; the role is a column `db.update_automation` refuses to write - only `set_automation_role`). **Editing never raises a role:**
+    `edit_automation` by a lower role of a higher role's automation is refused (so is delete / `set_automation_options`); by the same or a higher
+    role it keeps the role (the owner rewording a manager's automation does not give the new wording the owner's access). `list_automations` shows
+    `created_by_role` / `created_by` and hides a higher role's prompt and last result from a manager. Activity: the automation row says "Jarvis
+    (created by a manager (Sam))" with "Created by" / "Runs with" rows, and its runs "Scheduled job (created by a manager)".
+  - **Background calls** (`background_calls.role` was already there): now `owner` for the owner's own turn (was `''`; legacy rows stay `''`), `manager`,
+    `team`; the call runs through `dispatch(..., caller=)` so it is the requester's; `fsm_data` / `fleet_diagnostics` stay in `NOT_BACKGROUND`.
+  - **Approvals** (`pending_actions.requested_role`, `''` for old rows): `ActionExecutor.queue` records it; an approved `tool:` action runs its handler with
+    the REQUESTER's caller (a legacy `''` row runs as a manager), not the approver's click. Edit and Retry copy the original's role. Approving, standing
+    approvals and what they cover are untouched: nothing in this feature approves anything.
+  - **Self-improvement** (`agent_runs.requested_role`): the run, its engineer brief and the pull request name who asked ("a manager (Sam)"), the brief
+    lists `jarvis/access.py` and the owner-only checks among what a request can never weaken; Activity shows "Jarvis (asked by a manager)".
+  - **Self-reflection** (`services/self_learning.py`) reads the shared transcript, which holds what managers typed, so it runs as `access.REFLECTION_CALLER` (a manager).
+  - Not changed: suggestions' "Do it" is just a chat message typed by the clicker (so already their role); the live console (chat bus, transcript, Activity
+    check lines) is ONE shared surface for the owner and managers - an owner's automation's finding is visible to a manager there, as the owner's chat always was.
 - **Where the data may NOT go:** fsm_ tool output is untrusted, so chat/transcript/proactive text only ever gets a "finished" pointer, never
   rows; `fsm_data` cannot run in the background (the `background_calls` table would keep finance/pay/HR rows for 30 days); the `remember`
   tool (which self-learning also uses) refuses any fact that repeats a figure, date, id or long note from a sensitive read in the last hour

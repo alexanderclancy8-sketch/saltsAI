@@ -74,6 +74,47 @@ class Caller:
 current_caller: contextvars.ContextVar[Caller | None] = contextvars.ContextVar("jarvis_caller", default=None)
 
 
+# --- the role a piece of stored work runs with ----------------------------------------------------------------------------
+# An automation, a background call, a queued approval or a self-improvement request is created in one person's turn and run
+# later, somewhere else (the scheduler, a worker task, the approver's click). It must run with the permissions of whoever
+# CREATED it, never those of whoever's turn or click happens to trigger it. Each such record stores the creator's role
+# (owner | manager | team) and the run re-creates the creator's ``Caller`` from it, in the same ``current_caller`` context
+# variable a live chat turn uses, so every role-dependent tool (fsm_data's finance / pay / HR resources, fleet_diagnostics)
+# looks in the one place it already looks.
+#
+# The owner's own turn is "no caller" (None), exactly as before, so the owner's stored work runs with no caller too.
+# A stored role that is missing or not one of the three is read as MANAGER: least privilege, never the owner's.
+AUTOMATION_ROLES = (OWNER, MANAGER)   # who may create an automation: a team caller never may (create_automation is not a team tool)
+
+
+# Jarvis's own scheduled reflection over the shared transcript (services/self_learning.py): what it reads includes what a manager
+# typed, so it runs as a manager, never the owner.
+REFLECTION_CALLER = Caller(MANAGER, "Jarvis (self-reflection)")
+
+
+def role_of(caller: Caller | None) -> str:
+    """The role a caller acts with. None is the owner's own conversation (or a scheduled job / Jarvis himself)."""
+    return OWNER if caller is None else caller.role
+
+
+def stored_role(raw: object) -> str:
+    """A role read back from a database column: one of the three roles, else MANAGER (least privilege - an unknown, empty or
+    tampered value never becomes the owner's)."""
+    value = str(raw or "").strip().lower()
+    return value if value in ROLES else MANAGER
+
+
+def caller_for_role(role: str, name: str = "") -> Caller | None:
+    """The caller a stored record runs as: None for the owner (as before), a ``Caller`` for a manager or team member."""
+    role = stored_role(role)
+    return None if role == OWNER else Caller(role, clean_name(name) if name else "")
+
+
+def outranks(role: str, other: str) -> bool:
+    """True when ``role`` is strictly higher than ``other`` (owner > manager > team)."""
+    return _RANK[stored_role(role)] > _RANK[stored_role(other)]
+
+
 def clean_name(raw: str) -> str:
     """A display name safe to put in a prompt, a log line and an approval card: letters, digits, spaces and . ' - only."""
     kept = "".join(c for c in (raw or "") if c.isalnum() or c in " .'-")

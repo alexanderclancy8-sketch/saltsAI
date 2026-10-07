@@ -954,6 +954,16 @@ class CreateAutomationIn(BaseModel):
                                                      "schedule even when it keeps finding nothing")
 
 
+class EditAutomationIn(BaseModel):
+    automation_id: int = Field(description="The automation's number, from list_automations")
+    description: str | None = Field(None, description="A new short label, or leave out to keep it")
+    cron: str | None = Field(None, description="A new 5-field crontab schedule in the company's timezone, or leave out to keep it")
+    prompt: str | None = Field(None, description="A new instruction for what to check when it runs, or leave out to keep it")
+    take_over: bool = Field(False, description="OWNER ONLY, and only when the owner says so: make this automation run with the "
+                                               "owner's own permissions (an automation a manager set up, or one from before roles "
+                                               "were recorded, runs with a manager's). Refused for anyone else.")
+
+
 class DeleteAutomationIn(BaseModel):
     automation_id: int = Field(description="The automation's number, from list_automations")
 
@@ -2153,6 +2163,10 @@ async def list_automations(j, a: NoInput):
     return j.automations.list_all()
 
 
+async def edit_automation(j, a: EditAutomationIn):
+    return j.automations.edit(a.automation_id, a.description, a.cron, a.prompt, a.take_over)
+
+
 async def delete_automation(j, a: DeleteAutomationIn):
     return j.automations.delete(a.automation_id)
 
@@ -2765,12 +2779,15 @@ TOOLS: list[Tool] = [
     Tool("create_automation", "Set up your own recurring check on a schedule - 'every weekday at 8am, check for "
                               "unassigned jobs and tell me', 'every 30 minutes, check for a supplier email about "
                               "the delayed order'. It runs itself from then on with the same tools and the same "
-                              "approval rules as a live conversation - looking things up is automatic, but "
-                              "anything it wants to change still needs your approval. Confirm it back using the "
+                              "approval rules as a live conversation, AND the permissions of whoever sets it up: one "
+                              "a manager sets up runs as a manager (the owner-only FSM data - finance, staff pay, HR - "
+                              "and owner-only tools refuse it), one the owner sets up runs as the owner. Looking "
+                              "things up is automatic, but anything it wants to change still needs approval. Confirm it back using the "
                               "'schedule' field in the result (plain English, e.g. 'every weekday at 8am') - "
                               "never read the raw 'cron' field out loud.", CreateAutomationIn,
          create_automation, "Setting up an automation"),
-    Tool("list_automations", "Every automation the owner has set up, its schedule, and what it found last time "
+    Tool("list_automations", "Every automation that has been set up and who created it ('created_by_role' - it runs with "
+                             "that role's permissions), its schedule, and what it found last time "
                              "it ran. Each one has a 'schedule' field in plain English (e.g. 'every weekday at "
                              "8am') - read that back, not the raw 'cron' field. A check that keeps finding "
                              "nothing is slowed down automatically: 'effective_interval', 'no_change_streak' and "
@@ -2781,8 +2798,12 @@ TOOLS: list[Tool] = [
                                    "asked about. Use it when the owner answers 'keep it' to a keep/slow down/delete "
                                    "question.", AutomationOptionsIn, set_automation_options,
          "Updating that automation"),
-    Tool("delete_automation", "Remove one of the owner's automations by its number.", DeleteAutomationIn,
-         delete_automation, "Removing that automation"),
+    Tool("edit_automation", "Change an automation's wording, schedule or label (by its number). Editing never raises what it "
+                            "runs with: one a manager set up stays a manager's, and a manager can't edit one the owner set "
+                            "up. Only the owner, and only when they say so, can take an automation over (take_over) so it "
+                            "runs with the owner's permissions.", EditAutomationIn, edit_automation, "Updating that automation"),
+    Tool("delete_automation", "Remove an automation by its number (a manager can't remove one the owner set up).",
+         DeleteAutomationIn, delete_automation, "Removing that automation"),
     Tool("watch_ci", "Keep following the GitHub Actions (CI) result on a branch of your own repository in the "
                      "background and post a message in the chat when it passes, fails or changes, so the owner "
                      "doesn't have to ask again. Read-only. Returns at once; say you'll follow up, then carry on. "

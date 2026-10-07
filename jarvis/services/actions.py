@@ -95,6 +95,7 @@ class ActionExecutor:
         # The payload that is judged is the payload that is stored and run: the canonical JSON form of it.
         payload = json.loads(json.dumps(payload))
         caller = access.current_caller.get()
+        role = access.role_of(caller)  # recorded with the action: it runs with its requester's permissions when approved (see _execute)
         if caller is not None and caller.is_team:
             # Asked for by a team member (Team mode). It always waits for a human: the owner's standing approvals were
             # given for the owner's own requests, never for someone else's, so they are not even consulted. The requester is
@@ -106,12 +107,12 @@ class ActionExecutor:
             decision = self._standing_decision(kind, payload)
         if decision is not None and decision.category:
             action_id = self.db.create_action(kind, summary, payload, status="approved",
-                                              approved_by=sa.APPROVER_PREFIX + decision.category)
+                                              approved_by=sa.APPROVER_PREFIX + decision.category, requested_role=role)
             action = self.db.get_action(action_id)
             self.bus.publish("approvals", inbox.pending_for_display(self.db))
             self._spawn(self._run(action))
             return action_id
-        action_id = self.db.create_action(kind, summary, payload)
+        action_id = self.db.create_action(kind, summary, payload, requested_role=role)
         self.bus.publish("approvals", inbox.pending_for_display(self.db))
         if decision is not None and decision.rate_limited:
             self._warn_rate_limited(kind)
@@ -155,7 +156,14 @@ class ActionExecutor:
             from ..brain.tools import TOOLS_BY_NAME, serialise
 
             tool = TOOLS_BY_NAME[p["tool"]]
-            result = await tool.handler(self.j, tool.model.model_validate(p["args"]))
+            # It runs with the permissions of whoever ASKED for it, recorded when it was queued - not the approver's click, and not
+            # (for a row from before roles were kept) the owner's by default. Approving it still decides whether it happens at all.
+            asked = access.caller_for_role(action.get("requested_role"), str(p.get("requested_by") or "").removesuffix(" (team)"))
+            token = access.current_caller.set(asked)
+            try:
+                result = await tool.handler(self.j, tool.model.model_validate(p["args"]))
+            finally:
+                access.current_caller.reset(token)
             return serialise(result)[:600]
         if action["kind"] == "email_send":
             await self.mail.send_mail(p["to"], p["subject"], text_to_html(p["body"]), p.get("cc") or None)
