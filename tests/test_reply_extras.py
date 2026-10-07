@@ -133,7 +133,8 @@ def test_the_schema_allows_two_follow_ups_and_known_pop_ups_only():
             NextStepsIn(**bad)
     assert NextStepsIn(panel="").panel is None
     assert clean_follow_ups(["Same?", "same?", "Other?", "Third?"]) == ["Same?", "Other?"]
-    assert set(PANELS) == {"approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"}
+    # (+ "activity": a reply to "what did you do today?" may offer the What Jarvis did pop-up)
+    assert set(PANELS) == {"approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"}
 
 
 async def test_offer_next_steps_is_not_an_approval_and_changes_nothing(settings):

@@ -102,6 +102,56 @@ sends exactly the ids on screen after a confirm that says how many. Failed actio
 is unchanged. `tests/test_dismiss_failed.py` and `tests/test_console_browser_dismiss.py` pin it. When you add an action kind, decide deliberately whether it belongs in
 `approval_inbox.editable_fields` (default: no).
 
+*What Jarvis did (`services/activity_feed.py`, `j.activity_feed`; routes `GET /api/activity` and `GET /api/activity/export.csv`; tool
+`what_did_you_do`; `web/activity.js`; tests `tests/test_activity_feed.py`, `tests/test_console_browser_activity.py`).* ONE read-only
+model that UNIONS every record of something Jarvis proposed, prepared or changed - it keeps no copy of any of them and approves, declines,
+sends, retries, edits or changes nothing (a test greps the module for those verbs, and for the only table it writes). Item shape: `{id, when
+(UTC), kind, what, status, who, requested_by, decided_by, decided_at, created_at, source, source_ref, detail (rows, redacted), error,
+link, quiet, attention, auto, chain, sample}`. Kinds: draft | email | job_proposal | fsm_change | settings_change | memory | code_change
+(PR) | scheduled_check | suggestion | other. Statuses: waiting, approved, declined, done, failed, dismissed, edited, auto_approved
+("Auto-approved (standing)"), plus running (a background run, a pull-request run in flight). `Needs a look` is a filter, not a status:
+failed + waiting that are still open (a failure already retried or dismissed is not).
+- **Sources and how each maps** (add a source = one `_src_*` function and one `_Source(...)` entry in `SOURCES`):
+  `pending_actions` (the one approvals record: status pending/approved/done/failed/denied + `approved_by`, `superseded_by`/`supersedes`/
+  `supersede_kind`, `dismissed_*`; `when` = `COALESCE(decided_at, created_at)`; an email action is a *draft* until it is approved/sent, then an
+  *email*; `fsm_write` POST `/jobs`, `accept_quote*` and `log_job` are *job proposals*; `approved_by = "standing approval: <category>"` is
+  `auto_approved`, and still `failed` if it failed; denied-by-edit is `edited`; denied with "Blocked by the security check" is `failed`),
+  `check_runs` (changed/failed are rows; no_change/baseline are `quiet` and counted in SQL into the collapsed line, never read row by row),
+  `suggestions` (an open one is as old as `created_at` - `updated_at` is bumped on every refresh), `agent_runs` (pull-request runs; a run that
+  gave up is quiet; a "running" one with no step for 30 minutes shows failed), `background_calls` (failed ones only, unless "everything"),
+  `memory`, `audit_events` (new, below), `documents`, `adverts`, the kv `upsell:done:*` markers whose state is `improved`, and `automations`.
+  The engineer-home audit lines are the `check_runs` rows of the owner-only job (`activity.OWNER_ONLY_JOBS`): the module never names that table,
+  shows them to the principal owner only (`Query.owner`) and cleans postcodes and points out of them.
+- **What had no actor or time, and what was added (additive, cheap):** `audit_events(id, at, kind, actor, what, ref)` is written by
+  `ActivityFeed.record()` for a settings save (the *labels* of the settings that really changed - "Record keeping (on)" for a switch - never a
+  value; `main.save_settings`), the team access code set/cleared (never the code), a memory fact or learned reply reworded or removed (the number, never
+  the text; also the `forget` tool) and a CSV export. `check_runs` keeps runs that found something or failed for 31 days (quiet ones still 7;
+  `db.prune_check_runs(before, changed_before)`), so a 30-day view has them. Indexes: `idx_actions_when` (the very expression actions are
+  ordered by), `idx_check_runs_at`, `idx_audit_events_at`. Limits of the data, not of this module: the requester of an action is "Jarvis" unless a
+  team member asked (`payload.requested_by`) - the store does not say whether a chat turn or a scheduled job queued it; who *dismissed a suggestion*
+  is not stored; the time of an approved action is when it finished (`set_action_status` rewrites `decided_at`).
+- **Paging and limits:** `limit` 1-200 (default 50) and `offset`; each source is read newest-first with `LIMIT` and never more than `SCAN_CAP` (3000)
+  rows; the merge reaches at most `REACH_CAP` (3000) items deep and then says so (`capped`); a filter is applied in Python on the mapped item, so the
+  per-source read is widened (x4) until the page is full or the cap is hit; sources a kind filter cannot match are not read; the first page also
+  carries the day's summary, the quiet line and the "who" choices (offset > 0 does not). CSV: at most `EXPORT_MAX` (5000) rows, `X-Export-Truncated`
+  says when it was cut, a BOM for Excel, and every cell that starts with `= + - @` (even after spaces) or a tab/return gets a leading apostrophe.
+- **Redaction (`Cleaner`) for every string:** the approval cards' own redaction (`approval_inbox.clean`: `integrations.redact` + `redact.redact_text`),
+  spoken access codes (`history.redact_history`), `token=` / `password:` written into text, the LIVE secret values from Settings (every
+  `secret` field plus the staff report key and display password), payload KEYS that name a secret (`redact.is_sensitive_param`: `code`, `password`,
+  `pin`, `token`, `*_key`...), location keys dropped, coordinate pairs and UK postcodes (`HIDE_POSTCODES`; a site postcode is on the approval card
+  itself, not here). The access-code tool's details are withheld entirely. Items rooted in sample data (`sample`: the demo FSM, demo mailbox, demo accounts/
+  stock/staff) are flagged in the console and left out of the spoken answer.
+- **Access:** `GET /api/activity` is `MANAGER_OK` (a team session gets 403), `GET /api/activity/export.csv` is `OWNER_ONLY` (a manager gets 403), both with
+  `human_click` (a cross-site request is refused). `FEATURES[...]["activity"]` / `["activity_export"]` say which role has what.
+- **Console:** a rail item **Activity** (second, after Approvals; manager region, no count) opens the `#pop-activity` drawer; "See everything Jarvis did" is also
+  at the foot of Approvals, and the chat's "Open ..." chip can point at it (`trace.PANELS`). Summary line, Today / 7 / 30 day chips, Kind / Status / Who selects,
+  search, "Include everything" toggle, the collapsed quiet-checks line, rows that expand to the cleaned detail, "Show more" (or scrolling to the end), and
+  Export CSV (owner only). The only action in it is the ordinary drawer switch to Approvals.
+- **Voice tool `what_did_you_do`** (`when`: today | yesterday | 7d | 30d; read-only, `approval=False`, **not** in `TEAM_TOOLS`, in
+  `async_tools.UNTRUSTED_TOOLS`): counts first, then up to five notable things (failed ones, then waiting ones, then the newest), "And N more.", the
+  place to look, and "I've left out N items that only involved sample data" when `sample_sources()` says so. Short plain descriptions only: links are
+  stripped, nothing secret, no owner-only lines.
+
 *Memory pop-up.* `services/memory_book.py` + `/api/memory...` (owner + same-origin, console only - deliberately not a brain
 tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (rewritten through the SettingsStore too, or
 `Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then
@@ -150,6 +200,54 @@ jobs with no report sent, ...). A suggestion row (`suggestions` table, new `kind
   more than four are behind "Show all"; the "Needs you" strip says "N suggestions from Jarvis - ready to prepare" and opens the drawer.
   `prepare_suggestion`/`snooze_suggestion` are called only from `main.py` and the poller - there is no brain tool (the `suggestions` tool
   only lists, and its text says a person has to press Prepare); a test greps for it.
+
+*Upsell Opportunities, Jarvis's half (`services/upsell_drafts.py`, `j.upsell_drafts`; tool `upsell_opportunities`; tests
+`tests/test_upsell_drafts.py`).* The FSM (separate repo) finds sites where Salts maintains only SOME of Fire Alarm, Intruder Alarm, Fire
+Extinguishers, Access Control and Emergency Lighting, raises ONE Action Centre item per site with a fixed-template draft email, and an
+office user approves, edits or declines it THERE; the FSM sends the email (M365) only on that human click. **Jarvis never sends, approves,
+declines or edits-after-a-person.** It only (1) improves the draft wording and (2) answers "any upsell opportunities?" by reading the open
+items. Everything is Jarvis -> FSM through `FSMClient.jarvis_call` (the existing key); the FSM never calls Jarvis.
+- **Contract (absolute `/api/jarvis/upsells...` paths under the FSM base URL):** `GET /api/jarvis/upsells?status=open&draft_source=template`
+  and `GET /api/jarvis/upsells?status=open` -> a list of `{id, site_id, customer_id, customer, site, services_we_hold: [..],
+  services_not_maintained: [..], last_visit (ISO date | null), draft: {subject, body, draft_source: "template"|"jarvis"|"person"},
+  contact_first_name, office_phone}` (no finance fields, no email addresses). `PATCH /api/jarvis/upsells/{id}/draft` with `{subject, body}`
+  -> 200 `{ok: true}`; **409** = the item is no longer open or a person has edited the draft (Jarvis never retries that item); **422** = the
+  text was rejected (it must still contain the opt-out line and the office phone number, plain text, length caps) - Jarvis leaves the template.
+- **Draft improver (scheduler job `upsell_drafts`, a quiet `_check`: one collapsed activity line per run, never chat or a notification):**
+  every `upsell_drafts_interval_min` (10) minutes in working hours (the suggestions' `suggestions_fsm_hours_*`, Mon-Fri, `TIMEZONE`), hourly
+  outside them, and once at start-up (`Jarvis._first_run`). It GETs the open `template` drafts and, for each (at most 10 a run), makes one
+  tool-less `llm.structured` call (schema `UpsellEmail{subject, body}`; same call as `po_intake`) and PATCHes the result. The FSM text is
+  untrusted: control characters and the `<<<`/`>>>` fence are stripped, fields are clipped, and it goes into the prompt inside a
+  `<<<FSM_DATA ... FSM_DATA>>>` block that the system prompt calls data, never instructions.
+- **Hard rules, in the prompt AND re-checked in code (`finish()` / `problems()`):** short, plain British English, from the company
+  (`COMPANY_NAME`), an offer and a question ("who looks after your emergency lighting?"), one visit and one invoice as the benefit; NO
+  prices (pound/dollar/euro signs, "%", cost, price, discount, saving, "per year"...), NO link or email address, NO claim that the customer
+  lacks a system or is non-compliant (wording is "we don't currently maintain...", never "you don't have..."; "non-compliant", "breach",
+  "required by law", "at risk", "unprotected", "you must", "act now" all reject), plain text only (letters, digits and basic punctuation; no
+  markdown, HTML, emoji), at least one question, at most 1,500 characters / 200 words, subject at most 90 characters. The contact's FIRST
+  name only: the code writes the greeting (`Hi <first name>,`, or `Hello,` when the name is missing or not a plain name). The office phone and the opt-out
+  line are the FSM template's own, parsed out of the current template draft (`template_lines`): the opt-out line is the template's line(s)
+  matching the opt-out wording, the phone is `office_phone`; whatever the model wrote about opting out is dropped and the template's line
+  is appended verbatim as the LAST line, a missing or re-formatted phone is put back exactly as the FSM has it, and a missing sign-off is added.
+  A template with no recognisable opt-out line or no `office_phone` is left alone (no AI call). Wording that breaks a rule that cannot be
+  repaired (price, link, claim, no question, too long) gets ONE retry with the broken rules named, then the template stays.
+- **Idempotent and permanent stops (kv):** `upsell:done:<id>:<template hash>` (improved, rejected by our rules, or refused 422 - not tried
+  again for that exact template), `upsell:stop:<id>` (409 or 404 on the PATCH: never touched again, whatever the template becomes),
+  `upsell:tries:<id>` (AI failures; five and it gives up on that item). The model being away is not an error anyone sees: the template stays
+  and it tries again next run. A 404/405 on the GET (the FSM has not shipped upsells yet), a refused key, a 5xx or the FSM being down backs off
+  (1 to 15 minutes; 5 to 60 for a 404) with ONE log warning per outage and a quiet "reachable again" line; nothing reaches the UI. Sample data is
+  never a source (`j.fsm.demo` -> nothing is read or sent). No key or FSM text is logged.
+- **Switch:** `upsell_drafts_enabled` (Settings > Schedules next to `suggestions_publish_to_fsm`, default ON, **owner-only** via
+  `OWNER_ONLY_KEYS`). Off = no polling, no AI calls, no PATCH; the voice tool still answers.
+- **Voice tool `upsell_opportunities`** (`NoInput`, read-only, `approval=False`): `GET ...?status=open` and a short spoken-style answer - the count,
+  then up to five sites ("Acme Ltd, Acme House: we don't maintain their emergency lighting and access control yet."), "And N more.", and always
+  "Approve or decline them in the FSM Action Centre - I can't send these." Only customer, site and the five system names are spoken (no ids,
+  phone numbers, drafts, dates or finance). With the demo FSM it says it can't see real data (never sample figures); a 404 says "The FSM doesn't
+  have the upsell opportunities feature yet"; an outage says it couldn't reach the FSM. **Not in `TEAM_TOOLS`** (default deny: it lists customers
+  and sites by name), so a team session cannot call it.
+- **Safety:** the module has no code path that approves, declines, sends or emails and imports nothing from `actions`, mail, notifications or
+  customer comms (tests grep it; its only FSM verbs are the two GETs and the one draft PATCH). Standing approvals are untouched. A reworded
+  draft is still just a draft: a person approves and the FSM sends.
 
 *Daily rhythm (`services/daily_rhythm.py`).* The morning briefing (09:00) and end-of-day wrap-up (17:30), Monday to Friday, UK
 time, are intentional scheduled posts (not "checks": they always say something). `briefing_enabled` / `briefing_cron` /
@@ -533,6 +631,22 @@ approval path), and every message is run through `history.redact_history` (the s
   sweeps). Automations now ALWAYS run as a `quiet_turn` and are always told to start with `NOTHING_TO_REPORT` when there is nothing new;
   a finding goes through `Proactive.tell()` (= `announce()` when speaking up is on; otherwise one message in the open chat, once, or a
   quiet notification if no chat is open). A check that DOES find a change still posts normally and is logged as `changed`.
+- **Heartbeat stop rules** (`services/heartbeat.py`, applied by `AutomationService`): an automation that keeps returning
+  `NOTHING_TO_REPORT` backs off instead of running forever. `automations` columns `nochange_streak` / `nochange_since` /
+  `last_asked_at` / `never_slow` (migrated in `Database._migrate`). Every 6 consecutive no-change runs slows the *effective*
+  interval one step up 10 min -> 30 min -> hourly -> 3 h -> daily (only steps above the owner's cron interval, which is the shortest
+  gap between its next fires); it is done by `_run_guarded` skipping cron fires that come too soon after `last_run_at`, never by
+  rewriting the schedule, so it can't go faster than configured. Any real change resets the streak. After 12 h with no change, ONE
+  Teams-only message (subject `[Jarvis] ...`, via `notifier.send_owner_update(..., channels=("teams",))`) asks keep / slow down /
+  delete, not repeated for 24 h, not overnight, and only for automations configured to run more often than every 12 h. Overnight
+  (22:00-06:00 `TIMEZONE`) a non-urgent automation runs at most hourly. Exempt from all of it: a description/prompt mentioning
+  life-safety, lone worker, out-of-hours alarms or keyholder (`EXEMPT_RE`), or the owner's `never_slow` flag (`create_automation`
+  `never_slow_down`, or the `set_automation_options` tool - the answer to "keep it"). `list_automations` shows `effective_interval`,
+  `no_change_streak`, `slowed_because`. The clock is `AutomationService.clock` so tests use a fake one. This covers owner-created
+  automations only; the built-in pull request watch (`proactive_pr_watch_min`) is a separate interval job and is not slowed.
+- **`HEARTBEAT.md`** (optional): house rules read at the start of every automation run (`heartbeat.read_checklist`: `<data_dir>/HEARTBEAT.md`,
+  else the repo-root one; first 2000 chars) and appended to the run's prompt as guidance that never overrides the approval rules.
+  Edit it to change rules like "only message on change" without a deploy.
 - **Pull request watch**: `pr_watch()` (scheduled every `proactive_pr_watch_min` only when proactive is on and the Jarvis repo is
   connected) lists the open PRs read-only, compares with the last snapshot (kv `proactive:pr_watch`) and announces new PRs, CI
   passing/failing, conflicts and closed PRs. The first look only records a baseline.

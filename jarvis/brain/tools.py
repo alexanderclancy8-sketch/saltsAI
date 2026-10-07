@@ -241,6 +241,12 @@ class NextStepsIn(BaseModel):
         return v
 
 
+class WhatDidYouDoIn(BaseModel):
+    when: Literal["today", "yesterday", "7d", "30d"] = Field(
+        "today", description="Which period: 'today' (the default), 'yesterday', '7d' for this week (the last seven days) or '30d' for "
+                             "the last thirty days")
+
+
 class JobsIn(BaseModel):
     date_from: str | None = Field(None, description="YYYY-MM-DD, default today")
     date_to: str | None = Field(None, description="YYYY-MM-DD, default same as date_from")
@@ -915,10 +921,18 @@ class CreateAutomationIn(BaseModel):
                                     "runs, e.g. 'Check for jobs scheduled today with no engineer assigned and "
                                     "tell the owner if there are any' - write it as if telling yourself what "
                                     "to go and look at, using whatever tools that needs")
+    never_slow_down: bool = Field(False, description="True only if the owner says this must keep running at its full "
+                                                     "schedule even when it keeps finding nothing")
 
 
 class DeleteAutomationIn(BaseModel):
     automation_id: int = Field(description="The automation's number, from list_automations")
+
+
+class AutomationOptionsIn(BaseModel):
+    automation_id: int = Field(description="The automation's number, from list_automations")
+    never_slow_down: bool = Field(description="True: never slow it down, skip it overnight or ask about it. "
+                                              "False: let it back off when it keeps finding nothing")
 
 
 class WatchCIIn(BaseModel):
@@ -1759,6 +1773,27 @@ async def remedial_quotes(j, a: NoInput):
     return await remedial_pipeline(j.fsm)
 
 
+async def what_did_you_do(j, a: WhatDidYouDoIn):
+    """Read-only: a short spoken-style summary of what Jarvis proposed, changed and had decided, from the same record as the console's
+    "What Jarvis did" page. Counts first, then up to five notable things (failures and waiting ones first), then where to see the rest."""
+    return j.activity_feed.spoken(a.when)
+
+
+async def upsell_opportunities(j, a: NoInput):
+    """Read-only: the open Upsell Opportunities in the FSM, as a short spoken-style answer. Approving, editing, declining and sending
+    all happen in the FSM Action Centre by a person - there is deliberately nothing here that can do any of them."""
+    from ..services.upsell_drafts import spoken_answer
+
+    items, why = await j.upsell_drafts.list_open()
+    if why == "demo":  # sample data is never an answer (demo_guard): without a real FSM there is nothing to look at
+        return "I can't see any real upsell data yet: Salts FSM isn't connected to me, so I won't guess from sample figures."
+    if why == "missing":
+        return "The FSM doesn't have the upsell opportunities feature yet, so I can't see any."
+    if why:
+        return "I couldn't reach the FSM just now to look at the upsell opportunities. Try me again in a minute."
+    return spoken_answer(items)
+
+
 async def suggestions_list(j, a: NoInput):
     if demo_guard.suggestions_rest_on_sample_data(j):
         # A source the suggestions are built from is still sample data. Sweeping now would build suggestions from the sample figures (and send them to
@@ -2006,6 +2041,7 @@ async def remember(j, a: RememberIn):
 async def forget(j, a: ForgetIn):
     j.db.forget(a.memory_id)
     j.brain.refresh_system()
+    j.activity_feed.record("memory", "Jarvis", f"Forgot remembered fact #{a.memory_id}")  # shown in "What Jarvis did" (number only, never the text)
     return "Forgotten."
 
 
@@ -2026,7 +2062,7 @@ async def search_conversation_history(j, a: HistorySearchIn):
 
 
 async def create_automation(j, a: CreateAutomationIn):
-    return j.automations.create(a.description, a.cron, a.prompt)
+    return j.automations.create(a.description, a.cron, a.prompt, a.never_slow_down)
 
 
 async def list_automations(j, a: NoInput):
@@ -2035,6 +2071,10 @@ async def list_automations(j, a: NoInput):
 
 async def delete_automation(j, a: DeleteAutomationIn):
     return j.automations.delete(a.automation_id)
+
+
+async def set_automation_options(j, a: AutomationOptionsIn):
+    return j.automations.set_never_slow_down(a.automation_id, a.never_slow_down)
 
 
 async def watch_ci(j, a: WatchCIIn):
@@ -2422,6 +2462,20 @@ TOOLS: list[Tool] = [
     Tool("remedial_quotes", "Remedial quotes Salts FSM raised from service-visit defects: open pipeline and value, "
                             "which need chasing (7 and 21 days), and win rate.", NoInput, remedial_quotes,
          "Checking remedial quotes"),
+    Tool("what_did_you_do", "What Jarvis himself did: what he drafted, emailed, proposed or changed and what the owner approved, declined "
+                            "or still has waiting. Use for 'what did you do today / yesterday / this week?' and 'what's waiting on me?'. "
+                            "Read-only; returns a short spoken-style answer - the counts first, then up to five notable things, failed "
+                            "ones and waiting ones first, then where to see the full list (Activity in the console) - say it as given, "
+                            "in a few sentences. Never read out anything that sounds like a code, key or password. Items that only "
+                            "involved sample data are left out and the answer says so.",
+         WhatDidYouDoIn, what_did_you_do, "Checking what I did"),
+    Tool("upsell_opportunities", "Upsell Opportunities from the Salts FSM: sites where Salts maintains only some of fire alarm, "
+                                 "intruder alarm, fire extinguishers, access control and emergency lighting. Use for 'any upsell "
+                                 "opportunities?'. Read-only; returns a short spoken-style answer (how many, then up to five sites "
+                                 "and what we don't maintain yet) - say it as given, in a sentence or two. A person approves, edits or "
+                                 "declines each one in the FSM Action Centre, and the FSM sends the email when they click; you "
+                                 "cannot approve, decline, send or edit them. Never claim a customer lacks a system or is "
+                                 "non-compliant.", NoInput, upsell_opportunities, "Checking upsell opportunities"),
     Tool("suggestions", "Refresh and list your current proactive suggestions (unbilled work, quotes to chase, "
                         "overdue jobs to assign, debts to chase, stock to reorder, expiring qualifications, audits). Read-only. Quotes "
                         "to chase also appear in the Salts FSM Action Centre; each has a Prepare button there and in the "
@@ -2595,8 +2649,15 @@ TOOLS: list[Tool] = [
          create_automation, "Setting up an automation"),
     Tool("list_automations", "Every automation the owner has set up, its schedule, and what it found last time "
                              "it ran. Each one has a 'schedule' field in plain English (e.g. 'every weekday at "
-                             "8am') - read that back, not the raw 'cron' field.", NoInput, list_automations,
+                             "8am') - read that back, not the raw 'cron' field. A check that keeps finding "
+                             "nothing is slowed down automatically: 'effective_interval', 'no_change_streak' and "
+                             "'slowed_because' say how and why.", NoInput, list_automations,
          "Checking your automations"),
+    Tool("set_automation_options", "Set the owner's 'never slow down' override on one automation (by its number): "
+                                   "it then always runs at its full schedule, is not skipped overnight and is not "
+                                   "asked about. Use it when the owner answers 'keep it' to a keep/slow down/delete "
+                                   "question.", AutomationOptionsIn, set_automation_options,
+         "Updating that automation"),
     Tool("delete_automation", "Remove one of the owner's automations by its number.", DeleteAutomationIn,
          delete_automation, "Removing that automation"),
     Tool("watch_ci", "Keep following the GitHub Actions (CI) result on a branch of your own repository in the "

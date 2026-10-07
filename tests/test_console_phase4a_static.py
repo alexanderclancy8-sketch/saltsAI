@@ -64,9 +64,10 @@ def test_the_pending_inbox_is_loaded_from_the_redacted_endpoint_not_the_raw_even
     assert "payload" not in HUD[HUD.index("function cardHtml(v, where"):HUD.index("function syncCards(")]    # cards use the server's `details`, not raw payloads
 
 
-def test_the_rail_still_has_exactly_the_nine_dashboard_sections_and_memory_lives_in_settings():
+def test_the_rail_has_exactly_the_nine_dashboard_sections_plus_activity_and_memory_lives_in_settings():
+    # "activity" (What Jarvis did) is the tenth: the pinned inventory is now these ten, in this order (tests/test_hud_layout.py also pins the roles)
     rail = INDEX[INDEX.index('<nav class="rail"'):INDEX.index("</nav>", INDEX.index('<nav class="rail"'))]
-    assert re.findall(r'data-pop="(\w+)"', rail) == ["approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
+    assert re.findall(r'data-pop="(\w+)"', rail) == ["approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
     assert 'data-pop="memory"' not in rail and 'id="btn-open-memory"' in _pop("settings") and 'data-pop="memory"' in _pop("settings")
     assert '"memory"' in HUD[HUD.index("const POPS"):HUD.index("const Drawer")] and 'JarvisMemory?.load()' in HUD
     assert INDEX.index("/static/memory.js") < INDEX.index("/static/hud.js")

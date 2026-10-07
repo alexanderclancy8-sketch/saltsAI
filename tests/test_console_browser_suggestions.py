@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api")
 
+from jarvis.services.accreditations import SECTIONS  # noqa: E402
 from tests.test_console_browser import SIZES, THEMES, _no_hscroll, browser  # noqa: E402,F401
 from tests.test_console_browser_phase3 import _page, _shot, serve  # noqa: E402,F401
 from tests.test_console_browser_phase4a import _open_pop, _wait_cards  # noqa: E402
@@ -31,6 +32,12 @@ def _seed(j):
     for qid, title in (("Q1", "Chase quote Q1 for Acme Ltd (£1,200 + VAT)?"), ("Q4", "Chase quote Q4 for Beta Ltd (£5,000 + VAT)?"),
                        ("ZZ", "Chase quote ZZ for Gone Ltd (£90 + VAT)?"), ("Q9", "Chase quote Q9 for Niner Ltd (£40 + VAT)?")):
         j.db.upsert_suggestion(f"quote_followup:{qid}", title, "Work for them; sent 01 Sep, no reply yet.", "chase", 2, "quote_followup", "{}")
+    # The console lists them by priority, then newest first, and shows four. upsert stamps them with the wall clock to the
+    # second, so which of Q1 / Q4 / ZZ / Q9 ended up on the hidden fifth row depended on whether a second boundary fell
+    # between the inserts (Q1 sometimes had no Prepare button on screen). Fix the order: Q1 newest, Q9 oldest.
+    for n, qid in enumerate(("Q1", "Q4", "ZZ", "Q9")):
+        stamp = f"2026-01-01T00:00:{50 - n:02d}+00:00"
+        j.db.execute("UPDATE suggestions SET created_at = ?, updated_at = ? WHERE key = ?", (stamp, stamp, f"quote_followup:{qid}"))
 
 
 def _buttons(page, key):
@@ -43,6 +50,10 @@ def test_prepare_and_not_now_on_a_suggestion(browser, serve, width, height, sche
     fsm = FsmServer()
     srv, j, _ = serve(configure=_configure, http=httpx.AsyncClient(transport=httpx.MockTransport(fsm.handler)))
     _seed(j)
+    # "Needs you" shows only the three most urgent things. The bundled example accreditation register has fixed dates, and
+    # once the clock passes them "N reminders overdue" (weight 75) pushes the suggestions line (weight 35) out of the top
+    # three - this test failed under the nightly +40 days run. Give the test an empty register so only suggestions are in play.
+    j.accreditations.path.write_text("".join(f"{section}: []\n" for section in SECTIONS), encoding="utf-8")
     touch = {"has_touch": True, "is_mobile": True} if width < 760 else {}
     ctx, page = _page(browser, srv.url, width, height, scheme, **touch)
     try:

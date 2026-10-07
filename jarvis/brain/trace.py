@@ -21,8 +21,8 @@ import time
 from typing import Any, Callable
 
 # The pop-ups a reply may point at: the rail sections of the console (hud.js POPS, minus Settings/Connections/Demo).
-PANELS = ("approvals", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming")
-PANEL_TITLES = {"approvals": "Approvals", "comms": "Comms", "issues": "Issues", "health": "Health", "ops": "Ops",
+PANELS = ("approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming")
+PANEL_TITLES = {"approvals": "Approvals", "activity": "What Jarvis did", "comms": "Comms", "issues": "Issues", "health": "Health", "ops": "Ops",
                 "fleet": "Fleet", "finance": "Finance", "presence": "Presence", "upcoming": "Coming up"}
 MAX_FOLLOW_UPS = 2
 FOLLOW_UP_CHARS = 90
@@ -39,7 +39,7 @@ _TOOL_INFO: dict[str, tuple[tuple[str, ...], str | None]] = {
     **{n: ((_FSM,), None) for n in ("fsm_query", "fsm_systems_due", "ppm_schedule_plan", "fsm_contracts_renewing",
                                     "fsm_quotes", "fsm_source_search", "fsm_source_read", "staff_certifications",
                                     "unbilled_jobs", "remedial_quotes", "contract_renewals", "out_of_hours_calls",
-                                    "route_optimise_advice", "timesheet_check", "false_alarm_analysis")},
+                                    "route_optimise_advice", "timesheet_check", "false_alarm_analysis", "upsell_opportunities")},
     **{n: (("Stock records",), None) for n in ("stock_levels", "stock_usage", "stock_job_materials")},
     **{n: (("RAM Tracking",), "fleet") for n in ("engineer_locations", "nearest_engineer", "van_day")},
     **{n: (("Sage",), "finance") for n in ("finance_snapshot", "finance_aged", "finance_vat", "finance_cashflow",
@@ -54,6 +54,7 @@ _TOOL_INFO: dict[str, tuple[tuple[str, ...], str | None]] = {
     **{n: (("Issues log",), "issues") for n in ("issues_list", "issue_report", "issue_fix")},
     **{n: (("Routine tests",), "health") for n in ("routine_tests_run", "routine_tests_status")},
     "suggestions": (("Suggestions",), "approvals"),
+    "what_did_you_do": (("Jarvis's activity record",), "activity"),
     "knowledge_search": (("Knowledge base",), None),
     **{n: (("The web",), None) for n in ("web_search", "web_fetch", "WebSearch", "WebFetch", "regulatory_watch",
                                         "technical_watch")},

@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     result TEXT DEFAULT '',
     decided_at TEXT DEFAULT ''
 );
+-- "What Jarvis did" lists actions by when they last changed (decided, else created): an index on that very expression keeps the
+-- newest-first page cheap however many thousands of actions there are.
+CREATE INDEX IF NOT EXISTS idx_actions_when ON pending_actions (COALESCE(NULLIF(decided_at, ''), created_at), id);
 -- Where each Teams approver's one-to-one chat with the bot lives, so Jarvis can message them first (a Bot Framework
 -- "conversation reference"). Learned when an allowlisted person messages the bot; see services/teams_approvals.py.
 CREATE TABLE IF NOT EXISTS teams_approvers (
@@ -231,7 +234,11 @@ CREATE TABLE IF NOT EXISTS automations (
     prompt TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     last_run_at TEXT DEFAULT '',
-    last_result TEXT DEFAULT ''
+    last_result TEXT DEFAULT '',
+    nochange_streak INTEGER NOT NULL DEFAULT 0,
+    nochange_since TEXT DEFAULT '',
+    last_asked_at TEXT DEFAULT '',
+    never_slow INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS reply_habits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -252,6 +259,8 @@ CREATE TABLE IF NOT EXISTS check_runs (
     detail TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_check_runs_job ON check_runs (job_key, id);
+-- "What Jarvis did" (services/activity_feed.py) pages these by time.
+CREATE INDEX IF NOT EXISTS idx_check_runs_at ON check_runs (ran_at);
 -- Claude-designed adverts (services/adverts.py): the LAST version of each design only, newest few kept. html is the
 -- sanitised design (still holding the logo placeholder); it is never executed by the server.
 CREATE TABLE IF NOT EXISTS adverts (
@@ -326,6 +335,18 @@ CREATE TABLE IF NOT EXISTS background_calls (
     requester TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT ''
 );
+-- Who changed what in the console, for the "What Jarvis did" page: settings saved (the NAMES of the settings that changed, never
+-- their values), the team access code set or cleared (never the code), memory reworded / removed (never the text) and CSV exports.
+-- Written by services/activity_feed.py; actor is a person's name ("the owner" when it is the display session). Kept 400 days.
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT '',
+    what TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_at ON audit_events (at);
 -- One row per background engineering-agent run (self_improve / fixer / security_watch): progress, not results.
 CREATE TABLE IF NOT EXISTS agent_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -392,6 +413,13 @@ class Database:
         for col in ("resolved_by", "resolved_at"):  # who closed an issue by hand, and when
             if col not in issue_cols:
                 self._conn.execute(f"ALTER TABLE issues ADD COLUMN {col} TEXT DEFAULT ''")
+        # Heartbeat stop rules (services/heartbeat.py): the no-change streak, when it began, when the owner was last asked
+        # whether to keep the automation, and the owner's "never slow down" flag.
+        auto_cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(automations)").fetchall()}
+        for col, ddl in (("nochange_streak", "INTEGER NOT NULL DEFAULT 0"), ("nochange_since", "TEXT DEFAULT ''"),
+                         ("last_asked_at", "TEXT DEFAULT ''"), ("never_slow", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in auto_cols:
+                self._conn.execute(f"ALTER TABLE automations ADD COLUMN {col} {ddl}")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -578,8 +606,22 @@ class Database:
     def check_runs_since(self, since_iso: str) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM check_runs WHERE ran_at >= ? ORDER BY id", (since_iso,))
 
-    def prune_check_runs(self, before_iso: str) -> None:
-        self.execute("DELETE FROM check_runs WHERE ran_at < ?", (before_iso,))
+    def prune_check_runs(self, before_iso: str, changed_before_iso: str = "") -> None:
+        """Delete runs older than `before_iso`. A run that found something (or failed) is a record of a change and is kept
+        until `changed_before_iso` instead (when given), so "What Jarvis did" can look back further than the quiet runs."""
+        if changed_before_iso:
+            self.execute("DELETE FROM check_runs WHERE ran_at < ? OR (ran_at < ? AND outcome IN ('no_change', 'baseline'))",
+                         (changed_before_iso, before_iso))
+        else:
+            self.execute("DELETE FROM check_runs WHERE ran_at < ?", (before_iso,))
+
+    # -- the audit trail of console changes (services/activity_feed.py) ---------------------------
+    def add_audit_event(self, kind: str, actor: str, what: str, ref: str = "") -> int:
+        return self.execute("INSERT INTO audit_events (at, kind, actor, what, ref) VALUES (?,?,?,?,?)",
+                            (now_iso(), kind, actor, what, ref))
+
+    def prune_audit_events(self, before_iso: str) -> None:
+        self.execute("DELETE FROM audit_events WHERE at < ?", (before_iso,))
 
     # -- approvals ------------------------------------------------------------------
     def create_action(self, kind: str, summary: str, payload: dict[str, Any], status: str = "pending",

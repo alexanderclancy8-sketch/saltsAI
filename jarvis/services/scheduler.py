@@ -115,6 +115,10 @@ def build_scheduler(j) -> AsyncIOScheduler:
                   minutes=max(1, s.suggestions_fsm_interval_min), id="fsm_suggestions", max_instances=1, coalesce=True)
     sched.add_job(_guard("suggestion requests", j.fsm_suggestions.poll), "interval",
                   seconds=max(10, s.suggestions_fsm_poll_s), id="fsm_suggestion_requests", max_instances=1, coalesce=True)
+    # Upsell Opportunities: reword the FSM's template draft emails (every 10 minutes in working hours, hourly outside them). Quiet - one
+    # collapsed activity line per run, never a chat message. It only PATCHes draft wording; a person approves and sends in the FSM.
+    sched.add_job(_check(j, "upsell_drafts", "Upsell drafts", j.upsell_drafts.scheduled_run), "interval",
+                  minutes=max(1, s.upsell_drafts_interval_min), id="upsell_drafts", max_instances=1, coalesce=True)
     if s.wrapup_enabled:
         sched.add_job(_daily(j, "wrapup", "End-of-day wrap-up", j.wrapup.run),
                       cron_trigger(s.wrapup_cron, timezone=s.timezone), id="wrapup",

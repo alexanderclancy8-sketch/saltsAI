@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -178,7 +179,11 @@ def test_the_owner_sets_replaces_and_removes_a_home_and_the_postcode_never_comes
 
         # replace it with another postcode
         _save_home(page, "Dan Harper", "LS1 4AP")
-        page.wait_for_function("document.querySelector('#toasts').textContent.includes('Home saved')")
+        # The first save's "Home saved" toast can still be on screen, so it proves nothing about this save: wait for the
+        # replacement itself to land in the database (a slow save under load failed this with the old point still stored).
+        deadline = time.monotonic() + 15
+        while j.db.query("SELECT lat, lng FROM engineer_homes") != [{"lat": 53.7997, "lng": -1.5492}] and time.monotonic() < deadline:
+            time.sleep(0.1)
         assert j.db.query("SELECT lat, lng FROM engineer_homes") == [{"lat": 53.7997, "lng": -1.5492}]
 
         # remove it (a confirm first)

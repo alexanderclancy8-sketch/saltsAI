@@ -32,6 +32,7 @@ SIZES = [(1280, 800), (800, 900), (400, 820)]
 THEMES = ["dark", "light"]
 POPS = {  # rail item -> (drawer title, an element that proves the right content is showing)
     "approvals": ("Approvals", "#approvals"),
+    "activity": ("What Jarvis did", "#activity-summary"),
     "comms": ("Comms", "#inbox"),
     "issues": ("Issues and fixes", "#issues"),
     "health": ("Health", "#btn-run-tests"),
@@ -192,7 +193,8 @@ def test_drawer_closes_with_close_button_escape_and_clicking_outside(browser, se
             page.wait_for_function("!document.getElementById('drawer').classList.contains('open')")
             assert page.evaluate("getComputedStyle(document.getElementById('drawer')).visibility") in ("hidden", "visible")
         # a closed drawer is out of the tab order
-        page.wait_for_timeout(400)
+        # (visibility flips to hidden when the slide-out transition ends; a fixed 400 ms was not enough on a loaded machine)
+        page.wait_for_function("getComputedStyle(document.getElementById('drawer')).visibility === 'hidden'", timeout=10000)
         assert page.evaluate("getComputedStyle(document.getElementById('drawer')).visibility") == "hidden"
     finally:
         ctx.close()
