@@ -90,13 +90,13 @@ def role_meets(role: str | None, level: str) -> bool:
 FEATURES = {
     OWNER: {"approvals": True, "finance": True, "connections": True, "memory": True, "comms": True, "issues": True,
             "health": True, "settings_admin": True, "attachments": True, "feedback": True, "team_access": True,
-            "engineer_homes": True},
+            "engineer_homes": True, "activity": True, "activity_export": True},
     MANAGER: {"approvals": True, "finance": True, "connections": True, "memory": True, "comms": True, "issues": True,
               "health": True, "settings_admin": True, "attachments": True, "feedback": True, "team_access": False,
-              "engineer_homes": False},
+              "engineer_homes": False, "activity": True, "activity_export": False},
     TEAM: {"approvals": False, "finance": False, "connections": False, "memory": False, "comms": False, "issues": False,
            "health": False, "settings_admin": False, "attachments": False, "feedback": False, "team_access": False,
-           "engineer_homes": False},
+           "engineer_homes": False, "activity": False, "activity_export": False},
 }
 
 # Keys of /api/status a team session receives. An allowlist, so a key added to the status later is withheld from team
@@ -202,6 +202,7 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/approvals/dismiss-failed": MANAGER_OK,
     "GET /api/approvals/history": MANAGER_OK,
     "POST /api/approvals/{action_id}/{decision}": MANAGER_OK,
+    "GET /api/activity": MANAGER_OK,                        # "What Jarvis did": everything proposed, changed and decided (read only)
     "GET /api/memory": MANAGER_OK,                          # memory: read and edit
     "POST /api/memory/facts/{fact_id}": MANAGER_OK,
     "DELETE /api/memory/facts/{fact_id}": MANAGER_OK,
@@ -227,6 +228,8 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/settings/test/{section}": MANAGER_OK,
     "GET /auth/sage/start": MANAGER_OK,                     # finance connection
     "GET /auth/sage/callback": MANAGER_OK,
+    # ---- the principal owner only: the activity list as a CSV file (it leaves the system, so it is the owner's click alone)
+    "GET /api/activity/export.csv": OWNER_ONLY,
     # ---- the principal owner only: who may sign in as team
     "GET /api/team-access": OWNER_ONLY,
     "POST /api/team-access": OWNER_ONLY,

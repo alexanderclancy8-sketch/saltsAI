@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 
 NO_CHANGE, CHANGED, FAILED, BASELINE = "no_change", "changed", "failed", "baseline"
 OUTCOMES = (NO_CHANGE, CHANGED, FAILED, BASELINE)
-RETENTION_DAYS = 7
+RETENTION_DAYS = 7              # runs with nothing to report
+CHANGED_RETENTION_DAYS = 31    # runs that found something or failed (what "What Jarvis did" looks back over)
 MAX_RUNS_SHOWN = 40       # runs listed per check when its line is opened
 DETAIL_CHARS = 200
 PRUNE_EVERY = 50          # old rows are deleted once in this many recorded runs
@@ -59,7 +60,8 @@ class ActivityLog:
             self._recorded += 1
             if self._recorded % PRUNE_EVERY == 1:
                 cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
-                self.j.db.prune_check_runs(cutoff.isoformat(timespec="seconds"))
+                long_cutoff = datetime.now(timezone.utc) - timedelta(days=CHANGED_RETENTION_DAYS)
+                self.j.db.prune_check_runs(cutoff.isoformat(timespec="seconds"), long_cutoff.isoformat(timespec="seconds"))
         except Exception:  # noqa: BLE001
             log.exception("Could not record the activity of %s", key)
 

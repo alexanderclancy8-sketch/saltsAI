@@ -102,6 +102,56 @@ sends exactly the ids on screen after a confirm that says how many. Failed actio
 is unchanged. `tests/test_dismiss_failed.py` and `tests/test_console_browser_dismiss.py` pin it. When you add an action kind, decide deliberately whether it belongs in
 `approval_inbox.editable_fields` (default: no).
 
+*What Jarvis did (`services/activity_feed.py`, `j.activity_feed`; routes `GET /api/activity` and `GET /api/activity/export.csv`; tool
+`what_did_you_do`; `web/activity.js`; tests `tests/test_activity_feed.py`, `tests/test_console_browser_activity.py`).* ONE read-only
+model that UNIONS every record of something Jarvis proposed, prepared or changed - it keeps no copy of any of them and approves, declines,
+sends, retries, edits or changes nothing (a test greps the module for those verbs, and for the only table it writes). Item shape: `{id, when
+(UTC), kind, what, status, who, requested_by, decided_by, decided_at, created_at, source, source_ref, detail (rows, redacted), error,
+link, quiet, attention, auto, chain, sample}`. Kinds: draft | email | job_proposal | fsm_change | settings_change | memory | code_change
+(PR) | scheduled_check | suggestion | other. Statuses: waiting, approved, declined, done, failed, dismissed, edited, auto_approved
+("Auto-approved (standing)"), plus running (a background run, a pull-request run in flight). `Needs a look` is a filter, not a status:
+failed + waiting that are still open (a failure already retried or dismissed is not).
+- **Sources and how each maps** (add a source = one `_src_*` function and one `_Source(...)` entry in `SOURCES`):
+  `pending_actions` (the one approvals record: status pending/approved/done/failed/denied + `approved_by`, `superseded_by`/`supersedes`/
+  `supersede_kind`, `dismissed_*`; `when` = `COALESCE(decided_at, created_at)`; an email action is a *draft* until it is approved/sent, then an
+  *email*; `fsm_write` POST `/jobs`, `accept_quote*` and `log_job` are *job proposals*; `approved_by = "standing approval: <category>"` is
+  `auto_approved`, and still `failed` if it failed; denied-by-edit is `edited`; denied with "Blocked by the security check" is `failed`),
+  `check_runs` (changed/failed are rows; no_change/baseline are `quiet` and counted in SQL into the collapsed line, never read row by row),
+  `suggestions` (an open one is as old as `created_at` - `updated_at` is bumped on every refresh), `agent_runs` (pull-request runs; a run that
+  gave up is quiet; a "running" one with no step for 30 minutes shows failed), `background_calls` (failed ones only, unless "everything"),
+  `memory`, `audit_events` (new, below), `documents`, `adverts`, the kv `upsell:done:*` markers whose state is `improved`, and `automations`.
+  The engineer-home audit lines are the `check_runs` rows of the owner-only job (`activity.OWNER_ONLY_JOBS`): the module never names that table,
+  shows them to the principal owner only (`Query.owner`) and cleans postcodes and points out of them.
+- **What had no actor or time, and what was added (additive, cheap):** `audit_events(id, at, kind, actor, what, ref)` is written by
+  `ActivityFeed.record()` for a settings save (the *labels* of the settings that really changed - "Record keeping (on)" for a switch - never a
+  value; `main.save_settings`), the team access code set/cleared (never the code), a memory fact or learned reply reworded or removed (the number, never
+  the text; also the `forget` tool) and a CSV export. `check_runs` keeps runs that found something or failed for 31 days (quiet ones still 7;
+  `db.prune_check_runs(before, changed_before)`), so a 30-day view has them. Indexes: `idx_actions_when` (the very expression actions are
+  ordered by), `idx_check_runs_at`, `idx_audit_events_at`. Limits of the data, not of this module: the requester of an action is "Jarvis" unless a
+  team member asked (`payload.requested_by`) - the store does not say whether a chat turn or a scheduled job queued it; who *dismissed a suggestion*
+  is not stored; the time of an approved action is when it finished (`set_action_status` rewrites `decided_at`).
+- **Paging and limits:** `limit` 1-200 (default 50) and `offset`; each source is read newest-first with `LIMIT` and never more than `SCAN_CAP` (3000)
+  rows; the merge reaches at most `REACH_CAP` (3000) items deep and then says so (`capped`); a filter is applied in Python on the mapped item, so the
+  per-source read is widened (x4) until the page is full or the cap is hit; sources a kind filter cannot match are not read; the first page also
+  carries the day's summary, the quiet line and the "who" choices (offset > 0 does not). CSV: at most `EXPORT_MAX` (5000) rows, `X-Export-Truncated`
+  says when it was cut, a BOM for Excel, and every cell that starts with `= + - @` (even after spaces) or a tab/return gets a leading apostrophe.
+- **Redaction (`Cleaner`) for every string:** the approval cards' own redaction (`approval_inbox.clean`: `integrations.redact` + `redact.redact_text`),
+  spoken access codes (`history.redact_history`), `token=` / `password:` written into text, the LIVE secret values from Settings (every
+  `secret` field plus the staff report key and display password), payload KEYS that name a secret (`redact.is_sensitive_param`: `code`, `password`,
+  `pin`, `token`, `*_key`...), location keys dropped, coordinate pairs and UK postcodes (`HIDE_POSTCODES`; a site postcode is on the approval card
+  itself, not here). The access-code tool's details are withheld entirely. Items rooted in sample data (`sample`: the demo FSM, demo mailbox, demo accounts/
+  stock/staff) are flagged in the console and left out of the spoken answer.
+- **Access:** `GET /api/activity` is `MANAGER_OK` (a team session gets 403), `GET /api/activity/export.csv` is `OWNER_ONLY` (a manager gets 403), both with
+  `human_click` (a cross-site request is refused). `FEATURES[...]["activity"]` / `["activity_export"]` say which role has what.
+- **Console:** a rail item **Activity** (second, after Approvals; manager region, no count) opens the `#pop-activity` drawer; "See everything Jarvis did" is also
+  at the foot of Approvals, and the chat's "Open ..." chip can point at it (`trace.PANELS`). Summary line, Today / 7 / 30 day chips, Kind / Status / Who selects,
+  search, "Include everything" toggle, the collapsed quiet-checks line, rows that expand to the cleaned detail, "Show more" (or scrolling to the end), and
+  Export CSV (owner only). The only action in it is the ordinary drawer switch to Approvals.
+- **Voice tool `what_did_you_do`** (`when`: today | yesterday | 7d | 30d; read-only, `approval=False`, **not** in `TEAM_TOOLS`, in
+  `async_tools.UNTRUSTED_TOOLS`): counts first, then up to five notable things (failed ones, then waiting ones, then the newest), "And N more.", the
+  place to look, and "I've left out N items that only involved sample data" when `sample_sources()` says so. Short plain descriptions only: links are
+  stripped, nothing secret, no owner-only lines.
+
 *Memory pop-up.* `services/memory_book.py` + `/api/memory...` (owner + same-origin, console only - deliberately not a brain
 tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (rewritten through the SettingsStore too, or
 `Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then

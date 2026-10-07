@@ -33,14 +33,14 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import adverts, approval_inbox, connection_tests, documents, images
+from .services import activity_feed, adverts, approval_inbox, connection_tests, documents, images
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
 from .services.engineer_homes import DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, HomeError
 from .services.team_access import CodeRejected
 from .services.tracking import requester_label
 from .services.teams_approvals import approver_emails, invoke_value, parse_decision_value, parse_typed_command
-from .settings_store import AZURE_VOICES, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
+from .settings_store import AZURE_VOICES, FIELDS, OWNER_IDENTITY_KEYS, OWNER_ONLY_KEYS, SECTIONS_BY_ID, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 install_log_redaction()  # no secrets (webhook signatures, tokens, keys) in the log stream - see jarvis/redact.py
@@ -809,6 +809,38 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         """Every action in every state, newest first - dismissed failures included and flagged "dismissed by NAME at TIME"."""
         return approval_inbox.history(J(request).db, max(1, min(limit, 500)), dismissed)
 
+    # ------------------------------------------------------------------ what Jarvis did (read only)
+    # One list of everything Jarvis proposed, drafted, sent or changed and what a person decided (services/activity_feed.py). It
+    # approves, sends and changes nothing. Owner or manager session (a team session gets 403); the CSV is the principal owner's alone.
+    def activity_query(request: Request, rng: str, kind: str, status: str, who: str, text: str, everything: bool) -> activity_feed.Query:
+        feed = J(request).activity_feed
+        try:
+            since, until, _ = feed.window(rng)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        csv_ = lambda v: [x.strip() for x in str(v or "").split(",") if x.strip()]  # noqa: E731
+        return activity_feed.Query(since, until, kinds=csv_(kind), statuses=csv_(status), who=who, text=text, everything=everything,
+                                   owner=caller_of(request).role == access.OWNER)
+
+    @app.get("/api/activity", dependencies=[Depends(owner), Depends(human_click)])
+    async def activity_list(request: Request, range: str = "today", kind: str = "", status: str = "", who: str = "", q: str = "",
+                            everything: bool = False, limit: int = activity_feed.DEFAULT_LIMIT, offset: int = 0):
+        query = activity_query(request, range, kind, status, who, q, everything)
+        data = await asyncio.to_thread(J(request).activity_feed.page, query, limit, offset)
+        data["can_export"] = caller_of(request).role == access.OWNER
+        data["range"] = range
+        data["limits"] = {"page_max": activity_feed.PAGE_MAX, "reach": activity_feed.REACH_CAP}
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/activity/export.csv", dependencies=[Depends(principal), Depends(human_click)])
+    async def activity_export(request: Request, range: str = "today", kind: str = "", status: str = "", who: str = "", q: str = "",
+                              everything: bool = False):
+        query = activity_query(request, range, kind, status, who, q, everything)
+        body, cut = await asyncio.to_thread(J(request).activity_feed.export_csv, query, "the owner")
+        headers = {"Content-Disposition": f'attachment; filename="what-jarvis-did-{range}.csv"', "Cache-Control": "no-store",
+                   "X-Content-Type-Options": "nosniff", "X-Export-Truncated": "true" if cut else "false"}
+        return Response("﻿" + body, media_type="text/csv; charset=utf-8", headers=headers)
+
     @app.post("/api/approvals/{action_id}/{decision}", dependencies=[Depends(owner), Depends(human_click)])
     async def decide(action_id: int, decision: str, request: Request):
         j = J(request)
@@ -841,20 +873,26 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.post("/api/memory/facts/{fact_id}", dependencies=[Depends(owner), Depends(human_click)])
     async def memory_edit_fact(fact_id: int, body: MemoryTextIn, request: Request):
-        return memory_call(memory_book(request).edit_fact, fact_id, body.text)
+        result = memory_call(memory_book(request).edit_fact, fact_id, body.text)
+        J(request).activity_feed.record("memory", speaker(request) or "the owner", f"Reworded remembered fact #{fact_id}")
+        return result
 
     @app.delete("/api/memory/facts/{fact_id}", dependencies=[Depends(owner), Depends(human_click)])
     async def memory_delete_fact(fact_id: int, request: Request):
         memory_call(memory_book(request).delete_fact, fact_id)
+        J(request).activity_feed.record("memory", speaker(request) or "the owner", f"Removed remembered fact #{fact_id}")
         return {"deleted": fact_id}
 
     @app.post("/api/memory/replies/{reply_id}", dependencies=[Depends(owner), Depends(human_click)])
     async def memory_edit_reply(reply_id: int, body: MemoryTextIn, request: Request):
-        return memory_call(memory_book(request).edit_reply, reply_id, body.text)
+        result = memory_call(memory_book(request).edit_reply, reply_id, body.text)
+        J(request).activity_feed.record("memory", speaker(request) or "the owner", f"Reworded learned reply #{reply_id}")
+        return result
 
     @app.delete("/api/memory/replies/{reply_id}", dependencies=[Depends(owner), Depends(human_click)])
     async def memory_delete_reply(reply_id: int, request: Request):
         memory_call(memory_book(request).delete_reply, reply_id)
+        J(request).activity_feed.record("memory", speaker(request) or "the owner", f"Removed learned reply #{reply_id}")
         return {"deleted": reply_id}
 
     # ------------------------------------------------------------------ suggestions
@@ -1137,6 +1175,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             raise HTTPException(400, str(e)) from None
         j.db.add_notification("info", "Team access code set", "Engineers and office staff can sign in at /login with the new "
                               "code. Anyone signed in with the old one has been signed out.")
+        j.activity_feed.record("team_access", "the owner", "Set a new team access code (everyone signed in as team was signed out)")
         log.info("Team access code changed by the owner (previous team sessions are signed out).")
         await j.team_sessions.close()  # the old code's sessions can't sign in again; drop their conversations too
         return {**j.team_access.info(), "sessions": len(j.team_sessions)}
@@ -1146,6 +1185,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         j = J(request)
         j.team_access.clear()
         j.db.add_notification("info", "Team access switched off", "Nobody can sign in as team now, and anyone who was has been signed out.")
+        j.activity_feed.record("team_access", "the owner", "Switched team access off (everyone signed in as team was signed out)")
         log.info("Team access switched off by the owner.")
         await j.team_sessions.close()
         return {**j.team_access.info(), "sessions": len(j.team_sessions)}
@@ -1201,6 +1241,23 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         j = J(request)
         return await homes_view(j, removed=j.homes.clear_all("the owner"))
 
+    def settings_snapshot(keys: set[str]) -> dict[str, str]:
+        return {k: str(getattr(settings, k, "")) for k in keys if k in FIELDS}
+
+    def audit_settings(j: Jarvis, before: dict[str, str], actor: str | None) -> None:
+        """One line in "What Jarvis did" naming the settings that really changed (their labels - and on/off for a switch) and who saved
+        them. Never a value: a password, key, address or webhook is not written anywhere by this."""
+        changed = [k for k, old in before.items() if str(getattr(settings, k, "")) != old]
+        if not changed:
+            return
+        parts = []
+        for k in changed[:8]:
+            field = FIELDS[k]
+            now = getattr(settings, k, None)
+            parts.append(f"{field.label} ({'on' if now else 'off'})" if field.kind == "bool" else field.label)
+        more = f" and {len(changed) - 8} more" if len(changed) > 8 else ""
+        j.activity_feed.record("settings", actor or "the owner", "Changed settings: " + ", ".join(parts) + more)
+
     @app.post("/api/settings", dependencies=[Depends(owner)])
     async def save_settings(body: SettingsIn, request: Request):
         # Standing approvals widen what Jarvis may do without asking, and the owner/partner emails, display password
@@ -1212,9 +1269,11 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                                      "the display password and staff key, or whether van locations show outside "
                                      "working hours, or whether and where Jarvis may browse the web, or which "
                                      "service inbox Jarvis reads.")
+        before = settings_snapshot(set(body.values) | set(body.clear))
         errors = store.update(body.values, body.clear)
         if errors:
             return JSONResponse({"errors": errors}, status_code=400)
+        audit_settings(J(request), before, speaker(request))
         await reload_jarvis(request.app)
         data = settings_view(J(request), request)
         data["signed_out"] = "jarvis_owner_password" in body.values and bool(body.values["jarvis_owner_password"])

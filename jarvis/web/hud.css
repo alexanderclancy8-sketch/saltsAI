@@ -520,6 +520,54 @@ input.mem-input { min-height: 0; }
 .mem-item .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .mem-confirm p { margin: 0; color: var(--ember); font-size: 14px; }
 #memory-intro { margin-bottom: 4px; }
+/* ---------- What Jarvis did (the "activity" pop-up, activity.js): a read-only list, filters on top ---------- */
+.act-summary { margin: 0; font-weight: 500; overflow-wrap: anywhere; }
+.act-filters { display: flex; flex-direction: column; gap: 10px; }
+.act-ranges { display: flex; flex-wrap: wrap; gap: 8px; }
+.act-range.is-on { color: var(--core); border-color: var(--core); background: rgba(var(--core-rgb), .12); font-weight: 600; }
+.act-selects { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.act-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.act-field > span { font-family: var(--f-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.act-field select, .act-field input[type=search] { width: 100%; min-width: 0; background: var(--navy-deepest); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.act-field select:focus, .act-field input[type=search]:focus { outline: none; border-color: var(--core); }
+.drawer .act-toggle { flex-direction: row; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); margin-top: 10px; }
+.act-fold > summary { cursor: pointer; font-family: var(--f-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); padding: 6px 0; }
+.act-fold[open] > summary { margin-bottom: 6px; }
+.act-toggle input { width: 18px; height: 18px; flex: none; accent-color: var(--core); }
+.act-quiet { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.act-quiet[hidden], .act-quiet-list[hidden], .act-detail[hidden], .act-more .btn[hidden], .act-error[hidden], .act-note[hidden] { display: none; }
+.act-quiet-btn { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 10px 14px; color: var(--muted); font-size: 14px; }
+.act-quiet-btn::after { content: " \203A"; }
+.act-quiet-btn[aria-expanded="true"]::after { content: " \2039"; }
+.act-quiet-list { list-style: none; margin: 0; padding: 0 14px 10px; font-size: 13px; color: var(--muted); }
+.act-quiet-list li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-top: 1px solid var(--line); }
+.act-quiet-list li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.act-quiet-list li.act-note { display: block; }
+.act-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.act-item { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); min-width: 0; }
+.act-item[data-status="failed"] { border-left: 3px solid var(--warn); }
+.act-item[data-status="waiting"] { border-left: 3px solid var(--ember); }
+.act-row { display: grid; grid-template-columns: 4.6em minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; width: 100%; text-align: left; background: none; border: 0; padding: 10px 12px; color: inherit; }
+.act-row:hover { background: rgba(var(--core-rgb), .06); }
+.act-time { font-family: var(--f-mono); font-size: 12px; color: var(--muted); padding-top: 2px; }
+.act-what { min-width: 0; overflow-wrap: anywhere; font-size: 14.5px; }
+.act-kind { display: block; font-family: var(--f-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.act-sample { font-family: var(--f-mono); font-size: 11px; color: var(--ember); border: 1px solid rgba(var(--ember-rgb), .5); border-radius: 99px; padding: 0 7px; white-space: nowrap; }
+.act-chip { font-family: var(--f-mono); font-size: 11.5px; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; text-align: center; }
+.act-chip[data-status="waiting"] { color: var(--ember); border-color: rgba(var(--ember-rgb), .6); font-weight: 600; }
+.act-chip[data-status="failed"] { color: var(--warn); border-color: rgba(var(--warn-rgb), .6); font-weight: 600; }
+.act-chip[data-status="approved"], .act-chip[data-status="auto_approved"], .act-chip[data-status="done"] { color: var(--ok); border-color: rgba(var(--ok-rgb), .5); }
+.act-chip[data-status="running"] { color: var(--core); border-color: var(--core-dim); }
+.act-detail { padding: 2px 12px 12px; border-top: 1px dashed var(--line); font-size: 13.5px; min-width: 0; }
+.act-detail p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.act-detail .appr-detail { margin-top: 8px; }
+.act-detail .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.act-ref, .act-note { color: var(--muted); font-family: var(--f-mono); font-size: 12px; }
+.act-more { display: flex; justify-content: center; }
+.act-error { color: var(--warn); }
+.act-export { align-items: center; }
+.act-link { margin: 0; }
+#activity-sentinel { display: block; width: 1px; height: 1px; }
 
 /* ---------- responsive: phones (<= 760px) ----------
    One-handed, in the order of what matters: a LARGE core to talk to (it grows with the screen height, never below the
@@ -595,6 +643,13 @@ input.mem-input { min-height: 0; }
   .appr-card .row .btn, .mem-item .row .btn, .suggestion .row .btn { flex: 1 1 auto; }
   .appr-bulk > .btn { width: 100%; }
   .appr-confirm .row .btn { flex: 1 1 auto; }
+  /* What Jarvis did */
+  .act-selects { grid-template-columns: minmax(0, 1fr); }
+  .act-field select, .act-field input[type=search] { font-size: 16px; }   /* 16px stops iOS zooming the page when a field is focused */
+  .act-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .act-time { grid-column: 1 / -1; padding-top: 0; }
+  .act-detail .row .btn, .act-more .btn, .act-export .btn { flex: 1 1 auto; }
+  .act-export .btn { width: 100%; }
 }
 /* Narrow phones: the field takes its own row above the buttons so nothing is squeezed, and SEND fills the rest of the row. */
 @media (max-width: 480px) {
@@ -616,7 +671,7 @@ input.mem-input { min-height: 0; }
   .icon-btn { min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .btn, .btn.small { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .pill, .need, .rail-item { display: inline-flex; align-items: center; }
-  .cron-day, .linkish, .set-advanced-toggle, details.diff summary, .appr-history summary, .back-link, .conn-row, .chip { min-height: 44px; }
+  .cron-day, .linkish, .set-advanced-toggle, details.diff summary, .appr-history summary, .act-fold > summary, .back-link, .conn-row, .chip { min-height: 44px; }
   .chip { display: inline-flex; align-items: center; }
   .linkish { min-width: 44px; }
   details.diff summary { display: flex; align-items: center; }
@@ -633,6 +688,9 @@ input.mem-input { min-height: 0; }
   .appr-edit input[type=text], input.mem-input { min-height: 44px; }
   .cron-dom input[type=number] { width: 64px !important; }
   .map-toggle button { min-height: 44px; min-width: 44px; padding: 0 20px; }
+  .act-row, .act-quiet-btn, .drawer .act-toggle, .act-field select, .act-field input[type=search] { min-height: 44px; }
+  .act-toggle input { width: 22px; height: 22px; }
+  .act-range { min-width: 44px; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
