@@ -508,3 +508,25 @@ def test_the_module_is_get_only_and_has_no_way_to_queue_approve_or_send():
         assert verb not in code, verb
     for word in ("actions", "queue(", "approve", "send_mail", "notifier", "j.mail", "pending_actions"):
         assert word not in code, word
+
+
+async def test_changing_the_fsm_address_forgets_the_old_catalog_and_outage(tmp_path):
+    api = FakeFsmApi(rows={"jobs": rows(2)})
+    clock = Clock()
+    fsm = RealishFsm(api, tmp_path)
+    fsm.s = type("S", (), {"fsm_base_url": "https://old.example"})()
+    data = FsmData(fsm, clock=clock, sleep=clock.sleep)
+    await data.catalog()
+    assert data.cached is not None
+    api.override = lambda req, n: httpx.Response(404, text="gone")
+    clock.now += fd.CATALOG_TTL_S + 1
+    with pytest.raises(FsmDataError):
+        await data.catalog()                    # the old address has no API: backing off
+    n = len(api.requests)
+    with pytest.raises(FsmDataError):
+        await data.catalog()
+    assert len(api.requests) == n
+    fsm.s.fsm_base_url = "https://new.example"   # the owner saved a new address on the Settings page
+    api.override = None
+    assert (await data.catalog()).version == "v1" and len(api.requests) == n + 1
+    await fsm.aclose()

@@ -30,7 +30,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Awaitable, Callable
@@ -306,6 +306,7 @@ class FsmData:
         self._rate_until = 0.0
         self._down = False                         # an outage is open (one warning has been logged for it)
         self._last_error: FsmDataError | None = None
+        self._base: str | None = None              # the FSM address the state above was learned from
         self.on_change: Callable[[], None] | None = None   # called when the set of groups/resources first appears or changes
 
     # ---------------------------------------------------------------- state
@@ -333,7 +334,18 @@ class FsmData:
         return self._catalog_lock
 
     # ---------------------------------------------------------------- outage handling
+    def _sync_base(self) -> None:
+        """The owner can change the FSM address on the Settings page without a restart: a catalog (or an outage) learned from the
+        old address says nothing about the new one, so forget both."""
+        base = getattr(getattr(self.fsm, "s", None), "fsm_base_url", None)
+        if base != self._base:
+            if self._base is not None:
+                self._catalog, self._last_error, self._backoff_until, self._backoff_s = None, None, 0.0, 0.0
+                self._rate_until, self._down = 0.0, False
+            self._base = base
+
     def _gate(self) -> None:
+        self._sync_base()
         if self.demo:
             raise FsmDataError("demo", "Salts FSM isn't connected (it is showing sample data), so there is nothing real to read. "
                                        "Set FSM_BASE_URL and the API key under Connections.")
@@ -429,6 +441,7 @@ class FsmData:
     # ---------------------------------------------------------------- the catalog
     async def catalog(self, force: bool = False) -> Catalog:
         """The catalog: cached for ``ttl`` seconds, refetched when stale, replaced when its version changes."""
+        self._sync_base()
         cat = self._catalog
         if cat is not None and not force and self._clock() - cat.fetched_at < self.ttl:
             return cat
