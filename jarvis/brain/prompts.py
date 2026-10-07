@@ -363,7 +363,7 @@ def van_policy(settings) -> str:
 
 
 def build_system(settings, kb, db, connections: dict[str, str], staff_summary: str = "",
-                 history_before_id: int | None = None) -> list[dict[str, Any]]:
+                 history_before_id: int | None = None, fsm_data: str = "") -> list[dict[str, Any]]:
     """``history_before_id``: only turns up to this transcript id count as "earlier sessions" (the current
     session's own turns are already in the live conversation). None includes everything from the last 24 hours."""
     core = kb.core_documents() or "(No company documents yet - add markdown files under knowledge/company.)"
@@ -378,6 +378,9 @@ def build_system(settings, kb, db, connections: dict[str, str], staff_summary: s
                            open_requests=open_requests, recent=recent, van_policy=van_policy(settings),
                            connections="; ".join(f"{k}: {v}" for k, v in connections.items()),
                            kb_index=", ".join(kb.index()) or "none")
+    if fsm_data:  # the short auto-generated list of what the FSM lets Jarvis read (names only; fsm_catalog has the fields)
+        marker = "\n# Van locations outside working hours"
+        status = status.replace(marker, f"\n{fsm_data}\n{marker}", 1)
     return [
         {"type": "text", "text": persona, "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": status},

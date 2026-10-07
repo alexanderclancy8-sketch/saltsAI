@@ -1,9 +1,10 @@
 """Jarvis's self-diagnostics: what is quietly broken, one line per item, each ok / amber / red with a next step.
 
-The read-only ``doctor`` tool runs eight checks and puts the result on the display:
+The read-only ``doctor`` tool runs nine checks and puts the result on the display:
 
 1. plugins switched on in Settings but inert (``mcp_plugins.yaml``), or on with no entry there at all,
 2. data sources still on DEMO sample data (``demo_guard``),
+2b. what the FSM lets Jarvis read ("FSM data access: N groups, M resources, scope off: ..."),
 3. which keys are set - by NAME only (never a value; includes the free Companies House key),
 4. the owner's automations: last run, a long run of NOTHING_TO_REPORT, running too often out of hours,
 5. engineering-agent runs that are stalled, failed or gave up in the last 24 hours,
@@ -129,7 +130,8 @@ class Doctor:
     # ------------------------------------------------------------------ running
     # (name shown when the check itself breaks, method name) - looked up at run time, one broken check never stops the rest
     CHECKS = (
-        ("Plugins", "_plugins"), ("Data sources", "_demo"), ("Keys", "_keys"), ("Automations", "_automations"),
+        ("Plugins", "_plugins"), ("Data sources", "_demo"), ("FSM data access", "_fsm_data"), ("Keys", "_keys"),
+        ("Automations", "_automations"),
         ("Agent runs", "_agent_runs"), ("Open requests", "_requests"), ("Pull requests", "_pull_requests"),
         ("Tests and issues", "_tests_and_issues"),
     )
@@ -247,6 +249,26 @@ class Doctor:
                 out.append(Item("Data sources", AMBER, f"{label}: still on DEMO sample data, so Jarvis will not answer from it.",
                                 source.connect + "."))
         return out or [Item("Data sources", OK, "No data source is on DEMO sample data.")]
+
+    # ------------------------------------------------------------------ 2b. what the FSM lets Jarvis read
+    async def _fsm_data(self, now: datetime) -> list[Item]:
+        name = "FSM data access"
+        info = await self.j.fsm_read.summary()
+        state = info["state"]
+        if state == "ok":
+            off = info["scope_off"]
+            return [Item(name, OK, f"FSM data access: {_plural(info['groups'], 'group')}, {_plural(info['resources'], 'resource')}, "
+                                   f"scope off: {', '.join(off) if off else 'none'}.",
+                         "A group that is scope off can be switched on in the FSM's Jarvis access settings." if off else "")]
+        if state == "demo":
+            return [Item(name, OK, "FSM data access: not available - Salts FSM is not connected yet (sample data only).",
+                         "Set FSM_BASE_URL and the API key under Connections.")]
+        if state == "unavailable":
+            return [Item(name, AMBER, "FSM data access: the FSM doesn't expose its data API yet, so Jarvis uses its older "
+                                      "FSM tools and its own vehicle/equipment register.",
+                         "Nothing to do here - it starts working by itself once the FSM ships /api/jarvis/catalog.")]
+        return [Item(name, AMBER, f"FSM data access: {_clip(info.get('message'), 120)}",
+                     "Check the FSM key under Connections; Jarvis tries again by itself.")]
 
     # ------------------------------------------------------------------ 3. keys (names only)
     async def _keys(self, now: datetime) -> list[Item]:

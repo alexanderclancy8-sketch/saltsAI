@@ -151,7 +151,7 @@ class MaxBrain:
             blocks = build_team_system(self.s, self.j.kb, self.caller)
         else:
             blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
-                                  history_before_id=self._history_before)
+                                  history_before_id=self._history_before, fsm_data=self.j.fsm_read.prompt_block())
         self.system = "\n\n".join(b["text"] for b in blocks)
 
     def reset(self) -> None:
@@ -194,7 +194,9 @@ class MaxBrain:
         # set here would not reach it. See events.quiet_turn.
         if self.team:
             attachments = None  # a team session has no attachments (and no file reading: the Read tool is not offered)
-        return await self._submit(("ask", text, mode, attachments, speaker, quiet_turn.get()))
+        # (the asker's role travels the same way: a manager's turn on the shared brain is marked in a context variable by main.py)
+        return await self._submit(("ask", text, mode, attachments, speaker, quiet_turn.get(),
+                                   None if self.team else access.current_caller.get()))
 
     async def warm(self) -> None:
         """Start Claude Code ahead of the first message, so that one is quick too."""
@@ -280,7 +282,7 @@ class MaxBrain:
                 log.debug("Claude Code client disconnect: %s", e)
 
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
-                    speaker: str | None = None, quiet: bool = False) -> str:
+                    speaker: str | None = None, quiet: bool = False, asker: access.Caller | None = None) -> str:
         token = quiet_turn.set(quiet)
         if self.team:
             # the caller travels with the turn, never in the shared j.asked_by that belongs to the owner's turn
@@ -292,10 +294,12 @@ class MaxBrain:
                 quiet_turn.reset(token)
         # who is asking, for the out-of-hours van look-up log (read by the tracking tools)
         self.j.asked_by = requester_label(self.s, speaker, quiet)
+        role = access.current_caller.set(asker)  # (always set, even to None: the worker task was created inside SOME turn's context)
         try:
             return await self._turn_events(text, mode, attachments, speaker)
         finally:
             self.j.asked_by = ""
+            access.current_caller.reset(role)
             quiet_turn.reset(token)
 
     async def _turn_events(self, text: str, mode: str, attachments: list[dict[str, str]] | None,

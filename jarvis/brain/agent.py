@@ -62,7 +62,8 @@ class JarvisBrain:
             self.system = build_team_system(self.s, self.j.kb, self.caller)
             return
         self.system = build_system(self.s, self.j.kb, self.j.db, self.j.connections(),
-                                   self.j.register.prompt_summary(), history_before_id=self._history_before)
+                                   self.j.register.prompt_summary(), history_before_id=self._history_before,
+                                   fsm_data=self.j.fsm_read.prompt_block())
 
     def reset(self) -> None:
         self.messages = []

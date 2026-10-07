@@ -79,6 +79,8 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     # puts its report card on the display (same reason as doctor): a SILENT background call must really be silent
     "company_check",
     "suggestions", "morning_briefing", "end_of_day_wrap_up", "weekly_digest_now", "fsm_engineer_audit",
+    # rows of finance / staff pay / HR must not be kept in the background_calls table (30 days) - read them in the conversation
+    "fsm_data",
 }
 
 # Tools whose output includes text written by someone else (an email, a repository file, a customer's note in the FSM,
@@ -87,7 +89,9 @@ UNTRUSTED_PREFIXES = ("email_", "repo_", "fsm_", "knowledge_", "web_", "pr_")
 UNTRUSTED_TOOLS = {"company_check", "run_tests", "search_rankings", "seo_audit", "competitor_audit", "regulatory_watch",
                    "technical_watch", "job_detail", "search_conversation_history", "issues_list", "answer_questionnaire",
                    "capture_supplier_bill", "bid_assessment", "bid_document", "audit_evidence", "edit_office_document",
-                   "draft_office_document", "action_items", "what_did_you_do"}
+                   "draft_office_document", "action_items", "what_did_you_do",
+                   # (also caught by the fsm_ prefix; named so a rename can't quietly drop them)
+                   "fsm_data", "fsm_catalog"}
 
 
 def is_untrusted_output(tool_name: str) -> bool:

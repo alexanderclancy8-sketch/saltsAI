@@ -27,7 +27,9 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.voice import SpeechToTextCheck, Voice
 from .knowledge import KnowledgeBase
 from .services.accountant import Accountant
+from .integrations.fsm_data import FsmData
 from .services.accreditations import Accreditations
+from .services.fsm_read import FsmRead
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.standing_approvals import StandingApprovals
@@ -104,6 +106,8 @@ class Jarvis:
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)
+        self.fsm_data = FsmData(self.fsm)  # the FSM's generic read-only data API (catalog + any resource); see integrations/fsm_data.py
+        self.fsm_read = FsmRead(self)      # fsm_catalog / fsm_data: validation, who may read what, caps (services/fsm_read.py)
         self.ram = (RamTracking(s, self.http, store=self.db) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
                     else DemoRamTracking(self.fsm))
         self.finance = build_finance(s, self.http, self.db)
@@ -153,7 +157,8 @@ class Jarvis:
         self.marketing = MarketingTracker(s, self.db, self.http, self.presence, self.notifier, self.client)
         self.advisor = Advisor(s, self.db, self.accountant, self.reviewer, self.staff, self.marketing, self.notifier,
                                self.client, self.bus)
-        self.accreditations = Accreditations(s, self.db, self.staff, self.fsm, self.notifier, self.client, self.bus)
+        self.accreditations = Accreditations(s, self.db, self.staff, self.fsm, self.notifier, self.client, self.bus,
+                                             fsm_data=self.fsm_data, ram=self.ram)
         self.stores = Stores(self.db, demo_seed=self.fsm.demo, fsm=self.fsm)
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
@@ -214,6 +219,11 @@ class Jarvis:
         else:
             self.brain = JarvisBrain(self)
         self._startup_tasks: set[asyncio.Task] = set()
+        # The system prompt lists what the FSM lets Jarvis read; when the catalog first arrives (or changes) rebuild it.
+        self.fsm_data.on_change = self._fsm_catalog_changed
+
+    def _fsm_catalog_changed(self) -> None:
+        self.brain.refresh_system()
 
     def _seed_notes(self) -> None:
         known = {m["fact"].strip().lower() for m in self.db.memories()}
@@ -276,6 +286,7 @@ class Jarvis:
                 n for n, on in (("record keeping", s.standing_record_keeping),
                                 ("routine acknowledgements", s.standing_acknowledgements)) if on) or "off",
             "Salts FSM": "connected" if not self.fsm.demo else "DEMO data - set FSM_BASE_URL",
+            "FSM data (read-only)": self.fsm_read.connection_line(),
             "Accounts": (f"{self.finance.name}" if not getattr(self.finance, "demo", False)
                          else "DEMO data - connect Sage or add CSV exports"),
             "FSM source / auto-fix": f"{s.fsm_repo} ({s.fixer_mode})" if self.github else "not connected",
@@ -332,6 +343,7 @@ class Jarvis:
 
     async def _first_run(self) -> None:
         await asyncio.sleep(3)
+        await self.fsm_read.warm()  # the FSM's data catalog, and the van / equipment dates built on it (never raises)
         try:
             await self.tester.run("all")
             await self.marketing.snapshot()

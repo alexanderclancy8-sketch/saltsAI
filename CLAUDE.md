@@ -157,6 +157,59 @@ tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (r
 `Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then
 `brain.refresh_system()` so the next turn reads the change. Tests: `tests/test_memory_popup.py`.
 
+*Full read access to the FSM (`integrations/fsm_data.py`, `services/fsm_read.py`, `services/fsm_assets.py`; `j.fsm_data`, `j.fsm_read`; tests
+`tests/test_fsm_data_client.py`, `tests/test_fsm_data_tools.py`, `tests/test_fsm_assets.py`).* "Jarvis is the brains of the FSM": it can READ every
+module of the FSM, including finance and staff pay / HR, through the FSM's generic read-only data API. Read-only, GET only (a test greps
+the modules for any other verb), and nothing here touches `actions.queue/approve` or the approval gate.
+- **Contract (Jarvis -> FSM, the existing FSM key via `FSMClient.jarvis_call`, absolute paths under the FSM base URL):**
+  `GET /api/jarvis/catalog` -> `{version, groups: {group: {enabled, description}}, resources: [{name, group, description, fields:
+  [{name, type, description}], filters: [field names], sensitive}]}`; `GET /api/jarvis/data/{resource}` with `filter[field]=v` (also
+  `filter[field][gte]` / `[lte]`), `q`, `updated_since` (ISO), `fields=a,b`, `limit` (default 100, max 500), `offset`, `order=field|-field`
+  -> `{resource, items, total, next_offset (null at the end), truncated}`. Errors: 401 no/bad key, 403 `{error: "scope_off", group}`, 404
+  unknown resource, 422 bad field/filter, 429 + Retry-After; writes answer 405. Groups: operations, customers_sites, assets, compliance,
+  commercial, finance, people, comms, audit. Login material and raw card/bank numbers are never exposed by the FSM.
+- **Client (`FsmData`):** catalog cached 10 minutes and replaced when its `version` changes (`on_change` rebuilds the system prompt); a
+  query the FSM refuses as unknown/scope-off heals the cache. `fetch()` follows `next_offset` to a hard cap (500 rows per model call, 5000
+  for internal jobs, 20 pages) and reports `truncated` + `next_offset`. 3 requests at once, 20 s timeout, 429 `Retry-After` slept if short
+  (<=10 s) else reported and remembered. Every error is a plain `FsmDataError` (kind: demo, unavailable, unauthorized, scope_off,
+  forbidden, not_found, bad_request, rate_limited, server, network, bad_response) with no URL, key or row in it. **A 404/405 on the catalog
+  means the FSM has not shipped the API: it backs off 5 minutes to an hour, logs ONE warning per outage, and says "the FSM doesn't expose
+  this yet"; an outage backs off 1 to 15 minutes the same way.** Rows are never logged. ALL returned text is untrusted: control and
+  zero-width characters stripped, HTML tags removed, whitespace collapsed, secret-looking strings through `integrations/redact.redact`, strings
+  capped at 500 chars, nesting flattened, a value under a credential-named key blanked.
+- **Tools (read-only, `approval=False`, not in `TEAM_TOOLS`, `fsm_` prefix = untrusted output, `fsm_data` in `NOT_BACKGROUND`):**
+  `fsm_catalog(group?, resource?)` (groups, resources and field names, compact; falls back to names only with a hint when huge) and
+  `fsm_data(resource, filters, q, fields, order, updated_since, limit, offset)`, validated against the cached catalog - an unknown
+  resource, field, filter or order is answered with the nearest valid names (nothing is sent to the FSM). The result is capped at 30k chars
+  (`RESULT_CHARS`) with a "narrow your filters" hint and the `next_offset` to carry on from. The system prompt gets a SHORT generated block
+  (`FsmRead.prompt_block()`: group -> resource NAMES only, `*` = owner only), and `connections()` an "FSM data (read-only)" line.
+- **Who may hear what:** a resource the FSM flags `sensitive`, plus EVERY resource of the `finance` and `people` groups whatever the flag
+  says (default deny), is **owner-only** - the principal owner, the owner's own conversation, scheduled jobs and Jarvis himself (no caller).
+  A **manager** gets every other resource (and sees that owner-only ones exist, never their fields). A **team** session gets neither tool
+  (default-deny `TEAM_TOOLS`; the team tests stay strict). A refusal is recorded and nothing is fetched. Scope-off groups are reported by name.
+- **Where the data may NOT go:** fsm_ tool output is untrusted, so chat/transcript/proactive text only ever gets a "finished" pointer, never
+  rows; `fsm_data` cannot run in the background (the `background_calls` table would keep finance/pay/HR rows for 30 days); the `remember`
+  tool (which self-learning also uses) refuses any fact that repeats a figure, date, id or long note from a sensitive read in the last hour
+  (`FsmRead.contains_sensitive`, in memory only); "What Jarvis did" records `fsm_read` audit lines = resource name + row count + who, never a
+  value. FSM demo data: both tools say so and return nothing.
+- **Vans and equipment (`services/fsm_assets.py`, `Accreditations.refresh_fsm_assets`):** when the catalog has an enabled `assets` group,
+  vehicle MOT / road tax / service dates and equipment / test-kit calibration dates come from it and the daily reminders (90/60/30/14/7/1
+  days, then due-today and weekly overdue) run from them; the fleet insurance policy means no per-vehicle insurance. The catalog does not
+  promise asset field names, so `fsm_assets.roles()` maps the advertised field names/types to roles (registration, mot, tax, service,
+  calibration, other due date, name, serial, driver, type, status) and classifies each ROW (a registration or a "vehicle" type = a van;
+  sold/scrapped/inactive rows ignored) - **this is the one place to teach if the FSM's names differ**. No recorded date = `not_recorded`
+  ("date not recorded": not compliant, not overdue, never reminded). Registrations are cross-checked against RAM Tracking's vans:
+  `fleet_check` lists "check this" notes both ways (read-only; nothing changes). While the FSM is the source the YAML register
+  (`accreditations.yaml`, and the example placeholders - YD71/YD72, ladders, harnesses, PAT) is ignored for vans/equipment/calibration, any
+  real entry the FSM lacks is flagged, and `vehicle_update` / `vehicle_remove` / `equipment_update` / `equipment_remove` are refused
+  (`Tool.precheck`, and again at approval time) with a plain "update it in the FSM". With NO assets group (or scope off, a demo or older FSM)
+  nothing regresses: the register file and those four approval-gated tools work as before. The snapshot is refreshed by the 15-minute
+  `fsm_data_catalog` scheduler job, on start-up, before the reminders, and by `accreditations_status`; one older than 36 h is dropped.
+- **Doctor:** "FSM data access: N groups, M resources, scope off: x, y." (amber when the FSM does not expose the API yet or cannot be read).
+- **Adding to it:** nothing per resource - a new FSM resource appears in the catalog and is readable with no Jarvis change. A new owner-only
+  group is one entry in `fsm_read.OWNER_ONLY_GROUPS`. Tests mock the FSM with `tests/fsm_data_helpers.py` (`FakeFsmApi` behind the real
+  `FSMClient` over `httpx.MockTransport`, a hand-wound `Clock`, `jarvis_with_fsm`).
+
 *Suggestions with a Prepare button (`services/fsm_suggestions.py`, `j.fsm_suggestions`; tests `tests/test_fsm_suggestions.py`,
 `tests/test_console_browser_suggestions.py`).* "One step ahead": Jarvis offers to do the groundwork, in its own Approvals drawer AND in
 the Salts FSM Action Centre (the office's inbox). Stage 1 is one kind, `quote_followup`: a SENT quote with no response for 7 to 60 days
