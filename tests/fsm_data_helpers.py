@@ -112,3 +112,20 @@ def rows(n: int, **extra: Any) -> list[dict[str, Any]]:
 
 def dump(value: Any) -> str:
     return json.dumps(value, default=str)
+
+
+def jarvis_with_fsm(settings, api: FakeFsmApi, script=None, clock: Clock | None = None):
+    """A Jarvis whose FSM is 'connected' to the mocked data API (FSM_BASE_URL set, requests answered by ``api``) and whose FSM data
+    client runs on a hand-wound clock. Returns (jarvis, clock). The caller closes ``j.http``."""
+    from jarvis.core import Jarvis
+    from tests.fakes import FakeClient
+
+    settings.fsm_base_url = "https://fsm.example"
+    settings.fsm_api_key = "k-test-0000"
+    j = Jarvis(settings, client=FakeClient(script))
+    clock = clock or Clock()
+    j.fsm._real.http = httpx.AsyncClient(transport=httpx.MockTransport(api.handler))
+    j.fsm_data._clock, j.fsm_data._sleep = clock, clock.sleep
+    j.fsm_read._clock = clock
+    j.accreditations._clock = clock
+    return j, clock

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,10 +18,16 @@ import yaml
 
 from ..brain import llm
 from ..config import ROOT_DIR
+from ..integrations.fsm_data import FsmDataError
+from . import fsm_assets
 
 log = logging.getLogger(__name__)
 EXAMPLE_FILE = ROOT_DIR / "accreditations.example.yaml"
 REMIND_AT_DAYS = (90, 60, 30, 14, 7, 1)
+FSM_SNAPSHOT_MAX_AGE_S = 36 * 3600   # an FSM asset snapshot older than this (the FSM unreachable for a day and a half) is dropped
+FSM_MANAGED = ("Van and equipment dates are read from the Salts FSM (Company Assets) now, so a date recorded here would be "
+               "ignored. Update it in the FSM instead - the reminders pick it up by themselves. (This register is only a fallback "
+               "for when the FSM can't supply them.)")
 
 PACK_SYSTEM = """You are Jarvis, preparing {company} for a {scheme} audit / renewal. Using ONLY the evidence data
 provided, write an audit-ready evidence pack in markdown:
@@ -139,7 +146,7 @@ def _items(data: dict[str, Any], section: str) -> list[dict[str, Any]]:
 
 
 class Accreditations:
-    def __init__(self, settings, db, staff, fsm, notifier, client, bus):
+    def __init__(self, settings, db, staff, fsm, notifier, client, bus, *, fsm_data=None, ram=None):
         self.s = settings
         self.db = db
         self.staff = staff
@@ -148,6 +155,10 @@ class Accreditations:
         self.client = client
         self.bus = bus
         self.path: Path = settings.data_dir / "accreditations.yaml"
+        self.fsm_data = fsm_data       # the FSM's generic read-only data API (None = never use it; the register file is the source)
+        self.ram = ram                 # RAM Tracking, for the van cross-check only
+        self._assets: fsm_assets.AssetSnapshot | None = None
+        self._clock = time.monotonic
 
     def load(self) -> dict[str, Any]:
         src = self.path if self.path.exists() else EXAMPLE_FILE
@@ -212,6 +223,55 @@ class Accreditations:
         item.update({k: v for k, v in fields.items() if v not in (None, "")})
         self.save(data)
         return item
+
+    # ------------------------------------------------------------------ the FSM as the source of van and equipment dates
+    def _snapshot(self) -> fsm_assets.AssetSnapshot | None:
+        snap = self._assets
+        if snap is not None and self._clock() - snap.loaded_at > FSM_SNAPSHOT_MAX_AGE_S:
+            self._assets = snap = None
+        return snap
+
+    def fsm_manages(self, kind: str) -> bool:
+        """True when the FSM supplies this register ("vehicles" or "equipment"): its dates are the source of truth and this file's
+        entries (and the example file's placeholders) are ignored. False = the register file is still the source."""
+        snap = self._snapshot()
+        return bool(snap and (snap.manages_vehicles if kind == "vehicles" else snap.manages_equipment))
+
+    async def refresh_fsm_assets(self, max_age_s: float = 0) -> dict[str, Any]:
+        """Re-read the vans and equipment from the FSM's assets group (skipped if the snapshot is younger than ``max_age_s``).
+        Never raises. A FSM with no usable assets group - or none at all - clears the snapshot, so the register file is used."""
+        if self.fsm_data is None:
+            return {"source": "register file"}
+        snap = self._snapshot()
+        if snap is not None and self._clock() - snap.loaded_at < max_age_s:
+            return {"source": "Salts FSM", "cached": True}
+        try:
+            fresh = await fsm_assets.load(self.fsm_data, self.ram, self._clock())
+        except FsmDataError as e:
+            if e.kind in ("unavailable", "demo"):
+                self._assets = None
+            return {"source": "Salts FSM" if self._snapshot() else "register file", "error": e.message}
+        except Exception:  # noqa: BLE001 - never let a bad row stop the reminders
+            log.exception("Could not read van and equipment dates from the FSM")
+            return {"source": "Salts FSM" if self._snapshot() else "register file", "error": "unexpected error"}
+        self._assets = fresh
+        return {"source": "Salts FSM" if fresh else "register file"}
+
+    def effective(self) -> dict[str, Any]:
+        """The register as used: the file, with vans / equipment / calibration replaced by the FSM's when it supplies them."""
+        data = self.load()
+        snap = self._snapshot()
+        if snap is None:
+            return data
+        data["_fsm"] = snap
+        if snap.manages_vehicles:
+            data["_file_vehicles"] = (data.get("vehicles") or []) if self.path.exists() else []
+            data["vehicles"] = snap.vehicles
+        if snap.manages_equipment:
+            data["_file_equipment"] = (data.get("equipment") or []) if self.path.exists() else []
+            data["equipment"] = snap.equipment
+            data["calibration"] = snap.calibration
+        return data
 
     # ------------------------------------------------------------------ vans and equipment
     def update_vehicle(self, registration: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -280,7 +340,7 @@ class Accreditations:
 
     def status(self, today: date | None = None) -> dict[str, Any]:
         today = today or date.today()
-        data = self.load()
+        data = self.effective()
         upcoming = []
 
         def add(kind: str, name: str, when: Any, extra: str = "") -> None:
@@ -312,15 +372,44 @@ class Accreditations:
                                "timeline": upcoming,
                                "vehicles": [_jsonable(v) for v in data.get("vehicles") or []],
                                "equipment": [_jsonable(e) for e in data.get("equipment") or []]}
+        snap = data.get("_fsm")
+        if snap is not None:
+            out.update(self._fsm_status(data, snap))
         if not self.path.exists():
-            out["note"] = ("No real register yet, so these are PLACEHOLDER example dates, not the company's. Real ones "
-                           "are recorded with vehicle_update / equipment_update / accreditation_update (each waits "
-                           "for the owner's approval).")
+            if snap is not None and (snap.manages_vehicles or snap.manages_equipment):
+                out["note"] = ("Vans and equipment come from the Salts FSM (Company Assets). The accreditation, insurance and policy "
+                               "dates are PLACEHOLDER example dates, not the company's, until recorded with accreditation_update "
+                               "(each waits for the owner's approval).")
+            else:
+                out["note"] = ("No real register yet, so these are PLACEHOLDER example dates, not the company's. Real ones "
+                               "are recorded with vehicle_update / equipment_update / accreditation_update (each waits "
+                               "for the owner's approval).")
         return out
 
-    async def daily_reminders(self) -> int:
+    @staticmethod
+    def _fsm_status(data: dict[str, Any], snap: fsm_assets.AssetSnapshot) -> dict[str, Any]:
+        """What the answer adds when the FSM is the source: where the dates came from, items with no date recorded (neither compliant
+        nor overdue, and not reminded about), and the read-only 'check this' notes."""
+        extra: dict[str, Any] = {"fleet_source": "Salts FSM Company Assets (" + ", ".join(snap.resources) + ")",
+                                 "not_recorded": [dict(n) for n in snap.not_recorded], "fleet_check": list(snap.fleet_check)}
+        if snap.manages_vehicles:
+            fsm_keys = {fsm_assets.reg_key(v["registration"]) for v in snap.vehicles}
+            stale = [str(v.get("registration")) for v in data.get("_file_vehicles") or []
+                     if _reg_key(v.get("registration")) not in fsm_keys]
+            if stale:
+                extra["fleet_check"].append(f"The register file lists {', '.join(stale)} which the FSM doesn't - ignored, as the FSM "
+                                            "is the source now. If the van is real, add it in the FSM - check this.")
+        if snap.manages_equipment and data.get("_file_equipment"):
+            extra["fleet_check"].append(f"The register file lists {len(data['_file_equipment'])} equipment item(s) that are ignored now "
+                                        "that the FSM supplies equipment dates - check they are in the FSM.")
+        if snap.problems:
+            extra["fsm_problems"] = list(snap.problems)
+        return extra
+
+    async def daily_reminders(self, today: date | None = None) -> int:
+        await self.refresh_fsm_assets()  # the reminders run from the FSM's current dates (never raises)
         sent = 0
-        for item in self.status()["timeline"]:
+        for item in self.status(today)["timeline"]:
             if item["days_left"] in REMIND_AT_DAYS or item["days_left"] == 0 or (item["overdue"] and item["days_left"] % 7 == 0):
                 when = "is OVERDUE" if item["overdue"] else "is today" if item["days_left"] == 0 else f"in {item['days_left']} days"
                 await self.notifier.notify(f"{item['what']} {when}", f"Due {item['date']}. {item['detail']}".strip(),
@@ -331,7 +420,8 @@ class Accreditations:
 
     async def gather_evidence(self, scheme: str) -> dict[str, Any]:
         today = date.today()
-        data = self.load()
+        await self.refresh_fsm_assets(max_age_s=300)
+        data = self.effective()
         acc = next((a for a in data.get("accreditations", []) if scheme.lower() in a["scheme"].lower()), None)
         staff, certs, systems, jobs = await asyncio.gather(
             self.fsm.staff(), self.staff.expiring_certifications(3650),
@@ -362,7 +452,7 @@ class Accreditations:
             "complaints_and_issues_log": {"total": len(issues), "open": sum(i["status"] not in ("resolved", "wont_fix") for i in issues),
                                           "recent": [{"id": i["id"], "date": i["created_at"][:10], "title": i["title"],
                                                       "status": i["status"]} for i in issues[:15]]},
-            "calibration": data.get("calibration", []), "insurance": data.get("insurance", []),
+            "calibration": [_jsonable(c) for c in data.get("calibration", [])], "insurance": data.get("insurance", []),
             "policies": data.get("policies", []),
             "upcoming_dates": [t for t in self.status()["timeline"] if t["days_left"] <= 120],
             "demo": getattr(self.fsm, "demo", False),

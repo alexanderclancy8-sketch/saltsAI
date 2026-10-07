@@ -83,6 +83,8 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("marketing report", j.marketing.weekly_report),
                   cron_trigger(s.marketing_report_cron, timezone=s.timezone), id="marketing_report",
                   max_instances=1, coalesce=True)
+    sched.add_job(_guard("FSM data catalog", j.fsm_read.warm), "interval", minutes=15, id="fsm_data_catalog",
+                  max_instances=1, coalesce=True)  # keeps the catalog and the van / equipment dates built on it fresh
     sched.add_job(_guard("accreditation reminders", j.accreditations.daily_reminders),
                   cron_trigger("5 8 * * *", timezone=s.timezone), id="accreditations",
                   max_instances=1, coalesce=True)
