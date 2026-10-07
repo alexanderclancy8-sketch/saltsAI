@@ -568,20 +568,6 @@ input.mem-input { min-height: 0; }
 .act-export { align-items: center; }
 .act-link { margin: 0; }
 #activity-sentinel { display: block; width: 1px; height: 1px; }
-@media (max-width: 760px) {
-  .act-selects { grid-template-columns: minmax(0, 1fr); }
-  .act-field select, .act-field input[type=search] { font-size: 16px; }   /* 16px stops iOS zooming the page when a field is focused */
-  .act-row { grid-template-columns: minmax(0, 1fr) auto; min-height: 44px; }
-  .act-time { grid-column: 1 / -1; padding-top: 0; }
-  .act-detail .row .btn, .act-more .btn, .act-export .btn { flex: 1 1 auto; }
-  .act-export .btn { width: 100%; }
-}
-@media (max-width: 760px), (pointer: coarse) {
-  .act-row, .act-quiet-btn, .act-toggle { min-height: 44px; }
-  .act-field select, .act-field input[type=search] { min-height: 44px; }
-  .act-toggle input { width: 22px; height: 22px; }
-  .act-range { min-width: 44px; justify-content: center; }
-}
 
 /* ---------- responsive: phones (<= 760px) ----------
    One-handed, in the order of what matters: a LARGE core to talk to (it grows with the screen height, never below the
@@ -657,6 +643,13 @@ input.mem-input { min-height: 0; }
   .appr-card .row .btn, .mem-item .row .btn, .suggestion .row .btn { flex: 1 1 auto; }
   .appr-bulk > .btn { width: 100%; }
   .appr-confirm .row .btn { flex: 1 1 auto; }
+  /* What Jarvis did */
+  .act-selects { grid-template-columns: minmax(0, 1fr); }
+  .act-field select, .act-field input[type=search] { font-size: 16px; }   /* 16px stops iOS zooming the page when a field is focused */
+  .act-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .act-time { grid-column: 1 / -1; padding-top: 0; }
+  .act-detail .row .btn, .act-more .btn, .act-export .btn { flex: 1 1 auto; }
+  .act-export .btn { width: 100%; }
 }
 /* Narrow phones: the field takes its own row above the buttons so nothing is squeezed, and SEND fills the rest of the row. */
 @media (max-width: 480px) {
@@ -695,6 +688,9 @@ input.mem-input { min-height: 0; }
   .appr-edit input[type=text], input.mem-input { min-height: 44px; }
   .cron-dom input[type=number] { width: 64px !important; }
   .map-toggle button { min-height: 44px; min-width: 44px; padding: 0 20px; }
+  .act-row, .act-quiet-btn, .drawer .act-toggle, .act-field select, .act-field input[type=search] { min-height: 44px; }
+  .act-toggle input { width: 22px; height: 22px; }
+  .act-range { min-width: 44px; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
