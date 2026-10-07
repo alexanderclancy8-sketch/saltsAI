@@ -151,6 +151,54 @@ jobs with no report sent, ...). A suggestion row (`suggestions` table, new `kind
   `prepare_suggestion`/`snooze_suggestion` are called only from `main.py` and the poller - there is no brain tool (the `suggestions` tool
   only lists, and its text says a person has to press Prepare); a test greps for it.
 
+*Upsell Opportunities, Jarvis's half (`services/upsell_drafts.py`, `j.upsell_drafts`; tool `upsell_opportunities`; tests
+`tests/test_upsell_drafts.py`).* The FSM (separate repo) finds sites where Salts maintains only SOME of Fire Alarm, Intruder Alarm, Fire
+Extinguishers, Access Control and Emergency Lighting, raises ONE Action Centre item per site with a fixed-template draft email, and an
+office user approves, edits or declines it THERE; the FSM sends the email (M365) only on that human click. **Jarvis never sends, approves,
+declines or edits-after-a-person.** It only (1) improves the draft wording and (2) answers "any upsell opportunities?" by reading the open
+items. Everything is Jarvis -> FSM through `FSMClient.jarvis_call` (the existing key); the FSM never calls Jarvis.
+- **Contract (absolute `/api/jarvis/upsells...` paths under the FSM base URL):** `GET /api/jarvis/upsells?status=open&draft_source=template`
+  and `GET /api/jarvis/upsells?status=open` -> a list of `{id, site_id, customer_id, customer, site, services_we_hold: [..],
+  services_not_maintained: [..], last_visit (ISO date | null), draft: {subject, body, draft_source: "template"|"jarvis"|"person"},
+  contact_first_name, office_phone}` (no finance fields, no email addresses). `PATCH /api/jarvis/upsells/{id}/draft` with `{subject, body}`
+  -> 200 `{ok: true}`; **409** = the item is no longer open or a person has edited the draft (Jarvis never retries that item); **422** = the
+  text was rejected (it must still contain the opt-out line and the office phone number, plain text, length caps) - Jarvis leaves the template.
+- **Draft improver (scheduler job `upsell_drafts`, a quiet `_check`: one collapsed activity line per run, never chat or a notification):**
+  every `upsell_drafts_interval_min` (10) minutes in working hours (the suggestions' `suggestions_fsm_hours_*`, Mon-Fri, `TIMEZONE`), hourly
+  outside them, and once at start-up (`Jarvis._first_run`). It GETs the open `template` drafts and, for each (at most 10 a run), makes one
+  tool-less `llm.structured` call (schema `UpsellEmail{subject, body}`; same call as `po_intake`) and PATCHes the result. The FSM text is
+  untrusted: control characters and the `<<<`/`>>>` fence are stripped, fields are clipped, and it goes into the prompt inside a
+  `<<<FSM_DATA ... FSM_DATA>>>` block that the system prompt calls data, never instructions.
+- **Hard rules, in the prompt AND re-checked in code (`finish()` / `problems()`):** short, plain British English, from the company
+  (`COMPANY_NAME`), an offer and a question ("who looks after your emergency lighting?"), one visit and one invoice as the benefit; NO
+  prices (pound/dollar/euro signs, "%", cost, price, discount, saving, "per year"...), NO link or email address, NO claim that the customer
+  lacks a system or is non-compliant (wording is "we don't currently maintain...", never "you don't have..."; "non-compliant", "breach",
+  "required by law", "at risk", "unprotected", "you must", "act now" all reject), plain text only (letters, digits and basic punctuation; no
+  markdown, HTML, emoji), at least one question, at most 1,500 characters / 200 words, subject at most 90 characters. The contact's FIRST
+  name only: the code writes the greeting (`Hi <first name>,`, or `Hello,` when the name is missing or not a plain name). The office phone and the opt-out
+  line are the FSM template's own, parsed out of the current template draft (`template_lines`): the opt-out line is the template's line(s)
+  matching the opt-out wording, the phone is `office_phone`; whatever the model wrote about opting out is dropped and the template's line
+  is appended verbatim as the LAST line, a missing or re-formatted phone is put back exactly as the FSM has it, and a missing sign-off is added.
+  A template with no recognisable opt-out line or no `office_phone` is left alone (no AI call). Wording that breaks a rule that cannot be
+  repaired (price, link, claim, no question, too long) gets ONE retry with the broken rules named, then the template stays.
+- **Idempotent and permanent stops (kv):** `upsell:done:<id>:<template hash>` (improved, rejected by our rules, or refused 422 - not tried
+  again for that exact template), `upsell:stop:<id>` (409 or 404 on the PATCH: never touched again, whatever the template becomes),
+  `upsell:tries:<id>` (AI failures; five and it gives up on that item). The model being away is not an error anyone sees: the template stays
+  and it tries again next run. A 404/405 on the GET (the FSM has not shipped upsells yet), a refused key, a 5xx or the FSM being down backs off
+  (1 to 15 minutes; 5 to 60 for a 404) with ONE log warning per outage and a quiet "reachable again" line; nothing reaches the UI. Sample data is
+  never a source (`j.fsm.demo` -> nothing is read or sent). No key or FSM text is logged.
+- **Switch:** `upsell_drafts_enabled` (Settings > Schedules next to `suggestions_publish_to_fsm`, default ON, **owner-only** via
+  `OWNER_ONLY_KEYS`). Off = no polling, no AI calls, no PATCH; the voice tool still answers.
+- **Voice tool `upsell_opportunities`** (`NoInput`, read-only, `approval=False`): `GET ...?status=open` and a short spoken-style answer - the count,
+  then up to five sites ("Acme Ltd, Acme House: we don't maintain their emergency lighting and access control yet."), "And N more.", and always
+  "Approve or decline them in the FSM Action Centre - I can't send these." Only customer, site and the five system names are spoken (no ids,
+  phone numbers, drafts, dates or finance). With the demo FSM it says it can't see real data (never sample figures); a 404 says "The FSM doesn't
+  have the upsell opportunities feature yet"; an outage says it couldn't reach the FSM. **Not in `TEAM_TOOLS`** (default deny: it lists customers
+  and sites by name), so a team session cannot call it.
+- **Safety:** the module has no code path that approves, declines, sends or emails and imports nothing from `actions`, mail, notifications or
+  customer comms (tests grep it; its only FSM verbs are the two GETs and the one draft PATCH). Standing approvals are untouched. A reworded
+  draft is still just a draft: a person approves and the FSM sends.
+
 *Daily rhythm (`services/daily_rhythm.py`).* The morning briefing (09:00) and end-of-day wrap-up (17:30), Monday to Friday, UK
 time, are intentional scheduled posts (not "checks": they always say something). `briefing_enabled` / `briefing_cron` /
 `wrapup_enabled` / `wrapup_cron` are in Settings > Schedules. Each text has a word budget enforced in code
