@@ -313,7 +313,9 @@ def test_a_pull_request_link_must_be_a_github_pull_request(j):
 def test_a_run_that_stopped_reporting_progress_shows_as_failed(j):
     run = j.self_improve.runs.start("self_improve", "x")
     j.db.execute("UPDATE agent_runs SET updated_at = ? WHERE id = ?", (iso(now() - timedelta(hours=2)), run))
-    it = one(j, f"run:{run}", "today")
+    # "7d", not "today": two hours ago is still on the previous LOCAL day between midnight and 02:00 (BST: 23:00-01:00 UTC), when
+    # the "today" window (whole local days) would not contain the row at all
+    it = one(j, f"run:{run}", "7d")
     assert it["status"] == "failed" and "stopped reporting progress" in it["error"]
 
 
@@ -479,7 +481,7 @@ def test_a_filter_that_matches_only_old_rows_stops_at_the_scan_cap_and_says_so(j
     bulk_actions(j.db, af.SCAN_CAP + 300, summary="Chatter")
     odd = email(j.db, subject="Needle", summary="The needle")
     j.db.execute("UPDATE pending_actions SET created_at = ? WHERE id = ?", (iso(now() - timedelta(minutes=5)), odd))
-    page = feed(j).page(query(j, text="needle"), limit=50, summary=False, facets=False)
+    page = feed(j).page(query(j, "7d", text="needle"), limit=50, summary=False, facets=False)
     assert page["capped"] is True and page["scanned"] <= af.SCAN_CAP * len(af.SOURCES)
 
 
