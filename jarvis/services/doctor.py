@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-import shutil
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -32,6 +32,7 @@ from ..brain import plugins
 from ..cron import cron_trigger
 from ..integrations.github_pr import PRClient
 from ..redact import redact_text
+from ..settings_store import SECTIONS
 from .activity import BASELINE, NO_CHANGE
 from .agent_runs import AgentRuns
 
@@ -68,13 +69,25 @@ RAM_KEYS = (
     ("RAM_USERNAME", "ram_username"),
     ("RAM_PASSWORD", "ram_password"),
 )
-# Every credential field whose value must never appear in anything shown (used only to REMOVE it from reason text).
-_SCRUB_FIELDS = tuple(f for _, f in KEYS + RAM_KEYS) + (
-    "anthropic_api_key", "claude_code_oauth_token", "github_token", "jarvis_github_token", "deepgram_api_key",
-    "azure_speech_key", "ms_client_secret", "sage_client_secret", "azure_client_secret", "azure_kudu_password",
-    "teams_bot_app_password", "jarvis_owner_password", "jarvis_secret_key", "staff_report_key", "fsm_api_key",
-    "meta_page_token", "linkedin_access_token", "tiktok_access_token", "google_places_api_key", "pagespeed_api_key",
-)
+# Env-only credentials that are not on the Settings page (so not found through settings_store) - kept explicitly.
+_EXTRA_SCRUB_FIELDS = ("anthropic_api_key", "claude_code_oauth_token", "jarvis_secret_key", "azure_kudu_password",
+                       "ram_username")
+# Any setting NAMED like a credential is scrubbed too, so a secret added later is covered without anyone remembering to
+# list it here (a false match only means an error message loses a value it should not have shown anyway).
+_SECRET_NAME = re.compile(r"(?:^|_)(?:secret|token|password|passwd|pass|apikey|sig)(?:$|_)|_key$|connection_string$|"
+                          r"webhook_url$")
+
+
+def secret_fields(settings: Any = None) -> tuple[str, ...]:
+    """Every Settings attribute whose VALUE must never appear in anything shown (used only to REMOVE it from reason
+    text): every secret-kind field on the Settings page, the env-only credentials above, and any setting whose name looks
+    like a credential. Worked out on each call, so nothing has to be added here when a new secret appears."""
+    found = {f.key for section in SECTIONS for f in section.fields if f.kind == "secret"}
+    found.update(f for _, f in KEYS + RAM_KEYS)
+    found.update(_EXTRA_SCRUB_FIELDS)
+    fields = getattr(type(settings), "model_fields", None) or {}
+    found.update(n for n, f in fields.items() if f.annotation is str and _SECRET_NAME.search(n))
+    return tuple(sorted(found))
 
 
 @dataclass(frozen=True)
@@ -123,7 +136,7 @@ class Doctor:
 
     def _hide_secrets(self, text: str) -> str:
         s = self.j.settings
-        for field in _SCRUB_FIELDS:
+        for field in secret_fields(s):
             value = str(getattr(s, field, "") or "")
             if len(value) >= 4:
                 text = text.replace(value, "[hidden]")
@@ -179,32 +192,19 @@ class Doctor:
                 "items": [i.as_dict() for i in items], "shown_on_display": shown}
 
     # ------------------------------------------------------------------ 1. plugins
-    @staticmethod
-    def _plugin_problems(key: str, spec: dict[str, Any]) -> list[str]:
-        problems: list[str] = []
-        version = str(spec.get("version") or "").strip()
-        if not version:
-            problems.append("version is blank")
-        elif not plugins.PINNED.match(version):
-            problems.append("version is not an exact x.y.z pin")
-        command = str(spec.get("command") or "").strip()
-        if command not in plugins.ALLOWED_COMMANDS:
-            problems.append("launch command is not npx or uvx")
-        elif shutil.which(command) is None:
-            problems.append(f"{command} is not installed on this machine")
-        if key == "context7" and not spec.get("tools"):
-            problems.append("tools list is empty")
-        if key == "browser_use":
-            if not spec.get("readonly_tools"):
-                problems.append("readonly_tools is empty")
-            if spec.get("sandbox_confirmed") is not True:
-                problems.append("sandbox_confirmed is false")
-        if key == "thoughtproof":
-            if not str(spec.get("package") or "").strip():
-                problems.append("package is blank")
-            if not str(spec.get("tool") or "").strip():
-                problems.append("tool is blank")
-        return problems
+    def _plugin_problems(self, key: str, spec: dict[str, Any]) -> list[str]:
+        """Why a plugin that is switched on cannot work - asked of the SAME code that decides whether it starts, so a plugin
+        is never reported ok while Jarvis itself treats it as inert."""
+        s = self.j.settings
+        if key == "context7":
+            why = plugins.engineering_setup(s).problems.get("Context7", "")
+        elif key == "browser_use":
+            why = plugins.chat_setup(s).problems.get("Browser Use", "")
+        elif key == "thoughtproof":
+            why = self.j.verifier.problem()
+        else:
+            why = plugins.launch_config(spec)[1]
+        return [why] if why else []
 
     async def _plugins(self, now: datetime) -> list[Item]:
         name = "Plugins"

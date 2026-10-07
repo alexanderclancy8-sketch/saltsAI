@@ -115,12 +115,12 @@ browser_use:
 async def test_plugins_that_are_on_but_inert_say_why(settings, tmp_path, monkeypatch):
     j = make(settings, plugins_file=write_specs(tmp_path, SPECS), plugin_context7_enabled=True,
              plugin_superpowers_enabled=True, plugin_browser_use_enabled=True, plugin_thoughtproof_enabled=False)
-    monkeypatch.setattr("jarvis.services.doctor.shutil.which", lambda cmd: "/usr/bin/npx" if cmd == "npx" else None)
+    monkeypatch.setattr("jarvis.brain.plugins.shutil.which", lambda cmd: "/usr/bin/npx" if cmd == "npx" else None)
     items = {i.line.split(":")[0]: i for i in await report(j, "Plugins")}
     assert items["Context7"].status == OK
     browser = items["Browser Use"]
     assert browser.status == AMBER and browser.next_step
-    for problem in ("version is blank", "readonly_tools is empty", "sandbox_confirmed is false", "uvx is not installed"):
+    for problem in ("no exact pinned version", "no read-only tools listed", "sandbox not confirmed"):
         assert problem in browser.line, browser.line
     await j.http.aclose()
 
@@ -128,7 +128,7 @@ async def test_plugins_that_are_on_but_inert_say_why(settings, tmp_path, monkeyp
 async def test_a_plugin_that_is_on_with_no_entry_in_the_yaml_is_flagged(settings, tmp_path, monkeypatch):
     j = make(settings, plugins_file=write_specs(tmp_path, SPECS), plugin_superpowers_enabled=True,
              plugin_browser_use_enabled=False)
-    monkeypatch.setattr("jarvis.services.doctor.shutil.which", lambda cmd: "/usr/bin/npx")
+    monkeypatch.setattr("jarvis.brain.plugins.shutil.which", lambda cmd: "/usr/bin/npx")
     [superpowers] = [i for i in await report(j, "Plugins") if i.line.startswith("Superpowers")]
     assert superpowers.status == AMBER and "no entry in mcp_plugins.yaml" in superpowers.line
     await j.http.aclose()
@@ -138,10 +138,44 @@ async def test_a_broken_thoughtproof_is_red_because_it_refuses_actions_while_bro
     spec = "thoughtproof:\n  command: npx\n  package: ''\n  version: '1.0.0'\n  tool: ''\n"
     j = make(settings, plugins_file=write_specs(tmp_path, spec), plugin_context7_enabled=False,
              plugin_superpowers_enabled=False, plugin_thoughtproof_enabled=True)
-    monkeypatch.setattr("jarvis.services.doctor.shutil.which", lambda cmd: "/usr/bin/npx")
+    monkeypatch.setattr("jarvis.brain.plugins.shutil.which", lambda cmd: "/usr/bin/npx")
     [item] = await report(j, "Plugins")
-    assert item.status == RED and "package is blank" in item.line and "tool is blank" in item.line
+    assert item.status == RED and "no package named" in item.line
     assert "refused" in item.line
+    await j.http.aclose()
+
+
+async def test_a_plugin_with_a_blank_package_is_never_reported_ok(settings, tmp_path, monkeypatch):
+    """The doctor asks the code that starts the plugin, so a spec Jarvis treats as inert can never read 'ok'."""
+    spec = """
+context7:
+  command: npx
+  package: ""
+  version: "1.2.3"
+  tools: ["resolve-library-id"]
+browser_use:
+  command: npx
+  package: ""
+  version: "1.2.3"
+  readonly_tools: ["navigate"]
+  sandbox_confirmed: true
+  blocked_host_keywords: [sage, bank]
+  allowed_domains: [example.com]
+"""
+    j = make(settings, plugins_file=write_specs(tmp_path, spec), plugin_context7_enabled=True,
+             plugin_superpowers_enabled=False, plugin_browser_use_enabled=True,
+             plugin_browser_allowed_domains="example.com", plugin_thoughtproof_enabled=False)
+    monkeypatch.setattr("jarvis.brain.plugins.shutil.which", lambda cmd: "/usr/bin/npx")
+    items = {i.line.split(":")[0]: i for i in await report(j, "Plugins")}
+    for label in ("Context7", "Browser Use"):
+        assert items[label].status == AMBER, items[label].line
+        assert "no package named" in items[label].line, items[label].line
+    # and the same spec WITH a package is ok for both (so the check above is not just always failing)
+    fixed = spec.replace('package: ""', 'package: "some-mcp"')
+    j.settings.plugins_file = write_specs(tmp_path, fixed)
+    items = {i.line.split(":")[0]: i for i in await report(j, "Plugins")}
+    assert items["Context7"].status == OK, items["Context7"].line
+    assert items["Browser Use"].status == OK, items["Browser Use"].line
     await j.http.aclose()
 
 
@@ -160,7 +194,7 @@ async def test_the_shipped_mcp_plugins_yaml_is_reported_not_crashed_on(settings)
     j = make(settings, plugin_context7_enabled=True, plugin_superpowers_enabled=True, plugin_browser_use_enabled=True)
     lines = " ".join(i.line for i in await report(j, "Plugins"))
     assert "Context7" in lines and "Superpowers" in lines and "Browser Use" in lines
-    assert "version is blank" in lines and "no entry in mcp_plugins.yaml" in lines
+    assert "no exact pinned version" in lines and "no entry in mcp_plugins.yaml" in lines
     await j.http.aclose()
 
 
@@ -589,7 +623,11 @@ def test_the_doctor_source_never_interpolates_a_setting_into_text_or_a_log():
                 assert not re.search(r"\b(settings|getattr)\b|\bs\.", ln), ln
     # every place that reads a setting by name is a known, value-safe one
     allowed = ("bool(str(getattr(settings, field", "getattr(s, flag, False)", 'getattr(self.j, "self_github", None)',
-               'value = str(getattr(s, field, "")')
+               'value = str(getattr(s, field, "")',
+               # Doctor.run looks a check up by the method name in the fixed Doctor.CHECKS tuple: it never reads a setting
+               "got = getattr(self, method)(now)",
+               # secret_fields() reads the class's field list, not a value
+               'fields = getattr(type(settings), "model_fields", None) or {}')
     for ln in code:
         if "getattr(" in ln:
             assert any(a in ln for a in allowed), ln
@@ -597,3 +635,36 @@ def test_the_doctor_source_never_interpolates_a_setting_into_text_or_a_log():
     assert not re.search(r"\.(set_kv|execute|add_notification|set_setting|save)\(|SettingsStore|\.approve\(|\.deny\(|actions\.queue",
                          source)
     assert "get_secret" not in source and "decrypt" not in source
+
+
+def test_the_scrub_list_covers_every_secret_field_on_the_settings_page_and_any_credential_named_setting(settings):
+    from jarvis import settings_store
+
+    covered = set(doctor_mod.secret_fields(settings))
+    secret_kind = {f.key for s in settings_store.SECTIONS for f in s.fields if f.kind == "secret"}
+    assert secret_kind, "the Settings page has secret fields"
+    assert secret_kind <= covered, sorted(secret_kind - covered)
+    assert {"teams_webhook_url", "azure_storage_connection_string"} <= covered
+    # env-only credentials that are not on the Settings page, and anything named like a credential
+    assert {"anthropic_api_key", "claude_code_oauth_token", "github_token", "jarvis_github_token", "fsm_api_key"} <= covered
+    assert "owner_name" not in covered and "timezone" not in covered
+
+
+async def test_every_secret_field_is_removed_from_a_could_not_check_line(settings, monkeypatch):
+    from jarvis import settings_store
+
+    j = make(settings)
+    secret_kind = sorted({f.key for s in settings_store.SECTIONS for f in s.fields if f.kind == "secret"})
+    values = {f: f"SENTINEL-{f}-9d27b1" for f in secret_kind}
+    for field, value in values.items():
+        setattr(j.settings, field, value)
+
+    def boom(self, now):
+        raise RuntimeError("failed with " + " ".join(values.values()))
+
+    monkeypatch.setattr(Doctor, "_pull_requests", boom)
+    out = await Doctor(j).diagnose(NOW)
+    everything = json.dumps(out)
+    for field, value in values.items():
+        assert value not in everything, field
+    await j.http.aclose()
