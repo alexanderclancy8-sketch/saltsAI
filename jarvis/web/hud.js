@@ -1418,12 +1418,63 @@ function send(text, mode = "typed", opts = {}) {
     const runs = jobs.reduce((n, j) => n + (j.checks || 0), 0), since = jobs.map((j) => j.since).sort()[0] || "";
     return { html: esc(`Scheduled checks - ${plural(jobs.length, "job", "jobs")}, ${plural(runs, "run", "runs")}`) + `<span class="since">${esc(` since ${since}`)}</span>` + esc(", nothing to report"), level: "" };
   }
-  function syncActivityOpen() {
-    const tog = $("#activity-toggle"), box = $("#activity"); if (!tog || !box) return;
+  // Where the open panel goes. It lies over the TOP of the conversation, so it may only take the room above the end of the
+  // newest reply: that end (its last few lines and the Good / Wrong chips) is what the owner reads and presses next, and a panel
+  // on top of it - which is what a 40% panel did once the on-screen keyboard shrank the conversation to ~100px - hides it. The
+  // room is worked out from the real boxes (so any width, height, font size, reply length or keyboard), and then:
+  //   overlay  there is room for at least two check lines: the panel takes what there is (never more than 40%), scrolling inside;
+  //   away     no room and the box has the keyboard up (or the screen simply shrank): the panel steps aside like the core and
+  //            Needs-you strip do, and comes back when there is room again - e.g. the moment the keyboard goes (the summary row
+  //            keeps saying Show / Hide for what the owner asked for);
+  //   sheet    no room and the owner tapped Show with no keyboard up: a full-height sheet with its own Close (and Escape),
+  //            above the message box, instead of squeezing a one-line slot over the reply. Only ever from that tap - a resize
+  //            or the keyboard never throws one over the screen by itself.
+  const CHECKS_GAP = 6, CHECKS_TAIL_LINES = 3;
+  let checksAsked = false, fitQueued = false;
+  function checksRoom(convo, log, box) {
+    const cs = getComputedStyle(box), edge = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + edge, gap = parseFloat(cs.rowGap) || 0;
+    const rows = [...box.querySelectorAll("details.auto")].slice(0, 2);
+    const natural = box.scrollHeight + edge;
+    const two = Math.min(natural, pad + rows.reduce((n, r) => n + r.offsetHeight, 0) + gap * Math.max(0, rows.length - 1));
+    const want = Math.max(two, Math.min(natural, convo.clientHeight * 0.4), parseFloat(cs.minHeight) || 0);
+    const last = [...log.children].reverse().find((e) => e.getClientRects().length);
+    if (!last) return { avail: Infinity, want, floor: two };
+    const lr = log.getBoundingClientRect(), er = last.getBoundingClientRect(), cr = convo.getBoundingClientRect(), fb = last.querySelector(".fb");
+    const chips = fb ? fb.offsetHeight + (parseFloat(getComputedStyle(fb).marginTop) || 0) : 0;
+    const tail = Math.min(er.height, chips + CHECKS_TAIL_LINES * (parseFloat(getComputedStyle(last).lineHeight) || 21));
+    // The end of the newest message sits at the bottom of the log: the log follows its newest message, and while the panel is
+    // open a short conversation is bottom-aligned too (.stick-bottom), so there is never a message above it that the panel could
+    // be mistaken to cover - whatever the log's scroll is now.
+    const end = log.clientHeight - (parseFloat(getComputedStyle(log).paddingBottom) || 0);
+    return { avail: (lr.top - cr.top) + end - tail - CHECKS_GAP - box.offsetTop, want, floor: two };
+  }
+  function fitChecks() {
+    fitQueued = false;
+    const box = $("#activity"), tog = $("#activity-toggle"), convo = $("#transcript-wrap"), log = $("#conversation"); if (!box || !tog || !convo || !log) return;
+    let mode = "";
+    if (activityAllOpen && activityHasJobs) {
+      mode = "overlay";
+      box.hidden = false; box.classList.remove("sheet"); box.style.maxHeight = ""; box.style.removeProperty("--sheet-bottom");   // measured as the overlay
+      const room = checksRoom(convo, log, box);
+      if (room.avail >= room.floor) { box.style.maxHeight = `${Math.floor(Math.min(room.want, room.avail))}px`; checksAsked = false; }
+      else mode = checksAsked ? "sheet" : "away";
+    }
+    if (mode === "sheet") {
+      box.style.maxHeight = "";
+      box.style.setProperty("--sheet-bottom", `${Math.max(0, Math.round(innerHeight - $("#composer").getBoundingClientRect().top))}px`);   // the message box stays usable
+    }
+    box.hidden = !(mode === "overlay" || mode === "sheet"); box.classList.toggle("sheet", mode === "sheet");
+    log.classList.toggle("stick-bottom", mode === "overlay");
+    document.body.classList.toggle("checks-sheet", mode === "sheet");
+    if (mode === "sheet") box.setAttribute("role", "dialog"); else box.removeAttribute("role");
+    if (!activityAllOpen) checksAsked = false;
     const open = activityAllOpen && activityHasJobs;
-    box.hidden = !open; tog.setAttribute("aria-expanded", String(open));
+    tog.setAttribute("aria-expanded", String(open));
     const u = tog.querySelector("u"); if (u) u.textContent = open ? "Hide" : "Show";
   }
+  function scheduleFit() { if (!fitQueued) { fitQueued = true; requestAnimationFrame(fitChecks); } }
+  function syncActivityOpen() { fitChecks(); }
   let activityShown = "";
   function renderActivity(a) {
     const box = $("#activity"), tog = $("#activity-toggle"); if (!box || !tog) return;
@@ -1441,19 +1492,26 @@ function send(text, mode = "typed", opts = {}) {
     }
     // Only the panel's own scroll position is kept; the conversation's is never touched here.
     const keep = box.scrollTop;
-    box.innerHTML = jobs.map((job) => {
+    box.querySelectorAll("details.auto").forEach((d) => d.remove());   // the sheet's title bar (static) stays; the lines are rebuilt
+    box.insertAdjacentHTML("beforeend", jobs.map((job) => {
       const open = activityOpen.has(job.key);
       const runs = job.runs.map((r) => `<span class="${r.outcome === "changed" ? "changed" : r.outcome === "failed" ? "failed" : ""}">${esc(r.time)} ${esc(r.detail || (r.outcome === "no_change" ? "No change." : r.outcome))}</span>`).join("");
       return `<details class="auto" data-job="${esc(job.key)}"${job.failed ? ' data-level="bad"' : job.changed ? ' data-level="warn"' : ""}${open ? " open" : ""}>` +
         `<summary><span>${esc(activityLine(job))}</span><u>${open ? "Hide" : "Show"}</u></summary><div class="auto-runs">${runs}</div></details>`;
-    }).join("");
+    }).join(""));
     syncActivityOpen();
     box.scrollTop = keep;
   }
-  $("#activity-toggle")?.addEventListener("click", () => { activityAllOpen = !activityAllOpen; syncActivityOpen(); });
+  $("#activity-toggle")?.addEventListener("click", () => {
+    activityAllOpen = !activityAllOpen; checksAsked = activityAllOpen; syncActivityOpen();
+    if ($("#activity")?.classList.contains("sheet")) $("#activity-close")?.focus();
+  });
+  $("#input")?.addEventListener("focus", () => { checksAsked = false; scheduleFit(); });   // starting to type dismisses a sheet (the panel itself comes back with room)
+  const closeChecks = () => { activityAllOpen = false; syncActivityOpen(); $("#activity-toggle").focus(); };
+  $("#activity-close")?.addEventListener("click", closeChecks);
   $("#transcript-wrap")?.addEventListener("keydown", (e) => {   // Escape closes the panel (and hands focus back to its row)
     if (e.key !== "Escape" || !activityAllOpen || !e.target.closest?.("#activity, #activity-toggle")) return;
-    e.preventDefault(); e.stopPropagation(); activityAllOpen = false; syncActivityOpen(); $("#activity-toggle").focus();
+    e.preventDefault(); e.stopPropagation(); closeChecks();
   });
   // `toggle` does not bubble, so listen in the capture phase on the container (it survives the re-renders above).
   $("#activity")?.addEventListener("toggle", (e) => {
@@ -1464,9 +1522,26 @@ function send(text, mode = "typed", opts = {}) {
   // The conversation stays on its newest message whenever its box changes size (the checks row appearing, the panel opening
   // or closing, the keyboard, a font loading) - unless the owner has scrolled up to read, which is left alone.
   {
-    const log = $("#conversation"); let pinned = true;
-    log.addEventListener("scroll", () => { pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 48; }, { passive: true });
-    if (window.ResizeObserver) new ResizeObserver(() => { if (pinned) log.scrollTop = 1e9; }).observe(log);
+    const log = $("#conversation"); let pinned = true, lastH = log.clientHeight;
+    // A box that changes height (the keyboard, the panel) makes the browser fire a `scroll` too, and that one is not the owner
+    // scrolling up: reading it as such left the log where it was while the keyboard took its room, so the newest reply and its
+    // chips ended up below the visible part. Only a scroll with the height unchanged says where the owner has scrolled to.
+    log.addEventListener("scroll", () => {
+      if (log.clientHeight !== lastH) { lastH = log.clientHeight; return; }
+      pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+    }, { passive: true });
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => { if (pinned) log.scrollTop = 1e9; }).observe(log);
+      new ResizeObserver(() => { lastH = log.clientHeight; scheduleFit(); }).observe(log);
+      new ResizeObserver(scheduleFit).observe($("#transcript-wrap"));
+    }
+    // The panel is re-fitted whenever what it must keep clear (the end of the newest reply) or the room around it changes.
+    if (window.MutationObserver) {
+      new MutationObserver(scheduleFit).observe(log, { childList: true, subtree: true, characterData: true });
+      new MutationObserver(scheduleFit).observe(document.body, { attributes: true, attributeFilter: ["class"] });   // `composing` comes and goes
+    }
+    addEventListener("resize", scheduleFit);
+    window.visualViewport?.addEventListener("resize", scheduleFit);
   }
 
   // The top-bar pill: how many sources are still samples. Opens the Demo data pop-up.

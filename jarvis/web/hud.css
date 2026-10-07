@@ -218,6 +218,18 @@ body[data-hud="speaking"] .state b { animation: status-pulse .7s ease-in-out inf
 .activity { position: absolute; z-index: 5; left: 0; right: 0; top: 44px; max-height: 40%; min-height: 52px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
   display: flex; flex-direction: column; gap: 6px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
 .activity[hidden] { display: none; }
+/* The panel's height is set from script (hud.js fitChecks) to the room above the end of the newest reply; 40% is only the ceiling. When
+   there is not even room for two lines the owner's tap on Show opens it as a sheet instead: fixed, full height down to the message
+   box (which stays usable), with a title bar and Close. .shell is a stacking context under the top bar, hence the z-index lift. */
+.activity-bar { display: none; }
+.conversation.stick-bottom > :first-child { margin-top: auto; }   /* panel open: a short conversation sits at the bottom, under the panel's room */
+body.checks-sheet .shell { z-index: 3; }
+.activity.sheet { position: fixed; z-index: 5; top: 0; left: 0; right: 0; bottom: var(--sheet-bottom, 0px); height: auto; max-height: none; min-height: 0; border-radius: 0; border: 0;
+  border-bottom: 1px solid var(--line); background: var(--navy); gap: 8px; padding: 0 max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left)); }
+.activity.sheet .activity-bar { display: flex; position: sticky; top: 0; z-index: 1; align-items: center; justify-content: space-between; gap: 12px; flex: none; background: var(--navy);
+  padding: max(10px, env(safe-area-inset-top)) 0 8px; border-bottom: 1px solid var(--line); }
+.activity-bar h2 { margin: 0; min-width: 0; font-family: var(--f-display); font-weight: 600; font-size: 16px; letter-spacing: .04em; }
+.activity.sheet .auto { background: var(--panel); }
 .auto { border: 1px solid var(--line); border-radius: var(--r); font-size: 13px; color: var(--muted); flex: none; background: var(--navy); }
 .auto summary { cursor: pointer; padding: 8px 12px; list-style: none; display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
 .auto summary > span { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
