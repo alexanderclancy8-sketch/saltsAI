@@ -368,6 +368,22 @@ not a parse error. Recording is observability only: it swallows its own errors a
 agent does. A new engineer loop should call `self.runs.step(block.name, block.input)` after each tool call. The Max
 (Claude Code) backend gives no per-step hook, so those runs show a single "handed to Claude Code" step.
 
+**Self-diagnostics (`services/doctor.py`, the read-only `doctor` tool; tests `tests/test_doctor.py`).** "What is quietly broken?": one
+line per item, each `ok` / `amber` / `red` with a next step, put on the display (`bus.publish("display", ...)`, so `doctor` is in
+`async_tools.NOT_BACKGROUND`) and returned as `{summary, items, shown_on_display}`. `approval=False`, deliberately NOT in
+`access.TEAM_TOOLS`. Eight checks, all read-only from existing services: plugins on in Settings but inert or with no `mcp_plugins.yaml`
+entry (the reason comes from the same code that decides whether a plugin starts - `launch_config`, `engineering_setup`, `chat_setup`,
+`ActionVerifier.problem` - so it can never read ok while Jarvis treats the plugin as inert; a broken ThoughtProof is red because it fails
+closed), data sources still on DEMO (`demo_guard.demo_now`), keys set or not by NAME, automations (last run, `NOTHING_STREAK` quiet
+runs in a row from `check_runs`, running under every 30 minutes outside Mon-Fri working hours), agent runs (stalled / failed / gave up
+in 24h), open issues and approvals untouched for 24h, open PRs red or conflicted (`PRClient.list_open_prs`, which now also returns
+`created_at`/`updated_at`; "red for 24h" is judged from `updated_at`; no GitHub config is just an ok "not connected" line), failing
+routine tests and `needs_human` issues. **Fail soft:** `Doctor.run` wraps every check, so one that raises (or returns junk) becomes a
+single amber "could not check: <reason>" line and the rest still run. **Never print a secret:** a key is only asked "is it set?"
+(`_is_set`); no setting is put in an f-string or a log line; error reasons have every configured credential value removed
+(`_hide_secrets`; the list is `secret_fields()`: every secret-kind Settings field plus any credential-named setting, so a new secret is covered automatically) and are redacted; a grep test pins this. To add a check, add a `(name, method)` to `Doctor.CHECKS` returning
+`Item`s, and a test with fakes.
+
 **The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
 `tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
 `fsm_engineer_enabled`, both env-only): it reads the latest routine test results, open issues, failed approved writes and two live
