@@ -520,6 +520,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         # look-up is logged against whoever is signed in (the manager's name, or the owner's own display session).
         return await J(request).tracker.live(requester_label(settings, speaker(request)), tool="fleet_panel")
 
+    @app.get("/api/fleet/diagnostics", dependencies=[Depends(principal)])
+    async def fleet_diagnostics_view(request: Request):
+        # The principal owner only (access.ROUTE_POLICY): per van, RAM's last_event, its age, engineRpm and how Jarvis classified
+        # the van and why - no positions, names or homes. The same out-of-hours rule and look-up log as the map.
+        data = await J(request).tracker.fleet_diagnostics(requester_label(settings, speaker(request)))
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
     # ------------------------------------------------------------------ voice
     @app.post("/api/tts", dependencies=[Depends(member)])
     async def tts(body: TTSIn, request: Request):

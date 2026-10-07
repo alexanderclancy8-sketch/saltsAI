@@ -230,6 +230,8 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /auth/sage/callback": MANAGER_OK,
     # ---- the principal owner only: the activity list as a CSV file (it leaves the system, so it is the owner's click alone)
     "GET /api/activity/export.csv": OWNER_ONLY,
+    # ---- the principal owner only: how each van's moving / stopped / parked state was decided (no positions, no homes)
+    "GET /api/fleet/diagnostics": OWNER_ONLY,
     # ---- the principal owner only: who may sign in as team
     "GET /api/team-access": OWNER_ONLY,
     "POST /api/team-access": OWNER_ONLY,

@@ -1921,7 +1921,7 @@ function send(text, mode = "typed", opts = {}) {
     S.tracking = data; renderFleetStatus(); renderRail();
     if (!window.L) {  // map library blocked/offline: show a list instead
       $("#map").innerHTML = `<ul class="list" style="padding:8px">${(data.engineers || []).map((e) =>
-        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(homeParts(e).filter(Boolean).join(" · "))}</span></li>`).join("") ||
+        `<li>${esc(e.engineer)}<span class="sub">${esc(e.current_job || e.motion_label || e.status || "")}${e.eta_next_job_mins ? " · ETA next " + e.eta_next_job_mins + " min" : ""} · ${esc(homeParts(e).filter(Boolean).join(" · "))}</span></li>`).join("") ||
         `<li class="empty">${esc(data.note || "No vehicles reporting.")}</li>`}</ul>`;
       $("#map").style.height = "auto";
       return;
@@ -1947,8 +1947,8 @@ function send(text, mode = "typed", opts = {}) {
     (data.sites || []).forEach((s) => { halo(s.lat, s.lng, 5); L.circleMarker([s.lat, s.lng], { radius: 5, color: "#ff6a3d", weight: 2, fillOpacity: 0.6 }).bindTooltip(esc(s.name)).addTo(layer); pts.push([s.lat, s.lng]); });
     (data.engineers || []).forEach((e) => {
       halo(e.lat, e.lng, 7);
-      L.circleMarker([e.lat, e.lng], { radius: 7, color: e.status === "driving" ? "#ffb020" : "#26d9ff", weight: 2, fillOpacity: 0.85 })
-        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(homeParts(e).filter(Boolean).join(" · "))}`).addTo(layer);
+      L.circleMarker([e.lat, e.lng], { radius: 7, color: e.status === "driving" ? "#ffb020" : e.status === "no_position" ? "#8a97a6" : "#26d9ff", weight: 2, fillOpacity: 0.85 })
+        .bindTooltip(`${esc(e.engineer)}<br>${esc(e.current_job || e.motion_label || e.status || "")}${e.eta_next_job_mins ? `<br>ETA next: ${e.eta_next_job_mins} min` : ""}<br>${esc(homeParts(e).filter(Boolean).join(" · "))}`).addTo(layer);
       pts.push([e.lat, e.lng]);
     });
     const fleetList = $("#fleet-list");
@@ -1956,9 +1956,10 @@ function send(text, mode = "typed", opts = {}) {
       fleetList.hidden = !fleetState().live;  // sample positions are not vehicles: no list until RAM is really connected
       const warnings = (data.warnings || []).map((w) => `<li class="warn">${esc(w)}</li>`).join("");
       fleetList.innerHTML = (data.engineers || []).map((e) =>
-        `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(homeParts(e).filter(Boolean).join(" · "))}${e.at_home ? "" : e.status ? " · " + esc(e.status) : ""}</span></li>`).join("") + warnings;
+        `<li class="${e.at_home ? "ok" : ""}">${esc(e.engineer)}<span class="sub">${esc(homeParts(e).filter(Boolean).join(" · "))}${e.at_home ? "" : (e.motion_label || e.status) ? " · " + esc(e.motion_label || e.status) : ""}</span></li>`).join("") + warnings;
     }
     if (pts.length) map.fitBounds(pts, { padding: [20, 20], maxZoom: 12 });
+    FleetDiag.refreshIfOpen();
   }
   // Leaflet measures its box once; call this whenever the map's container may have changed size or been revealed.
   function fitMapSoon() { requestAnimationFrame(() => { if (map) { map.invalidateSize(); refreshMap(); } }); }
@@ -3022,6 +3023,26 @@ function send(text, mode = "typed", opts = {}) {
   });
 
   // ------------------------------------------------------------------ engineer homes (the owner's Settings)
+  // Fleet diagnostics (owner only; /api/fleet/diagnostics refuses everyone else): per van RAM's raw last_event, its age, engine RPM
+  // and how Jarvis classified the van and why, so the rules can be checked against RAM's own portal. Never a position or a home.
+  const FleetDiag = {
+    async load() {
+      const box = $("#fleet-diag"), list = $("#fleet-diag-list"), status = $("#fleet-diag-status");
+      if (!box || ROLE !== "owner") return;
+      let d = null;
+      try { const r = await api("/api/fleet/diagnostics"); d = r.ok ? await r.json() : null; } catch { d = null; }
+      if (!d) { status.textContent = "Couldn't read the fleet diagnostics."; list.innerHTML = ""; return; }
+      const vans = d.vans || [];
+      status.textContent = !vans.length ? (d.note || "No vans to show.")
+        : `${plural(vans.length, "van", "vans")}. Compare each with RAM's portal (Moving / Stopped); the reason says what decided it.`;
+      list.innerHTML = vans.map((v) => `<li><b>${esc(v.registration || "unknown van")}</b> ${esc(v.classification || "")}
+        <span class="sub">last_event ${esc(v.last_event || "none")} · ${v.event_age_min == null ? "no event time" : esc(v.event_age_min + " min ago")} · engine RPM ${v.engine_rpm == null ? "not reported" : esc(v.engine_rpm)}</span>
+        <span class="sub">${esc(v.reason || "")}</span></li>`).join("");
+    },
+    refreshIfOpen() { const box = $("#fleet-diag"); if (box && box.open) this.load(); },
+  };
+  $("#fleet-diag")?.addEventListener("toggle", (ev) => { if (ev.target.open) FleetDiag.load(); });
+
   // Where each engineer lives, so Fleet can say "home". Owner only (/api/engineer-homes refuses everyone else). The owner types a
   // postcode, the server looks it up once and keeps a ROUNDED map point; the postcode is never stored or sent back, so a saved
   // row shows only "Home set (date)" and the postcode box is empty again. The box is cleared as soon as the request is sent.

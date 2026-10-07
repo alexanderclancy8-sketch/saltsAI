@@ -1680,6 +1680,13 @@ async def engineer_locations(j, a: NoInput):
     return {**data, "engineers": [({**e, "lat": None, "lng": None} if e.get("at_home") else e) for e in data.get("engineers", [])]}
 
 
+async def fleet_diagnostics(j, a: NoInput):
+    caller = access.current_caller.get()
+    if caller is not None and caller.role != access.OWNER:
+        return {"error": "Fleet diagnostics are for the owner only."}
+    return await j.tracker.fleet_diagnostics(_asker(j))
+
+
 async def who_is_home(j, a: NoInput):
     return await j.tracker.home_status(_asker(j))
 
@@ -2405,13 +2412,20 @@ TOOLS: list[Tool] = [
     Tool("stock_job_materials", "Materials issued to a job and their cost (for job costing).", JobRefIn,
          stock_job_materials, "Costing job materials"),
     Tool("engineer_locations", "Live engineer/van locations from Salts FSM tracking: where everyone is, on site or "
-                               "not, ETA to next job, and whether each van is at home (at_home: true is shown as "
+                               "not, ETA to next job, whether each van is moving, stopped with the engine on or parked "
+                               "(motion_label; speed_mph is only an estimate from successive positions and may be "
+                               "absent: say \"about 30 mph\", never an exact speed), and whether each van is at home (at_home: true is shown as "
                                "'home' with no position - never say where; null means no home is set for that "
                                "engineer and RAM sent no label). Also puts the map "
                                "on the display. Outside working hours (Mon-Fri 07:00-18:30) it shows nothing unless "
                                "the owner has allowed it in Settings (on-call engineers only, or everyone); the "
                                "result's note says which, and such look-ups are logged.", NoInput,
          engineer_locations, "Locating the team"),
+    Tool("fleet_diagnostics", "Owner only, read-only: for each van, RAM's raw last_event name, its age in minutes, engine "
+                              "RPM, how Jarvis classified it (Moving / Stopped, engine on / Parked / No recent position) "
+                              "and the reason. For checking Fleet against RAM's own portal. No positions, no homes. "
+                              "Same out-of-hours rule and logging as engineer_locations.", NoInput, fleet_diagnostics,
+         "Checking how the fleet is classified"),
     Tool("who_is_home", "Which engineers are at home (their van is at the home point the owner set for them, or RAM's "
                         "label says home), which are away, which have no home set and no RAM label (so can't be told), "
                         "and who has no recent position. Working hours, or outside them only where the owner's setting "

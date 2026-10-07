@@ -103,7 +103,7 @@ class Jarvis:
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)
-        self.ram = (RamTracking(s, self.http) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
+        self.ram = (RamTracking(s, self.http, store=self.db) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
                     else DemoRamTracking(self.fsm))
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None

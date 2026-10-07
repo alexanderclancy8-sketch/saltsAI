@@ -39,7 +39,9 @@ async def test_vehicles_and_positions_read_last_event_as_a_string(settings):
         ("YD71 SFS", "Dan Harper", True), ("YD72 SFS", "Priya Shah", False)]
     assert vehicles[0]["lat"] == 53.83 and vehicles[0]["timestamp"] == "2026-10-02T09:00:00Z"
     positions = await j.ram.positions()
-    assert [(p["registration"], p["speed_mph"]) for p in positions] == [("YD71 SFS", 15), ("YD72 SFS", 0)]
+    # Stricter than the old (15, 0): no speed is known from one reading, so none is claimed.
+    assert [(p["registration"], p["speed_mph"], p["motion_label"]) for p in positions] == [
+        ("YD71 SFS", None, "Moving"), ("YD72 SFS", None, "Parked")]
     await j.http.aclose()
 
 
