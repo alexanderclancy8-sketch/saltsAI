@@ -67,6 +67,8 @@ ARGS_CHARS = 1000
 # (a SILENT background call must really be silent, and these would reach the owner or a third party regardless of the
 # policy). Found by reading every handler (and the service call each makes) for bus.publish / notifier / send_mail.
 NOT_BACKGROUND = set(NO_RECURSE) | {
+    # an internal fault report is judged on the live turn (whether it read outside content) and is rate-limited per hour
+    "report_fault",
     "run_in_background", "background_results", "engineer_locations", "fleet_diagnostics", "who_is_home", "nearest_engineer", "van_day",
     "timesheet_check",
     # one customer's balance: its figures are never kept in the background_calls table, and an office lookup is rate-limited

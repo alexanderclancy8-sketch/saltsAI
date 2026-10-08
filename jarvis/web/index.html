@@ -48,6 +48,7 @@
     <!--role:manager--><button type="button" class="rail-item" data-pop="comms">Comms <span class="rail-count" id="rc-comms">0</span></button><!--/role:manager-->
     <!--role:manager--><button type="button" class="rail-item" data-pop="issues">Issues <span class="rail-count" id="rc-issues">0</span></button><!--/role:manager-->
     <!--role:manager--><button type="button" class="rail-item" data-pop="health">Health <span class="rail-count" id="rc-health">0</span></button><!--/role:manager-->
+    <!--role:manager--><button type="button" class="rail-item" data-pop="faults">Faults <span class="rail-count" id="rc-faults">0</span></button><!--/role:manager-->
     <button type="button" class="rail-item" data-pop="ops">Ops <span class="rail-count" id="rc-ops">0</span></button>
     <button type="button" class="rail-item" data-pop="fleet">Fleet <span class="rail-count" id="rc-fleet">off</span></button>
     <!--role:manager--><button type="button" class="rail-item" data-pop="finance">Finance <span class="rail-count" id="rc-finance">0</span></button><!--/role:manager-->
@@ -263,6 +264,22 @@
         <h3>Alerts</h3>
         <ul class="list" id="notifications"></ul>
       </div>
+    </section><!--/role:manager-->
+
+    <!-- Fault reports (faults.js, services/faults.py): what of Jarvis's own broke. Internal only - copied by a person, never sent. -->
+    <!--role:manager--><section class="pop" id="pop-faults" data-title="Faults" hidden>
+      <p class="sub" id="faults-intro">Things Jarvis noticed broken in himself. Copy a report and paste it into Claude Code to get it fixed -
+        reports stay inside Jarvis and have secrets and customer details taken out.</p>
+      <div class="sec">
+        <h3>Open <span class="count" id="faults-count"></span></h3>
+        <div class="row faults-actions"><button class="btn" id="btn-faults-copy-all" type="button" hidden>Copy all open faults</button></div>
+        <ul class="mem-list" id="faults-open"><li class="empty">Loading…</li></ul>
+      </div>
+      <div class="sec">
+        <h3>Recently closed</h3>
+        <ul class="mem-list" id="faults-closed"></ul>
+      </div>
+      <p class="empty" id="faults-error" role="alert" hidden></p>
     </section><!--/role:manager-->
 
     <section class="pop" id="pop-ops" data-title="Operations" hidden>
@@ -521,6 +538,7 @@
 <script src="/static/memory.js"></script>
 <script src="/static/activity.js"></script>
 <script src="/static/checks.js"></script>
+<script src="/static/faults.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

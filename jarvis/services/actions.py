@@ -247,6 +247,7 @@ class ActionExecutor:
             else:
                 result = await self._execute(action)
                 self.db.set_action_status(action["id"], "done", result)
+                self._fault("action_done", action)   # a fault for this kind of action (services/faults.py) has fixed itself
                 if category:
                     await self._announce_automatic(action, category, result)
                 else:
@@ -255,9 +256,20 @@ class ActionExecutor:
         except Exception as e:  # noqa: BLE001
             log.exception("Action %s failed", action["id"])
             self.db.set_action_status(action["id"], "failed", str(e)[:1000])
+            self._fault("action_failed", action, e)   # an internal fault report (services/faults.py) - never sent anywhere
             await self.notifier.notify(f"Action #{action['id']} failed", str(e)[:500], level="warning",
                                        importance="normal")
         self.bus.publish("approvals", inbox.pending_for_display(self.db))
+
+    def _fault(self, what: str, *args: Any) -> None:
+        """Tell the fault log (services/faults.py) an approved action failed or worked. Never raises."""
+        faults = getattr(self.j, "faults", None)
+        if faults is None:
+            return
+        try:
+            getattr(faults, what)(*args)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not update the fault log")
 
     async def _announce_automatic(self, action: dict[str, Any], category: str, result: str) -> None:
         """The visible marker that this ran without anyone clicking: a display notice and a Teams message to the

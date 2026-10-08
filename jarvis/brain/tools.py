@@ -1472,11 +1472,26 @@ async def company_check(j, a: CompanyCheckIn):
     return await j.company_check.run(a.company)
 
 
+class ReportFaultIn(BaseModel):
+    summary: str = Field(max_length=200, description="What you can't do, in one line, e.g. \"I can't open .msg email attachments\".")
+    details: str = Field("", max_length=2000, description="What you were trying to do, what happened (the error text if any) and "
+                                                          "what you already tried. No customer details, codes or passwords.")
+
+
+async def report_fault(j, a: ReportFaultIn):
+    # Internal only: a row in Jarvis's own fault log (services/faults.py). Never sent to GitHub, Teams or anywhere else.
+    return j.faults.report_from_tool(a.summary, a.details)
+
+
 async def doctor(j, a: NoInput):
     """Read-only self-diagnostics: one line per item (ok / amber / red + next step), also put on the display."""
     from ..services.doctor import Doctor
 
-    return await Doctor(j).diagnose()
+    doc = Doctor(j)
+    out = await doc.diagnose()
+    # a red line (or a check that broke) becomes an internal fault report; a check that ran clean closes its old ones (services/faults.py)
+    j.faults.from_doctor(doc.last_items, doc.ran)
+    return out
 
 
 async def log_job(j, a: LogJobIn):
@@ -2657,6 +2672,12 @@ TOOLS: list[Tool] = [
                    "failing routine tests and issues needing a human. A check that can't run says so and the rest "
                    "still do. Use it when the owner asks 'is anything broken?', 'run the doctor' or 'health check'. "
                    "It changes nothing.", NoInput, doctor, "Running a self-check"),
+    Tool("report_fault", "File an internal fault report when you notice you can't do something you should be able to (a file "
+                         "type you can't open, a tool that keeps erroring, a step that always fails). It goes in the console's "
+                         "Faults list for the owner to pass to the developer - it is never sent anywhere outside Jarvis and needs no "
+                         "approval. One report per problem (repeats are counted), at most a few an hour. Not for business problems "
+                         "(use issue_report) and never with customer details, codes or passwords in it.",
+         ReportFaultIn, report_fault, "Noting a fault"),
     Tool("company_check", "Free pre-quote check of a new commercial customer on the Companies House register: whether the "
                           "company is active, how long it has existed (incorporation date, not proof of trading), "
                           "whether its accounts or confirmation statement are overdue, dormant accounts, insolvency "

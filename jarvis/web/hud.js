@@ -174,7 +174,7 @@
   // ONE drawer component: every section of the console (and Settings / Connections) is a .pop inside #drawer-body.
   // Drawer.show(name) reveals one and slides the drawer in from the right; it is closed by the Close button,
   // Escape, or a click on the scrim (outside). It is never wider than the viewport (see .drawer in hud.css).
-  const POPS = ["approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming", "demo", "memory", "settings", "connections"];
+  const POPS = ["approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance", "presence", "upcoming", "demo", "memory", "settings", "connections"];
   const Drawer = {
     current: null, opener: null,
     isOpen() { return $("#drawer").classList.contains("open"); },
@@ -195,6 +195,7 @@
       if (name === "memory") window.JarvisMemory?.load();
       if (name === "activity") window.JarvisActivity?.load();
       if (name === "health") window.JarvisChecks?.load();
+      if (name === "faults") window.JarvisFaults?.load();
       if (name === "settings" && ROLE === "owner") { TeamAccess.load(); Homes.load(); }
       if ((name === "settings" || name === "connections") && !TEAM) {
         if (!Settings.loaded) Settings.load();
@@ -233,7 +234,7 @@
   // Both are computed from the same status data the pop-ups render. A rail count turns amber when that section needs a
   // look and red when something is failing; "Needs you" shows the three most urgent things, each opening its pop-up.
   // A team console has none of Approvals, Comms, Issues, Health or Finance: nothing about them is fetched, counted or listed.
-  const TEAM_HIDDEN = ["approvals", "comms", "issues", "health", "finance"];
+  const TEAM_HIDDEN = ["approvals", "comms", "issues", "health", "faults", "finance"];
   function setRail(name, n, level, text) {
     if (TEAM && TEAM_HIDDEN.includes(name)) return;
     const item = $(`.rail-item[data-pop="${name}"]`), count = $(`#rc-${name}`);
@@ -282,6 +283,9 @@
     setRail("health", tests.length ? `${tests.length - failing}/${tests.length}` : "0", failing ? "bad" : alerts ? "warn" : "", tests.length ? `${tests.length - failing} of ${tests.length} routine tests passing${alerts ? `, ${plural(alerts, "alert", "alerts")}` : ""}` : "no test results yet");
     if (failing) add(100, "bad", `${failing} ${failing === 1 ? "check" : "checks"} failing`, "health");
     if (alerts && !failing) add(30, "warn", `${plural(alerts, "alert", "alerts")} in the last day`, "health");
+    // Fault reports about Jarvis himself (services/faults.py): a count on the rail only - no banner, nothing over the chat.
+    const nfaults = Number(d.faults?.open) || 0;
+    setRail("faults", nfaults, nfaults ? "warn" : "", nfaults ? `${plural(nfaults, "open fault", "open faults")} in Jarvis` : "no open faults");
 
     const staff = d.staff && !d.staff.error ? d.staff : null;
     const late = staff ? staff.late_starts.length : 0;
@@ -519,6 +523,7 @@
   // as ordinary chat text - never through decide()/the approvals path.
   if (!TEAM) window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
   if (!TEAM) window.JarvisActivity?.init({ api: (p, o) => api(p, o), role: ROLE }); // the "What Jarvis did" pop-up (activity.js): a read-only list
+  if (!TEAM) window.JarvisFaults?.init({ api: (p, o) => api(p, o), toast: (a, b, c) => toast(a, b, c) }); // fault reports (faults.js)
   if (!TEAM) window.JarvisChecks?.init({ api: (p, o) => api(p, o), role: ROLE, toast: (a, b, c) => toast(a, b, c) }); // question checks (checks.js) in Health
   window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 

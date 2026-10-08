@@ -1002,7 +1002,7 @@ def test_every_pop_up_in_the_console_is_either_in_a_manager_region_or_deliberate
     left = set(re.findall(r'<section class="pop" id="pop-(\w+)"', stripped))
     all_pops = set(re.findall(r'<section class="pop" id="pop-(\w+)"', html))
     assert left == TEAM_POPS, f"pop-ups left in the team page: {left}"
-    assert all_pops - TEAM_POPS == {"approvals", "activity", "comms", "issues", "health", "finance", "demo", "memory", "connections"}
+    assert all_pops - TEAM_POPS == {"approvals", "activity", "comms", "issues", "health", "faults", "finance", "demo", "memory", "connections"}
     assert html.count("<!--role:manager-->") == html.count("<!--/role:manager-->")
     assert html.count("<!--role:owner-->") == html.count("<!--/role:owner-->")
     assert html.count("<!--role:team-->") == html.count("<!--/role:team-->")
