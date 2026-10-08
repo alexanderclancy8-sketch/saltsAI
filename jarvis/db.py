@@ -473,6 +473,33 @@ CREATE TABLE IF NOT EXISTS faults (
     resolved_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_faults_key ON faults (key, status);
+-- System schematics (services/schematics.py): one row per drawing, the latest revision number; each revision's normalised spec
+-- (the model's structured description - never markup or code) is in schematic_revisions. Exports are rendered on demand.
+CREATE TABLE IF NOT EXISTS schematics (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    site TEXT NOT NULL DEFAULT '',
+    system TEXT NOT NULL DEFAULT '',
+    job_ref TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_role TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_schematics_updated ON schematics (updated_at);
+CREATE TABLE IF NOT EXISTS schematic_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    drawing_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    drawn_on TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    spec_json TEXT NOT NULL,
+    UNIQUE (drawing_id, revision)
+);
 -- House rules (services/rulebook.py): standing instructions about HOW Jarvis behaves. A row only ever exists because the principal
 -- owner approved a rule_add action on the console, or edited one in the Memory pop-up. status: active | disabled.
 CREATE TABLE IF NOT EXISTS house_rules (

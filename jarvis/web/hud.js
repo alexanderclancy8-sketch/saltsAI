@@ -1210,6 +1210,8 @@ function send(text, mode = "typed", opts = {}) {
   }
   function replyExtras(msg, d, steps) {
     if (!msg || d.replace) return;
+    // System schematics (web/schematics.js): drawn IN the message under its text, from references only - never over the chat.
+    if (Array.isArray(d.schematics) && d.schematics.length) window.JarvisSchematics?.attach(msg, d.schematics);
     if (d.web_sources) msg.insertAdjacentHTML("beforeend", webSourcesHtml(d.web_sources));
     if (typeof d.elapsed_ms === "number") {
       const secs = (d.elapsed_ms / 1000).toFixed(1) + "s";

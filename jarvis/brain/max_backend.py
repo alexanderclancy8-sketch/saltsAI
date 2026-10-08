@@ -31,6 +31,7 @@ from . import checkmode, coverage, plugins
 from .. import access
 from ..redact import redact_text
 from ..events import quiet_turn
+from .trace import attachment as trace_attachment
 from ..services.conversation_quality import TurnRecord
 from ..services.tracking import requester_label
 from .prompts import build_system, build_team_system, house_rules
@@ -82,7 +83,7 @@ def build_sdk_tools(j, tools: list | None = None, caller: access.Caller | None =
                 parsed = _t.model.model_validate(args or {})
                 result = await dispatch(j, _t, parsed, caller=caller, check=check)
                 events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "done",
-                                        "coverage": _facts(_t.name, parsed, result)})
+                                        "coverage": _facts(_t.name, parsed, result), **trace_attachment(_t.name, result)})
                 return {"content": [{"type": "text", "text": serialise(result)}]}
             except ValidationError as e:
                 events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error", "coverage": []})

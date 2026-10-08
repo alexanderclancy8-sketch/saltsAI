@@ -816,6 +816,41 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                                  "Cache-Control": "no-store"})
 
+    # ------------------------------------------------------------------ system schematics (services/schematics.py)
+    # Every signed-in role (owner, manager, engineer, office) may list, view and download them: a drawing carries no prices, and a
+    # download sends and changes nothing (no approval) - it leaves a "What Jarvis did" line. The scene is primitives laid out by code;
+    # the console draws it with DOM APIs (web/schematics.js).
+    def _who(request: Request) -> str:
+        caller = caller_of(request)
+        if caller is not None and caller.is_team:
+            return caller.label
+        return speaker(request) or settings.owner_name or "the owner"
+
+    @app.get("/api/schematics", dependencies=[Depends(member)])
+    async def schematics_list(request: Request, site: str = "", kind: str = "", q: str = "", limit: int = 20):
+        return JSONResponse({"drawings": J(request).schematics.list(site=site, kind=kind, query=q, limit=limit)},
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/schematics/{drawing_id}", dependencies=[Depends(member)])
+    async def schematic_view(drawing_id: str, request: Request, rev: int = 0, mode: str = "wide"):
+        view = await asyncio.to_thread(J(request).schematics.view, drawing_id, rev or None, mode)
+        if view is None:
+            raise HTTPException(404, "No such drawing")
+        return JSONResponse(view, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/schematics/{drawing_id}/export/{fmt}", dependencies=[Depends(member)])
+    async def schematic_export(drawing_id: str, fmt: str, request: Request, rev: int = 0, paper: str = "a3"):
+        from .services import schematics as sch
+
+        if fmt not in sch.EXPORT_FORMATS:
+            raise HTTPException(404, "No such format - use svg, png or pdf.")
+        out = await asyncio.to_thread(J(request).schematics.export, drawing_id, fmt, rev or None, paper, _who(request))
+        if out is None:
+            raise HTTPException(404, "No such drawing")
+        data, mime, filename = out
+        return Response(data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                                                        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
     # ------------------------------------------------------------------ draft social media graphics (PNG)
     @app.get("/api/images/{image_name}", dependencies=[Depends(owner)])
     async def get_image(image_name: str, download: int = 0):
