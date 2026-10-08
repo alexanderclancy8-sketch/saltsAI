@@ -193,7 +193,7 @@ class OutOfHours:
                 body = (await j.mail.get_message(m["id"], mailbox=mailbox)).get("body", "")
                 content: list[dict[str, Any]] = []
                 if m.get("has_attachments"):
-                    for pdf in (await j.mail.pdf_attachments(m["id"], mailbox=mailbox))[:3]:
+                    for pdf in [p for p in await j.mail.pdf_attachments(m["id"], mailbox=mailbox) if p.get("data")][:3]:
                         content.append({"type": "document", "title": pdf["name"],
                                         "source": {"type": "base64", "media_type": "application/pdf",
                                                    "data": pdf["data"]}})

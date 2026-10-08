@@ -13,6 +13,7 @@ reply drafts, folder filing and mark-as-read stay on the owner's own mailbox.
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import html
 import io
@@ -75,7 +76,32 @@ def mailbox_for(settings: Settings, source: str | None) -> tuple[str | None, str
     return None, "mailbox must be 'owner' or 'service'."
 
 
-OFFICE_EXTENSIONS = (".docx", ".xlsx")  # macro-enabled (.docm/.xlsm) and legacy formats are deliberately not read
+OFFICE_EXTENSIONS = (".docx", ".xlsx", ".pptx")  # macro-enabled (.docm/.xlsm) and legacy formats are deliberately not read
+# Office names that are listed (so the owner is told why) but never downloaded: legacy binary formats and macro-enabled files
+_UNREADABLE_OFFICE = (".doc", ".xls", ".ppt", ".docm", ".dotm", ".xlsm", ".xlsb", ".xltm", ".pptm", ".potm", ".ppsm")
+FILE_ATTACHMENT = "#microsoft.graph.fileAttachment"
+ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"        # an Outlook item (email, event, contact) attached to the email
+REFERENCE_ATTACHMENT = "#microsoft.graph.referenceAttachment"  # a LINK to a OneDrive / SharePoint file, not the file itself
+ATTACHMENT_LIST_SELECT = "id,name,size,contentType,isInline"  # never contentBytes: files are fetched one by one with /$value
+MAX_ATTACHMENTS_FETCHED = 10
+
+
+def attachment_kind(item: dict[str, Any]) -> str:
+    """'file', 'item' or 'reference' for one entry of a Graph /attachments listing."""
+    t = item.get("@odata.type")
+    if t == ITEM_ATTACHMENT:
+        return "item"
+    if t == REFERENCE_ATTACHMENT:
+        return "reference"
+    return "file"
+
+
+def is_pdf_attachment(name: str, content_type: str = "") -> bool:
+    return (name or "").strip().lower().endswith(".pdf") or "pdf" in (content_type or "").lower()
+
+
+def is_office_attachment(name: str, content_type: str = "") -> bool:
+    return (name or "").strip().lower().endswith(OFFICE_EXTENSIONS + _UNREADABLE_OFFICE)
 
 
 def select_office_attachments(items: list[dict[str, Any]], max_bytes: int = 15_000_000) -> list[dict[str, str]]:
@@ -167,28 +193,81 @@ class GraphMail:
         out["body"] = _strip((msg.get("body") or {}).get("content", ""))
         return out
 
-    async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
-                              max_bytes: int = 15_000_000) -> list[dict[str, str]]:
-        """PDF attachments of a message as base64 (e.g. an answering service's call report)."""
-        base = self._base(mailbox)
-        r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
+    async def _attachment_items(self, message_id: str, mailbox: str | None) -> list[dict[str, Any]]:
+        """The attachments of a message WITHOUT their content (names, sizes, kinds): the listing alone can't carry a
+        multi-megabyte file reliably, so each file is then fetched on its own with ``_attachment_bytes``."""
+        r = await self.http.get(f"{self._base(mailbox)}/messages/{message_id}/attachments",
+                                params={"$select": ATTACHMENT_LIST_SELECT, "$top": "50"}, headers=await self._headers())
         r.raise_for_status()
-        out = []
-        for a in r.json().get("value", []):
+        return r.json().get("value", [])
+
+    async def _attachment_bytes(self, message_id: str, attachment_id: str, mailbox: str | None) -> bytes:
+        """The raw bytes of one file attachment through ``/$value``, which works for any size (the JSON ``contentBytes``
+        form is only reliable under ~3 MB)."""
+        r = await self.http.get(f"{self._base(mailbox)}/messages/{message_id}/attachments/{attachment_id}/$value",
+                                headers=await self._headers())
+        r.raise_for_status()
+        return r.content
+
+    async def _fetch_attachments(self, message_id: str, mailbox: str | None, wanted, max_bytes: int,
+                                 readable) -> list[dict[str, Any]]:
+        """The attachments ``wanted(name, content_type)`` picks, as ``{"name", "data": base64}`` - or, for one that can't be
+        fetched as file bytes, ``{"name", "problem": <code>, "size", "detail"}`` saying why (link, item, format,
+        too_large, download_failed, empty). Nothing is silently dropped, so the owner can be told exactly what happened."""
+        out: list[dict[str, Any]] = []
+        for a in await self._attachment_items(message_id, mailbox):
             name = a.get("name") or ""
-            is_pdf = name.lower().endswith(".pdf") or "pdf" in (a.get("contentType") or "").lower()
-            if a.get("@odata.type") == "#microsoft.graph.fileAttachment" and is_pdf and a.get("contentBytes") \
-                    and int(a.get("size") or 0) <= max_bytes:
-                out.append({"name": name, "data": a["contentBytes"]})
+            if not wanted(name, a.get("contentType") or ""):
+                continue
+            if len(out) >= MAX_ATTACHMENTS_FETCHED:
+                break
+            size = int(a.get("size") or 0)
+            kind = attachment_kind(a)
+            if kind == "reference":
+                out.append({"name": name, "problem": "link", "size": size})
+            elif kind == "item":
+                out.append({"name": name, "problem": "item", "size": size})
+            elif not readable(name):
+                out.append({"name": name, "problem": "format", "size": size})
+            elif size > max_bytes:
+                out.append({"name": name, "problem": "too_large", "size": size})
+            else:
+                try:
+                    raw = await self._attachment_bytes(message_id, a.get("id") or "", mailbox)
+                except Exception as e:  # noqa: BLE001 - one attachment failing mustn't hide the others
+                    out.append({"name": name, "problem": "download_failed", "size": size,
+                                "detail": describe_http_error(e)})
+                    continue
+                if not raw:
+                    out.append({"name": name, "problem": "empty", "size": size})
+                elif len(raw) > max_bytes:
+                    out.append({"name": name, "problem": "too_large", "size": len(raw)})
+                else:
+                    out.append({"name": name, "data": base64.b64encode(raw).decode()})
         return out
 
+    async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
+                              max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
+        """PDF attachments of a message as base64 (e.g. an answering service's call report or a customer's PO). Files of
+        any size are fetched through /$value; one that can't be read as file bytes (a OneDrive / SharePoint link, an
+        attached email, a download failure, over ``max_bytes``) is returned as an entry with a ``problem`` and no
+        ``data``, so a caller that wants the bytes must skip entries without ``data``."""
+        return await self._fetch_attachments(message_id, mailbox, is_pdf_attachment, max_bytes, lambda n: True)
+
     async def office_attachments(self, message_id: str, mailbox: str | None = None,
-                                 max_bytes: int = 15_000_000) -> list[dict[str, str]]:
-        """Word (.docx) and Excel (.xlsx) attachments of a message as base64 - read-only, nothing is changed."""
-        base = self._base(mailbox)
-        r = await self.http.get(f"{base}/messages/{message_id}/attachments", headers=await self._headers())
-        r.raise_for_status()
-        return select_office_attachments(r.json().get("value", []), max_bytes)
+                                 max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
+        """Word (.docx), Excel (.xlsx) and PowerPoint (.pptx) attachments of a message as base64 - read-only, nothing is
+        changed. Same contract as ``pdf_attachments`` for files that can't be read (including the old .doc / .xls / .ppt
+        and macro-enabled formats, which are listed with a problem and never downloaded)."""
+        return await self._fetch_attachments(message_id, mailbox, is_office_attachment, max_bytes,
+                                             lambda n: n.strip().lower().endswith(OFFICE_EXTENSIONS))
+
+    async def attachment_overview(self, message_id: str, mailbox: str | None = None) -> list[dict[str, Any]]:
+        """Every attachment of a message, content not downloaded: name, size, kind (file / item / reference) and type. Used
+        to tell the owner what an email DOES carry when there was nothing readable of the kind asked for."""
+        return [{"name": a.get("name") or "", "size": int(a.get("size") or 0), "kind": attachment_kind(a),
+                 "content_type": a.get("contentType") or "", "inline": bool(a.get("isInline"))}
+                for a in await self._attachment_items(message_id, mailbox)]
 
     async def attachment_names(self, message_id: str, mailbox: str | None = None, limit: int = 20) -> list[str]:
         """File names of a message's attachments (names only - no content is downloaded)."""
@@ -463,11 +542,14 @@ class DemoMail:
         raise KeyError(f"No message {message_id}")
 
     async def pdf_attachments(self, message_id: str, mailbox: str | None = None,
-                              max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+                              max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
         return []
 
     async def office_attachments(self, message_id: str, mailbox: str | None = None,
-                                 max_bytes: int = 15_000_000) -> list[dict[str, str]]:
+                                 max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
+        return []
+
+    async def attachment_overview(self, message_id: str, mailbox: str | None = None) -> list[dict[str, Any]]:
         return []
 
     async def mark_read(self, message_id: str) -> None:
