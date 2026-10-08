@@ -38,8 +38,10 @@ WEB = Path(__file__).resolve().parent.parent / "jarvis" / "web"
 OWNER_PW = "owner-pass-for-drawings"
 OFFICE_CODE = "office-code-drawings-1"
 ENGINEER_CODE = "engineer-code-drawings-2"
-SPEC_TYPES = {"smoke", "heat", "multi", "call_point", "sounder", "vad", "sounder_beacon", "panel", "repeater", "interface", "beam",
-              "aspirating", "door_holder", "pir", "door_contact", "keypad", "cctv", "access_reader"}
+# the brief's list (smoke, heat, multi-sensor, call point, sounder, VAD, sounder-beacon, panel, repeater, interface / I-O, beam, aspirating
+# point, door holder, PIR, door contact, keypad, CCTV camera, access reader) under the SHARED symbol set's keys, plus an intruder panel
+SPEC_TYPES = {"smoke", "heat", "multi", "mcp", "sounder", "vad", "sounder_vad", "panel", "repeater", "io", "interface", "beam", "asd",
+              "door_holder", "intruder_panel", "pir", "door_contact", "keypad", "camera", "reader"}
 
 
 def fixed_now():
@@ -89,20 +91,34 @@ def stored_plan(j, raw=None, name="plan.png") -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------- the symbols
-def test_one_symbol_library_with_every_device_type_and_only_closed_primitives():
+def test_one_shared_symbol_set_for_floor_plans_and_schematics():
+    from jarvis.services import schematic_symbols as SS
+
     lib = symbol_library()
     assert set(DEVICE_TYPES) == SPEC_TYPES and len(DEVICE_TYPES) == len(SPEC_TYPES)
-    assert [t for t, d in lib["types"].items() if d.get("rotates")] == ["cctv"]
-    for t, d in lib["types"].items():
-        assert d["label"] and d["group"] in lib["colours"] and d["prims"], t
-        for p in d["prims"]:
-            assert p[0] in ("circle", "rect", "poly", "line", "text"), (t, p)
-            coords = (p[1] if p[0] == "poly" else p[1:3] if p[0] == "text" else [p[1], p[2], p[1] + p[3], p[2] + p[4]] if p[0] == "rect"
-                      else [p[1] - p[3], p[2] - p[3], p[1] + p[3], p[2] + p[3]] if p[0] == "circle" else p[1:5])
-            assert all(-12.5 <= v <= 12.5 for v in coords), (t, p)        # inside the 24-unit box, centred on 0
+    assert set(DEVICE_TYPES) <= set(SS.SYMBOLS)                      # every floor-plan type IS a schematic type: same names...
+    for t in DEVICE_TYPES:                                             # ...same shapes and labels, taken from the one definition
+        assert lib["types"][t]["items"] is SS.SYMBOLS[t]["items"] and lib["types"][t]["label"] == SS.SYMBOLS[t]["label"], t
+        assert lib["types"][t]["colour"] in pd.FAMILY_COLOURS.values()
+    assert [t for t, d in lib["types"].items() if d["rotates"]] == ["camera"]
+    # the shared set's own aliases resolve too, and the floor-plan words land on shared keys
+    assert pd.normalise_type("break glass") == "mcp" and pd.normalise_type("Sounder beacon") == "sounder_vad"
+    assert pd.normalise_type("CCTV camera") == "camera" and pd.normalise_type("card reader") == "reader"
+    assert pd.normalise_type("aspirating point") == "asd" and pd.normalise_type("Dome camera") is None   # ptz: not a floor-plan type
     js = (WEB / "drawing_symbols.js").read_text(encoding="utf-8")
-    assert "NOT a formal" in js and "BS symbol set" in js          # never claimed to be a standard symbol set
+    assert "schematic_symbols.py" in js and "NOT a" in js and "formal BS symbol set" in js
     assert "innerHTML" not in js and "eval(" not in js
+    assert '"prims"' not in js and "DRAWING-SYMBOLS-JSON" not in js        # no second copy of the shapes in the console
+
+
+def test_the_pdf_draws_the_shared_primitives(settings, monkeypatch):
+    from jarvis.services import schematic_symbols as SS
+
+    seen = []
+    real = SS.expand
+    monkeypatch.setattr(SS, "expand", lambda key, *a, **k: (seen.append(key), real(key, *a, **k))[1])
+    exported(settings, "devices", {"devices": [{"type": "smoke", "x": 0.2, "y": 0.2}, {"type": "camera", "x": 0.5, "y": 0.5, "direction": 90}]})
+    assert {"smoke", "camera"} <= set(seen)
 
 
 # ------------------------------------------------------------------------------------------------------- cleaning / clamping
@@ -119,7 +135,7 @@ def test_devices_are_validated_and_clamped_and_unknown_types_dropped():
         "not a device",
     ], "rotation": 271, "paper": "letter"})
     devs = content["devices"]
-    assert [d["type"] for d in devs] == ["smoke", "call_point", "call_point", "cctv", "pir"]
+    assert [d["type"] for d in devs] == ["smoke", "mcp", "mcp", "camera", "pir"]
     assert devs[0]["x"] == 1.0 and devs[0]["y"] == 0.0 and report["clamped"] == 1
     assert "‮" not in devs[0]["label"] and "\u0000" not in devs[0]["label"] and len(devs[0]["label"]) <= pd.LABEL_MAX
     assert len(devs[0]["note"]) == pd.NOTE_MAX
@@ -237,7 +253,7 @@ async def test_a_proposal_is_one_vision_call_with_the_plan_as_untrusted_data_and
     assert prompt[0]["type"] == "image" and prompt[0]["source"]["media_type"] == "image/jpeg"
     text = prompt[1]["text"]
     assert text.startswith("<<<REQUEST\n") and text.count("REQUEST>>>") == 1 and "‹‹‹REQUEST" in text   # the brief can't close its fence
-    assert [d["type"] for d in out["devices"]] == ["smoke", "call_point", "sounder"]
+    assert [d["type"] for d in out["devices"]] == ["smoke", "mcp", "sounder"]
     assert out["devices"][2]["x"] == 1.0 and len(out["devices"][2]["label"]) <= pd.LABEL_MAX
     assert out["zones"] == [] and out["panel_location"] == "Reception"
     assert out["notes"] == ["Kitchen not shown", "Scale unknown", "extra", "extra", "extra", "extra"][:pd.MAX_NOTES]
@@ -421,7 +437,7 @@ def test_owner_uploads_opens_saves_and_a_stale_save_is_refused(world):
     r = owner.post("/api/drawings/1", json=body)
     assert r.status_code == 200, r.text
     saved = r.json()
-    assert saved["version"] == 2 and saved["revision"] == "B" and saved["counts"] == {"smoke": 1, "call_point": 1}
+    assert saved["version"] == 2 and saved["revision"] == "B" and saved["counts"] == {"smoke": 1, "mcp": 1}
     assert saved["content"]["devices"][1]["x"] == 1.0 and saved["report"]["clamped"] == 1
     r = owner.post("/api/drawings/1", json=body)                       # still at version 1: someone saved since
     assert r.status_code == 409 and "saved this drawing since you opened it" in r.json()["detail"]
@@ -510,7 +526,7 @@ def test_a_device_layout_pdf_has_the_title_block_legend_counts_and_disclaimer(se
     text = pdf_text(data)
     flat = re.sub(r"\s+", " ", text)
     assert mime == "application/pdf" and name == "D1-Ground-floor-rev-A-A3.pdf"
-    for needle in ("DEVICE LAYOUT", "DRAFT", "Smoke detector", "CCTV camera", "Manual call point", "Total devices", "Unit 4 Test Park",
+    for needle in ("DEVICE LAYOUT", "DRAFT", "Smoke detector", "Camera (fixed)", "Manual call point", "Total devices", "Unit 4 Test Park",
                    "1 Example Road, Testville", "Main entrance", "J-77", "9 October 2026", "Salts Fire & Security", "not to scale",
                    DISCLAIMER, "does not show compliance with BS 5839"):
         assert needle in flat, needle

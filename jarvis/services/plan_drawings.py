@@ -1,5 +1,6 @@
 """Drawings on floor plans: device layouts and BS 5839-1-style zone charts (``j.drawings``; tool ``draw_on_plan``; console rail
-item + pop-up **Drawings**, ``web/drawings.js``; symbols ``web/drawing_symbols.js``; tests ``tests/test_plan_drawings.py`` and
+item + pop-up **Drawings**, ``web/drawings.js``; symbols: the ONE shared set in ``services/schematic_symbols.py``, drawn in the console by
+``web/drawing_symbols.js``; tests ``tests/test_plan_drawings.py`` and
 ``tests/test_plan_drawings_browser.py``).
 
 Two outputs from one plan:
@@ -62,6 +63,7 @@ from .. import access
 from ..brain import checkmode, llm
 from ..redact import redact_text
 from . import file_reader
+from . import schematic_symbols as SS
 from .file_reader import FileProblem
 
 log = logging.getLogger(__name__)
@@ -92,8 +94,6 @@ LABEL_MAX, NOTE_MAX, ZONE_NAME_MAX, FLOOR_MAX = 40, 160, 60, 40
 TITLE_MAX, FIELD_MAX, ADDRESS_MAX, REVISION_MAX, JOB_MAX, BRIEF_MAX, NAME_MAX = 120, 120, 240, 12, 40, 1500, 120
 PROPOSALS_PER_HOUR = 20
 
-SYMBOLS_FILE = Path(__file__).resolve().parent.parent / "web" / "drawing_symbols.js"
-_JSON_START, _JSON_END = "/* DRAWING-SYMBOLS-JSON-START */", "/* DRAWING-SYMBOLS-JSON-END */"
 
 
 PDFIUM_LOCK = threading.Lock()
@@ -104,50 +104,63 @@ class PlanSourceError(ValueError):
 
 
 # ------------------------------------------------------------------------------------------------------- the symbol library
-@lru_cache(maxsize=1)
-def symbol_library() -> dict[str, Any]:
-    """The JSON block of web/drawing_symbols.js - the ONE definition of every symbol, read by the editor and by the exporter."""
-    text = SYMBOLS_FILE.read_text(encoding="utf-8")
-    return json.loads(text[text.index(_JSON_START) + len(_JSON_START):text.index(_JSON_END)])
-
-
-DEVICE_TYPES: tuple[str, ...] = tuple(symbol_library()["types"])
+# ONE symbol set for every drawing Jarvis makes: services/schematic_symbols.py (shared with system schematics). The floor-plan device
+# types are a subset of its keys - the same names, shapes, codes and labels - so a smoke detector looks the same on a zone chart, a
+# device layout and a loop schematic. The console editor is SENT these primitives (``symbol_library()``, in the drawings list and every
+# drawing) and draws them with web/drawing_symbols.js; the PDF / PNG export expands them with ``schematic_symbols.expand``.
+DEVICE_TYPES: tuple[str, ...] = ("smoke", "heat", "multi", "mcp", "sounder", "vad", "sounder_vad", "panel", "repeater", "io", "interface",
+                                 "beam", "asd", "door_holder", "intruder_panel", "pir", "door_contact", "keypad", "camera", "reader")
+# Drawn by the shared set pointing RIGHT; a floor-plan view direction is degrees clockwise from straight UP the plan as uploaded.
+ROTATING = frozenset({"camera"})
+FAMILY_COLOURS = {"fire": "#c62828", "security": "#1565c0", "network": "#37474f", "common": "#37474f"}
+SOFT_FILL = "#eef1f5"
+ZONE_COLOURS = ("#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00897b", "#d81b60", "#6d4c41", "#3949ab", "#7cb342",
+                "#f4511e", "#546e7a")
 
 
 def device_label(kind: str) -> str:
-    return symbol_library()["types"].get(kind, {}).get("label", "Device")
+    return SS.label(kind) if kind in DEVICE_TYPES else "Device"
 
 
 def device_colour(kind: str) -> str:
-    lib = symbol_library()
-    return lib["colours"].get(lib["types"].get(kind, {}).get("group", ""), lib["colours"]["control"])
+    return FAMILY_COLOURS.get(SS.SYMBOLS.get(kind, {}).get("family", ""), FAMILY_COLOURS["common"])
 
 
-# Words the model (or a person) might use for a type -> the closed vocabulary. Anything else is dropped (and counted).
-ALIASES = {
-    "smoke detector": "smoke", "optical": "smoke", "optical smoke": "smoke", "optical smoke detector": "smoke", "smoke head": "smoke",
-    "heat detector": "heat", "rate of rise": "heat", "multisensor": "multi", "multi sensor": "multi", "multi-sensor": "multi",
-    "multi sensor detector": "multi", "multi-sensor detector": "multi", "mcp": "call_point", "manual call point": "call_point",
-    "call point": "call_point", "callpoint": "call_point", "break glass": "call_point", "bell": "sounder", "sounders": "sounder",
-    "beacon": "vad", "visual alarm device": "vad", "strobe": "vad", "visual alarm": "vad", "sounder beacon": "sounder_beacon",
-    "sounder-beacon": "sounder_beacon", "sounder/beacon": "sounder_beacon", "control panel": "panel", "fire panel": "panel",
-    "fire alarm panel": "panel", "cie": "panel", "alarm panel": "panel", "intruder panel": "panel", "repeater panel": "repeater",
-    "i/o": "interface", "io": "interface", "interface unit": "interface", "input/output": "interface", "i/o unit": "interface",
-    "input output unit": "interface", "beam detector": "beam", "optical beam": "beam", "beam": "beam", "asd": "aspirating",
-    "aspirating point": "aspirating", "sampling point": "aspirating", "aspirating sampling point": "aspirating",
-    "door holder": "door_holder", "door retainer": "door_holder", "pir detector": "pir", "motion detector": "pir", "pir": "pir",
-    "door contact": "door_contact", "magnetic contact": "door_contact", "reed contact": "door_contact", "keypad": "keypad",
-    "camera": "cctv", "cctv camera": "cctv", "access reader": "access_reader", "card reader": "access_reader",
-    "reader": "access_reader", "access control reader": "access_reader", "proximity reader": "access_reader",
+def palette(kind: str) -> dict[str, str]:
+    """The shared set's colour ROLES -> print colours for one floor-plan device (its family colour; white and a soft tint fills)."""
+    col = device_colour(kind)
+    return {"ink": col, "accent": col, "muted": col, "line": col, "paper": "#ffffff", "soft": SOFT_FILL, "assumed": "#8c929b"}
+
+
+@lru_cache(maxsize=1)
+def symbol_library() -> dict[str, Any]:
+    """What the editor draws with: for each floor-plan type the shared set's own primitives (unit box -1..1, y down), its label,
+    family colour and whether it turns; plus the zone colours. Plain data - web/drawing_symbols.js validates and draws it."""
+    return {"version": 2, "source": "jarvis/services/schematic_symbols.py", "soft": SOFT_FILL, "zone_colours": list(ZONE_COLOURS),
+            "types": {t: {"label": device_label(t), "family": SS.SYMBOLS[t]["family"], "colour": device_colour(t),
+                          "rotates": t in ROTATING, "items": SS.SYMBOLS[t]["items"]} for t in DEVICE_TYPES}}
+
+
+# Floor-plan words for a type -> the shared key (checked before the shared set's own ALIASES, which also apply).
+PLAN_ALIASES = {
+    "call point": "mcp", "manual call point": "mcp", "callpoint": "mcp", "break glass": "mcp", "cctv": "camera", "cctv camera": "camera",
+    "camera": "camera", "fixed camera": "camera", "access reader": "reader", "access control reader": "reader", "card reader": "reader",
+    "proximity reader": "reader", "aspirating point": "asd", "aspirating sampling point": "asd", "sampling point": "asd",
+    "aspirating": "asd", "sounder beacon": "sounder_vad", "sounder-beacon": "sounder_vad", "sounder/beacon": "sounder_vad",
+    "control panel": "panel", "fire panel": "panel", "fire alarm panel": "panel", "cie": "panel", "intruder panel": "intruder_panel",
+    "alarm panel": "intruder_panel", "intruder alarm panel": "intruder_panel", "i/o": "io", "interface/i-o": "io", "i/o unit": "io",
+    "input/output": "io", "interface unit": "interface", "multi-sensor detector": "multi", "multi sensor detector": "multi",
+    "multi-sensor": "multi", "visual alarm device": "vad", "visual alarm": "vad", "beacon": "vad", "door holder": "door_holder",
+    "door contact": "door_contact", "reed contact": "door_contact", "pir detector": "pir", "motion detector": "pir",
+    "smoke detector": "smoke", "heat detector": "heat", "beam detector": "beam", "repeater panel": "repeater",
 }
 
 
 def normalise_type(raw: Any) -> str | None:
     s = re.sub(r"[\s_]+", " ", str(raw or "").strip().lower())
-    key = s.replace(" ", "_")
-    if key in DEVICE_TYPES:
-        return key
-    return ALIASES.get(s)
+    if s in PLAN_ALIASES:
+        return PLAN_ALIASES[s]
+    return SS.resolve(raw, DEVICE_TYPES)
 
 
 # ------------------------------------------------------------------------------------------------------------ cleaning
@@ -233,7 +246,7 @@ def clean_device(raw: Any) -> tuple[dict[str, Any] | None, bool]:
         return None, False
     out: dict[str, Any] = {"type": kind, "x": x, "y": y, "label": clean_text(raw.get("label"), LABEL_MAX),
                            "note": clean_text(raw.get("note"), NOTE_MAX)}
-    if symbol_library()["types"][kind].get("rotates"):
+    if kind in ROTATING:
         d = _num(raw.get("direction"))
         if d is not None:
             out["direction"] = round(d % 360, 1)
@@ -671,7 +684,7 @@ class PlanDrawings:
                 "plan": {"width": plan.get("width"), "height": plan.get("height"), "page": plan.get("page"), "pages": plan.get("pages"),
                          "name": plan.get("name", ""), "source": plan.get("source", ""), "url": f"/api/drawings/{row['id']}/plan"},
                 "can_edit": self.may_edit(caller), "can_manage": self.may_manage(caller),
-                "drawn_by": DRAWN_BY, "disclaimer": DISCLAIMER}
+                "drawn_by": DRAWN_BY, "disclaimer": DISCLAIMER, "symbols": symbol_library()}
 
     def listing(self, caller: access.Caller | None) -> dict[str, Any]:
         rows = self.db.query("SELECT id, kind, title, site_name, job_ref, revision, updated_at, updated_by, data FROM drawings "
@@ -690,7 +703,7 @@ class PlanDrawings:
                         "devices": len(data.get("devices") or []), "zones": len(data.get("zones") or [])})
         return {"drawings": out, "can_manage": self.may_manage(caller), "can_edit": self.may_edit(caller),
                 "team_note": "" if self.may_manage(caller) else "Drawings linked to a job show here.",
-                "types": [{"type": t, "label": device_label(t)} for t in DEVICE_TYPES], "disclaimer": DISCLAIMER}
+                "symbols": symbol_library(), "disclaimer": DISCLAIMER}
 
     def create(self, *, kind: str, plan_id: str, meta: dict[str, Any], content: dict[str, Any] | None = None, by: str,
                proposed: bool = False) -> dict[str, Any]:
@@ -982,78 +995,64 @@ def _rgb(hex_colour: str):
     return HexColor(hex_colour)
 
 
-def draw_symbol(c, kind: str, px: float, py: float, size: float, direction: float | None = None) -> None:
-    """One symbol from the library on a reportlab canvas, centred on (px, py) in points, ``size`` points across."""
-    lib = symbol_library()
-    d = lib["types"].get(kind)
-    if d is None:
+def _turn(prims: list[dict[str, Any]], degrees: float) -> list[dict[str, Any]]:
+    """Primitives centred on (0, 0) turned clockwise (y down) - a rect becomes a closed polygon."""
+    a = math.radians(degrees)
+    ca, sa = math.cos(a), math.sin(a)
+
+    def rot(x: float, y: float) -> list[float]:
+        return [x * ca - y * sa, x * sa + y * ca]
+
+    out = []
+    for p in prims:
+        q = dict(p)
+        if p["t"] == "rect":
+            x, y, w, h = p["x"], p["y"], p["w"], p["h"]
+            q = {**{k: v for k, v in p.items() if k not in ("x", "y", "w", "h", "rx")}, "t": "poly", "z": True,
+                 "pts": [rot(x, y), rot(x + w, y), rot(x + w, y + h), rot(x, y + h)]}
+        elif p["t"] == "poly":
+            q["pts"] = [rot(x, y) for x, y in p["pts"]]
+        elif p["t"] == "line":
+            (q["x1"], q["y1"]), (q["x2"], q["y2"]) = rot(p["x1"], p["y1"]), rot(p["x2"], p["y2"])
+        elif p["t"] == "circle":
+            q["cx"], q["cy"] = rot(p["cx"], p["cy"])
+        elif p["t"] == "text":
+            q["x"], q["y"] = rot(p["x"], p["y"])
+        out.append(q)
+    return out
+
+
+def draw_symbol(c, kind: str, px: float, py: float, size: float, direction: float | None = None, page_h: float | None = None) -> None:
+    """One device symbol on a reportlab canvas, centred on (px, py) in points, ``size`` points across: the SHARED symbol set's
+    primitives (``schematic_symbols.expand``) drawn by the schematics' own PDF drawer in this device's family colour. A camera with a
+    view direction is turned to it and gets a light view cone."""
+    from .schematic_render import _pdf_draw, transform
+
+    if kind not in DEVICE_TYPES:
         return
+    H = page_h if page_h is not None else c._pagesize[1]
     col = _rgb(device_colour(kind))
-    white = _rgb("#ffffff")
-    k = size / lib["box"]
-    sw = lib["stroke"]
-    c.saveState()
-    c.translate(px, py)
-    c.scale(k, -k)             # symbol units, y pointing down - the same space the SVG renderer uses
-    turn = d.get("rotates") and direction is not None
-    if turn:
-        r, half = 3 * lib["box"], math.pi / 6
+    prims = SS.expand(kind, 0, 0, size)
+    if kind in ROTATING and direction is not None:
+        r, half = size * 3, math.pi / 6
         a = math.radians(direction - 90)
         p = c.beginPath()
-        p.moveTo(0, 0)
+        p.moveTo(px, py)
         for i in range(13):
             t = a - half + (2 * half) * i / 12
-            p.lineTo(math.cos(t) * r, math.sin(t) * r)
+            p.lineTo(px + math.cos(t) * r, py - math.sin(t) * r)
         p.close()
+        c.saveState()
         c.setFillColor(col, alpha=0.14)
         c.setStrokeColor(col, alpha=0.45)
-        c.setLineWidth(0.8)
+        c.setLineWidth(0.6)
         c.drawPath(p, stroke=1, fill=1)
-        c.setStrokeColor(col, alpha=1)
-        c.rotate(direction)
+        c.restoreState()
+        prims = _turn(prims, direction - 90)
+    c.saveState()
     c.setLineCap(1)
     c.setLineJoin(1)
-    c.setStrokeColor(col)
-
-    def paint(style: str) -> tuple[int, int]:
-        if style == "f":
-            c.setFillColor(col)
-            c.setLineWidth(sw * 0.5)
-            return 1, 1
-        c.setLineWidth(sw)
-        if style == "n":
-            return 1, 0
-        c.setFillColor(white)
-        return 1, 1
-
-    for prim in d["prims"]:
-        what = prim[0]
-        if what == "circle":
-            s, f = paint(prim[4])
-            c.circle(prim[1], prim[2], prim[3], stroke=s, fill=f)
-        elif what == "rect":
-            s, f = paint(prim[5])
-            c.rect(prim[1], prim[2], prim[3], prim[4], stroke=s, fill=f)
-        elif what == "poly":
-            s, f = paint(prim[2])
-            pts = prim[1]
-            p = c.beginPath()
-            p.moveTo(pts[0], pts[1])
-            for i in range(2, len(pts), 2):
-                p.lineTo(pts[i], pts[i + 1])
-            p.close()
-            c.drawPath(p, stroke=s, fill=f)
-        elif what == "line":
-            c.setLineWidth(sw)
-            c.line(prim[1], prim[2], prim[3], prim[4])
-        elif what == "text":
-            c.saveState()
-            c.translate(prim[1], prim[2])
-            c.scale(1, -1)
-            c.setFillColor(col)
-            c.setFont("Helvetica-Bold", prim[4])
-            c.drawCentredString(0, -prim[4] * 0.35, _pdf_text(prim[3]))
-            c.restoreState()
+    _pdf_draw(c, transform(prims, px, H - py), H, palette(kind))
     c.restoreState()
 
 
@@ -1123,7 +1122,7 @@ def render_pdf(row: dict[str, Any], plan: PlanImage, paper: str, logo: Path | No
         return dx + rx * dw, dy + dh - ry * dh
 
     sym = min(max(0.026 * max(dw, dh), 3.4 * mm), 7 * mm * f)
-    zone_cols = symbol_library()["zone_colours"]
+    zone_cols = ZONE_COLOURS
     if kind == "zones":
         for i, z in enumerate(content["zones"]):
             col = _rgb(zone_cols[(z["number"] - 1) % len(zone_cols)])
@@ -1171,7 +1170,7 @@ def render_pdf(row: dict[str, Any], plan: PlanImage, paper: str, logo: Path | No
         for d in content["devices"]:
             px, py = at(d["x"], d["y"])
             direction = (d["direction"] + rot_dir) % 360 if d.get("direction") is not None else None
-            draw_symbol(c, d["type"], px, py, sym, direction)
+            draw_symbol(c, d["type"], px, py, sym, direction, H)
         lf = max(5.0, sym * 0.42)
         c.setFont("Helvetica", lf)
         for d in content["devices"]:
@@ -1248,7 +1247,7 @@ def render_pdf(row: dict[str, Any], plan: PlanImage, paper: str, logo: Path | No
         yy = space_top
         icon = min(rh * 0.82, 5.5 * mm * f ** 0.5)
         for t, num in items[:shown]:
-            draw_symbol(c, t, px0 + icon / 2, yy - rh / 2, icon)   # no direction: a legend camera has no view cone
+            draw_symbol(c, t, px0 + icon / 2, yy - rh / 2, icon, None, H)   # no direction: a legend camera has no view cone
             c.setFillColor(ink)
             c.setFont("Helvetica", fs)
             c.drawString(px0 + icon + 2.5 * mm, yy - rh / 2 - fs * 0.35, _pdf_text(device_label(t)))

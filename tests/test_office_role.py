@@ -210,8 +210,11 @@ def test_the_allowlists_engineer_is_exactly_the_old_team_list_and_office_adds_on
     assert access.ENGINEER_TOOLS == TEAM_TOOLS == {"fsm_jobs", "job_detail", "fsm_systems_due", "staff_overdue_jobs", "staff_today",
                                                    "engineer_locations", "nearest_engineer", "marketing_overview", "knowledge_search",
                                                    "log_job", "run_in_background", "background_results",
-                                                   "find_similar_work"}  # (team: no prices, no emails - test_similar_work.py)
+                                                   "find_similar_work",  # (team: no prices, no emails - test_similar_work.py)
+                                                   "draw_schematic", "list_schematics", "open_schematic"}  # (test_schematics.py)
     assert OFFICE_TOOLS - TEAM_TOOLS == access.OFFICE_EXTRA_TOOLS == {"customer_balance"}
+    # office views and exports schematics but does not draw them: the one engineer-only tool
+    assert TEAM_TOOLS - OFFICE_TOOLS == access.ENGINEER_ONLY_TOOLS == {"draw_schematic"}
     assert TOOLS_BY_NAME["customer_balance"].approval is False
     for t in TOOLS:
         assert tool_allowed(t.name, SAM) == tool_allowed(t.name, LEGACY) == (t.name in TEAM_TOOLS), t.name

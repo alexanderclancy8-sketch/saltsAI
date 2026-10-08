@@ -1,124 +1,88 @@
-/* JARVIS console - the symbol library for drawings on floor plans (device layouts and zone charts).
+/* JARVIS console - draws the device symbols of a drawing on a floor plan (device layouts and zone charts, web/drawings.js).
  *
- * ONE file, used twice: the editor (web/drawings.js) draws every device with it in the browser, and the server
- * (services/plan_drawings.py) reads the JSON block below - exactly the text between the two marker comments - to draw the
- * same symbols into the exported PDF / PNG. So a symbol is changed here and nowhere else.
+ * There is ONE symbol set for every drawing Jarvis makes: jarvis/services/schematic_symbols.py (shared with system schematics). This
+ * file holds no shapes of its own: the server sends the floor-plan subset (services/plan_drawings.symbol_library(), in the drawings
+ * list and in every drawing) and this file only DRAWS it, so a smoke detector looks the same on a zone chart, a device layout, a loop
+ * schematic and every export. They are clear, consistent symbols of the kind commonly used on UK fire and security drawings - NOT a
+ * formal BS symbol set, and nothing here claims they are; every export carries its own legend.
  *
- * These are clear, consistent symbols of the kind commonly used on UK fire and security layouts (letters in circles for
- * detectors, squares for manual / interface devices, a speaker for sounders, rays for visual alarms). They are NOT a formal
- * BS symbol set and nothing here claims they are; every exported drawing carries its own legend.
+ * The data: { types: { key: { label, family, colour, rotates, items: [primitive...] } }, soft, zone_colours: [...] }. A primitive is in
+ * a unit box -1..1 (y down): circle {cx, cy, r}, rect {x, y, w, h, rx}, line {x1, y1, x2, y2}, poly {pts: [[x, y]...], z: closed},
+ * text {x, y, s, fs, w}; optional fill role f (paper | soft | ink | accent) and stroke role c. Roles become this device's family colour
+ * (white / a soft tint for the paper / soft fills). Everything is checked here (known shape, finite numbers) and built with DOM APIs:
+ * nothing is parsed as markup. A type that "rotates" (the camera) is drawn by the shared set pointing RIGHT; its view direction here
+ * is degrees clockwise from UP, and it gets a light view cone.
  *
- * Geometry: each symbol lives in a 24 x 24 box centred on (0, 0), y pointing DOWN (SVG's way). Primitives, all plain data:
- *   ["circle", cx, cy, r, style]        style: "s" = outline in the symbol colour on a white fill (legible over plan lines),
- *   ["rect", x, y, w, h, style]                 "f" = filled with the symbol colour, "n" = outline with no fill
- *   ["poly", [x1, y1, x2, y2, ...], style]   (closed)
- *   ["line", x1, y1, x2, y2]
- *   ["text", x, y, "TXT", size]          centred on (x, y), bold sans-serif, in the symbol colour
- * A type with "rotates": true (the CCTV camera) is drawn pointing UP and turned by the device's view direction (degrees,
- * clockwise, 0 = up on the plan as uploaded); the renderers add a light view cone in front of it.
- * Keep the block strict JSON (double quotes, no trailing commas, no comments): Python parses it with json.loads.
- *
- * Another drawing feature (system schematics) may bring its own symbol file; if both land, reconcile them into one.
- *
- * Exposes window.DrawingSymbols = { DATA, TYPES, ZONE_COLOURS, label(type), colour(type), draw(parent, type, x, y, size, opts), icon(type, px) }.
+ * Exposes window.DrawingSymbols = { setData(data), ready(), TYPES, ZONE_COLOURS, label(type), colour(type), draw(parent, type, x, y,
+ * size, opts), icon(type, px) }.
  */
 (() => {
   "use strict";
-  const DATA = /* DRAWING-SYMBOLS-JSON-START */
-{
-  "version": 1,
-  "box": 24,
-  "stroke": 1.7,
-  "colours": {"fire": "#c62828", "security": "#1565c0", "control": "#37474f"},
-  "zone_colours": ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00897b", "#d81b60", "#6d4c41",
-                   "#3949ab", "#7cb342", "#f4511e", "#546e7a"],
-  "types": {
-    "smoke": {"label": "Smoke detector", "group": "fire",
-              "prims": [["circle", 0, 0, 10, "s"], ["text", 0, 0, "S", 12]]},
-    "heat": {"label": "Heat detector", "group": "fire",
-             "prims": [["circle", 0, 0, 10, "s"], ["text", 0, 0, "H", 12]]},
-    "multi": {"label": "Multi-sensor detector", "group": "fire",
-              "prims": [["circle", 0, 0, 10, "s"], ["text", 0, 0, "M", 12]]},
-    "call_point": {"label": "Manual call point", "group": "fire",
-                   "prims": [["rect", -9, -9, 18, 18, "s"], ["circle", 0, 0, 4.5, "f"]]},
-    "sounder": {"label": "Sounder", "group": "fire",
-                "prims": [["poly", [-10, -4, -5, -4, 3, -10, 3, 10, -5, 4, -10, 4], "s"],
-                          ["line", 6, -5, 10, -8], ["line", 7, 0, 11, 0], ["line", 6, 5, 10, 8]]},
-    "vad": {"label": "Visual alarm device (beacon)", "group": "fire",
-            "prims": [["circle", 0, 0, 6, "f"], ["line", 0, -8, 0, -11.5], ["line", 0, 8, 0, 11.5], ["line", -8, 0, -11.5, 0],
-                      ["line", 8, 0, 11.5, 0], ["line", -5.7, -5.7, -8.1, -8.1], ["line", 5.7, -5.7, 8.1, -8.1],
-                      ["line", -5.7, 5.7, -8.1, 8.1], ["line", 5.7, 5.7, 8.1, 8.1]]},
-    "sounder_beacon": {"label": "Sounder-beacon", "group": "fire",
-                       "prims": [["poly", [-11, -3, -7, -3, -1, -8, -1, 8, -7, 3, -11, 3], "s"], ["circle", 6.5, 0, 4, "f"],
-                                 ["line", 6.5, -6, 6.5, -9], ["line", 6.5, 6, 6.5, 9], ["line", 11, -4, 12, -6], ["line", 11, 4, 12, 6]]},
-    "panel": {"label": "Control panel", "group": "control",
-              "prims": [["rect", -12, -8, 24, 16, "s"], ["rect", -12, -8, 24, 4.5, "f"], ["text", 0, 2.3, "PANEL", 6.5]]},
-    "repeater": {"label": "Repeater panel", "group": "control",
-                 "prims": [["rect", -12, -8, 24, 16, "s"], ["text", 0, 0, "REP", 8]]},
-    "interface": {"label": "Interface / I-O unit", "group": "fire",
-                  "prims": [["rect", -10, -10, 20, 20, "s"], ["text", 0, 0, "I/O", 8]]},
-    "beam": {"label": "Beam detector", "group": "fire",
-             "prims": [["rect", -11, -7, 22, 14, "s"], ["line", -7, 0, 4, 0], ["poly", [3, -3.5, 8, 0, 3, 3.5], "f"]]},
-    "aspirating": {"label": "Aspirating sampling point", "group": "fire",
-                   "prims": [["circle", 0, 0, 9, "s"], ["circle", 0, 0, 3.2, "f"], ["line", -12, 0, -9, 0], ["line", 9, 0, 12, 0]]},
-    "door_holder": {"label": "Door holder", "group": "fire",
-                    "prims": [["rect", -10, -10, 20, 20, "s"], ["text", 0, 0, "DH", 9]]},
-    "pir": {"label": "PIR detector", "group": "security",
-            "prims": [["poly", [0, 9, -11, -4, -8, -8, -3, -10.5, 3, -10.5, 8, -8, 11, -4], "s"], ["text", 0, -3, "PIR", 6.5]]},
-    "door_contact": {"label": "Door contact", "group": "security",
-                     "prims": [["rect", -11, -5, 9, 10, "s"], ["rect", 2, -5, 9, 10, "f"]]},
-    "keypad": {"label": "Keypad", "group": "security",
-               "prims": [["rect", -9, -11, 18, 22, "s"], ["rect", -6, -8, 12, 4, "n"],
-                         ["circle", -4, 1, 1.4, "f"], ["circle", 0, 1, 1.4, "f"], ["circle", 4, 1, 1.4, "f"],
-                         ["circle", -4, 6, 1.4, "f"], ["circle", 0, 6, 1.4, "f"], ["circle", 4, 6, 1.4, "f"]]},
-    "cctv": {"label": "CCTV camera", "group": "security", "rotates": true,
-             "prims": [["rect", -5, -3, 10, 13, "s"], ["poly", [-3, -3, -7, -11, 7, -11, 3, -3], "s"]]},
-    "access_reader": {"label": "Access control reader", "group": "security",
-                      "prims": [["rect", -8, -11, 16, 22, "s"], ["line", -4, -6, 4, -6], ["text", 0, 3, "AC", 7.5]]}
-  }
-}
-  /* DRAWING-SYMBOLS-JSON-END */;
-
   const SVGNS = "http://www.w3.org/2000/svg";
-  const TYPES = Object.keys(DATA.types);
   const FONT = "'IBM Plex Sans', 'Segoe UI', system-ui, Arial, sans-serif";
-  const label = (type) => (DATA.types[type] || {}).label || "Device";
-  const colour = (type) => DATA.colours[(DATA.types[type] || {}).group] || DATA.colours.control;
+  const SHAPES = new Set(["circle", "rect", "line", "poly", "text"]);
+  const SW = 2 / 22;          // the shared set's stroke width (size / 22) in unit-box units
+  let DATA = { types: {}, soft: "#eef1f5", zone_colours: ["#e53935", "#1e88e5", "#43a047", "#fb8c00"] };
+  const api = { TYPES: [], ZONE_COLOURS: DATA.zone_colours };
 
+  const fin = (v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 4;
+  const hex = (v, d) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v : d);
+  function okItem(p) {
+    if (!p || !SHAPES.has(p.t)) return false;
+    if (p.t === "circle") return [p.cx ?? 0, p.cy ?? 0, p.r].every(fin);
+    if (p.t === "rect") return [p.x, p.y, p.w, p.h].every(fin);
+    if (p.t === "line") return [p.x1, p.y1, p.x2, p.y2].every(fin);
+    if (p.t === "poly") return Array.isArray(p.pts) && p.pts.length >= 2 && p.pts.length <= 64 && p.pts.every((q) => Array.isArray(q) && q.length === 2 && q.every(fin));
+    return [p.x ?? 0, p.y ?? 0, p.fs].every(fin) && typeof p.s === "string" && p.s.length <= 6;
+  }
+
+  function setData(d) {
+    if (!d || typeof d !== "object" || !d.types || typeof d.types !== "object") return;
+    const types = {};
+    for (const [k, v] of Object.entries(d.types)) {
+      if (!/^[a-z_]{1,24}$/.test(k) || !v || !Array.isArray(v.items)) continue;
+      types[k] = { label: String(v.label || k).slice(0, 60), colour: hex(v.colour, "#37474f"), rotates: !!v.rotates, items: v.items.filter(okItem).slice(0, 40) };
+    }
+    const zones = Array.isArray(d.zone_colours) ? d.zone_colours.map((c) => hex(c, null)).filter(Boolean) : [];
+    DATA = { types, soft: hex(d.soft, "#eef1f5"), zone_colours: zones.length ? zones : DATA.zone_colours };
+    api.TYPES = Object.keys(types);
+    api.ZONE_COLOURS = DATA.zone_colours;
+  }
+
+  const label = (type) => (DATA.types[type] || {}).label || "Device";
+  const colour = (type) => (DATA.types[type] || {}).colour || "#37474f";
   function el(name, attrs) {
     const n = document.createElementNS(SVGNS, name);
     for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
     return n;
   }
 
-  /** Draw one symbol into `parent` (an SVG element), centred on (x, y), `size` units across. opts: {direction (deg), cone (bool)}.
-   *  Built with DOM APIs only: the type picks a symbol from the closed list above, nothing from a drawing is parsed as markup. */
+  /** Draw one symbol into `parent` (an SVG element), centred on (x, y), `size` units across. opts: {direction (deg), cone (bool)}. */
   function draw(parent, type, x, y, size, opts = {}) {
     const def = DATA.types[type];
     if (!def) return null;
-    const c = colour(type), k = size / DATA.box;
+    const c = def.colour, h = size / 2;
+    const fillOf = (role) => role === "paper" ? "#ffffff" : role === "soft" ? DATA.soft : (role === "ink" || role === "accent") ? c : "none";
+    const strokeOf = (role) => role === "paper" ? "#ffffff" : c;
     const g = el("g", { class: "sym", transform: `translate(${x} ${y})` });
-    if (def.rotates && Number.isFinite(opts.direction) && opts.cone !== false) {
-      // a light view cone in front of the camera: 60 degrees wide, three symbol sizes long
-      const a = (opts.direction - 90) * Math.PI / 180, r = size * 3, h = Math.PI / 6;
-      const p1 = [Math.cos(a - h) * r, Math.sin(a - h) * r], p2 = [Math.cos(a + h) * r, Math.sin(a + h) * r];
+    const turn = def.rotates && Number.isFinite(opts.direction);
+    if (turn && opts.cone !== false) {
+      const a = (opts.direction - 90) * Math.PI / 180, r = size * 3, hw = Math.PI / 6;
+      const p1 = [Math.cos(a - hw) * r, Math.sin(a - hw) * r], p2 = [Math.cos(a + hw) * r, Math.sin(a + hw) * r];
       g.appendChild(el("path", { d: `M0 0 L${p1[0]} ${p1[1]} A${r} ${r} 0 0 1 ${p2[0]} ${p2[1]} Z`, fill: c, "fill-opacity": 0.14,
-                                  stroke: c, "stroke-opacity": 0.45, "stroke-width": Math.max(0.6, k * 0.8) }));
+                                  stroke: c, "stroke-opacity": 0.45, "stroke-width": Math.max(0.6, size * 0.03) }));
     }
-    const inner = el("g", { transform: `${def.rotates && Number.isFinite(opts.direction) ? `rotate(${opts.direction}) ` : ""}scale(${k})` });
-    const sw = DATA.stroke;
-    const paint = (style) => style === "f" ? { fill: c, stroke: c, "stroke-width": sw * 0.5 }
-      : style === "n" ? { fill: "none", stroke: c, "stroke-width": sw } : { fill: "#ffffff", stroke: c, "stroke-width": sw };
-    for (const p of def.prims) {
-      const kind = p[0];
-      if (kind === "circle") inner.appendChild(el("circle", { cx: p[1], cy: p[2], r: p[3], ...paint(p[4]) }));
-      else if (kind === "rect") inner.appendChild(el("rect", { x: p[1], y: p[2], width: p[3], height: p[4], ...paint(p[5]) }));
-      else if (kind === "poly") inner.appendChild(el("polygon", { points: p[1].join(" "), "stroke-linejoin": "round", ...paint(p[2]) }));
-      else if (kind === "line") inner.appendChild(el("line", { x1: p[1], y1: p[2], x2: p[3], y2: p[4], stroke: c, "stroke-width": sw, "stroke-linecap": "round" }));
-      else if (kind === "text") {
-        const t = el("text", { x: p[1], y: p[2], fill: c, "font-size": p[4], "font-weight": 700, "font-family": FONT, "text-anchor": "middle",
-                                "dominant-baseline": "central" });
-        t.textContent = String(p[3]);
+    const inner = el("g", { transform: `${turn ? `rotate(${opts.direction - 90}) ` : ""}scale(${h})` });
+    for (const p of def.items) {
+      const stroke = { stroke: strokeOf(p.c), "stroke-width": SW, "stroke-linejoin": "round", "stroke-linecap": "round" };
+      if (p.t === "circle") inner.appendChild(el("circle", { cx: p.cx || 0, cy: p.cy || 0, r: p.r, fill: fillOf(p.f ?? "paper"), ...stroke }));
+      else if (p.t === "rect") inner.appendChild(el("rect", { x: p.x, y: p.y, width: p.w, height: p.h, rx: fin(p.rx) ? p.rx : 0, fill: fillOf(p.f ?? "paper"), ...stroke }));
+      else if (p.t === "line") inner.appendChild(el("line", { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2, ...stroke }));
+      else if (p.t === "poly") inner.appendChild(el(p.z ? "polygon" : "polyline", { points: p.pts.map((q) => q.join(",")).join(" "), fill: p.z ? fillOf(p.f ?? "paper") : "none", ...stroke }));
+      else if (p.t === "text") {
+        const t = el("text", { x: p.x || 0, y: (p.y || 0) + p.fs * 0.36, fill: c, "font-size": p.fs, "font-weight": Number(p.w) >= 600 ? 700 : 400,
+                                "font-family": FONT, "text-anchor": "middle" });
+        t.textContent = p.s;
         inner.appendChild(t);
       }
     }
@@ -130,9 +94,10 @@
   /** A small standalone <svg> of one symbol (the palette and the legend). */
   function icon(type, px = 28) {
     const svg = el("svg", { viewBox: "-14 -14 28 28", width: px, height: px, "aria-hidden": "true", focusable: "false", class: "sym-icon" });
-    draw(svg, type, 0, 0, 24, { direction: 0, cone: false });
+    draw(svg, type, 0, 0, 24, { cone: false });
     return svg;
   }
 
-  window.DrawingSymbols = { DATA, TYPES, ZONE_COLOURS: DATA.zone_colours, label, colour, draw, icon };
+  Object.assign(api, { setData, ready: () => api.TYPES.length > 0, label, colour, draw, icon });
+  window.DrawingSymbols = api;
 })();

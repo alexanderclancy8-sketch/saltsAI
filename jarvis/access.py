@@ -14,9 +14,10 @@ Three roles:
   * ``engineer`` - exactly the team role as it was: ``TEAM_TOOLS`` and nothing more. The old single team code and every
                    team session signed in with it ARE the engineer code and engineer sessions (least privilege, no data
                    migration: same database key, same cookie key), so an upgrade gives nobody more than they had.
-  * ``office``   - the engineer allowlist plus ONE read-only tool, ``customer_balance`` (``OFFICE_EXTRA_TOOLS``): for one
-                   customer at a time, what they owe, what is overdue and their oldest overdue invoice - so the office can
-                   answer a customer who rings about their account. Nothing else finance-related (no invoice lists, payments,
+  * ``office``   - the engineer allowlist MINUS the engineer-only tools (``ENGINEER_ONLY_TOOLS``: drawing a system schematic -
+                   office may list, open and export saved ones) plus ONE read-only tool, ``customer_balance``
+                   (``OFFICE_EXTRA_TOOLS``): for one customer at a time, what they owe, what is overdue and their oldest overdue
+                   invoice - so the office can answer a customer who rings about their account. Nothing else finance-related (no invoice lists, payments,
                    credit notes, company finance, pay, fsm_data / fsm_analyse) and the same console as an engineer.
 
   Both kinds are tier ``team`` everywhere else - the route table, the console features, what stored work (approvals,
@@ -266,13 +267,20 @@ TEAM_TOOLS = frozenset({
     "log_job",               # queues a job for approval, requester recorded, never auto-approved
     "run_in_background",     # only for the tools above; forced SILENT; scoped to the requester
     "background_results",    # only the requester's own
+    # system schematics (services/schematics.py): no prices ever. Engineers draw and revise (useful on site); everyone in the team
+    # may list, open and export saved drawings. draw_schematic saves to Jarvis's own records only - nothing is sent or changed.
+    "draw_schematic",        # ENGINEER_ONLY_TOOLS: not office
+    "list_schematics",
+    "open_schematic",
 })
 
 # What an OFFICE team member has on top of TEAM_TOOLS - and nothing else. ``customer_balance`` is read-only and answers for ONE
 # customer at a time with three figures and one invoice (services/customer_balance.py); it is the office's only finance tool.
 OFFICE_EXTRA_TOOLS = frozenset({"customer_balance"})
+# What an ENGINEER has that office does not: creating / revising a system schematic (office views and exports saved ones).
+ENGINEER_ONLY_TOOLS = frozenset({"draw_schematic"})
 ENGINEER_TOOLS = TEAM_TOOLS
-OFFICE_TOOLS = TEAM_TOOLS | OFFICE_EXTRA_TOOLS
+OFFICE_TOOLS = (TEAM_TOOLS - ENGINEER_ONLY_TOOLS) | OFFICE_EXTRA_TOOLS
 
 # Folders of the knowledge base a team session's `knowledge_search` never reads.
 TEAM_KB_EXCLUDED = ("private/", "finance/")
@@ -288,7 +296,7 @@ def tools_for(caller: Caller | None) -> frozenset[str] | None:
 def tool_allowed(name: str, caller: Caller | None) -> bool:
     """May ``caller`` use the tool called ``name``? ``None`` (the owner's conversation, a scheduled job) and owner/manager
     callers: yes, as before. A team caller: only if the name is in their kind's allowlist (default deny) - an engineer has
-    TEAM_TOOLS exactly, office has TEAM_TOOLS plus OFFICE_EXTRA_TOOLS."""
+    TEAM_TOOLS exactly, office has TEAM_TOOLS minus ENGINEER_ONLY_TOOLS plus OFFICE_EXTRA_TOOLS."""
     allowed = tools_for(caller)
     return True if allowed is None else name in allowed
 
@@ -300,6 +308,9 @@ OFFICE_ONLY_REFUSAL = ("That's for the office: account balances are looked up by
 def refusal(name: str, caller: Caller | None = None) -> str:
     if name in OFFICE_EXTRA_TOOLS and caller is not None and caller.is_engineer:
         return OFFICE_ONLY_REFUSAL
+    if name in ENGINEER_ONLY_TOOLS and caller is not None and caller.is_office:
+        return ("Drawing or revising a schematic is for the engineers and managers. You can list, open and download the saved "
+                "drawings (list_schematics / open_schematic); ask an engineer or a manager to draw a new one.")
     return (f"{name} isn't available to you here. This is the team version of Jarvis, which covers jobs, engineers, "
             "systems and fleet but not finance, approvals, accounts, staff pay or settings. If you need that, ask the office.")
 
@@ -341,6 +352,11 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/drawings/{drawing_id}/plan": TEAM_OK,
     "GET /api/drawings/{drawing_id}/export/{fmt}": TEAM_OK,
     "POST /api/drawings/{drawing_id}": TEAM_OK,
+    # system schematics: list, view (the laid-out drawing) and download SVG / PNG / PDF. No prices on a drawing; a download needs no
+    # approval (it sends and changes nothing; it leaves a "What Jarvis did" line). Engineers and office may view and export.
+    "GET /api/schematics": TEAM_OK,
+    "GET /api/schematics/{drawing_id}": TEAM_OK,
+    "GET /api/schematics/{drawing_id}/export/{fmt}": TEAM_OK,
     # ---- owner or manager only (a team session gets 403)
     "GET /api/reply-suggestion": MANAGER_OK,
     "GET /api/reply-suggestions": MANAGER_OK,

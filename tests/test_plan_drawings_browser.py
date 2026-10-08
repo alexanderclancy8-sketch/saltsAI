@@ -169,7 +169,7 @@ def test_drag_add_delete_undo_save_and_export_with_a_mouse(browser, stack, tmp_p
         save(page)
         row = j.drawings._row(did)
         devs = row["content"]["devices"]
-        assert sorted(d["type"] for d in devs) == ["call_point", "heat", "smoke"] and row["version"] == 2
+        assert sorted(d["type"] for d in devs) == ["heat", "mcp", "smoke"] and row["version"] == 2
         smoke = next(d for d in devs if d["type"] == "smoke")
         assert abs(smoke["x"] - 0.5) < 0.04 and abs(smoke["y"] - 0.5) < 0.04, smoke      # it went where it was dragged to
 

@@ -56,6 +56,9 @@ CHECK_TOOLS = frozenset({
     "email_inbox", "email_search", "email_read", "marketing_overview", "search_rankings", "knowledge_search",
     "what_did_you_do", "issues_list", "routine_tests_status", "list_automations", "agent_runs", "action_items",
     "weekly_digest_latest",
+    # system schematics: laying a drawing out is compute (allowed); SAVING it is a write, which draw_schematic skips in check mode
+    # (and Schematics.save refuses through guard()); listing / opening saved drawings is a read
+    "draw_schematic", "list_schematics", "open_schematic",
 })
 
 

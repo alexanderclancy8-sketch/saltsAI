@@ -40,6 +40,7 @@ from .services.advisor import Advisor
 from .services.standing_approvals import StandingApprovals
 from .services.teams_approvals import TeamsApprovals
 from .services.activity_feed import ActivityFeed
+from .services.schematics import Schematics
 from .services.activity import CHANGED, ActivityLog
 from .services.automations import AutomationService
 from .services.billing import Billing
@@ -207,6 +208,7 @@ class Jarvis:
         self.faults = FaultLog(self)
         # Drawings on floor plans: device layouts and zone charts (Jarvis proposes, a person adjusts, then exports)
         self.drawings = PlanDrawings(self)
+        self.schematics = Schematics(self)  # system schematics: spec -> code-drawn SVG / PNG / PDF, saved with revisions
         self.activity_feed = ActivityFeed(self)  # "What Jarvis did": a read-only union of everything proposed, changed and decided
         # Owner set / clear of an engineer's home point: engineer name and time only, never a postcode or a point.
         self.homes.audit = lambda action, detail: self.activity.record("engineer_homes", "Engineer homes", CHANGED, detail)

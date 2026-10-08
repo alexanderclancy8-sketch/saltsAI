@@ -76,6 +76,26 @@ _DEMO: dict[str, Callable[[Any], bool]] = {
 }
 
 
+# Tools whose result carries a drawing the console shows UNDER the reply (in the flow of the chat, never over it): the reference only
+# (id, revision, number, title) - the console fetches the drawing itself from /api/schematics/{id}. Works for the owner's console and a
+# team session's alike (both have a trace; a team console never gets "display" events).
+ATTACH_TOOLS = frozenset({"draw_schematic", "open_schematic"})
+MAX_ATTACHMENTS = 4
+
+
+def attachment(name: str, result: Any) -> dict[str, Any]:
+    """The extra field for a finished tool's "done" event: {"schematic": {...}} for a drawing to show, else {}. Never raises."""
+    try:
+        if name.removeprefix("mcp__jarvis__") not in ATTACH_TOOLS or not isinstance(result, dict):
+            return {}
+        ref = result.get("drawing")
+        if not isinstance(ref, dict) or not isinstance(ref.get("id"), str) or not isinstance(ref.get("revision"), int):
+            return {}
+        return {"schematic": {k: ref.get(k) for k in ("id", "revision", "number", "rev", "title", "kind")}}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def tool_info(name: str) -> tuple[tuple[str, ...], str | None]:
     return _TOOL_INFO.get(name.removeprefix("mcp__jarvis__"), ((), None))
 
@@ -115,6 +135,7 @@ class TurnTrace:
         self.user_text = ""
         self.mode = "typed"
         self.entity_notes: list[str] = []   # "Jarvis's notes on X" this turn leaned on (add_source): notes, not a checked system
+        self.schematics: list[dict[str, Any]] = []   # drawings to show under the reply (attachment())
         self.web: dict[str, Any] | None = None   # the turn's web budget record (add_web): sources really used, uses, errors
 
     # ------------------------------------------------------------------ feeding it
@@ -154,6 +175,11 @@ class TurnTrace:
     def note_result(self, data: dict[str, Any]) -> None:
         """A finished tool call: the facts the brain worked out from its result (``coverage``), or - for a call that raised
         and carried none - an error for every source that tool reads."""
+        ref = data.get("schematic")
+        if isinstance(ref, dict) and data.get("state") == "done":
+            key = (ref.get("id"), ref.get("revision"))
+            self.schematics = [s for s in self.schematics if (s.get("id"), s.get("revision")) != key] + [ref]
+            self.schematics = self.schematics[-MAX_ATTACHMENTS:]
         facts = data.get("coverage")
         if isinstance(facts, list):
             self.facts += [f for f in facts if isinstance(f, dict) and f.get("src") and f.get("status")][:20]
@@ -229,6 +255,8 @@ class TurnTrace:
             out["panel_title"] = PANEL_TITLES[panel]
         if self.follow_ups:
             out["follow_ups"] = list(self.follow_ups)
+        if self.schematics:
+            out["schematics"] = [dict(s) for s in self.schematics]
         facts = list(self.facts)
         if self.web:
             if self.web.get("sources"):

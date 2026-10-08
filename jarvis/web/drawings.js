@@ -1,7 +1,7 @@
 /* JARVIS console - the Drawings pop-up: device layouts and zone charts on a floor plan (services/plan_drawings.py).
  *
  * Jarvis proposes, a person adjusts, then exports. The list (GET /api/drawings) opens a drawing in the editor: the plan picture
- * (GET /api/drawings/{id}/plan) under an SVG overlay drawn with the symbol library (drawing_symbols.js). In the editor you can
+ * (GET /api/drawings/{id}/plan) under an SVG overlay drawn with the shared symbol set (services/schematic_symbols.py, drawn by drawing_symbols.js). In the editor you can
  *   - Move: drag a device, drag a zone's corner dots or the whole zone, or drag empty space to pan a zoomed plan;
  *   - Add device: pick a symbol in the palette, then tap / click the plan (keep the finger down to slide it into place);
  *   - Draw zone: tap the corners, then Finish (or tap the first corner again); set its number, name and floor;
@@ -64,6 +64,7 @@
       data = await readJson(r);
       if (!r.ok) throw new Error(detail(data, "Couldn't load the drawings."));
     } catch (e) { if (e?.message !== "signed out") showError(e?.message || "Couldn't load the drawings. Try again in a moment."); return; }
+    S().setData(data.symbols);       // the ONE shared symbol set (services/schematic_symbols.py), sent by the server
     const list = data.drawings || [];
     $("#drw-count").textContent = list.length ? String(list.length) : "";
     $("#drw-list").innerHTML = list.length ? list.map((d) => `<li class="mem-item drw-item" data-id="${Number(d.id)}">
@@ -175,6 +176,7 @@
         if (!r.ok) { showError(detail(d, "That drawing couldn't be opened.")); return; }
       } catch (e) { if (e?.message !== "signed out") showError("That drawing couldn't be opened - try again."); return; }
     }
+    S().setData(d.symbols);
     E = { d, meta: {}, content: JSON.parse(JSON.stringify(d.content)), saved: "", undo: [], mode: "move", addType: "smoke", sel: null,
           draft: [], zoom: 1, drag: null, busy: false };
     for (const [k] of META_FIELDS) E.meta[k] = d[k] || "";
@@ -438,7 +440,7 @@
       box.appendChild(field("Label", lab));
       const note = input("text", d.note || "", { maxLength: 160 }); note.dataset.dev = "note";
       box.appendChild(field("Note", note));
-      if (d.type === "cctv") {
+      if (d.type === "camera") {
         const dir = input("number", Number.isFinite(d.direction) ? String(d.direction) : "", { min: 0, max: 359, step: 5 }); dir.dataset.dev = "direction";
         box.appendChild(field("View direction (degrees clockwise from up, as uploaded)", dir));
       }
@@ -524,7 +526,7 @@
     if (E.d.can_edit && E.mode === "add" && E.d.kind === "devices") {
       e.preventDefault();
       const dev = { type: E.addType, x, y, label: "", note: "" };
-      if (dev.type === "cctv") dev.direction = 0;
+      if (dev.type === "camera") dev.direction = 0;
       E.content.devices.push(dev);
       E.sel = { kind: "device", i: E.content.devices.length - 1 };
       pushUndo(start);
@@ -747,7 +749,7 @@
       const d = E.content.devices[E.sel.i];
       if (!d) return;
       if (t.dataset.dev === "direction") { const v = Number(t.value); if (t.value !== "" && Number.isFinite(v)) d.direction = ((v % 360) + 360) % 360; else delete d.direction; }
-      else if (t.dataset.dev === "type") { d.type = t.value; if (d.type !== "cctv") delete d.direction; }
+      else if (t.dataset.dev === "type") { d.type = t.value; if (d.type !== "camera") delete d.direction; }
       else d[t.dataset.dev] = t.value.slice(0, t.dataset.dev === "label" ? 40 : 160);
       renderSvg(); renderLegend(); renderStatus();
       if (t.dataset.dev === "type") renderSide();
