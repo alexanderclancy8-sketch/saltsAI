@@ -209,7 +209,8 @@ def test_stored_work_never_records_office_and_re_runs_as_an_engineer():
 def test_the_allowlists_engineer_is_exactly_the_old_team_list_and_office_adds_one_read_only_tool():
     assert access.ENGINEER_TOOLS == TEAM_TOOLS == {"fsm_jobs", "job_detail", "fsm_systems_due", "staff_overdue_jobs", "staff_today",
                                                    "engineer_locations", "nearest_engineer", "marketing_overview", "knowledge_search",
-                                                   "log_job", "run_in_background", "background_results"}
+                                                   "log_job", "run_in_background", "background_results",
+                                                   "find_similar_work"}  # (team: no prices, no emails - test_similar_work.py)
     assert OFFICE_TOOLS - TEAM_TOOLS == access.OFFICE_EXTRA_TOOLS == {"customer_balance"}
     assert TOOLS_BY_NAME["customer_balance"].approval is False
     for t in TOOLS:

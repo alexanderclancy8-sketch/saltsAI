@@ -497,6 +497,40 @@ customer writes one `balance_lookup` audit line (customer name + FSM id, who, ro
 `fsm_read.note_sensitive_text` so `remember` refuses them. The office prompt (`prompts.OFFICE_BALANCE`) allows only the customer being
 discussed and sends payment arrangements / disputes to the owner; the engineer prompt says balances are for the office.
 
+*"Have we done something like this before?" (`services/similar_work.py`, `j.similar_work`; tool `find_similar_work`; tests
+`tests/test_similar_work.py`).* For a quote request, a described job or an enquiry email: the most similar past FSM quotes and jobs, plus
+past emails, each with ref, title, customer/site, date, value, status (+ `outcome` won/lost/open for quotes), key line items (`qty x item`,
+never a price), WHY it matched and `record {resource, id}` (+ `link` only when the row carries an https url). Read-only, not approval-gated.
+- **Sources (bounded):** the catalog's `quotes` (or `quotations` / `proposals`) and `jobs` through `FsmData.fetch`: one read of the
+  `RECENT_ROWS` (300) most recent (ordered by the first date field the catalog lists; the date range as `[gte]/[lte]` when that field is
+  filterable; `q=customer` when a customer is given) plus at most `SEARCH_TERMS` (2) `q` searches of `SEARCH_ROWS` (100) - a manufacturer,
+  a building type, then a keyword; lines from the row itself (`lines` / `line_items` / `items` / `materials`...) or, for up to
+  `MAX_LINE_READS` (8) quotes, a `quote_lines` / `quote_items` resource filtered by `quote_id`. A recent read that stopped short = `partial`
+  ("searched the 300 most recent of N quotes plus keyword matches"). Mail: up to 3 `mail.search_messages` (the owner's mailbox, the call
+  `email_search` makes), scored on subject + preview; an email is named by id / sender name / subject / date, never its text (`email_read`).
+- **Scoring (no embeddings):** `extract()` reduces the description and each row's descriptive text (ids, money, contact details, links,
+  dates and status left out) to features - system type, manufacturer (`_MAKERS`, e.g. Gent / Vigilon, Advanced / MxPro, Paxton / Net2),
+  kind of building, kind of customer, zones / loops / devices / storeys, panel type, BS 5839 category, kind of job, a "£15k" budget, and the
+  words left over. `score()`: +3 per shared system / manufacturer / building, +1.5 customer type, +1 panel / category / job kind, up to +2
+  zones / +1.5 devices / +1 loops / storeys by closeness (>= 50%), +1 a value near the budget (owner/manager quotes only), up to +2 shared
+  words; `MIN_SCORE` 3. Every point is a `why` line. Filters (customer, site_type, system_type, manufacturer, date_from / date_to) are HARD
+  filters (a known feature name must match; anything else is a substring of the row text); everything filtered away -> `filtered_out`.
+- **Pricing guide (owner / manager):** from the most similar quotes with a value (`PRICING_POOL` 15): `based_on`, the quote refs,
+  `low` / `median` / `high` (Decimal strings), `value_field` (the FSM field used), `won` {...} when >= 2 were won, `typical_line_items`
+  (in >= 2 and >= a third of the quotes that have lines, with `in_quotes` / `of` / `typical_qty`) and a "guide only" note. Fewer than
+  `MIN_FOR_GUIDE` (3) priced similar quotes -> `not_enough`, no range. The prompt (PERSONA "Similar past work") says quote it as given.
+- **Who sees what:** owner = everything (an FSM resource flagged sensitive / in an owner-only group is read, `handling` added and the
+  figures noted via `fsm_read.note_sensitive_text`); manager = the same minus such a resource (`owner_only` in `sources`, like `fsm_data`);
+  team (engineer AND office: it is in `TEAM_TOOLS`) = matches with NO `value`, no `pricing_guide`, no budget scoring, no email search, never
+  a sensitive resource, and a `prices` note (`TEAM_PERSONA` says it never shows prices). In `CHECK_TOOLS`, `NOT_BACKGROUND` and
+  `UNTRUSTED_TOOLS`; "What Jarvis did" gets one `fsm_read` line (rows read per source, number similar, who - never a value or a name).
+  Demo FSM / mailbox = not a source (`demo` / `not_connected` in `sources`, nothing returned).
+- **Coverage:** `trace._TOOL_INFO` names Salts FSM; `coverage._similar_facts` turns `sources` into one fact per part - "Salts FSM quotes",
+  "Salts FSM jobs", "your mailbox past emails" (ok / partial / not_connected / scope_off / not_exposed / owner_only / error).
+- **Not hooked into `fsm_suggestions`:** its only kind is `quote_followup` (a chase email for ONE sent quote, pushed to the FSM's Action
+  Centre, which office staff read). There is no "suggest a new quote" kind to cite past quotes in, and adding other customers' past prices
+  to a chase email or an Action Centre card would put commercial figures where the team can see them - so it is left out on purpose.
+
 *Engineer home points (`services/engineer_homes.py`; tests `tests/test_engineer_homes.py`, `tests/test_engineer_homes_browser.py`).* RAM's
 public API has no address labels (only lat/lng, registration, driver), so "home" in Fleet / `who_is_home` / `van_day` comes from a point
 the OWNER sets per engineer in Settings > Engineer homes: a van within the owner's radius (100 m default, 50-300 m, kv
@@ -904,7 +938,7 @@ What surrounds a reply is built from what really happened, not from text the mod
 - ok / partial (`truncated`: "scanned 50,000 of 64,200 rows", "showing 120 of 900 rows" - counts only) / demo (the FSM or Outlook demo, NOT
 gated by demo_guard) / withheld (`demo_data_withheld`, and composite `demo_guard.stub` sections) / not_connected (FSM demo `kind: demo`) /
 scope_off (+ group) / not_exposed (`kind: unavailable`, or a 404 on a resource the catalog lists) / owner_only / error / timeout / rate_limited /
-refused (team) / blocked (check mode) / bad_input (the model's own typo - ignored) / transcribed (`fsm_document_read` of a scan: the part is "Salts FSM document '<name>'"; Medium unless the reply says it was a transcribed scan; a cut-short document is partial; the FSM's `masked_by_fsm` count is listed under `caveats`; an ambiguous pick / no match is bad_input). `customer_balance` is the part "Salts FSM invoices (one customer)" (not found / ambiguous = bad_input, an engineer = refused). Customer / site notes injected by services/entity_memory.py (`TurnTrace.add_source` "Jarvis's notes on X") go in `coverage.notes` - never `checked`, never a needed source met, so they can't raise the confidence on their own. `TurnTrace` collects them from the bus and `finish(reply)` adds
+refused (team) / blocked (check mode) / bad_input (the model's own typo - ignored) / transcribed (`fsm_document_read` of a scan: the part is "Salts FSM document '<name>'"; Medium unless the reply says it was a transcribed scan; a cut-short document is partial; the FSM's `masked_by_fsm` count is listed under `caveats`; an ambiguous pick / no match is bad_input). `customer_balance` is the part "Salts FSM invoices (one customer)" (not found / ambiguous = bad_input, an engineer = refused). `find_similar_work` gives one fact per part from its `sources`: "Salts FSM quotes", "Salts FSM jobs", "your mailbox past emails". Customer / site notes injected by services/entity_memory.py (`TurnTrace.add_source` "Jarvis's notes on X") go in `coverage.notes` - never `checked`, never a needed source met, so they can't raise the confidence on their own. `TurnTrace` collects them from the bus and `finish(reply)` adds
 `coverage = coverage.summarise(facts, user_text, demo=demo_map(j), team=...)`: `checked`, `gaps[{source, kind, text}]`, `confidence`, `why`,
 `areas` (+ `spoken` for a Low voice turn when the reply didn't already name the gap). `AREAS` maps question words to the source groups a question
 needs (money -> Salts FSM AND Sage; vans_where -> RAM; vans_compliance -> FSM | register | RAM; stock -> stock records | FSM; operations -> FSM;
@@ -956,7 +990,7 @@ untrusted data (Security section; `web_` is an `UNTRUSTED_PREFIXES` entry).
   nothing. Results (`question_check_runs` / `question_check_results`, newest 26 runs) keep a <= 300-char redacted reply excerpt.
 - **Check mode can't send, queue or write - enforced in layers:** `dispatch(..., check=True)` (or `checkmode.active`, the SAME ContextVar as
   `events.check_mode`) runs only `checkmode.CHECK_TOOLS` (pure reads; never `approval=True`; no log_job/email/remember/display/notify/van
-  look-ups/access codes; `entity_note_add` / `entity_note_propose` write and are refused, `entity_notes_get`, `fsm_document_read` and `customer_balance` read and run) and returns `{"blocked_in_check_mode": true}` otherwise; while it is set `ActionExecutor.queue`, `Notifier.notify` /
+  look-ups/access codes; `entity_note_add` / `entity_note_propose` write and are refused, `entity_notes_get`, `fsm_document_read`, `customer_balance` and `find_similar_work` read and run) and returns `{"blocked_in_check_mode": true}` otherwise; while it is set `ActionExecutor.queue`, `Notifier.notify` /
   `send_owner_update` raise `CheckModeBlocked`, `db.add_transcript` / `remember` / `create_action` raise, and every bus except a `check_ok`
   one drops events. MaxBrain passes `check` into its MCP tool handlers (ContextVars don't reach them) and drops the browsing plugin. Reads still
   leave their normal "What Jarvis did" `fsm_read` audit lines.

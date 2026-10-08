@@ -23,6 +23,10 @@ checked system: they can't satisfy a question's need for a source, so they never
 don't change the rules (items the FSM masked in a document) are listed too.
 * **High** otherwise: every source it needed was read, real and complete.
 
+``find_similar_work`` names each part it searched on its own - "Salts FSM quotes", "Salts FSM jobs" and "your mailbox past
+emails" - so a search that could only read some of them (mail not connected, quotes owner-only or switched off, a long history
+only partly searched) says which part was missing.
+
 What is stored with the transcript row (``as_stored()``) is labels and counts only - source names, resource names, the
 kind of gap, "scanned 50,000 of 64,200 rows" - never a value, a figure from the data, a name from a row, or a secret.
 Nothing here writes, sends or approves anything.
@@ -74,6 +78,12 @@ TOOL_DETAIL = {
 _BALANCE_KIND = {"not_found": "bad_input", "bad_request": "bad_input", "ambiguous": "bad_input", "office_only": "refused"}
 FSM_DATA_TOOLS = ("fsm_data", "fsm_analyse")
 DOC_TOOL = "fsm_document_read"
+# find_similar_work (services/similar_work.py) reads up to three parts of two sources and says how each went in its `sources`:
+# the FSM's quotes and jobs, and past emails in the mailbox (never for a team caller - the team version has no mailbox).
+SIMILAR_TOOL = "find_similar_work"
+_SIMILAR_PARTS = {"quotes": (FSM, "quotes"), "jobs": (FSM, "jobs"), "emails": (MAIL, "past emails")}
+_SIMILAR_STATUS = {"ok": "ok", "partial": "partial","demo": "not_connected", "not_connected": "not_connected",
+                   "scope_off": "scope_off", "not_exposed": "not_exposed", "owner_only": "owner_only", "rate_limited": "rate_limited"}
 
 # ------------------------------------------------------------------------------------------------ what a question needs
 @dataclass(frozen=True)
@@ -203,6 +213,8 @@ def call_facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
     a = args.model_dump() if hasattr(args, "model_dump") else (args if isinstance(args, dict) else {})
     if short == DOC_TOOL:
         return _document_facts(a, result)
+    if short == SIMILAR_TOOL:
+        return _similar_facts(result)
     detail = str(a.get("resource") or "") if short in FSM_DATA_TOOLS else TOOL_DETAIL.get(short, "")
     if isinstance(result, str):
         if "isn't available to you here" in result and "team version" in result:
@@ -274,6 +286,24 @@ def web_facts(web: dict[str, Any] | None) -> list[dict[str, str]]:
     if _int(web.get("searches")) or _int(web.get("reads")):
         return [_fact(WEB, PARTIAL, "", "searched, but no page was cited or read")]
     return []
+
+
+def _similar_facts(result: Any) -> list[dict[str, str]]:
+    """find_similar_work: one fact per part it read (Salts FSM quotes, Salts FSM jobs, your mailbox past emails), each with how
+    that read went - a part cut short says how much was searched, a part not connected / switched off / owner-only says so."""
+    if not isinstance(result, dict):
+        return [_fact(FSM, OK, "quotes"), _fact(FSM, OK, "jobs")]
+    if "error" in result and result.get("kind") and not result.get("sources"):
+        return [_fact(FSM, BAD_INPUT if result["kind"] == "bad_request" else ERROR, "past work")]
+    out: list[dict[str, str]] = []
+    for part, info in (result.get("sources") or {}).items():
+        if part not in _SIMILAR_PARTS or not isinstance(info, dict):
+            continue
+        src, detail = _SIMILAR_PARTS[part]
+        status = _SIMILAR_STATUS.get(str(info.get("status") or ""), ERROR)
+        note = str(info.get("note") or "") if status in (PARTIAL, SCOPE_OFF) else ""
+        out.append(_fact(src, status, detail, note))
+    return out
 
 
 def error_facts(name: str, exc: BaseException) -> list[dict[str, str]]:

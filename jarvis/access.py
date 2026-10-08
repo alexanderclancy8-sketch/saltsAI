@@ -248,8 +248,9 @@ def event_visible(event: object, role: str | None) -> bool:
 # The ONLY tools a team session's Jarvis (and a team session's background calls) may use. Read-only operational data,
 # plus `log_job`, which queues an approval for a human with the requester recorded (and never auto-runs: the standing
 # approvals are skipped for a team requester). Everything else is denied by default - finance, accounts, staff review and
-# pay, email, stock values, quotes and contract values, access codes, settings, connections, memory, approvals, the
-# engineering agents and pull requests - so a new tool needs a deliberate line here.
+# pay, email, stock values, quote and contract values, access codes, settings, connections, memory, approvals, the
+# engineering agents and pull requests - so a new tool needs a deliberate line here. (``find_similar_work`` shows a team caller
+# similar past jobs and quotes, but strips every value and price and never reads email for them.)
 TEAM_TOOLS = frozenset({
     "fsm_jobs",              # today's / a date range's jobs
     "job_detail",            # one job: notes, status, materials used
@@ -260,6 +261,8 @@ TEAM_TOOLS = frozenset({
     "nearest_engineer",      # closest engineer to a place, same privacy rule
     "marketing_overview",    # followers and reviews (the Presence pop-up)
     "knowledge_search",      # standards and company how-tos (never the owner's private or finance folders)
+    "find_similar_work",     # similar past jobs and quotes - for a team caller WITHOUT any money (no values, no pricing guide)
+                             # and without emails; owner-only FSM resources are never read for them (services/similar_work.py)
     "log_job",               # queues a job for approval, requester recorded, never auto-approved
     "run_in_background",     # only for the tools above; forced SILENT; scoped to the requester
     "background_results",    # only the requester's own
