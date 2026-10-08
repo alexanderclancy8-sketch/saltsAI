@@ -22,6 +22,8 @@ Cover, in this order:
 2. What slipped - jobs not finished, overdue or unassigned call-outs, late starts - and what should happen to them.
 3. What's waiting on {owner} - approvals and the most useful suggestions.
 4. Tomorrow - how many jobs, the first starts, anything unassigned or risky, deadlines coming up.
+If "jarvis_faults" has a count above zero, add ONE short sentence that Jarvis has that many open fault reports about
+itself, waiting in Faults on the console (no detail). Say nothing about faults when the count is zero.
 Finish with one "Shall I...?" offer for the single most useful next step (you never act without approval).
 Round numbers for speech. No lists, headings or markdown - flowing speech. {budget} If the data is demo
 data, say so once. Only use the data provided; never invent facts."""
@@ -99,6 +101,8 @@ class WrapUp:
                                   for c in (await _safe(demo_guard.section(j.customers.scores()), "customers"))
                                   .get("at_risk", [])][:5],
             "tomorrow": tomorrow_view,
+            # Jarvis's own open fault reports (services/faults.py): the count and newest titles only, for one short sentence
+            "jarvis_faults": j.faults.wrapup_summary() if getattr(j, "faults", None) is not None else {"count": 0},
             "deadlines_next_14_days": [d for d in j.accountant.deadlines() if 0 <= d["days_left"] <= 14],
         }
 

@@ -51,8 +51,15 @@ class ActivityLog:
         except Exception:  # noqa: BLE001 - an odd timezone name must not stop the log
             return ZoneInfo("UTC")
 
-    def record(self, key: str, name: str, outcome: str, detail: str = "") -> None:
-        """Note one run of a scheduled check. Never raises: logging a run must not be able to break the run."""
+    def record(self, key: str, name: str, outcome: str, detail: str = "", error: BaseException | None = None) -> None:
+        """Note one run of a scheduled check. Never raises: logging a run must not be able to break the run. A failed run opens (or
+        bumps) an internal fault report and any other outcome closes it (services/faults.py); ``error`` gives it the traceback."""
+        faults = getattr(self.j, "faults", None)
+        if faults is not None:
+            try:
+                faults.check_run(key, name, outcome, detail, error)
+            except Exception:  # noqa: BLE001
+                log.exception("Could not update the fault log for %s", key)
         try:
             if outcome not in OUTCOMES:
                 outcome = NO_CHANGE

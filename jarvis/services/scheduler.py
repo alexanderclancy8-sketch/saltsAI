@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,12 +12,20 @@ from ..cron import cron_trigger
 log = logging.getLogger(__name__)
 
 
-def _guard(name: str, fn):
+def _guard(name: str, fn, j=None):
+    """A scheduled job that must never take the scheduler down. Given ``j``, a failure is also an internal fault report and a
+    good run closes it (services/faults.py)."""
     async def run():
+        faults = getattr(j, "faults", None)
         try:
             await fn()
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             log.exception("Scheduled job %s failed", name)
+            if faults is not None:
+                faults.job_failed(name, e)
+            return
+        if faults is not None:
+            faults.job_ok(name)
     return run
 
 
@@ -30,7 +39,7 @@ def _check(j, key: str, name: str, fn):
             found = await fn()
         except Exception as e:  # noqa: BLE001
             log.exception("Scheduled job %s failed", name)
-            j.activity.record(key, name, "failed", f"Failed: {type(e).__name__}")
+            j.activity.record(key, name, "failed", f"Failed: {type(e).__name__}", error=e)
             return
         if isinstance(found, int) and not isinstance(found, bool):
             j.activity.record(key, name, "changed" if found else "no_change",
@@ -47,7 +56,7 @@ def _daily(j, key: str, name: str, fn):
             await fn()
         except Exception as e:  # noqa: BLE001
             log.exception("Scheduled job %s failed", name)
-            j.activity.record(key, name, "failed", f"Failed: {type(e).__name__}")
+            j.activity.record(key, name, "failed", f"Failed: {type(e).__name__}", error=e)
             try:
                 j.db.add_notification("warning", f"{name} didn't run", f"It failed ({type(e).__name__}). Ask me for it and I'll try again.")
             except Exception:  # noqa: BLE001
@@ -57,57 +66,58 @@ def _daily(j, key: str, name: str, fn):
 
 def build_scheduler(j) -> AsyncIOScheduler:
     s = j.settings
+    guard = functools.partial(_guard, j=j)   # every plain job's failure is also an internal fault report (services/faults.py)
     sched = AsyncIOScheduler(timezone=s.timezone)
-    sched.add_job(_guard("system tests", lambda: j.tester.run("system")), "interval",
+    sched.add_job(guard("system tests", lambda: j.tester.run("system")), "interval",
                   minutes=s.routine_test_interval_min, id="system_tests", max_instances=1, coalesce=True)
-    sched.add_job(_guard("compliance", lambda: j.tester.run("compliance")),
+    sched.add_job(guard("compliance", lambda: j.tester.run("compliance")),
                   cron_trigger(s.compliance_check_cron, timezone=s.timezone), id="compliance",
                   max_instances=1, coalesce=True)
     if s.fsm_engineer_enabled:  # read-only audit; says something only when a failure is new or changed
-        sched.add_job(_guard("FSM engineer bot", j.fsm_engineer.run),
+        sched.add_job(guard("FSM engineer bot", j.fsm_engineer.run),
                       cron_trigger(s.fsm_engineer_cron, timezone=s.timezone), id="fsm_engineer",
                       max_instances=1, coalesce=True)
     if s.briefing_enabled:  # the daily rhythm: on by default, switched off / re-timed in Settings > Schedules
         sched.add_job(_daily(j, "briefing", "Morning briefing", j.briefings.morning_briefing),
                       cron_trigger(s.briefing_cron, timezone=s.timezone), id="briefing",
                       max_instances=1, coalesce=True)
-    sched.add_job(_guard("staff review", j.reviewer.weekly_review),
+    sched.add_job(guard("staff review", j.reviewer.weekly_review),
                   cron_trigger(s.staff_review_cron, timezone=s.timezone), id="staff_review",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("business review", j.business_review),
+    sched.add_job(guard("business review", j.business_review),
                   cron_trigger(s.business_review_cron, timezone=s.timezone), id="business_review",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("social snapshot", j.marketing.snapshot),
+    sched.add_job(guard("social snapshot", j.marketing.snapshot),
                   cron_trigger(s.social_snapshot_cron, timezone=s.timezone), id="social_snapshot",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("marketing report", j.marketing.weekly_report),
+    sched.add_job(guard("marketing report", j.marketing.weekly_report),
                   cron_trigger(s.marketing_report_cron, timezone=s.timezone), id="marketing_report",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("FSM data catalog", j.fsm_read.warm), "interval", minutes=15, id="fsm_data_catalog",
+    sched.add_job(guard("FSM data catalog", j.fsm_read.warm), "interval", minutes=15, id="fsm_data_catalog",
                   max_instances=1, coalesce=True)  # keeps the catalog and the van / equipment dates built on it fresh
-    sched.add_job(_guard("accreditation reminders", j.accreditations.daily_reminders),
+    sched.add_job(guard("accreditation reminders", j.accreditations.daily_reminders),
                   cron_trigger("5 8 * * *", timezone=s.timezone), id="accreditations",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("regulatory watch", j.regwatch.weekly),
+    sched.add_job(guard("regulatory watch", j.regwatch.weekly),
                   cron_trigger(s.regulatory_watch_cron, timezone=s.timezone), id="regwatch",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("technical watch", j.regwatch.technical_weekly),
+    sched.add_job(guard("technical watch", j.regwatch.technical_weekly),
                   cron_trigger(s.technical_watch_cron, timezone=s.timezone), id="technical_watch",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("security watch", j.security_watch.run),
+    sched.add_job(guard("security watch", j.security_watch.run),
                   cron_trigger(s.security_watch_cron, timezone=s.timezone), id="security_watch",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("billing check", j.daily_billing),
+    sched.add_job(guard("billing check", j.daily_billing),
                   cron_trigger(s.billing_check_cron, timezone=s.timezone), id="billing",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("review requests", j.daily_reviews),
+    sched.add_job(guard("review requests", j.daily_reviews),
                   cron_trigger(s.review_requests_cron, timezone=s.timezone), id="reviews",
                   max_instances=1, coalesce=True)
     if s.customer_comms_enabled:  # drafts only - every email still waits for the owner's approval
-        sched.add_job(_guard("customer emails", j.customer_comms_sweep),
+        sched.add_job(guard("customer emails", j.customer_comms_sweep),
                       cron_trigger(s.customer_comms_cron, timezone=s.timezone), id="customer_comms",
                       max_instances=1, coalesce=True)
-    sched.add_job(_guard("suggestions", j.suggestions.sweep),
+    sched.add_job(guard("suggestions", j.suggestions.sweep),
                   cron_trigger(s.suggestions_cron, timezone=s.timezone), id="suggestions",
                   max_instances=1, coalesce=True)
     # Suggestions with a Prepare button: kept true every 15 minutes in working hours (hourly outside them), published to the
@@ -115,7 +125,7 @@ def build_scheduler(j) -> AsyncIOScheduler:
     # neither posts into the chat; they only fill the Approvals drawer / the FSM. Both are cheap no-ops with the switch off.
     sched.add_job(_check(j, "fsm_suggestions", "Suggestions sync", j.fsm_suggestions.scheduled_sync), "interval",
                   minutes=max(1, s.suggestions_fsm_interval_min), id="fsm_suggestions", max_instances=1, coalesce=True)
-    sched.add_job(_guard("suggestion requests", j.fsm_suggestions.poll), "interval",
+    sched.add_job(guard("suggestion requests", j.fsm_suggestions.poll), "interval",
                   seconds=max(10, s.suggestions_fsm_poll_s), id="fsm_suggestion_requests", max_instances=1, coalesce=True)
     # Upsell Opportunities: reword the FSM's template draft emails (every 10 minutes in working hours, hourly outside them). Quiet - one
     # collapsed activity line per run, never a chat message. It only PATCHes draft wording; a person approves and sends in the FSM.
@@ -125,7 +135,7 @@ def build_scheduler(j) -> AsyncIOScheduler:
         sched.add_job(_daily(j, "wrapup", "End-of-day wrap-up", j.wrapup.run),
                       cron_trigger(s.wrapup_cron, timezone=s.timezone), id="wrapup",
                       max_instances=1, coalesce=True)
-    sched.add_job(_guard("self-learning reflection", j.self_learning.reflect),
+    sched.add_job(guard("self-learning reflection", j.self_learning.reflect),
                   cron_trigger(s.self_learning_cron, timezone=s.timezone), id="self_learning",
                   max_instances=1, coalesce=True)
     # Customer / site notes: propose updated pinned summaries (PENDING, in the Memory pop-up). Quiet: one collapsed activity line,
@@ -133,26 +143,26 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_check(j, "entity_summaries", "Customer & site note summaries", j.entity_memory.weekly_summaries),
                   cron_trigger(s.entity_summaries_cron, timezone=s.timezone), id="entity_summaries",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("conversation quality summary", j.quality.weekly_summary),
+    sched.add_job(guard("conversation quality summary", j.quality.weekly_summary),
                   cron_trigger(s.conversation_quality_cron, timezone=s.timezone), id="conversation_quality",
                   max_instances=1, coalesce=True)
     if getattr(s, "question_checks_enabled", False):  # the weekly accuracy scorecard: off by default (owner-only switch)
-        sched.add_job(_guard("question checks", j.question_checks.scheduled),
+        sched.add_job(guard("question checks", j.question_checks.scheduled),
                       cron_trigger(s.question_checks_cron, timezone=s.timezone), id="question_checks",
                       max_instances=1, coalesce=True)
-    sched.add_job(_guard("conversation quality retention", j.quality.prune_job),
+    sched.add_job(guard("conversation quality retention", j.quality.prune_job),
                   cron_trigger("20 3 * * *", timezone=s.timezone), id="conversation_quality_retention",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("engineer homes retention", j.homes.maintain),  # forgets the home of anyone off the staff list
+    sched.add_job(guard("engineer homes retention", j.homes.maintain),  # forgets the home of anyone off the staff list
                   cron_trigger("25 3 * * *", timezone=s.timezone), id="engineer_homes_retention",
                   max_instances=1, coalesce=True)
-    sched.add_job(_guard("weekly digest", j.weekly_digest.scheduled),
+    sched.add_job(guard("weekly digest", j.weekly_digest.scheduled),
                   cron_trigger(s.weekly_digest_cron, timezone=s.timezone), id="weekly_digest",
                   max_instances=1, coalesce=True)
     sched.add_job(_check(j, "lone_worker", "Lone-worker check", j.lone_worker_sweep), "interval",
                   minutes=s.lone_worker_check_min, id="lone_worker", max_instances=1, coalesce=True)
     if s.proactive_chat_enabled and j.self_github is not None:  # read-only; says what changed, only when it changed
-        sched.add_job(_guard("pull request watch", j.proactive.pr_watch), "interval",
+        sched.add_job(guard("pull request watch", j.proactive.pr_watch), "interval",
                       minutes=max(1, s.proactive_pr_watch_min), id="pr_watch", max_instances=1, coalesce=True)
     if not getattr(j.mail, "demo", True):
         sched.add_job(_check(j, "inbox_scan", "Issue email scan", j.issues.scan_inbox), "interval",
@@ -165,4 +175,7 @@ def build_scheduler(j) -> AsyncIOScheduler:
         sched.add_job(_check(j, "council_intake_scan", "Council portal request scan", j.council_intake.scan_inbox),
                       "interval", minutes=s.inbox_check_interval_min, id="council_intake_scan", max_instances=1,
                       coalesce=True)
+    # Fault reports (services/faults.py): RAM / FSM data health and, every few hours, a quiet doctor run. Internal only.
+    sched.add_job(guard("fault watch", j.faults.watch), "interval", minutes=15, id="fault_watch", max_instances=1,
+                  coalesce=True)
     return sched

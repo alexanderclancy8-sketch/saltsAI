@@ -360,6 +360,10 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/approvals/history": MANAGER_OK,
     "POST /api/approvals/{action_id}/{decision}": MANAGER_OK,
     "GET /api/activity": MANAGER_OK,                        # "What Jarvis did": everything proposed, changed and decided (read only)
+    "GET /api/faults": MANAGER_OK,                          # fault reports (services/faults.py): list, copy as markdown for
+    "GET /api/faults/report": MANAGER_OK,                   # Claude Code, mark fixed. Internal only - never sent outside Jarvis
+    "GET /api/faults/{fault_id}/report": MANAGER_OK,
+    "POST /api/faults/{fault_id}/fixed": MANAGER_OK,
     "GET /api/memory": MANAGER_OK,                          # memory: read and edit
     "POST /api/memory/facts/{fact_id}": MANAGER_OK,
     "DELETE /api/memory/facts/{fact_id}": MANAGER_OK,

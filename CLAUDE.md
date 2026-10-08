@@ -670,6 +670,30 @@ single amber "could not check: <reason>" line and the rest still run. **Never pr
 (`_hide_secrets`; the list is `secret_fields()`: every secret-kind Settings field plus any credential-named setting, so a new secret is covered automatically) and are redacted; a grep test pins this. To add a check, add a `(name, method)` to `Doctor.CHECKS` returning
 `Item`s, and a test with fakes.
 
+**Fault reports (`services/faults.py`, `j.faults`; table `faults`; tool `report_fault`; console rail item + pop-up **Faults**,
+`web/faults.js`; tests `tests/test_faults.py`).** Jarvis writes down what of his OWN has broken so the owner can paste a clean report into
+Claude Code. **The repo is public: a fault report is NEVER sent to GitHub, Teams, email or anywhere outside Jarvis** - it lives in the
+`faults` table and leaves only on a person's "Copy" click (a test greps `faults.py` and the GitHub/Teams/notifier modules).
+- **Triggers** (all through `FaultLog.record`; a repeat of an OPEN fault with the same key bumps `count`/`last_seen`): `Doctor.run` ->
+  `from_doctor` (a RED line, or a check that crashed = "could-not-check"; amber is not a fault); `ActionExecutor._run` -> `action_failed`
+  (one fault per action KIND, with the traceback's jarvis/ files); `ActivityLog.record(..., outcome="failed", error=e)` (scheduled checks,
+  briefing / wrap-up, automations) and `scheduler._guard(name, fn, j=j)` (every other job; `build_scheduler` binds `j`); the 15-minute
+  `fault_watch` job (`FaultLog.watch`: RAM `probe()` health and `fsm_data.last_error` - `STREAK` (2) bad looks in a row; "not shipped yet",
+  rate-limited, scope-off and demo are not faults - plus a quiet `Doctor.run` every `DOCTOR_EVERY` (6 h, kv `faults:doctor_last`));
+  and `report_fault(summary, details)` (no approval card - internal; `REPORTS_PER_HOUR` 5; flagged when the turn read outside content;
+  not in `TEAM_TOOLS`, not in `CHECK_TOOLS`, in `NOT_BACKGROUND`).
+- **Auto-close** ("resolved itself" + `resolved_at`): the doctor check runs without that red line, the scheduled run/job succeeds, an action of
+  the same kind completes, the integration answers. "Mark fixed" is a person (`POST /api/faults/{id}/fixed`). Closed rows go after 180 days.
+- **Redaction before saving** (`faults.clean`): configured secret values (`doctor.secret_fields`), `integrations.redact`, `redact_text`,
+  `redact_history` (access codes), whole URL query strings, control characters, length caps. The diagnosis is worked out in code from the
+  error (`diagnose`), never invented. The export (`report_markdown`) also swaps emails, phone numbers, postcodes and the customer / site
+  names Jarvis holds (entity notes + the FSM look-up cache) for placeholders, fences the error as data, and adds versions (build id from the
+  environment, Python, backend).
+- **Console** (MANAGER_OK; team 403, `faults` not in `TEAM_STATUS_KEYS`): `GET /api/faults`, `GET /api/faults/{id}/report` and
+  `GET /api/faults/report` (all open) return markdown for the clipboard ("Copy report for Claude", "Copy all open faults"). `/api/status`
+  carries `faults.open` for the rail count only - no banner over the chat. The 17:30 wrap-up gets `jarvis_faults` (count + newest titles)
+  and says one sentence when there are any.
+
 **The FSM engineer bot (`services/fsm_engineer.py`, `j.fsm_engineer`, tool `fsm_engineer_audit`; tests
 `tests/test_fsm_engineer.py`).** A read-only systems audit, scheduled by `fsm_engineer_cron` (and switched by
 `fsm_engineer_enabled`, both env-only): it reads the latest routine test results, open issues, failed approved writes and two live

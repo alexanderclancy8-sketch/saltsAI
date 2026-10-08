@@ -156,6 +156,7 @@ class Doctor:
         """Every check's lines, worst first. A check that raises becomes one amber 'could not check' line."""
         now = now or datetime.now(timezone.utc)
         items: list[Item] = []
+        ran: list[str] = []
         for name, method in self.CHECKS:
             try:
                 got = getattr(self, method)(now)
@@ -165,11 +166,16 @@ class Doctor:
                 if not all(isinstance(i, Item) for i in found):
                     raise TypeError("the check returned something that is not a report line")
                 items.extend(found)
+                ran.append(name)
             except Exception as e:  # noqa: BLE001 - fail soft: this is the whole point
                 reason = self._reason(e)
                 log.warning("Doctor: the %s check could not run (%s)", name, type(e).__name__)
                 items.append(Item(name, AMBER, f"could not check: {reason}",
                                   "Look in the Jarvis log for this check; the other checks still ran."))
+        # A red line (or a check that broke) is an internal fault report; a check that ran clean closes its old ones (services/faults.py)
+        faults = getattr(self.j, "faults", None)
+        if faults is not None:
+            faults.from_doctor(items, ran)
         return sorted(items, key=lambda i: _RANK.get(i.status, 1))  # stable: keeps the check order within a status
 
     @staticmethod

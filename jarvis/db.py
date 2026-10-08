@@ -450,6 +450,29 @@ CREATE TABLE IF NOT EXISTS entity_note_entries (
     updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_entity_note_entries_entity ON entity_note_entries (entity_id, status);
+-- Fault reports (services/faults.py): something of Jarvis's own that broke - a doctor line gone red, an approved action that failed,
+-- an integration that keeps erroring, a scheduled run that failed, or one Jarvis filed itself (report_fault). Internal only: never sent
+-- to GitHub or anywhere outside Jarvis. Every text field is redacted before it is stored. A repeat of an OPEN fault (same key) bumps
+-- count / last_seen instead of adding a row. status: open | fixed (a person marked it) | resolved_itself (its check passed again).
+CREATE TABLE IF NOT EXISTS faults (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    error TEXT NOT NULL DEFAULT '',
+    doing TEXT NOT NULL DEFAULT '',
+    tried TEXT NOT NULL DEFAULT '',
+    diagnosis TEXT NOT NULL DEFAULT '',
+    files TEXT NOT NULL DEFAULT '',
+    untrusted INTEGER NOT NULL DEFAULT 0,
+    count INTEGER NOT NULL DEFAULT 1,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolved_at TEXT NOT NULL DEFAULT '',
+    resolved_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_faults_key ON faults (key, status);
 """
 
 # Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).

@@ -602,6 +602,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     approvals=approval_inbox.pending_for_display(j.db),
                     activity=j.activity.summary(owner=caller.role == access.OWNER),
+                    faults={"open": j.faults.open_count()},   # the Faults rail count (owner / manager; never in the team status)
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name, address=address_for(settings),
                     resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
@@ -961,6 +962,34 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         if decision == "deny":
             return {"result": await j.actions.deny(action_id, by=speaker(request))}
         raise HTTPException(400, "decision must be approve or deny")
+
+    # ------------------------------------------------------------------ fault reports (the Faults pop-up; services/faults.py)
+    # Owner or manager (MANAGER_OK; a team session gets 403). Internal only: the report is built here for a PERSON to copy into
+    # Claude Code - nothing here (or anywhere) sends it to GitHub or outside Jarvis. "Mark fixed" is a same-origin click.
+    @app.get("/api/faults", dependencies=[Depends(owner)])
+    async def faults_list(request: Request):
+        return JSONResponse(J(request).faults.listing(), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/faults/report", dependencies=[Depends(owner), Depends(human_click)])
+    async def faults_report_all(request: Request):
+        faults = J(request).faults
+        rows = faults.open_faults()
+        return JSONResponse({"markdown": faults.report_markdown(rows), "count": len(rows)}, headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/faults/{fault_id}/report", dependencies=[Depends(owner), Depends(human_click)])
+    async def faults_report_one(fault_id: int, request: Request):
+        faults = J(request).faults
+        row = faults.get(fault_id)
+        if row is None:
+            raise HTTPException(404, "That fault no longer exists.")
+        return JSONResponse({"markdown": faults.report_markdown([row])}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/faults/{fault_id}/fixed", dependencies=[Depends(owner), Depends(human_click)])
+    async def faults_mark_fixed(fault_id: int, request: Request):
+        try:
+            return J(request).faults.mark_fixed(fault_id, speaker(request) or "the owner")
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from None
 
     # ------------------------------------------------------------------ memory (the Memory pop-up)
     # What Jarvis has learned: list / reword / delete. Console-only (owner session + same-origin click); not a brain
