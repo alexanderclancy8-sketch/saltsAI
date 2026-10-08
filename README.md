@@ -276,6 +276,15 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
 - **The Memory pop-up (Settings → Memory).** Lists what Jarvis has learned - "Things Jarvis should know", things he
   remembered himself, and the short replies he has learned - each one editable and deletable. A change is used from his very
   next message, and deleting a note also removes it from Settings so it can't come back on a restart.
+- **Customer & site memory (Settings → Memory → Customers & sites).** Jarvis keeps running notes on each customer and site,
+  against its Salts FSM record (by id, so two customers with the same name never get mixed up). Say "remember for Acme: they
+  want a call before we send anyone" and it is noted; if the name could be more than one customer, Jarvis asks which. When a
+  customer or site comes up, Jarvis reads its notes and says when he used them ("Using my notes on Acme: ..."). Notes he
+  suggests himself - and anything said after he read an email, a document, FSM text or a web page - only wait in the tab until
+  you or a manager press Accept. He refuses to keep codes, passwords, phone numbers, email addresses or anything personal
+  (those stay in Salts FSM). Once a week he may suggest an updated summary for each customer (switch off under Settings →
+  Schedules); it never posts in the chat. Owners and managers see the tab; the team console doesn't; only the owner can forget
+  everything on a customer. Notes are never sent to Teams.
 - **Standing approvals (off by default, owner-only).** Settings → Standing approvals has two switches, which are
   your own approval given in advance for two narrow things, and nothing else:
   - *Record keeping*: creating a **new** customer, site or contact in Salts FSM, and adding a note, task or

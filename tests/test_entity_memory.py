@@ -18,7 +18,9 @@ Pinned here:
 from __future__ import annotations
 
 import functools
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -574,3 +576,28 @@ def test_the_console_says_so_on_sample_data(app):
 def test_accepting_and_discarding_are_never_tools():
     for t in TOOLS_BY_NAME.values():
         assert not (t.name.startswith("entity_") and any(w in t.name for w in ("accept", "discard", "decide", "forget", "delete")))
+
+
+def test_the_console_tab_is_wired_and_only_reaches_its_own_endpoints():
+    web = Path(__file__).resolve().parent.parent / "jarvis" / "web"
+    index, js, memory = ((web / n).read_text(encoding="utf-8") for n in ("index.html", "entity_notes.js", "memory.js"))
+    assert index.index("/static/entity_notes.js") < index.index("/static/memory.js") < index.index("/static/hud.js")
+    pop = index[index.index('id="pop-memory"'):index.index("</section>", index.index('id="pop-memory"'))]
+    for ident in ("mem-tab-general", "mem-tab-entities", "mem-panel-entities", "ent-search", "ent-list", "ent-fsm", "ent-view", "ent-demo"):
+        assert f'id="{ident}"' in pop, ident
+    # the tab lives inside the manager-only region of the page (cut out of a team member's page)
+    region = index[index.index("<!--role:manager--><section class=\"pop\" id=\"pop-memory\""):]
+    assert region.index('id="mem-panel-entities"') < region.index("<!--/role:manager-->")
+    code = js[js.index("*/") + 2:]
+    assert set(re.findall(r"/api/[a-z\-]+", code)) == {"/api/entity-notes"}
+    assert "approvals" not in code and "/api/memory" not in code
+    assert "JarvisEntityNotes" in memory and "selectTab" in memory
+
+
+def test_the_reflection_and_the_prompt_mention_the_notes():
+    from jarvis.brain import prompts
+    from jarvis.services import self_learning
+
+    assert "entity_note_propose" in Path(self_learning.__file__).read_text(encoding="utf-8")
+    text = Path(prompts.__file__).read_text(encoding="utf-8")
+    assert "entity_note_add" in text and "Using my notes on Acme" in text
