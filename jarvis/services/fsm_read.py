@@ -372,6 +372,11 @@ class FsmRead:
                 for k in sorted(store, key=store.get)[: len(store) - SENSITIVE_NOTE_MAX]:
                     del store[k]
 
+    def note_sensitive_text(self, text: str) -> None:
+        """A figure derived from owner-only data (a total, an average, a calculation on them) is as sensitive as the rows it came
+        from: remember it for the same hour so ``remember`` refuses it too."""
+        self._note_sensitive([{"value": str(text)}])
+
     def contains_sensitive(self, text: str) -> bool:
         """True when ``text`` repeats a figure, date, id or long note read from owner-only FSM data in the last hour."""
         now = self._clock()
