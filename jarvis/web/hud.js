@@ -1210,7 +1210,7 @@ function send(text, mode = "typed", opts = {}) {
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
-      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id); break;
+      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id, d.chart); break;
       case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; loadInboxSoon(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
@@ -1229,7 +1229,8 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ display overlay
-  function openDisplay(title, markdown, docId, imageId, advertId) {
+  let chartHandle = null; // the chart on the display now (charts.js); torn down before the next panel replaces it
+  function openDisplay(title, markdown, docId, imageId, advertId, chart) {
     $("#display-title").textContent = title;
     // Download buttons only for stored, drafted documents / graphics (the id is a 32-char hex string from the server).
     const dl = $("#display-downloads");
@@ -1244,7 +1245,14 @@ function send(text, mode = "typed", opts = {}) {
     }
     if (isImage) $("#display-png").href = `/api/images/${imageId}.png?download=1`;
     dl.hidden = !(isDoc || isImage);
+    if (chartHandle) { chartHandle.destroy(); chartHandle = null; }
     $("#display-body").innerHTML = md(markdown);
+    if (chart && window.JarvisCharts) { // a validated spec from the server, drawn with DOM APIs only (charts.js); above the table under it
+      const host = document.createElement("div"); host.className = "chart-host";
+      $("#display-body").prepend(host);
+      $("#display").classList.add("open"); // visible before it is measured, so it draws at the right width
+      chartHandle = window.JarvisCharts.mount(host, chart, { hideTitle: String(chart.title || "").trim() === String(title || "").trim() });
+    }
     if (advertId && /^[0-9a-f]{32}$/.test(advertId)) showAdvert(advertId);
     $("#display").classList.add("open");
     $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog

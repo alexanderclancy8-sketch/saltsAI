@@ -1,0 +1,63 @@
+/* JARVIS console - charts (web/charts.js). Colours come from the console's tokens (--panel, --text, --muted, --line, --core) so a
+ * chart follows the light / dark theme; the series colours themselves are set by charts.js from a fixed, colour-vision-checked palette.
+ * A chart sits in the display panel (#display-body) above the table Jarvis puts under it. */
+.chart-host { margin: 0 0 16px; max-width: 1100px; }
+.chart { margin: 0; padding: 14px 16px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chart-title { font-family: var(--f-display); font-weight: 600; font-size: 15px; color: var(--text); overflow-wrap: anywhere; }
+.chart-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--text); }
+.chart-legend[hidden] { display: none; }
+.chart-legend li { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.chart-legend .nm { overflow-wrap: anywhere; }
+.chart-legend .sw { flex: none; display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.chart-legend .sw.line { height: 3px; width: 14px; border-radius: 2px; }
+.chart-legend.rows { flex-direction: column; gap: 4px; flex-wrap: nowrap; max-width: 420px; }
+.chart-legend.rows li { display: flex; gap: 8px; }
+.chart-legend .ex { margin-left: auto; padding-left: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chart-pie .chart-body, .chart-donut .chart-body { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px 28px; }
+.chart-pie .chart-plot, .chart-donut .chart-plot { flex: 1 1 280px; min-width: 240px; }
+.chart-pie .chart-legend.rows, .chart-donut .chart-legend.rows { flex: 1 1 240px; max-width: none; }
+.chart-plot { position: relative; min-width: 0; }
+.chart-svg { max-width: 100%; height: auto; overflow: visible; }
+.chart-svg text { user-select: none; }
+.chart-overlay { position: absolute; left: 0; top: 0; width: 100%; }
+.chart-hit { position: absolute; padding: 0; margin: 0; border: 0; background: transparent; border-radius: 6px; cursor: default; touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent; }
+.chart-hit:focus { outline: none; }
+.chart-hit:focus-visible { outline: 2px solid var(--core); outline-offset: -2px; }
+.chart-mark { transition: filter .12s ease; }
+.chart-mark.is-active { filter: brightness(1.18); stroke: var(--text); stroke-width: 1.5px; }
+.chart-tip { position: absolute; z-index: 3; pointer-events: none; background: var(--panel-hi); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; font-size: 13px; line-height: 1.35; box-shadow: var(--shadow); max-width: min(300px, 92%); width: max-content; }
+.chart-tip[hidden] { display: none; }
+.tip-title { font-weight: 600; margin-bottom: 4px; overflow-wrap: anywhere; }
+.tip-row { display: flex; align-items: center; gap: 8px; }
+.tip-row strong { font-variant-numeric: tabular-nums; }
+.tip-name { color: var(--muted); overflow-wrap: anywhere; }
+.tip-key { flex: none; display: inline-block; width: 12px; height: 3px; border-radius: 2px; }
+.tip-key.box { height: 12px; border-radius: 3px; }
+.chart-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.chart-actions .icon-btn { border-color: var(--line); color: var(--core); }
+.chart-actions .icon-btn:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+.chart-status { margin: 0; font-size: 13px; color: var(--muted); }
+.chart-status:empty { display: none; }
+.chart-status.bad { color: var(--warn); }
+.chart-data summary { cursor: pointer; color: var(--core); font-size: 13.5px; padding: 2px 0; }
+.chart-data summary:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; border-radius: 4px; }
+.chart-table-scroll { overflow: auto; max-height: 320px; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.chart-data table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.chart-data th, .chart-data td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
+.chart-data thead th { position: sticky; top: 0; background: var(--panel-hi); color: var(--text); font-weight: 600; }
+.chart-data tbody th { font-weight: 500; color: var(--text); }
+.chart-data td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart-data tr:last-child th, .chart-data tr:last-child td { border-bottom: 0; }
+@media (max-width: 640px) {
+  .chart { padding: 10px 10px 10px; }
+  .chart-host { margin-bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .chart-mark { transition: none; } }
+@media (forced-colors: active) {
+  .chart-hit:focus-visible { outline-color: Highlight; }
+  .chart-mark.is-active { stroke: CanvasText; }
+}

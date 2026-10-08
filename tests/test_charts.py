@@ -342,3 +342,34 @@ async def test_an_owner_only_analysis_chart_is_marked_by_fsm_analyse_too(env):
     (ev,) = events(q)
     assert ev["audience"] == "owner" and access.event_visible({"type": "display", "data": ev}, access.OWNER)
     assert not access.event_visible({"type": "display", "data": ev}, access.MANAGER)
+
+
+# --------------------------------------------------------------------------- the console's side, read as source
+from pathlib import Path  # noqa: E402
+
+WEB = Path(__file__).resolve().parent.parent / "jarvis" / "web"
+
+
+def test_charts_js_never_turns_data_into_markup_or_code():
+    src = (WEB / "charts.js").read_text(encoding="utf-8")
+    for banned in (".innerHTML", ".outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "setTimeout(\"", "javascript:",
+                   "DOMParser", ".srcdoc", "createContextualFragment"):
+        assert banned not in src, banned
+    assert src.count("textContent") >= 10 and "createElementNS" in src
+
+
+def test_the_console_loads_charts_before_hud_and_hud_hands_the_chart_over():
+    index = (WEB / "index.html").read_text(encoding="utf-8")
+    assert index.index("/static/charts.js") < index.index("/static/hud.js") and "/static/charts.css" in index
+    hud = (WEB / "hud.js").read_text(encoding="utf-8")
+    assert 'openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id, d.chart)' in hud and "window.JarvisCharts.mount(" in hud
+    assert (WEB / "charts.css").exists()
+
+
+def test_charts_css_follows_the_console_tokens_not_fixed_colours():
+    css = (WEB / "charts.css").read_text(encoding="utf-8")
+    import re
+
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", css), "chart chrome colours come from the theme tokens"
+    for token in ("--panel", "--line", "--text", "--muted", "--core"):
+        assert f"var({token}" in css
