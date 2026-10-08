@@ -21,6 +21,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -42,8 +43,13 @@ KEY = "sk-fsm-secret-key-0123456789"
 class FsmServer:
     """A stand-in for the Salts FSM: its quotes and contracts, and the /api/jarvis/suggestions endpoints under test."""
 
-    def __init__(self):
-        today = date.today()
+    def __init__(self, today: date | None = None):
+        # "Today" is the BUSINESS day (settings.timezone), passed in or read here at call time, never from the process's own zone:
+        # Jarvis() moves the process from UTC to Europe/London (Linux), so a date.today() taken BEFORE it was built is the UTC date
+        # and one taken after is the London date - an hour either side of British midnight those differ by a day and the "9 days"
+        # quote became 10 days old (this is what failed CI around 23:41 UTC). Tests hand the same `today` to sync() (see build()).
+        today = today or datetime.now(ZoneInfo("Europe/London")).date()
+        self.today = today
 
         def quote(qid, days, value, customer, status="sent"):
             return {"id": qid, "title": f"Work for {customer}", "customer": customer, "site": f"{customer} House",
@@ -111,8 +117,14 @@ def build(settings, **overrides) -> tuple[Jarvis, FsmServer]:
     settings.fsm_api_key = KEY
     for k, v in overrides.items():
         setattr(settings, k, v)
-    server = FsmServer()
+    server = FsmServer(datetime.now(ZoneInfo(settings.timezone)).date())
     j = Jarvis(settings, client=FakeClient(), http=httpx.AsyncClient(transport=httpx.MockTransport(server.handler)))
+    real_sync = j.fsm_suggestions.sync
+
+    async def sync(today: date | None = None, force_hours: bool | None = None) -> int:   # every sweep sees the server's day, not the clock's
+        return await real_sync(today or server.today, force_hours)
+
+    j.fsm_suggestions.sync = sync
     return j, server
 
 
@@ -333,7 +345,7 @@ async def test_a_request_whose_snoozed_until_is_in_the_future_is_left_alone(worl
 
 async def test_fsm_requested_prepares_are_rate_limited_per_hour(settings):
     j, server = build(settings, suggestions_prepare_max_per_hour=2)
-    today = date.today()
+    today = server.today
     server.contracts.append({"id": "C2", "customer": "Beta Ltd", "site": "x", "contact_email": "a@beta.example.com"})
     server.quotes = [{"id": f"X{i}", "title": "t", "customer": "Beta Ltd", "site": "s", "value": 10 + i, "status": "sent",
                       "sent_date": (today - timedelta(days=10)).isoformat()} for i in range(5)]
@@ -394,7 +406,7 @@ async def test_editing_the_draft_does_not_make_the_suggestion_look_dealt_with(wo
 async def test_a_chase_the_scheduled_sweep_already_drafted_is_not_offered_again(world):
     j, server = world
     j.settings.customer_comms_quote_followup_days = 5
-    await j.customer_comms.draft_all(["quote_followup"], today=date.today())
+    await j.customer_comms.draft_all(["quote_followup"], today=server.today)
     assert [a["payload"]["to"] for a in j.db.pending_actions()] == [["ops@acme.example.com"]]    # Q1; Q4 has no email
     await j.fsm_suggestions.sync(force_hours=True)
     assert {s["key"] for s in j.db.open_suggestions()} == {Q4}                  # Q1 already has its draft waiting
