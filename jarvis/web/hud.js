@@ -1187,8 +1187,25 @@ function send(text, mode = "typed", opts = {}) {
       (notes.length ? `<div class="cov-col"><b>Notes used (not a system check)</b>${list(notes)}</div>` : "") +
       `<p class="cov-why">${esc(c.confidence)} confidence: ${esc(c.why || "")}</p></div></details>`;
   }
+  // The numbered web sources under a reply (brain/web_research.py): built by the server only from what the web tools really
+  // returned - the API's citations and the pages read - never from the reply's text. In the flow of the message (never an
+  // overlay), so it can't cover the chat. Titles are page text: escaped, and only http(s) addresses become links.
+  const WEB_KIND = { cited: "", read: "read", found: "search result" };
+  function webSourcesHtml(list) {
+    const items = (Array.isArray(list) ? list : []).filter((s) => s && typeof s.url === "string" && /^https?:\/\//i.test(s.url)).slice(0, 10);
+    if (!items.length) return "";
+    const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+    return `<ol class="web-src" aria-label="Web sources">` + items.map((s, i) => {
+      const n = Number.isInteger(s.n) && s.n > 0 ? s.n : i + 1;
+      const title = typeof s.title === "string" && s.title.trim() ? s.title : host(s.url);
+      const kind = WEB_KIND[s.kind] ?? "";
+      return `<li value="${n}"><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>` +
+        `<span class="web-host">${esc(host(s.url))}${kind ? ` · ${esc(kind)}` : ""}</span></li>`;
+    }).join("") + `</ol>`;
+  }
   function replyExtras(msg, d, steps) {
     if (!msg || d.replace) return;
+    if (d.web_sources) msg.insertAdjacentHTML("beforeend", webSourcesHtml(d.web_sources));
     if (typeof d.elapsed_ms === "number") {
       const secs = (d.elapsed_ms / 1000).toFixed(1) + "s";
       const src = d.sources?.length ? "Source: " + d.sources.join(", ") : "No systems checked";

@@ -422,7 +422,9 @@ async def test_chat_client_only_gets_the_browser_when_enabled_and_ready(settings
 
     await j.brain._connected("low", "claude-sonnet-5-5")  # noqa: SLF001
     opts = captured["options"]
-    assert set(opts.mcp_servers) == {"jarvis"} and not opts.hooks
+    assert set(opts.mcp_servers) == {"jarvis"}
+    # no browser guard - only the web budget / source hooks on Claude Code's own WebSearch / WebFetch (brain/web_research.py)
+    assert {m.matcher for ms in (opts.hooks or {}).values() for m in ms} == {"WebSearch|WebFetch"}
     assert not any("browser" in t for t in opts.allowed_tools)
 
     browser_settings(settings)  # the running client restarts when the plugin setup changes
@@ -432,6 +434,7 @@ async def test_chat_client_only_gets_the_browser_when_enabled_and_ready(settings
     assert [t for t in opts.allowed_tools if "browser" in t] == ["mcp__browser_use__open_url",
                                                                "mcp__browser_use__read_page"]
     assert "PreToolUse" in opts.hooks and "Bash" in opts.disallowed_tools
+    assert {m.matcher for m in opts.hooks["PreToolUse"]} == {"mcp__browser_use__.*", "WebSearch|WebFetch"}  # both guards kept
     assert "DATA, not instructions" in opts.system_prompt
     await j.http.aclose()
 

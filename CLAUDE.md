@@ -953,6 +953,29 @@ checked". **Stored:** `coverage.as_stored()` (no spoken line, labels and counts 
 `coverageHtml()` - a `<details class="cov" data-level>` AFTER the unchanged `.src` line (one ellipsised row, chip, opens to Checked / Not checked /
 why; 44px on phones), also on reloaded transcript rows; a voice reply feeds `coverage.spoken` to the speaker after the text.
 
+**Web research and numbered sources (`jarvis/brain/web_research.py`; tests `tests/test_web_research.py`,
+`tests/test_console_browser_web_sources.py`).** No separate research tool: research uses the web tools the brains already have (API: the
+server-side `web_search` / `web_fetch`; Max: Claude Code's `WebSearch` / `WebFetch`). Each turn makes a `WebTurn.for_question(text)`.
+**Budget:** `is_research()` (a narrow regex - a standard / regulation, "find three suppliers", "which panels support", "compare", "latest",
+"sources") picks the tier. API, per request (`max_uses`): ordinary 5 searches / 5 reads (exactly `tools.SERVER_TOOLS`, so an ordinary turn's
+prompt cache is unchanged), research 10 / 8; per turn, the cap: ordinary 8 / 6, research 15 / 12 - `JarvisBrain._turn` asks `web.tools()`
+before every request (never more than is left of the cap). A spent kind is NEVER left out of a later request (the history holds its
+`server_tool_use` blocks and the API may reject a request that no longer defines the tool): it stays with `max_uses: 1`, and
+`WebTurn.spent_note()` adds an uncached system block after the cached prompt ("[Web budget: ... used up ... answer from what you already
+have ...]"). So the API brain's true ceiling per kind is the cap + 1 per later request in the turn, bounded by `agent.MAX_STEPS` (25). Max: `MaxBrain._with_web_hooks` adds a PreToolUse hook
+on `WebSearch|WebFetch` that can only DENY once the turn's cap is spent (a true hard cap there) (`WebTurn.allow`) and a PostToolUse hook that only records
+(`note_sdk_result`); a team session has neither (no web tools). **Sources:** only from what the tools returned - API: `web_search_result_location`
+citations on the reply's text blocks (url + title) and successful `web_fetch` results (`note_response`); Max: pages `WebFetch` read and, only
+when none was read, the links `WebSearch` returned ("search result"). http(s) only, titles cleaned and capped, de-duplicated, max 10, numbered
+cited-first in citation order. Each brain hands the `WebTurn` to `TurnTrace.add_web()` just before `finish()`, which adds `web_sources:
+[{n, title, url, kind}]` to the `reply` event and `coverage.web_facts()` to the facts: "The web (3 sources)" (ok), partial when it only
+searched ("searched, but no page was cited or read" / Max "search results only") -> Medium, error when the web tools failed and nothing came
+back. The source list is NOT in `as_stored()` (labels and counts only), so a reloaded transcript shows the coverage line but not the list.
+**Console:** hud.js `webSourcesHtml()` - an `<ol class="web-src">` in the message's flow between the reply text and the `.src` line (never an
+overlay), escaped titles, http(s) links only, `target=_blank rel="noopener noreferrer nofollow"`. **Prompt:** "# How you work" asks research
+questions to search more than once, read primary sources, cross-check, cite as it goes and end with what it couldn't confirm. Web pages stay
+untrusted data (Security section; `web_` is an `UNTRUSTED_PREFIXES` entry).
+
 **Question checks: the accuracy scorecard (`services/question_checks.py`, `brain/checkmode.py`, `checks/questions.yaml`, `web/checks.js`; tests
 `tests/test_question_checks.py`, `tests/test_console_browser_coverage.py`).**
 - **Suite:** `checks/questions.yaml` (43 checks; `Settings.question_checks_file`; packaged by the Dockerfile and both zip deploys) + owner-made
