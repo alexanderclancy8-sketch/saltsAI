@@ -277,7 +277,8 @@ body.checks-sheet .shell { z-index: 3; }
 .qc-bar[data-level="warn"] { background: var(--ember); }
 .qc-bar[data-level="bad"] { background: var(--warn); }
 .qc-bar .sr, #qc .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.qc-area { display: grid; grid-template-columns: minmax(0, 1fr) auto 48px; gap: 8px; align-items: baseline; }
+#qc .list li.qc-area { display: grid; grid-template-columns: minmax(0, 1fr) auto 48px; gap: 8px; align-items: baseline; padding: 6px 0; font-size: 14px; }
+#qc .list li.qc-area .sub { display: inline; }
 .qc-pct { text-align: right; font-family: var(--f-mono); }
 .qc-pct[data-level="ok"] { color: var(--ok); }
 .qc-pct[data-level="warn"] { color: var(--ember); }
