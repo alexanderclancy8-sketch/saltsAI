@@ -7,6 +7,8 @@ Three stores feed it, all existing ones (nothing new is stored):
   therefore also rewrites the setting, or the next start/reload would quietly put the old wording back.
 * Things Jarvis has learned - the rest of the `memory` table (the `remember` tool and the nightly self-reflection).
 * Learned replies - the `reply_habits` table behind the grey suggestion in the message box.
+* House rules - the `house_rules` table (services/rulebook.py), listed here with who approved each and when. Rewording, switching
+  one off or on and deleting are the PRINCIPAL OWNER's (main.py routes under /api/memory/rules, `Rulebook.edit/set_active/delete`).
 
 This is the owner's own console path, called only from main.py's authenticated, same-origin endpoints. It is
 deliberately NOT a brain tool: nothing the model says can reach these methods (the model can already `remember` and
@@ -58,15 +60,17 @@ class MemoryBook:
             refresh()
 
     # ------------------------------------------------------------------ list
-    def listing(self) -> dict[str, list[dict[str, Any]]]:
+    def listing(self) -> dict[str, Any]:
         facts = []
         for m in self.j.db.memories():
             facts.append({"id": m["id"], "text": m["fact"], "added": m["created_at"],
                           "source": "notes" if self._in_notes(m["fact"]) else "learned"})
         replies = [{"id": r["id"], "text": r["display"], "context": r["context"], "uses": r["uses"],
                     "last_used": r["last_used"]} for r in self.j.reply_suggestions.rows()]
+        book = getattr(self.j, "rulebook", None)   # house rules (services/rulebook.py): listed here, changed only by the owner
         return {"notes": [f for f in facts if f["source"] == "notes"],
-                "learned": [f for f in facts if f["source"] == "learned"], "replies": replies}
+                "learned": [f for f in facts if f["source"] == "learned"], "replies": replies,
+                "rules": book.listing() if book is not None else {"rules": [], "pending": 0}}
 
     # ------------------------------------------------------------------ facts
     def _fact(self, fact_id: int) -> dict[str, Any]:

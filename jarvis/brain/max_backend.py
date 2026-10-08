@@ -33,7 +33,7 @@ from ..redact import redact_text
 from ..events import quiet_turn
 from ..services.conversation_quality import TurnRecord
 from ..services.tracking import requester_label
-from .prompts import build_system, build_team_system
+from .prompts import build_system, build_team_system, house_rules
 from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
 from .web_research import WebTurn
@@ -171,10 +171,12 @@ class MaxBrain:
 
     def refresh_system(self) -> None:
         if self.team:
-            blocks = build_team_system(self.s, self.j.kb, self.caller)
+            blocks = build_team_system(self.s, self.j.kb, self.caller,
+                                       rules=house_rules(self.j, self.caller))
         else:
             blocks = build_system(self.s, self.j.kb, self.j.db, self.j.connections(), self.j.register.prompt_summary(),
-                                  history_before_id=self._history_before, fsm_data=self.j.fsm_read.prompt_block())
+                                  history_before_id=self._history_before, fsm_data=self.j.fsm_read.prompt_block(),
+                                  rules=house_rules(self.j, None))
         self.system = "\n\n".join(b["text"] for b in blocks)
 
     def reset(self) -> None:

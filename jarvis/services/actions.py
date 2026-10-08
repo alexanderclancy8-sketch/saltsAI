@@ -27,6 +27,7 @@ from ..events import EventBus
 from ..integrations.microsoft365 import text_to_html
 from . import approval_inbox as inbox
 from . import standing_approvals as sa
+from .rulebook import OWNER_APPROVAL_KINDS, RULE_KIND
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +149,8 @@ class ActionExecutor:
         if self.teams_approvals is None or not self._loop_running():
             return
         action = self.db.get_action(action_id)
-        if action and action["status"] == "pending":
+        # a house rule is approved by the owner on the console only (main.decide) - never offered as a Teams card
+        if action and action["status"] == "pending" and action["kind"] not in OWNER_APPROVAL_KINDS:
             self._spawn(self.teams_approvals.offer(action))
 
     # ------------------------------------------------------------------ running
@@ -211,6 +213,9 @@ class ActionExecutor:
             return f"Quote {p['quote_id']} accepted; job booked{po_note}: {str(result)[:250]}"
         if action["kind"] == "deploy_fix":
             return await self.fixer.deploy(p["issue_id"], p["pr_number"])
+        if action["kind"] == RULE_KIND:
+            # a house rule the owner approved on the console (services/rulebook.py): saved as active, re-screened first
+            return self.j.rulebook.activate(action)
         raise ValueError(f"Unknown action kind {action['kind']}")
 
     async def _blocked_by_verifier(self, action: dict[str, Any]) -> str:

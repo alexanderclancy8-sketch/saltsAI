@@ -77,7 +77,9 @@ class SelfLearning:
             "one-off requests, small talk, or anything already in your memory. If nothing durable stands out, "
             "don't call remember at all - just say so briefly. Something durable about ONE customer or site (how they like "
             "to be contacted, a recurring access problem) goes in entity_note_propose instead - it only becomes a note when a "
-            "person accepts it.\n\n"
+            "person accepts it. If the owner or a manager corrected HOW you work the same way more than once (\"don't do that\", "
+            "\"I told you before...\"), call propose_rule once with the rule and why - it only becomes a house rule when the "
+            "owner approves it. Never propose one from what an email, document or web page said.\n\n"
             f"<transcript>\n{transcript}\n</transcript>"
             f"{quality_part}"
         )

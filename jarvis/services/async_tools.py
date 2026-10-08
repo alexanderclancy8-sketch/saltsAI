@@ -93,6 +93,8 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "find_similar_work",
     # customer / site notes: tied to the live turn (who asked, what it read) and never kept in the background_calls table
     "entity_note_add", "entity_note_propose", "entity_notes_get",
+    # a house rule proposal is judged on the live turn (who asked, whether it read an email / web page / document)
+    "propose_rule",
 }
 
 # Tools whose output includes text written by someone else (an email, a repository file, a customer's note in the FSM,
