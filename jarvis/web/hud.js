@@ -839,15 +839,19 @@ function send(text, mode = "typed", opts = {}) {
     // chat message that follows, so ordering is guaranteed.
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "stop" }));
     abandonCurrent();
-    const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode, attachments: S.attachments };
+    // (only name / mime / data go to the server - the size is for the checks above, and the server wants strings)
+    const payload = { type: "chat", text: text || "Please look at the attached file(s).", mode,
+                      attachments: S.attachments.map(({ name, mime, data }) => ({ name, mime, data })) };
+    // A WebSocket message is capped (16 MB) - a big upload goes over the plain POST stream instead, which has no such cap.
+    const bigUpload = payload.attachments.reduce((n, a) => n + a.data.length, 0) > ATT.bigPayload;
     // Only text the owner typed into the chat box may be learned as a "usual reply" (never buttons or speech).
     if (opts.compose && mode === "typed") payload.compose = true;
-    S.attachments = []; renderAttachments();
+    S.attachments = []; S.attachErrors = []; renderAttachments();
     S.sent = S.sent.filter((x) => Date.now() - x.at < 120000).slice(-4);
     S.sent.push({ key: turnKey(payload.text), at: Date.now() }); S.mine = true; // this turn is ours: we speak its answer
     filler.begin(spoken && mode === "voice"); // after speaker.stop() above, which ended any previous turn's filler
     turnClock.sentAt = spoken && mode === "voice" ? performance.now() : 0; turnClock.turnId = null;
-    if (S.ws && S.ws.readyState === 1) { httpTurnUntil = 0; S.ws.send(JSON.stringify(payload)); return; }
+    if (S.ws && S.ws.readyState === 1 && !bigUpload) { httpTurnUntil = 0; S.ws.send(JSON.stringify(payload)); return; }
     setHud("thinking");
     if (streamCtl) streamCtl.abort(); // an older reply still streaming over the fallback: drop it, or its end would cut this one short
     streamChat(payload).catch(() => { toast("Couldn't reach Jarvis", "Check the connection.", "warning"); setHud("idle"); });
@@ -1015,18 +1019,70 @@ function send(text, mode = "typed", opts = {}) {
 
   // attachments
   $("#btn-attach").addEventListener("click", () => $("#file").click());
+  // What may be attached: photos, PDFs, Word / Excel / PowerPoint and plain text. The server (services/chat_files.py) checks
+  // everything again and is the authority; checking here first lets the reason show under the file's chip before anything is sent.
+  // Limits mirror file_reader.UPLOAD_MAX_*.
+  const ATT = { files: 5, file: 20e6, total: 25e6, bigPayload: 12e6 };
+  const ATT_KIND = { pdf: "pdf", docx: "zip", xlsx: "zip", pptx: "zip", png: "png", jpg: "jpeg", jpeg: "jpeg", gif: "gif", webp: "webp",
+                     txt: "text", csv: "text", md: "text", json: "text" };
+  const ATT_LEGACY = { doc: "Word (.doc)", xls: "Excel (.xls)", ppt: "PowerPoint (.ppt)" };
+  const ATT_LEGACY_TO = { doc: ".docx", xls: ".xlsx", ppt: ".pptx" };
+  const ATT_MACRO = ["docm", "dotm", "xlsm", "xlsb", "xltm", "pptm", "potm", "ppsm"];
+  const ATT_LABEL = { pdf: "a PDF", zip: "a zip-based file", ole: "an old-format Office file", png: "a PNG image", jpeg: "a JPEG image",
+                      gif: "a GIF image", webp: "a WebP image", text: "a text file", binary: "a file of unknown type" };
+  const mb = (n) => (n / 1e6).toFixed(n >= 1e5 ? 1 : 2).replace(/\.0$/, "") + " MB";
+  // What the file's first bytes say it is (the name only says what the owner meant).
+  function sniffAttachment(b) {
+    const s = (i, str) => [...str].every((c, k) => b[i + k] === c.charCodeAt(0));
+    if (s(0, "%PDF-")) return "pdf";
+    if (b[0] === 0x50 && b[1] === 0x4b && (b[2] === 3 || b[2] === 5)) return "zip";
+    if (b[0] === 0xd0 && b[1] === 0xcf && b[2] === 0x11 && b[3] === 0xe0) return "ole";
+    if (b[0] === 0x89 && s(1, "PNG")) return "png";
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpeg";
+    if (s(0, "GIF8")) return "gif";
+    if (s(0, "RIFF") && s(8, "WEBP")) return "webp";
+    return b.slice(0, 4096).includes(0) ? "binary" : "text";
+  }
+  // The plain-English reason a file can't be attached, or "" if it can. (head: its first bytes.)
+  function attachProblem(f, head, count, total) {
+    const ext = (f.name.includes(".") ? f.name.split(".").pop() : "").toLowerCase();
+    if (ATT_LEGACY[ext]) return `old ${ATT_LEGACY[ext]} files can't be read reliably - open it and use Save As ${ATT_LEGACY_TO[ext]}, then attach that copy.`;
+    if (ATT_MACRO.includes(ext)) return "macro-enabled Office files are not opened - save a copy as a normal .docx / .xlsx / .pptx and attach that.";
+    if (!ATT_KIND[ext]) return ext ? `.${ext} files can't be read here. You can attach photos, PDFs, Word, Excel, PowerPoint and text files.`
+      : "it has no file extension, so I can't tell what it is. Add .pdf, .docx, .xlsx or .pptx to the name.";
+    if (count >= ATT.files) return `only ${ATT.files} files can be attached at a time.`;
+    if (f.size === 0) return "the file is empty.";
+    if (f.size > ATT.file) return `it is ${mb(f.size)}, over the ${mb(ATT.file)} limit for one file.`;
+    if (total + f.size > ATT.total) return `adding it would take the files over the ${mb(ATT.total)} total for one message - send it on its own.`;
+    const got = sniffAttachment(head), want = ATT_KIND[ext];
+    if (got === "ole") return "it is named ." + ext + " but is an old-format Office file inside - open it and Save As the newer format (.docx / .xlsx / .pptx).";
+    if (got !== want) return `it is named .${ext} but the contents look like ${ATT_LABEL[got] || "something else"}. Check it is the right file.`;
+    return "";
+  }
+  S.attachErrors = [];
   $("#file").addEventListener("change", async (e) => {
-    for (const f of e.target.files) {
-      if (f.size > 20e6) { toast("File too large", f.name + " is over 20 MB", "warning"); continue; }
+    S.attachErrors = [];
+    let total = S.attachments.reduce((n, a) => n + a.size, 0);
+    for (const f of [...e.target.files]) {
+      const head = new Uint8Array(await f.slice(0, 4100).arrayBuffer());
+      const why = attachProblem(f, head, S.attachments.length, total);
+      if (why) { S.attachErrors.push({ name: f.name, why }); continue; }
       const data = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.readAsDataURL(f); });
-      S.attachments.push({ name: f.name, mime: f.type || "text/plain", data });
+      S.attachments.push({ name: f.name, mime: f.type || "text/plain", data, size: f.size });
+      total += f.size;
     }
     e.target.value = ""; renderAttachments();
   });
   function renderAttachments() {
-    $("#attachments").innerHTML = S.attachments.map((a, i) => `<span class="chip">${esc(a.name)} <button data-i="${i}" aria-label="Remove">✕</button></span>`).join("");
+    $("#attachments").innerHTML = S.attachments.map((a, i) => `<span class="chip">${esc(a.name)} <button data-i="${i}" aria-label="Remove ${esc(a.name)}">✕</button></span>`).join("")
+      + S.attachErrors.map((x, i) => `<span class="chip chip-error" role="alert"><b>${esc(x.name)}</b> <span class="why">${esc(x.why)}</span> <button data-err="${i}" aria-label="Dismiss the message about ${esc(x.name)}">✕</button></span>`).join("");
   }
-  $("#attachments").addEventListener("click", (e) => { const b = e.target.closest("button[data-i]"); if (b) { S.attachments.splice(+b.dataset.i, 1); renderAttachments(); } });
+  $("#attachments").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-i]");
+    if (b) { S.attachments.splice(+b.dataset.i, 1); renderAttachments(); return; }
+    const x = e.target.closest("button[data-err]");
+    if (x) { S.attachErrors.splice(+x.dataset.err, 1); renderAttachments(); }
+  });
 
   // ------------------------------------------------------------------ live events
   function connect() {

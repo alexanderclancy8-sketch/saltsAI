@@ -38,13 +38,15 @@ def request_params(settings: Settings, effort: str, *, compaction: bool = False,
 
 
 async def structured(client: anthropic.AsyncAnthropic, settings: Settings, schema: type[T], *, system: str,
-                     prompt: str | list[dict[str, Any]], effort: str = "low", max_tokens: int = 8000) -> T:
-    """One-shot call that returns a validated pydantic object."""
+                     prompt: str | list[dict[str, Any]], effort: str = "low", max_tokens: int = 8000,
+                     max_turns: int = 4) -> T:
+    """One-shot call that returns a validated pydantic object. ``max_turns`` only matters on the Claude Max backend (a
+    prompt with several attached pages is read one file at a time there, each read being a turn)."""
     if settings.effective_llm_backend == "max":
         from .max_backend import parse_structured, run_once
 
         result = await run_once(settings, system=system, prompt=prompt, effort=effort,
-                                output_schema=schema.model_json_schema(), max_turns=4)
+                                output_schema=schema.model_json_schema(), max_turns=max_turns)
         return parse_structured(result, schema)
     params = request_params(settings, effort)
     content = prompt if isinstance(prompt, list) else [{"type": "text", "text": prompt}]

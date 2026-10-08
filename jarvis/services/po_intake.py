@@ -75,7 +75,7 @@ class PoIntake:
             return []
         return [{"type": "document", "title": pdf.get("name") or "attachment.pdf",
                  "source": {"type": "base64", "media_type": "application/pdf", "data": pdf["data"]}}
-                for pdf in pdfs[:MAX_PDFS]]
+                for pdf in [p for p in pdfs if p.get("data")][:MAX_PDFS]]  # (an entry with a "problem" has no bytes to read)
 
     async def _classify(self, msg: dict[str, Any]) -> PoExtraction:
         text = (f"From: {msg.get('from_name')} <{msg.get('from_email')}>\nSubject: {msg.get('subject')}\n\n"

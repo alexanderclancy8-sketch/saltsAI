@@ -33,7 +33,7 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import activity_feed, adverts, approval_inbox, connection_tests, documents, images
+from .services import activity_feed, adverts, approval_inbox, chat_files, connection_tests, documents, images
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
 from .services.engineer_homes import DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, HomeError
@@ -346,20 +346,29 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         except Exception as e:  # noqa: BLE001
             log.warning("reply learning skipped: %s", e)
 
+    async def files_for_turn(j: Jarvis, bus, text: str, attachments: list | None, team: bool):
+        """(text, attachments, errors) for a chat turn. Attached files are checked and READ here (PDF text or a transcription
+        of a scan, Word / Excel / PowerPoint text - see services/chat_files.py), so both brains get the same thing and a refused
+        file is explained in words. A team session has no attachments at all."""
+        if team or not attachments:
+            return text, None, []
+        prepared = await chat_files.prepare(j, attachments, bus)
+        return text + prepared.notice(), prepared.files, prepared.errors
+
     @app.post("/api/chat", dependencies=[Depends(member)])
     async def chat(body: ChatIn, request: Request):
-        brain, _ = brain_of(request)
+        brain, bus = brain_of(request)
         team = caller_of(request).is_team
         if not team:  # a team member's typing is never learned as the owner's usual replies
             learn_reply(J(request), body.text, body.mode, body.compose, body.attachments)
         token = mark_manager(caller_of(request))
         try:
-            reply = await brain.ask(body.text, "voice" if body.mode == "voice" else "typed", None if team else body.attachments,
-                                    speaker=speaker(request))
+            text, files, errors = await files_for_turn(J(request), bus, body.text, body.attachments, team)
+            reply = await brain.ask(text, "voice" if body.mode == "voice" else "typed", files, speaker=speaker(request))
         finally:
             if token is not None:
                 access.current_caller.reset(token)
-        return {"reply": reply}
+        return {"reply": reply, **({"attachment_errors": errors} if errors else {})}
 
     # Same conversation, but for when the live WebSocket isn't available (e.g. it dropped and hasn't
     # reconnected yet): word-by-word as Claude generates it, rather than the client waiting on the full
@@ -377,7 +386,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             learn_reply(j, body.text, mode, body.compose, body.attachments)
         q = bus.subscribe()
         token = mark_manager(caller_of(request))
-        task = asyncio.create_task(brain.ask(body.text, mode, None if team else body.attachments, speaker=speaker(request)))
+        who = speaker(request)
+
+        async def turn():
+            text, files, _ = await files_for_turn(j, bus, body.text, body.attachments, team)
+            return await brain.ask(text, mode, files, speaker=who)
+
+        task = asyncio.create_task(turn())
         if token is not None:
             access.current_caller.reset(token)  # (the task has its own copy of the context)
 
@@ -682,9 +697,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                         learn_reply(j, str(msg["text"])[:20000], "voice" if msg.get("mode") == "voice" else "typed",
                                     msg.get("compose") is True, msg.get("attachments"))
                     token = mark_manager(caller)
-                    task = asyncio.create_task(brain.ask(msg["text"][:20000],
-                                                         "voice" if msg.get("mode") == "voice" else "typed",
-                                                         None if team else (msg.get("attachments") or []), speaker=who))
+                    async def turn(text=msg["text"][:20000], mode="voice" if msg.get("mode") == "voice" else "typed",
+                                   attachments=msg.get("attachments")):
+                        text, files, _ = await files_for_turn(j, bus, text, attachments if isinstance(attachments, list)
+                                                              else None, team)
+                        return await brain.ask(text, mode, files, speaker=who)
+
+                    task = asyncio.create_task(turn())
                     if token is not None:
                         access.current_caller.reset(token)
                     running.add(task)

@@ -287,8 +287,12 @@ body.checks-sheet .shell { z-index: 3; }
 .reply-hint kbd { font-family: var(--f-mono); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
 .reply-hint button { background: none; border: none; color: var(--muted); font-size: 12px; }
 .reply-hint button:hover { color: var(--core); }
-.attachments { flex: none; display: flex; gap: 6px; flex-wrap: wrap; }
+.attachments { flex: none; display: flex; gap: 6px; flex-wrap: wrap; max-height: 28vh; overflow-y: auto; }
 .attachments:empty { display: none; }
+.attachments .chip { max-width: 100%; overflow-wrap: anywhere; }
+/* a file that could not be attached: its name, then the plain reason, on the same chip (wraps rather than scrolling sideways) */
+.chip.chip-error { display: block; flex: 1 1 100%; border-color: var(--warn); color: var(--text); border-radius: 12px; white-space: normal; line-height: 1.35; }
+.chip.chip-error .why { color: var(--muted); }
 .composer { position: relative; flex: none; display: flex; align-items: flex-end; gap: 8px; padding-block: 10px 16px; margin: 0; }
 .composer .field { flex: 1; min-width: 0; resize: none; min-height: 46px; max-height: 160px; line-height: 1.35; display: block; font-size: 15px; }
 .sq { width: 46px; height: 46px; flex: none; padding: 0; display: grid; place-items: center; }

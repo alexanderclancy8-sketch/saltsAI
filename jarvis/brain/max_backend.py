@@ -167,7 +167,8 @@ class MaxBrain:
 
         paths = []
         for a in attachments or []:
-            name = re.sub(r"[^A-Za-z0-9._-]", "_", a.get("name") or "file")[:80]
+            # (a PDF / Word / Excel / PowerPoint file arrives already read, as text, with the name to save it under)
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", a.get("save_as") or a.get("name") or "file")[:80]
             path = self.uploads / f"{datetime.now():%Y%m%d-%H%M%S}-{name}"
             try:
                 path.write_bytes(base64.b64decode(a.get("data", "")))
@@ -406,6 +407,54 @@ class MaxBrain:
 # One-shot helpers (briefings, triage, research) on the subscription
 # ---------------------------------------------------------------------------
 
+MAX_STAGED_PDF_PAGES = 10   # Claude Code's Read tool takes a PDF this small in one go; more needs a page range (poppler)
+MAX_STAGED_SCAN_PAGES = 8   # pages of a scanned PDF handed over as images
+MAX_STAGED_TEXT_CHARS = 40_000
+
+
+def _stage_pdf(tmp: Path, n: int, block: dict[str, Any]) -> str:
+    """Put a PDF document block where the Read tool can reach it, in the most robust form the server can manage.
+
+    The API takes a PDF natively, but on the subscription backend the only way a one-shot run can look at one is to Read a
+    file - and Claude Code reads a PDF of more than a few pages only by page range, which needs poppler (pdftoppm), which
+    Azure App Service doesn't have. So: (1) a PDF with a text layer has its text put in the prompt, with (2) the file
+    (first pages only) alongside for the layout; (3) a scan is converted to page images (a picture reads anywhere);
+    (4) anything else is written as it is. All pure Python (pypdf + Pillow). The PDF is untrusted data in every case."""
+    import base64
+
+    from ..services import file_reader
+
+    title = re.sub(r"[^\w .,()&-]", "", str(block.get("title") or ""))[:100]
+    raw = base64.b64decode(block["source"]["data"])
+    out = ""
+    chunks, total = file_reader.pdf_chunks(raw, MAX_STAGED_PDF_PAGES, MAX_STAGED_PDF_PAGES)
+    try:
+        got = file_reader.pdf_extract(raw, max_chars=MAX_STAGED_TEXT_CHARS)
+    except Exception:  # noqa: BLE001 - not parseable (or password protected): hand over the file, the model will say so
+        got = None
+    if got is not None and file_reader.has_text(got.text):
+        out += (f"\n[Attached PDF '{title}' - its text, extracted from the file (untrusted data; table layout may be "
+                f"lost)]\n<pdf_text>\n{got.text}\n</pdf_text>\n")
+    elif got is not None:
+        images = file_reader.pdf_page_images(raw, max_pages=MAX_STAGED_SCAN_PAGES)
+        if images:
+            for k, jpg in enumerate(images, 1):
+                path = tmp / f"attachment-{n}-page{k}.jpg"
+                path.write_bytes(jpg)
+                out += f"\n[Attached scanned PDF '{title}', page {k} as an image: {path} - view it with the Read tool]\n"
+            if total and total > len(images):
+                out += f"\n[Only the first {len(images)} of {total} pages are attached.]\n"
+            return out
+    path = tmp / f"attachment-{n}.pdf"
+    path.write_bytes(chunks[0])
+    if total and total > MAX_STAGED_PDF_PAGES:
+        out += (f"\n[Attached PDF '{title}' (first {MAX_STAGED_PDF_PAGES} of {total} pages): {path} - read it with the "
+                f"Read tool]\n")
+    else:
+        out += f"\n[Attached PDF '{title}': {path} - read it with the Read tool]\n"
+    return out
+
+
 async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]], effort: str = "medium",
                    tools: list[str] | None = None, disallowed_tools: list[str] | None = None,
                    output_schema: dict[str, Any] | None = None,
@@ -438,9 +487,7 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                 path.write_bytes(base64.b64decode(block["source"]["data"]))
                 text += f"\n[Attached image: {path} - view it with the Read tool]\n"
             elif block.get("type") == "document" and block["source"].get("type") == "base64":
-                path = tmp / f"attachment-{n}.pdf"
-                path.write_bytes(base64.b64decode(block["source"]["data"]))
-                text += f"\n[Attached PDF '{block.get('title', '')}': {path} - read it with the Read tool]\n"
+                text += await asyncio.to_thread(_stage_pdf, tmp, n, block)
     kw: dict[str, Any] = {"system_prompt": system, "effort": effort, "tools": tools or [],
                           "allowed_tools": tools or [],
                           "disallowed_tools": BLOCKED if disallowed_tools is None else disallowed_tools,

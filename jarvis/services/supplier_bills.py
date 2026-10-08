@@ -345,7 +345,9 @@ class SupplierBills:
         """Read one email (and its PDF attachments) and return a proposed bill with match results and flags."""
         j = self.j
         msg = await j.mail.get_message(message_id)
-        pdfs = (await j.mail.pdf_attachments(message_id))[:MAX_PDFS] if msg.get("has_attachments") else []
+        pdfs = []
+        if msg.get("has_attachments"):  # (an entry with a "problem" - a link, a download failure - has no bytes to read)
+            pdfs = [p for p in await j.mail.pdf_attachments(message_id) if p.get("data")][:MAX_PDFS]
         if not pdfs and not (msg.get("body") or "").strip():
             return {"message_id": message_id, "proposed_bill": None, "note": "No PDF attachment or email text to read."}
         ext = await self._extract(msg, pdfs)

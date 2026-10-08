@@ -84,7 +84,7 @@
         <div class="conversation" id="conversation" role="log" aria-live="polite" aria-label="Conversation"></div>
       </section>
 
-      <div class="attachments" id="attachments"></div>
+      <div class="attachments" id="attachments" aria-live="polite"></div>
       <!--role:manager--><div class="reply-hint" id="reply-hint" hidden>
         <span class="rh-text" id="reply-hint-text"></span>
         <kbd title="Press the right arrow key (caret at the end) to put this in the box - Enter still sends, Esc dismisses">→</kbd>
@@ -110,8 +110,8 @@
         </div>
         <button type="button" class="ghost sq" id="btn-shortcuts" aria-haspopup="menu" aria-expanded="false" aria-controls="quick" aria-label="Shortcuts" title="Shortcuts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
         <textarea class="field" id="input" rows="1" aria-label="Message Jarvis" enterkeyhint="send" title="Enter to send, Shift+Enter for a new line" placeholder="Message Jarvis"></textarea>
-        <!--role:manager--><button type="button" class="ghost sq attach" id="btn-attach" title="Attach photos, PDFs or documents" aria-label="Attach"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
-        <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.txt,.csv,.md,.json"><!--/role:manager-->
+        <!--role:manager--><button type="button" class="ghost sq attach" id="btn-attach" title="Attach photos, PDFs, Word, Excel or PowerPoint files" aria-label="Attach photos, PDFs, Word, Excel or PowerPoint files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/></svg></button>
+        <input type="file" id="file" multiple hidden accept="image/*,application/pdf,.pdf,.docx,.xlsx,.pptx,.doc,.xls,.ppt,.txt,.csv,.md,.json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation"><!--/role:manager-->
         <button type="button" class="ghost sq mic" id="btn-mic" title="Talk to Jarvis (or hold Space)" aria-label="Microphone"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <button type="button" class="btn-send stop" id="btn-stop" title="Stop" aria-label="Stop" hidden>STOP</button>
         <button type="submit" class="btn-send" id="btn-send" title="Send" aria-label="Send">SEND</button>
