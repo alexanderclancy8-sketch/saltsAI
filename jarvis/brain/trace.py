@@ -38,7 +38,7 @@ _TOOL_INFO: dict[str, tuple[tuple[str, ...], str | None]] = {
     **{n: ((_FSM,), "ops") for n in ("fsm_jobs", "staff_today", "staff_productivity", "staff_overdue_jobs",
                                      "attendance_check", "job_detail", "lone_worker_check", "staff_review",
                                      "office_productivity")},
-    **{n: ((_FSM,), None) for n in ("fsm_data", "fsm_analyse", "fsm_query", "fsm_systems_due", "ppm_schedule_plan", "fsm_contracts_renewing",
+    **{n: ((_FSM,), None) for n in ("fsm_data", "fsm_analyse", "fsm_document_read", "fsm_query", "fsm_systems_due", "ppm_schedule_plan", "fsm_contracts_renewing",
                                     "fsm_quotes", "fsm_source_search", "fsm_source_read", "staff_certifications",
                                     "unbilled_jobs", "remedial_quotes", "contract_renewals", "out_of_hours_calls",
                                     "route_optimise_advice", "timesheet_check", "false_alarm_analysis", "upsell_opportunities")},
@@ -111,6 +111,7 @@ class TurnTrace:
         self.facts: list[dict[str, str]] = []   # what each finished tool call said about its sources (coverage.call_facts)
         self.user_text = ""
         self.mode = "typed"
+        self.entity_notes: list[str] = []   # "Jarvis's notes on X" this turn leaned on (add_source): notes, not a checked system
 
     # ------------------------------------------------------------------ feeding it
     def on_event(self, event_type: str, data: Any) -> None:
@@ -154,6 +155,15 @@ class TurnTrace:
             self.facts += [f for f in facts if isinstance(f, dict) and f.get("src") and f.get("status")][:20]
         elif data.get("state") == "error":
             self.facts += [{"src": s, "status": cov_mod.ERROR} for s in cov_mod.tool_sources(str(data.get("name") or ""))]
+
+    def add_source(self, label: str) -> None:
+        """A source that is not a tool call: the customer / site notes added to a tool result (services/entity_memory.py), named
+        so the source line says the answer leaned on them ("Jarvis's notes on Acme"). Ignored outside a turn."""
+        label = " ".join(str(label or "").split())[:80]
+        if self.active and label and label not in self.sources:
+            self.sources.append(label)
+        if self.active and label and label not in self.entity_notes:
+            self.entity_notes.append(label)
 
     def offer(self, panel: str | None, follow_ups: list[str]) -> None:
         """The offer_next_steps tool: what the model chose to suggest. Ignored outside a turn."""
@@ -202,7 +212,8 @@ class TurnTrace:
         if self.follow_ups:
             out["follow_ups"] = list(self.follow_ups)
         try:
-            cov = cov_mod.summarise(self.facts, self.user_text, demo=cov_mod.demo_map(self.j), team=self.team)
+            cov = cov_mod.summarise(self.facts, self.user_text, demo=cov_mod.demo_map(self.j), team=self.team,
+                                    notes=self.entity_notes, reply=reply)
         except Exception:  # noqa: BLE001 - describing a turn must never break it
             cov = None
         if cov:

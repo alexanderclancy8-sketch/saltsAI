@@ -610,3 +610,23 @@ async def test_doctor_line(settings, tmp_path):
     items = await Doctor(j).run()
     assert any(i.check == "Question checks" and i.status == "amber" for i in items)
     await j.http.aclose()
+
+
+async def test_check_mode_blocks_the_note_writing_tools_and_allows_the_note_and_document_reads(settings):
+    assert {"entity_note_add", "entity_note_propose"}.isdisjoint(checkmode.CHECK_TOOLS)
+    assert {"entity_notes_get", "fsm_document_read"} <= checkmode.CHECK_TOOLS
+    j = Jarvis(settings, client=FakeClient())
+    before = j.db.query("SELECT COUNT(*) AS n FROM entity_note_entries")[0]["n"]
+    for name in ("entity_note_add", "entity_note_propose"):
+        tool = TOOLS_BY_NAME[name]
+        out = await dispatch(j, tool, tool.model.model_validate({"entity_type": "customer", "entity": "Acme Ltd",
+                                                                  "text": "Prefers morning visits"}), check=True)
+        assert isinstance(out, dict) and out["blocked_in_check_mode"] is True, name
+    assert j.db.query("SELECT COUNT(*) AS n FROM entity_note_entries")[0]["n"] == before
+    for name, args in (("entity_notes_get", {"entity_type": "customer", "entity": "Acme Ltd"}),
+                       ("fsm_document_read", {"document_id": "doc-1"})):
+        tool = TOOLS_BY_NAME[name]
+        out = await dispatch(j, tool, tool.model.model_validate(args), check=True)
+        assert not (isinstance(out, dict) and out.get("blocked_in_check_mode")), name   # a read: it ran (demo FSM answers for itself)
+    assert j.db.pending_actions() == []
+    await j.http.aclose()

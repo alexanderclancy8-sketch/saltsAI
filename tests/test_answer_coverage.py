@@ -305,3 +305,65 @@ async def test_a_managers_owner_only_read_is_named_as_owner_only(settings):
 @pytest.mark.parametrize("bad", [None, "x", 3])
 def test_line_and_spoken_are_safe_on_junk(bad):
     assert line(bad if isinstance(bad, dict) else None) == "" and spoken(None) == ""
+
+
+# --------------------------------------------------------------------------- FSM documents and Jarvis's own customer / site notes
+def test_an_fsm_document_read_names_the_document_and_its_caveats():
+    ok = call_facts("fsm_document_read", {"document_id": "doc-1"},
+                    {"document_id": "doc-1", "name": "RAMS ladder work.pdf", "transcribed": False, "truncated": False, "masked_by_fsm": 0})
+    assert ok == [{"src": "Salts FSM", "status": cov.OK, "detail": "document 'RAMS ladder work.pdf'"}]
+    [scan] = call_facts("fsm_document_read", {}, {"name": "Cert.jpg", "transcribed": True, "truncated": False, "masked_by_fsm": 2})
+    assert scan["status"] == cov.TRANSCRIBED and scan["note"] == "2 items masked by the FSM"
+    [part] = call_facts("fsm_document_read", {}, {"name": "Big.pdf", "transcribed": False, "truncated": True, "masked_by_fsm": 0})
+    assert part["status"] == cov.PARTIAL
+    assert call_facts("fsm_document_read", {}, {"ambiguous": True, "candidates": []})[0]["status"] == cov.BAD_INPUT
+    assert call_facts("fsm_document_read", {}, {"error": "x", "kind": "not_found"})[0]["status"] == cov.BAD_INPUT
+    assert call_facts("fsm_document_read", {}, {"error": "x", "kind": "unavailable"})[0]["status"] == cov.NOT_EXPOSED
+    assert call_facts("fsm_document_read", {}, {"error": "x", "kind": "owner_only"})[0]["status"] == cov.OWNER_ONLY
+
+
+def test_a_transcribed_scan_is_medium_unless_the_answer_says_so():
+    facts = [{"src": "Salts FSM", "status": cov.TRANSCRIBED, "detail": "document 'Cert.jpg'"}]
+    silent = summarise(facts, "When does the Keighley certificate expire?", demo=real(), reply="It expires on 3 March 2027.")
+    assert silent["confidence"] == MEDIUM and "Salts FSM document 'Cert.jpg'" in silent["checked"]
+    assert "transcribed scan" in silent["caveats"][0] and "doesn't say so" in silent["caveats"][0]
+    said = summarise(facts, "When does the Keighley certificate expire?", demo=real(),
+                     reply="It's a scan I transcribed, so check it, but it says 3 March 2027.")
+    assert said["confidence"] == HIGH and "doesn't say so" not in said["caveats"][0]
+
+
+def test_masked_items_are_listed_as_a_caveat_and_on_the_line():
+    facts = [{"src": "Salts FSM", "status": "ok", "detail": "document 'Site pack.pdf'", "note": "3 items masked by the FSM"}]
+    c = summarise(facts, "What does the Keighley site pack say about access?", demo=real())
+    assert c["confidence"] == HIGH and c["caveats"] == ["Salts FSM document 'Site pack.pdf' (3 items masked by the FSM)"]
+    assert "Caveats: Salts FSM document 'Site pack.pdf' (3 items masked by the FSM)" in line(c)
+
+
+def test_jarvis_notes_are_notes_not_a_checked_system_and_never_raise_confidence():
+    c = summarise([], "Anything I should know about Acme's jobs?", demo=real(), notes=["Jarvis's notes on Acme"])
+    assert c["notes"] == ["Jarvis's notes on Acme"] and c["checked"] == []
+    assert c["confidence"] == LOW                      # a business question answered from notes alone: nothing was checked
+    with_fsm = summarise([{"src": "Salts FSM", "status": "ok", "detail": "jobs"}], "Anything about Acme's jobs?", demo=real(),
+                         notes=["Jarvis's notes on Acme"])
+    without = summarise([{"src": "Salts FSM", "status": "ok", "detail": "jobs"}], "Anything about Acme's jobs?", demo=real())
+    assert with_fsm["confidence"] == without["confidence"] == HIGH and with_fsm["checked"] == without["checked"]
+    assert line(with_fsm).endswith("· Notes: Jarvis's notes on Acme · High")
+    assert summarise([], "Morning", demo=real(), notes=["Jarvis's notes on Acme"])["notes"] == ["Jarvis's notes on Acme"]
+
+
+async def test_the_trace_counts_injected_notes_as_notes(settings):
+    from jarvis.brain.trace import TurnTrace
+
+    j = Jarvis(settings, client=FakeClient())
+    t = TurnTrace(j)
+    t.on_event("user_message", {"text": "What do we know about Acme's jobs?"})
+    t.on_event("thinking", {"mode": "typed"})
+    t.on_event("tool", {"name": "fsm_jobs", "state": "start"})
+    t.on_event("tool", {"name": "fsm_jobs", "state": "done", "coverage": [{"src": "Salts FSM", "status": "ok", "detail": "jobs"}]})
+    t.add_source("Jarvis's notes on Acme")
+    out = t.finish("From the FSM jobs, and my notes on Acme.")
+    assert "Jarvis's notes on Acme" in out["sources"]                      # the existing source line still names them
+    assert out["coverage"]["notes"] == ["Jarvis's notes on Acme"] and "Jarvis's notes on Acme" not in out["coverage"]["checked"]
+    stored = json.loads(cov.as_stored(out["coverage"]))
+    assert stored["notes"] == ["Jarvis's notes on Acme"]
+    await j.http.aclose()

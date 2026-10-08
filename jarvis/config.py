@@ -396,6 +396,10 @@ class Settings(BaseSettings):
     billing_check_cron: str = "45 16 * * 1-5"  # unbilled completed jobs -> draft invoices for approval
     review_requests_cron: str = "50 16 * * 1-5"  # thank-you + Google review requests for the day's jobs
     self_learning_cron: str = "0 21 * * *"  # nightly reflection: remember anything durable from the day's chats
+    # Customer / site notes (services/entity_memory.py): once a week, propose an updated pinned summary for each customer or site
+    # whose notes changed - as a PENDING suggestion in the Memory pop-up, never a chat message. False switches it off.
+    entity_summaries_enabled: bool = True
+    entity_summaries_cron: str = "30 6 * * 1"
     conversation_quality_cron: str = "30 8 * * 1"  # weekly short "conversation quality" summary (Mondays 8:30)
     # Conversation-quality tables (turn_metrics, voice_events, turn_feedback) hold short redacted excerpts of what
     # was said; rows older than this many days are deleted daily (the full transcript has its own 2-year retention).

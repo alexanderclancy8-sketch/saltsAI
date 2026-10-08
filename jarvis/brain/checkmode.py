@@ -41,6 +41,9 @@ CHECK_TOOLS = frozenset({
     # accounts, stock, registers (reads; sample data is withheld by demo_guard as usual)
     "finance_snapshot", "finance_aged", "finance_vat", "finance_cashflow", "finance_corporation_tax",
     "finance_profit_and_loss", "finance_deadlines", "finance_credit_control", "stock_levels", "stock_usage",
+    # FSM documents (read-only; a scan may be transcribed by Jarvis's own model) and Jarvis's own customer / site notes (read only -
+    # entity_note_add / entity_note_propose WRITE and stay off this list)
+    "fsm_document_read", "entity_notes_get",
     "stock_job_materials", "stock_reorder", "accreditations_status", "audit_evidence", "oncall_roster",
     # mail (read only), presence, knowledge, Jarvis's own records
     "email_inbox", "email_search", "email_read", "marketing_overview", "search_rankings", "knowledge_search",

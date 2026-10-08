@@ -30,6 +30,7 @@ from .services.accountant import Accountant
 from .integrations.fsm_data import FsmData
 from .services.accreditations import Accreditations
 from .services.fsm_analyse import FsmAnalyse
+from .services.fsm_documents import FsmDocuments
 from .services.fsm_read import FsmRead
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
@@ -59,6 +60,7 @@ from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
 from .services.supplier_bills import PurchaseOrderBook, SupplierBills
 from .services.async_tools import AsyncTools
+from .services.entity_memory import EntityMemory
 from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
@@ -110,6 +112,7 @@ class Jarvis:
         self.fsm = FSMRouter(s, self.http)
         self.fsm_data = FsmData(self.fsm)  # the FSM's generic read-only data API (catalog + any resource); see integrations/fsm_data.py
         self.fsm_read = FsmRead(self)      # fsm_catalog / fsm_data: validation, who may read what, caps (services/fsm_read.py)
+        self.fsm_documents = FsmDocuments(self)  # fsm_document_read: the text inside FSM documents, scans transcribed (services/fsm_documents.py)
         self.fsm_analyse = FsmAnalyse(self)  # fsm_analyse: totals / averages / groupings over the FSM, with optional charts (services/fsm_analyse.py)
         self.ram = (RamTracking(s, self.http, store=self.db) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
                     else DemoRamTracking(self.fsm))
@@ -213,6 +216,9 @@ class Jarvis:
         # Describes each chat turn from the tool events (source line, pop-up button, follow-ups) - see brain/trace.py.
         self.trace = TurnTrace(self)
         self.bus.add_tap(self.trace.on_event)
+        # Per-customer / per-site notes (services/entity_memory.py): its tap notes which tools brought outside content into a turn.
+        self.entity_memory = EntityMemory(self)
+        self.bus.add_tap(self.entity_memory.on_event)
         # Team mode: the access code for engineers/office staff (hashed, in the database) and one cut-down brain per team session.
         self.team_access = TeamAccess(self.db)
         self.team_sessions = TeamSessions(self)

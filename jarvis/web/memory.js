@@ -5,6 +5,9 @@
  * rewords an entry in place; Delete asks "Delete this?" first. Both go to the owner-authenticated endpoints under
  * /api/memory and only change what Jarvis reads from his next message on.
  *
+ * A second tab, "Customers & sites", holds Jarvis's notes on each customer and site (entity_notes.js); this file only switches
+ * between the two tabs and hands the shared helpers on.
+ *
  * It lives in its own file, like ask.js, so hud.js only needs a hook to open it (Drawer.show("memory") calls load())
  * and the shared api()/toast() helpers handed to init(). It has no connection to the approvals queue: nothing here
  * sends, approves or runs anything. Loaded before hud.js; exposes window.JarvisMemory.
@@ -41,8 +44,27 @@
       </div></li>`;
   }
 
+  // Two tabs: "What Jarvis knows" (the three lists here) and "Customers & sites" (entity_notes.js, notes per Salts FSM record).
+  function selectTab(name, focus) {
+    document.querySelectorAll("#pop-memory .mem-tab").forEach((t) => {
+      const on = t.dataset.memTab === name;
+      t.setAttribute("aria-selected", on ? "true" : "false"); t.tabIndex = on ? 0 : -1;
+      if (on && focus) t.focus();
+    });
+    document.querySelectorAll("#pop-memory .mem-panel").forEach((p) => { p.hidden = p.id !== `mem-panel-${name}`; });
+    if (name === "entities") window.JarvisEntityNotes?.load();
+  }
+  document.addEventListener("click", (e) => { const t = e.target.closest("#pop-memory .mem-tab"); if (t) selectTab(t.dataset.memTab, false); });
+  document.addEventListener("keydown", (e) => {
+    const t = e.target.closest?.("#pop-memory .mem-tab"); if (!t || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    const tabs = [...document.querySelectorAll("#pop-memory .mem-tab")], i = tabs.indexOf(t);
+    const next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
+    e.preventDefault(); selectTab(tabs[next].dataset.memTab, true);
+  });
+
   async function load() {
     if (!host) return;
+    window.JarvisEntityNotes?.badge();
     let data;
     try { data = await (await host.api("/api/memory")).json(); }
     catch { showError("Couldn't load what Jarvis has learned. Try again in a moment."); return; }
@@ -103,5 +125,5 @@
     e.preventDefault(); save(form.closest(".mem-item"));
   });
 
-  window.JarvisMemory = { init(h) { host = h; }, load };
+  window.JarvisMemory = { init(h) { host = h; window.JarvisEntityNotes?.init(h); }, load, selectTab };
 })();

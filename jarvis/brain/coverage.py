@@ -12,7 +12,12 @@ The confidence rules (``confidence()``), in order:
   a source errored or timed out and was not read successfully afterwards; a business question was answered with no
   system checked at all; two or more of the sources it needed are missing (not connected, withheld as sample data,
   switched off in the FSM, not exposed by the FSM yet, owner-only, refused, or simply not looked at).
-* **Medium** when any of: a scan or list was cut short (truncated / INCOMPLETE); exactly one needed source is missing.
+* **Medium** when any of: a scan or list was cut short (truncated / INCOMPLETE); exactly one needed source is missing; an FSM
+  document was a scan Jarvis transcribed with its own model and the reply doesn't say so.
+
+Jarvis's own notes on a customer or site ("Jarvis's notes on Acme", services/entity_memory.py) are listed as NOTES, never as a
+checked system: they can't satisfy a question's need for a source, so they never raise the confidence by themselves. Caveats that
+don't change the rules (items the FSM masked in a document) are listed too.
 * **High** otherwise: every source it needed was read, real and complete.
 
 What is stored with the transcript row (``as_stored()``) is labels and counts only - source names, resource names, the
@@ -60,6 +65,7 @@ TOOL_DETAIL = {
     "finance_credit_control": "credit control", "finance_deadlines": "deadlines",
 }
 FSM_DATA_TOOLS = ("fsm_data", "fsm_analyse")
+DOC_TOOL = "fsm_document_read"
 
 # ------------------------------------------------------------------------------------------------ what a question needs
 @dataclass(frozen=True)
@@ -97,7 +103,8 @@ OK, PARTIAL, DEMO = "ok", "partial", "demo"
 WITHHELD, NOT_CONNECTED, SCOPE_OFF, NOT_EXPOSED, OWNER_ONLY = "withheld", "not_connected", "scope_off", "not_exposed", "owner_only"
 ERROR, TIMEOUT, RATE_LIMITED = "error", "timeout", "rate_limited"
 REFUSED, BLOCKED, BAD_INPUT = "refused", "blocked", "bad_input"
-READ = frozenset({OK, PARTIAL, DEMO})                     # the source was actually read
+TRANSCRIBED = "transcribed"   # an FSM document that was a scan, transcribed by Jarvis's own model (may be misread)
+READ = frozenset({OK, PARTIAL, DEMO, TRANSCRIBED})        # the source was actually read
 MISSING = frozenset({WITHHELD, NOT_CONNECTED, SCOPE_OFF, NOT_EXPOSED, OWNER_ONLY, REFUSED, BLOCKED})
 FAILED = frozenset({ERROR, TIMEOUT, RATE_LIMITED})
 
@@ -106,6 +113,7 @@ REASON = {WITHHELD: "not connected - sample data withheld", NOT_CONNECTED: "not 
           BLOCKED: "blocked in check mode", ERROR: "error", TIMEOUT: "timed out", RATE_LIMITED: "rate limited",
           DEMO: "sample data", "not_checked": "not checked"}
 
+_SAID_SCAN = re.compile(r"\bscan|transcri|photo|hand-?written|may be misread", re.I)
 _UPSTREAM = re.compile(r"unavailable|not reachable|couldn'?t reach|could not reach|timed? ?out|timeout|connection|"
                        r"server error|not answering|\b5\d\d\b|refused the key|rate limit", re.I)
 _FSM_KIND = {"demo": NOT_CONNECTED, "scope_off": SCOPE_OFF, "unavailable": NOT_EXPOSED, "owner_only": OWNER_ONLY,
@@ -165,7 +173,7 @@ def tool_sources(name: str) -> tuple[str, ...]:
     from .trace import tool_info
 
     short = name.removeprefix("mcp__jarvis__")
-    if short in FSM_DATA_TOOLS:
+    if short in FSM_DATA_TOOLS or short == DOC_TOOL:
         return (FSM,)
     return tool_info(short)[0]
 
@@ -185,6 +193,8 @@ def call_facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
     if not sources:
         return []
     a = args.model_dump() if hasattr(args, "model_dump") else (args if isinstance(args, dict) else {})
+    if short == DOC_TOOL:
+        return _document_facts(a, result)
     detail = str(a.get("resource") or "") if short in FSM_DATA_TOOLS else TOOL_DETAIL.get(short, "")
     if isinstance(result, str):
         if "isn't available to you here" in result and "team version" in result:
@@ -212,6 +222,27 @@ def call_facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
     for label in _stubs(result):
         out.append(_fact(_DEMO_LABEL_TO_SOURCE.get(label, label), WITHHELD))
     return out
+
+
+def _document_facts(a: dict[str, Any], result: Any) -> list[dict[str, str]]:
+    """fsm_document_read: the document's name is the part read; a transcribed scan, a cut-short text and masked items are said."""
+    if not isinstance(result, dict):
+        return [_fact(FSM, OK, "document")]
+    name = str(result.get("name") or result.get("document_id") or a.get("document_id") or "").strip()
+    detail = f"document '{name[:40]}'" if name else "document"
+    if result.get("ambiguous") or ("error" in result and result.get("kind") in ("not_found", "bad_request")):
+        return [_fact(FSM, BAD_INPUT, detail)]   # nothing was read yet: it asked which one / found nothing to read
+    if "error" in result and result.get("kind"):
+        return [_fact(FSM, _FSM_KIND.get(str(result["kind"]), ERROR), detail)]
+    masked = _int(result.get("masked_by_fsm")) or 0
+    note = f"{masked} item{'' if masked == 1 else 's'} masked by the FSM" if masked > 0 else ""
+    if result.get("transcribed"):
+        status = TRANSCRIBED
+    elif result.get("truncated"):
+        status, note = PARTIAL, "only part of the document was read" + (f"; {note}" if note else "")
+    else:
+        status = OK
+    return [_fact(FSM, status, detail, note)]
 
 
 def error_facts(name: str, exc: BaseException) -> list[dict[str, str]]:
@@ -245,7 +276,8 @@ def _needed_groups(areas: Iterable[Area], team: bool) -> list[tuple[str, ...]]:
     return groups
 
 
-def confidence(*, relied_on_demo: bool, failed: int, missing: int, truncated: bool, business: bool, read_any: bool) -> tuple[str, str]:
+def confidence(*, relied_on_demo: bool, failed: int, missing: int, truncated: bool, business: bool, read_any: bool,
+               transcribed_unsaid: bool = False) -> tuple[str, str]:
     """(confidence, why) by the explicit rules in the module docstring."""
     if relied_on_demo:
         return LOW, "Part of this answer came from sample (demo) data."
@@ -259,16 +291,36 @@ def confidence(*, relied_on_demo: bool, failed: int, missing: int, truncated: bo
         return MEDIUM, "Only part of the data was read."
     if missing == 1:
         return MEDIUM, "One source it needed wasn't checked."
+    if transcribed_unsaid:
+        return MEDIUM, "A document was a scan transcribed by Jarvis, and the answer doesn't say so."
     return HIGH, "Everything it needed was read, real and complete."
 
 
 def summarise(facts: list[dict[str, str]], user_text: str = "", *, demo: dict[str, bool] | None = None, team: bool = False,
-              tools_used: int = 0) -> dict[str, Any] | None:
-    """The coverage of one turn, or None when there is nothing to say (no source read, no business question)."""
+              tools_used: int = 0, notes: list[str] | None = None, reply: str = "") -> dict[str, Any] | None:
+    """The coverage of one turn, or None when there is nothing to say (no source read, no business question, no notes used).
+    ``notes``: the "Jarvis's notes on X" labels the turn leaned on (listed, never counted as a checked system). ``reply``: what was
+    said - only to see whether a transcribed scan was owned up to."""
     demo = demo or {}
     areas = areas_of(user_text)
-    if not facts and not areas:
+    used_notes = list(dict.fromkeys(" ".join(str(n).split())[:80] for n in (notes or []) if str(n).strip()))[:8]
+    if not facts and not areas and not used_notes:
         return None
+    caveats: list[str] = []
+    transcribed_unsaid = False
+    for f in facts:
+        lab = _label(f["src"], f.get("detail", ""))
+        if f["status"] == TRANSCRIBED:
+            said = bool(_SAID_SCAN.search(str(reply or "")))
+            transcribed_unsaid = transcribed_unsaid or not said
+            text = f"{lab} (transcribed scan - may be misread{'' if said else '; the answer doesn' + chr(39) + 't say so'})"
+            if text not in caveats:
+                caveats.append(text)
+        if f.get("note") and "masked by the FSM" in f["note"]:
+            m = re.search(r"\d+ items? masked by the FSM", f["note"])
+            text = f"{lab} ({m.group(0) if m else f['note']})"
+            if text not in caveats:
+                caveats.append(text)
     checked: list[str] = []
     read: set[str] = set()
     partial: dict[str, list[str]] = {}
@@ -332,9 +384,14 @@ def summarise(facts: list[dict[str, str]], user_text: str = "", *, demo: dict[st
             f"{display(first)} ({REASON[NOT_CONNECTED] if not_connected else REASON['not_checked']})")
     business = bool(areas)
     level, why = confidence(relied_on_demo=bool(demo_used), failed=len(failed_sources), missing=len(missing_sources),
-                            truncated=bool(partial), business=business, read_any=bool(read))
-    return {"v": VERSION, "checked": checked[:12], "gaps": gaps[:12], "confidence": level, "why": why,
-            "areas": [a.name for a in areas]}
+                            truncated=bool(partial), business=business, read_any=bool(read), transcribed_unsaid=transcribed_unsaid)
+    out = {"v": VERSION, "checked": checked[:12], "gaps": gaps[:12], "confidence": level, "why": why,
+           "areas": [a.name for a in areas]}
+    if caveats:
+        out["caveats"] = caveats[:8]
+    if used_notes:
+        out["notes"] = used_notes
+    return out
 
 
 def line(cov: dict[str, Any] | None) -> str:
@@ -344,6 +401,10 @@ def line(cov: dict[str, Any] | None) -> str:
     parts = ["Checked: " + (", ".join(cov.get("checked") or []) or "nothing")]
     if cov.get("gaps"):
         parts.append("Not checked: " + ", ".join(g["text"] for g in cov["gaps"]))
+    if cov.get("caveats"):
+        parts.append("Caveats: " + ", ".join(cov["caveats"]))
+    if cov.get("notes"):
+        parts.append("Notes: " + ", ".join(cov["notes"]))
     parts.append(str(cov.get("confidence", "")))
     return " · ".join(parts)
 
@@ -413,7 +474,7 @@ def as_stored(cov: dict[str, Any] | None) -> str:
 
     if not cov:
         return ""
-    keep = {k: cov[k] for k in ("v", "checked", "gaps", "confidence", "why", "areas") if k in cov}
+    keep = {k: cov[k] for k in ("v", "checked", "gaps", "caveats", "notes", "confidence", "why", "areas") if k in cov}
     return json.dumps(keep, ensure_ascii=False)[:4000]
 
 

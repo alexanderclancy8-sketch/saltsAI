@@ -1175,11 +1175,16 @@ function send(text, mode = "typed", opts = {}) {
     if (!c || typeof c !== "object" || !COV_LEVELS.includes(c.confidence)) return "";
     const checked = (Array.isArray(c.checked) ? c.checked : []).filter((x) => typeof x === "string");
     const gaps = (Array.isArray(c.gaps) ? c.gaps : []).map((g) => (g && typeof g.text === "string" ? g.text : "")).filter(Boolean);
-    const line = `Checked: ${checked.join(", ") || "nothing"}` + (gaps.length ? ` · Not checked: ${gaps.join(", ")}` : "");
+    const strs = (v) => (Array.isArray(v) ? v : []).filter((x) => typeof x === "string" && x);
+    const caveats = strs(c.caveats), notes = strs(c.notes); // notes = Jarvis's own notes on a customer / site: never a checked system
+    const line = `Checked: ${checked.join(", ") || "nothing"}` + (gaps.length ? ` · Not checked: ${gaps.join(", ")}` : "") +
+      (caveats.length ? ` · Caveats: ${caveats.join(", ")}` : "") + (notes.length ? ` · Notes: ${notes.join(", ")}` : "");
     const list = (items) => items.length ? `<ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="cov-none">Nothing</p>`;
     return `<details class="cov" data-level="${esc(c.confidence)}"><summary aria-label="${esc(line)}. Confidence ${esc(c.confidence)}.">` +
       `<span class="cov-line">${esc(line)}</span><span class="cov-chip">${esc(c.confidence)}</span></summary>` +
       `<div class="cov-body"><div class="cov-col"><b>Checked</b>${list(checked)}</div><div class="cov-col"><b>Not checked</b>${list(gaps)}</div>` +
+      (caveats.length ? `<div class="cov-col"><b>Caveats</b>${list(caveats)}</div>` : "") +
+      (notes.length ? `<div class="cov-col"><b>Notes used (not a system check)</b>${list(notes)}</div>` : "") +
       `<p class="cov-why">${esc(c.confidence)} confidence: ${esc(c.why || "")}</p></div></details>`;
   }
   function replyExtras(msg, d, steps) {

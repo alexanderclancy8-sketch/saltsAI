@@ -604,6 +604,45 @@ input.mem-input { min-height: 0; }
 .mem-item .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .mem-confirm p { margin: 0; color: var(--ember); font-size: 14px; }
 #memory-intro { margin-bottom: 4px; }
+.mem-item .btn[data-ent="edit"], .ent-summary-sec .btn[data-ent="edit-summary"] { color: var(--core); border-color: var(--core-dim); }
+/* Two tabs: "What Jarvis knows" and "Customers & sites" (entity_notes.js). Each panel lays its sections out like a pop-up does. */
+.mem-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: -8px; }
+.mem-tab { flex: 1 1 0; min-width: 0; background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 8px; color: var(--muted);
+  font-family: var(--f-display); font-size: 14px; letter-spacing: .04em; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.mem-tab:hover { color: var(--text); }
+.mem-tab[aria-selected="true"] { color: var(--core); border-bottom-color: var(--core); }
+.mem-tab:focus-visible { outline: 2px solid var(--core); outline-offset: -2px; }
+.mem-tab .count { font-family: var(--f-mono); font-size: 12px; color: var(--ember); }
+.mem-tab .count:empty { display: none; }
+.mem-panel { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.mem-panel[hidden], #ent-browse[hidden], #ent-view[hidden], .ent-summary-view[hidden], .ent-summary-edit[hidden], .ent-edit[hidden] { display: none; }
+#ent-browse, #ent-view { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#ent-view { gap: 22px; }
+.ent-label { font-family: var(--f-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.drawer label.ent-label { margin-bottom: -8px; }
+.ent-banner { margin: 0; border: 1px solid var(--line); border-left: 3px solid var(--ember); border-radius: var(--r); background: var(--panel); padding: 10px 14px; font-size: 14px; color: var(--text); }
+.ent-banner[hidden] { display: none; }
+.ent-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ent-list .empty { color: var(--muted); font-size: 14px; }
+.ent-row { width: 100%; text-align: left; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: baseline;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 11px 14px; color: var(--text); cursor: pointer; font: inherit; }
+.ent-row:hover { border-color: var(--core-dim); }
+.ent-row:focus-visible { outline: 2px solid var(--core); outline-offset: 1px; }
+.ent-name { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+.ent-pending { font-family: var(--f-mono); font-size: 12px; color: var(--ember); white-space: nowrap; }
+.ent-meta { grid-column: 1 / -1; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.ent-back { align-self: flex-start; }
+.ent-title { margin: 0; font-family: var(--f-display); font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+#ent-view .ent-title + .ent-sub { margin-top: -18px; }
+.ent-sub { margin: 0; color: var(--muted); font-family: var(--f-mono); font-size: 12px; overflow-wrap: anywhere; }
+.ent-summary { margin: 0; overflow-wrap: anywhere; font-size: 14.5px; }
+.ent-summary.empty { color: var(--muted); }
+.ent-summary-sec .row, .ent-add .row, .ent-forget .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ent-add .mem-meta { margin-top: 8px; }
+.ent-suggestion { border-left: 3px solid var(--ember); }
+.ent-flag { margin: 0 0 6px; color: var(--ember); font-size: 13px; overflow-wrap: anywhere; }
+.ent-forget .mem-confirm { margin-top: 10px; border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: var(--r); background: var(--panel); padding: 10px 14px; }
+.ent-forget .mem-confirm p { color: var(--text); overflow-wrap: anywhere; }
 /* ---------- What Jarvis did (the "activity" pop-up, activity.js): a read-only list, filters on top ---------- */
 .act-summary { margin: 0; font-weight: 500; overflow-wrap: anywhere; }
 .act-filters { display: flex; flex-direction: column; gap: 10px; }
@@ -727,6 +766,8 @@ input.mem-input { min-height: 0; }
   .appr-msg .appr-row.block dd { max-height: 4.6em; }   /* in the conversation: a few lines, scroll for the rest */
   .appr-msg .appr-safe { display: none; }
   .appr-card .row .btn, .mem-item .row .btn, .suggestion .row .btn { flex: 1 1 auto; }
+  .ent-summary-sec .row .btn, .ent-add .row .btn, .ent-forget .btn, .ent-back { flex: 1 1 auto; width: 100%; }
+  .ent-search { font-size: 16px; }   /* 16px stops iOS zooming the page when the search box is focused */
   .appr-bulk > .btn { width: 100%; }
   .appr-confirm .row .btn { flex: 1 1 auto; }
   /* What Jarvis did */
@@ -780,6 +821,7 @@ input.mem-input { min-height: 0; }
   .act-row, .act-quiet-btn, .drawer .act-toggle, .act-field select, .act-field input[type=search] { min-height: 44px; }
   .act-toggle input { width: 22px; height: 22px; }
   .act-range { min-width: 44px; justify-content: center; }
+  .mem-tab, .ent-row, input.ent-search { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

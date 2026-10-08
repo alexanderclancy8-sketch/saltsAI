@@ -329,6 +329,11 @@
     </section><!--/role:manager-->
 
     <!--role:manager--><section class="pop" id="pop-memory" data-title="Memory" hidden>
+      <div class="mem-tabs" role="tablist" aria-label="Memory">
+        <button type="button" role="tab" class="mem-tab" id="mem-tab-general" data-mem-tab="general" aria-selected="true" aria-controls="mem-panel-general">What Jarvis knows</button>
+        <button type="button" role="tab" class="mem-tab" id="mem-tab-entities" data-mem-tab="entities" aria-selected="false" aria-controls="mem-panel-entities" tabindex="-1">Customers &amp; sites <span class="count" id="ent-pending-count"></span></button>
+      </div>
+      <div class="mem-panel" id="mem-panel-general" role="tabpanel" aria-labelledby="mem-tab-general">
       <p class="empty" id="memory-intro">What Jarvis has learned about the business. Reword or delete anything that is out of date or wrong;
         he reads the change from his very next message.</p>
       <div class="sec" id="memory-notes-sec">
@@ -344,6 +349,24 @@
         <ul class="mem-list" id="memory-replies"></ul>
       </div>
       <p class="empty" id="memory-error" role="alert" hidden></p>
+      </div>
+      <!-- Customer & site notes (entity_notes.js): owner and manager only, like the rest of this pop-up. -->
+      <div class="mem-panel" id="mem-panel-entities" role="tabpanel" aria-labelledby="mem-tab-entities" hidden>
+        <p class="empty" id="ent-intro">Jarvis's notes on each customer and site, kept against its Salts FSM record. He reads them when that
+          customer or site comes up. Notes he suggests wait here until you accept them.</p>
+        <p class="ent-banner" id="ent-demo" role="status" hidden>Salts FSM is showing sample data, so notes can't be added until it is connected.</p>
+        <div id="ent-browse">
+          <label class="ent-label" for="ent-search">Find a customer or site</label>
+          <input type="search" id="ent-search" class="mem-input ent-search" placeholder="Name or FSM id" autocomplete="off" maxlength="120">
+          <ul class="ent-list" id="ent-list"><li class="empty">Loading…</li></ul>
+          <div class="sec" id="ent-fsm-sec" hidden>
+            <h3>In Salts FSM, no notes yet</h3>
+            <ul class="ent-list" id="ent-fsm"></ul>
+          </div>
+        </div>
+        <div id="ent-view" hidden></div>
+        <p class="empty" id="ent-error" role="alert" hidden></p>
+      </div>
     </section><!--/role:manager-->
 
     <section class="pop" id="pop-settings" data-title="Settings" hidden>
@@ -468,6 +491,7 @@
 <script src="/static/core.js"></script>
 <script src="/static/ask.js"></script>
 <script src="/static/charts.js"></script>
+<script src="/static/entity_notes.js"></script>
 <script src="/static/memory.js"></script>
 <script src="/static/activity.js"></script>
 <script src="/static/checks.js"></script>
