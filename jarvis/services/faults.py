@@ -6,7 +6,8 @@ owner or a manager presses "Copy report for Claude" in the console and pastes it
 
 What opens a fault (``record``; a repeat of an OPEN fault with the same key bumps ``count`` and ``last_seen`` instead of adding a row):
 
-* the doctor (``services/doctor.py``) finds a RED line, or one of its checks could not run (``from_doctor``),
+* the doctor (``services/doctor.py``, run by the ``doctor`` tool or quietly by ``watch``) finds a RED line, or one of its checks could
+  not run (``from_doctor``),
 * an approved action fails when it runs (``ActionExecutor._run`` -> ``action_failed``), one fault per action KIND,
 * a scheduled run fails - a check, the briefing / wrap-up, an automation (``ActivityLog.record`` with outcome ``failed``) or any other
   scheduled job (``scheduler._guard``),
@@ -334,7 +335,8 @@ class FaultLog:
             j.db.set_kv("faults:doctor_last", self.now_iso())
             from .doctor import Doctor
 
-            await Doctor(j).run(self._now())   # files its own faults (from_doctor); shows nothing
+            doc = Doctor(j)
+            self.from_doctor(await doc.run(self._now()), doc.ran)   # shows nothing; only files / closes faults
         try:
             self.prune()
         except Exception:  # noqa: BLE001

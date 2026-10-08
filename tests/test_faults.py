@@ -170,13 +170,14 @@ async def test_doctor_red_lines_and_broken_checks_become_faults_and_close_when_g
     monkeypatch.setattr(Doctor, "CHECKS", (("Tests and issues", "_t"), ("Pull requests", "_b")))
     monkeypatch.setattr(Doctor, "_t", tests_check, raising=False)
     monkeypatch.setattr(Doctor, "_b", broken, raising=False)
-    await Doctor(j).run()
+    await TOOLS_BY_NAME["doctor"].handler(j, None)          # the doctor tool files the faults
     keys = {r["key"]: r for r in rows(j)}
     assert set(keys) == {"doctor:Tests and issues:" + fingerprint("2 routine tests failing: system/fsm, system/tls."),
                          "doctor:Pull requests:could-not-check"}
     assert all(r["source"] == "doctor" and "jarvis/services/doctor.py" in r["files"] for r in keys.values())
     state["red"] = False
-    await Doctor(j).run()
+    j.db.set_kv("faults:doctor_last", "2000-01-01T00:00:00+00:00")
+    await j.faults.watch()                                   # and so does the watch's quiet run
     status = {r["key"].split(":")[1]: r["status"] for r in rows(j)}
     assert status == {"Tests and issues": RESOLVED, "Pull requests": OPEN}   # a check that still crashes can't say it's fixed
 
@@ -189,7 +190,7 @@ async def test_amber_lines_are_not_faults(settings, monkeypatch):
 
     monkeypatch.setattr(Doctor, "CHECKS", (("Data sources", "_a"),))
     monkeypatch.setattr(Doctor, "_a", amber, raising=False)
-    await Doctor(j).run()
+    await TOOLS_BY_NAME["doctor"].handler(j, None)
     assert rows(j) == []
 
 

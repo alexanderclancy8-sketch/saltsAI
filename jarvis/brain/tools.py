@@ -1474,7 +1474,11 @@ async def doctor(j, a: NoInput):
     """Read-only self-diagnostics: one line per item (ok / amber / red + next step), also put on the display."""
     from ..services.doctor import Doctor
 
-    return await Doctor(j).diagnose()
+    doc = Doctor(j)
+    out = await doc.diagnose()
+    # a red line (or a check that broke) becomes an internal fault report; a check that ran clean closes its old ones (services/faults.py)
+    j.faults.from_doctor(doc.last_items, doc.ran)
+    return out
 
 
 async def log_job(j, a: LogJobIn):

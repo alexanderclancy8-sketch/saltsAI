@@ -126,6 +126,8 @@ def _is_set(settings: Any, field: str) -> bool:
 class Doctor:
     def __init__(self, j: Any):
         self.j = j
+        self.ran: list[str] = []
+        self.last_items: list[Item] = []
 
     # ------------------------------------------------------------------ running
     # (name shown when the check itself breaks, method name) - looked up at run time, one broken check never stops the rest
@@ -172,10 +174,7 @@ class Doctor:
                 log.warning("Doctor: the %s check could not run (%s)", name, type(e).__name__)
                 items.append(Item(name, AMBER, f"could not check: {reason}",
                                   "Look in the Jarvis log for this check; the other checks still ran."))
-        # A red line (or a check that broke) is an internal fault report; a check that ran clean closes its old ones (services/faults.py)
-        faults = getattr(self.j, "faults", None)
-        if faults is not None:
-            faults.from_doctor(items, ran)
+        self.ran = ran          # which checks completed: the fault log (services/faults.py) only closes faults for these
         return sorted(items, key=lambda i: _RANK.get(i.status, 1))  # stable: keeps the check order within a status
 
     @staticmethod
@@ -190,6 +189,7 @@ class Doctor:
     async def diagnose(self, now: datetime | None = None) -> dict[str, Any]:
         """Run everything, put it on the display and hand the lines back. Showing it is also fail-soft."""
         items = await self.run(now)
+        self.last_items = items
         text = redact_text(self.markdown(items))
         shown = True
         try:
