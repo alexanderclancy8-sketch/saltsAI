@@ -133,7 +133,7 @@ async def test_an_ambiguous_name_asks_with_candidates_and_stores_nothing(setting
 async def test_the_owner_adds_an_active_note_attributed_to_them(settings):
     j = make(settings)
     live(j)
-    j.asked_by = "Alex"
+    j.asked_by = "Alex (display)"                         # what the brain sets for the owner's own display
     out = await add(j, "Wants a call before an engineer is sent")
     assert out["saved"] is True and out["entity"] == "Acme Alarms Ltd (customer C1)"
     (e,) = entries(j)

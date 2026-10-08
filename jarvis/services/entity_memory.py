@@ -287,7 +287,7 @@ class EntityMemory:
         role = access.role_of(caller)
         if caller is not None and caller.name:
             return role, caller.name
-        asked = str(getattr(self.j, "asked_by", "") or "")
+        asked = str(getattr(self.j, "asked_by", "") or "").removesuffix(" (display)")   # requester_label's "<owner> (display)"
         return role, (asked if asked and asked != "automation" else access.ROLE_LABEL.get(role, role))
 
     # ------------------------------------------------------------------ Salts FSM look-ups
