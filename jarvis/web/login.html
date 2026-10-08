@@ -24,8 +24,9 @@
         <button class="btn-signin" type="submit">SIGN IN</button>
         <div class="err" id="err" role="alert"></div>
       </form>
-      <!-- Team sign-in: engineers and office staff, with the team access code the owner set in Settings. They get the
-           cut-down console (no Finance, Approvals or Connections). Hidden until asked for. -->
+      <!-- Team sign-in: engineers and office staff, with a team access code the owner set in Settings - the office code or
+           the engineer code; the CODE decides the role (the server checks it against both). They get the cut-down console
+           (no Finance, Approvals or Connections). Hidden until asked for. -->
       <form method="post" action="/login/team" id="team-form" hidden>
         <input class="field" id="team-name" name="name" type="text" placeholder="Your name" aria-label="Your name" autocomplete="name" maxlength="40" required>
         <input class="field" id="team-code" name="code" type="password" placeholder="Team access code" aria-label="Team access code" autocomplete="off" required>

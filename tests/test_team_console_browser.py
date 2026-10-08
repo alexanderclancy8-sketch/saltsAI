@@ -1,5 +1,9 @@
 """Real-browser checks of console redesign Phase 4b, item 5: the team console.
 
+Since the office / engineer split (tests/test_office_role.py, tests/test_office_role_browser.py) the team code here is the
+ENGINEER code - Settings > Team access has an Office code and an Engineer code section - and the top bar names the kind
+("Engineer · Sam Walker", where it said "Team · Sam Walker"). Everything else pinned here is unchanged.
+
 Headless Chrome through Playwright (skipped when it is not installed, like test_console_browser.py, whose fixtures it shares),
 at 1280 / 800 / 400px in both themes:
 
@@ -144,20 +148,20 @@ def test_the_owner_turns_team_access_on_in_settings_and_a_team_member_signs_in(b
         assert owner.text_content("#role-chip") == "Owner"
         owner.click('.tb-btn[data-pop="settings"]')
         owner.wait_for_function("document.getElementById('drawer').classList.contains('open')")
-        owner.wait_for_function("document.getElementById('team-access-status').textContent.startsWith('Off')")
-        assert owner.is_visible("#btn-team-set") and owner.is_hidden("#btn-team-off")
-        assert owner.evaluate("document.getElementById('team-code').type") == "password"
+        owner.wait_for_function("document.getElementById('team-access-status-engineer').textContent.startsWith('Off')")
+        assert owner.is_visible("#btn-team-set-engineer") and owner.is_hidden("#btn-team-off-engineer")
+        assert owner.evaluate("document.getElementById('team-code-engineer').type") == "password"
         owner.locator("#team-access-sec").scroll_into_view_if_needed()
         _shot(owner, f"owner-team-access-off-{width}-{scheme}")
-        owner.fill("#team-code", "short")                       # too short: refused, nothing saved
-        owner.click("#btn-team-set")
+        owner.fill("#team-code-engineer", "short")              # too short: refused, nothing saved
+        owner.click("#btn-team-set-engineer")
         owner.wait_for_selector(".toast.warning, .toast")
         assert not j.team_access.enabled
-        owner.fill("#team-code", TEAM_CODE)
-        owner.click("#btn-team-set")
-        owner.wait_for_function("document.getElementById('team-access-status').textContent.startsWith('On')")
-        assert owner.input_value("#team-code") == ""             # the code is never shown again
-        assert owner.is_visible("#btn-team-off") and owner.text_content("#btn-team-set") == "Change code"
+        owner.fill("#team-code-engineer", TEAM_CODE)
+        owner.click("#btn-team-set-engineer")
+        owner.wait_for_function("document.getElementById('team-access-status-engineer').textContent.startsWith('On')")
+        assert owner.input_value("#team-code-engineer") == ""   # the code is never shown again
+        assert owner.is_visible("#btn-team-off-engineer") and owner.text_content("#btn-team-set-engineer") == "Change code"
         assert TEAM_CODE not in owner.content()
         owner.locator("#team-access-sec").scroll_into_view_if_needed()
         _shot(owner, f"owner-team-access-on-{width}-{scheme}")
@@ -188,7 +192,7 @@ def test_the_owner_turns_team_access_on_in_settings_and_a_team_member_signs_in(b
             team.fill("#team-code", TEAM_CODE)
             team.click(".btn-team-signin")
             team.wait_for_selector("#needs-list .need, #needs-list .needs-clear:not(:has-text('Loading'))", timeout=15000)
-            assert team.text_content("#role-chip") == "Team · Sam Walker"
+            assert team.text_content("#role-chip") == "Engineer · Sam Walker"
         finally:
             team_ctx.close()
     finally:
@@ -205,9 +209,9 @@ def test_switching_team_access_off_from_settings_signs_everyone_out(browser, fre
         _sign_in_team(team, srv.url)
         owner.once("dialog", lambda d: d.accept())
         owner.click('.tb-btn[data-pop="settings"]')
-        owner.wait_for_function("document.getElementById('team-access-status').textContent.startsWith('On')")
-        owner.click("#btn-team-off")
-        owner.wait_for_function("document.getElementById('team-access-status').textContent.startsWith('Off')")
+        owner.wait_for_function("document.getElementById('team-access-status-engineer').textContent.startsWith('On')")
+        owner.click("#btn-team-off-engineer")
+        owner.wait_for_function("document.getElementById('team-access-status-engineer').textContent.startsWith('Off')")
         assert not j.team_access.enabled
         team.reload(wait_until="domcontentloaded")
         team.wait_for_url(re.compile(r"/login"))                 # the old session is no longer any good
@@ -232,7 +236,7 @@ def test_the_team_console_is_cut_down_everywhere(browser, serve_team, width, hei
         # the top bar: Voice and Settings; the role, shown subtly; no Connections, no Speaks up
         assert page.evaluate("[...document.querySelectorAll('.tb-btn')].map(b => b.textContent.trim())") == ["Voice on", "Settings"]
         chip = page.locator("#role-chip")
-        assert chip.is_visible() and chip.text_content() == "Team · Sam Walker"
+        assert chip.is_visible() and chip.text_content() == "Engineer · Sam Walker"
         box = chip.bounding_box()
         assert box["x"] >= 0 and box["x"] + box["width"] <= width
         # the markup of the hidden sections is not in the page at all
@@ -312,7 +316,7 @@ def test_the_owners_console_still_has_everything_and_the_team_controls(browser, 
         assert page.text_content("#role-chip") == "Owner"
         assert page.evaluate("document.getElementById('quick').querySelectorAll('.chip-btn').length") == 9  # the owner's shortcuts
         page.click('.tb-btn[data-pop="settings"]')
-        page.wait_for_function("document.getElementById('team-access-status').textContent.startsWith('On')")
+        page.wait_for_function("document.getElementById('team-access-status-engineer').textContent.startsWith('On')")
         page.wait_for_timeout(300)
         for pop in ("approvals", "finance"):
             assert page.evaluate(f"document.getElementById('pop-{pop}') !== null")

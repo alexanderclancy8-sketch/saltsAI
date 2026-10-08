@@ -5,10 +5,10 @@ with JARVIS_OWNER_PASSWORD set, a signed session cookie is required; without
 one, Jarvis only answers requests from the local machine. On Azure, managers
 listed in MANAGER_EMAILS can also get in through App Service's Microsoft sign-in.
 
-Team mode adds a third kind of session for engineers and office staff: a team access code the owner sets (never stored
-in the clear, see services/team_access.py) is exchanged at /login/team for a SEPARATE cookie (``TEAM_COOKIE``) signed with a
-key of its own, so a team cookie can never satisfy ``is_owner`` / ``is_principal_owner`` and an owner cookie is not a team
-one. ``role_of`` is the one place a connection is turned into a role (jarvis/access.py); ``is_owner`` and
+Team mode adds a third kind of session for engineers and office staff: a team access code the owner sets (one for the
+office, one for engineers; never stored in the clear, see services/team_access.py) is exchanged at /login/team for a SEPARATE
+cookie (``TEAM_COOKIE``) signed with a key of its own (per role), so a team cookie can never satisfy ``is_owner`` /
+``is_principal_owner`` and an owner cookie is not a team one. ``role_of`` is the one place a connection is turned into a role (jarvis/access.py); ``is_owner`` and
 ``is_principal_owner`` are unchanged and still mean owner-or-manager / the owner themself.
 """
 
@@ -145,29 +145,42 @@ def new_state() -> str:
 
 
 # ---------------------------------------------------------------------------------------------------- team sessions
-def _team_key(settings: Settings, code_digest: str) -> bytes:
-    """The signing key for team cookies. It includes the stored digest of the team access code, so changing or switching
-    off the code signs every team session out at once, and it is not derivable from JARVIS_SECRET_KEY alone (whose default
-    is a known string)."""
+# Two kinds of team session since the office / engineer split (jarvis/access.py): each role has its own code, and its cookies are
+# signed with a key derived from THAT role's code digest, so rotating or clearing one role's code signs out that role only. The
+# role is also inside the signed body ("r"), and a cookie is only accepted under the key of the role it names - an engineer
+# cookie can never be read as an office one. A cookie with no "r" (every team cookie from before the split) is an engineer's,
+# and the engineer key is derived exactly as the single team key was, so those sessions carry on - as engineers.
+def _team_key(settings: Settings, code_digest: str, team_role: str = access.ENGINEER) -> bytes:
+    """The signing key for one role's team cookies. It includes the stored digest of that role's access code, so changing or
+    switching off the code signs every session of that role out at once, and it is not derivable from JARVIS_SECRET_KEY alone
+    (whose default is a known string). The engineer key is the pre-split team key, unchanged."""
+    if access.team_role_of(team_role) == access.OFFICE:
+        return hashlib.sha256(f"jarvis-team-session|office|{settings.jarvis_secret_key}|{code_digest}".encode()).digest()
     return hashlib.sha256(f"jarvis-team-session|{settings.jarvis_secret_key}|{code_digest}".encode()).digest()
 
 
-def make_team_session(settings: Settings, code_digest: str, name: str) -> str:
-    """A signed cookie value for a team member: name, a random session id and an expiry. Returns "" if team access is off."""
+def make_team_session(settings: Settings, code_digest: str, name: str, team_role: str = access.ENGINEER) -> str:
+    """A signed cookie value for a team member: name, role, a random session id and an expiry. Returns "" if that role's
+    access is off."""
     if not code_digest:
         return ""
-    body = base64.urlsafe_b64encode(json.dumps(
-        {"n": access.clean_name(name), "s": secrets.token_hex(8), "e": int(time.time()) + TEAM_SESSION_DAYS * 86400},
-        separators=(",", ":")).encode()).decode().rstrip("=")
-    return f"{body}.{hmac.new(_team_key(settings, code_digest), body.encode(), hashlib.sha256).hexdigest()}"
+    team_role = access.team_role_of(team_role)
+    data = {"n": access.clean_name(name), "s": secrets.token_hex(8), "e": int(time.time()) + TEAM_SESSION_DAYS * 86400}
+    if team_role == access.OFFICE:
+        data["r"] = access.OFFICE  # (an engineer cookie has no "r", exactly like the pre-split team cookies)
+    body = base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).decode().rstrip("=")
+    return f"{body}.{hmac.new(_team_key(settings, code_digest, team_role), body.encode(), hashlib.sha256).hexdigest()}"
 
 
-def read_team_session(settings: Settings, code_digest: str, token: str | None) -> access.Caller | None:
-    """The team member a cookie value stands for, or None (no team access set, bad signature, expired, malformed)."""
+def read_team_session(settings: Settings, code_digest: str, token: str | None,
+                      team_role: str = access.ENGINEER) -> access.Caller | None:
+    """The team member a cookie value stands for, if it is a valid ``team_role`` cookie; else None (that role's access is
+    off, bad signature, expired, malformed, or it is the other role's cookie)."""
+    team_role = access.team_role_of(team_role)
     if not code_digest or not token or "." not in token:
         return None
     body, sig = token.rsplit(".", 1)
-    if not hmac.compare_digest(sig, hmac.new(_team_key(settings, code_digest), body.encode(), hashlib.sha256).hexdigest()):
+    if not hmac.compare_digest(sig, hmac.new(_team_key(settings, code_digest, team_role), body.encode(), hashlib.sha256).hexdigest()):
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
@@ -175,14 +188,29 @@ def read_team_session(settings: Settings, code_digest: str, token: str | None) -
         return None
     if not isinstance(data, dict) or not isinstance(data.get("e"), int) or data["e"] <= time.time():
         return None
+    if access.team_role_of(data.get("r")) != team_role:
+        return None
     name, sid = access.clean_name(str(data.get("n") or "")), str(data.get("s") or "")
     if not name or not sid.isalnum():
         return None
-    return access.Caller(access.TEAM, name, sid)
+    return access.Caller(access.TEAM, name, sid, team_role)
 
 
-def role_of(settings: Settings, conn: Request | WebSocket, owner_email: str, team_digest: str = "") -> access.Caller | None:
-    """What the signed-in person on this connection is: the owner, a manager, a team member, or None (not signed in).
+def read_any_team_session(settings: Settings, digests: dict[str, str] | str, token: str | None) -> access.Caller | None:
+    """The team member a cookie stands for, whichever role it is. ``digests`` is ``{role: digest}`` (a bare string is the
+    engineer digest alone, as before the split)."""
+    if isinstance(digests, str):
+        digests = {access.ENGINEER: digests}
+    for team_role in (access.ENGINEER, access.OFFICE):
+        caller = read_team_session(settings, digests.get(team_role, ""), token, team_role)
+        if caller is not None:
+            return caller
+    return None
+
+
+def role_of(settings: Settings, conn: Request | WebSocket, owner_email: str,
+            team_digest: dict[str, str] | str = "") -> access.Caller | None:
+    """What the signed-in person on this connection is: the owner, a manager, a team member (office or engineer), or None.
 
     Owner and manager come from exactly the same checks as before (``is_principal_owner`` / ``is_owner``); a team session
     only counts when neither of those holds, so there is no way for a team cookie to be mistaken for more."""
@@ -191,4 +219,4 @@ def role_of(settings: Settings, conn: Request | WebSocket, owner_email: str, tea
     if is_owner(settings, conn):
         manager = signed_in_manager(settings, conn)
         return access.Caller(access.MANAGER, settings.person(manager) if manager else "")
-    return read_team_session(settings, team_digest, conn.cookies.get(TEAM_COOKIE))
+    return read_any_team_session(settings, team_digest, conn.cookies.get(TEAM_COOKIE))
