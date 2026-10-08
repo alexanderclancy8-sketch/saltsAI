@@ -222,6 +222,47 @@ the modules for any other verb), and nothing here touches `actions.queue/approve
   tool (which self-learning also uses) refuses any fact that repeats a figure, date, id or long note from a sensitive read in the last hour
   (`FsmRead.contains_sensitive`, in memory only); "What Jarvis did" records `fsm_read` audit lines = resource name + row count + who, never a
   value. FSM demo data: both tools say so and return nothing.
+*Number-crunching and charts, without running model-written code (`services/calc.py`, `services/fsm_analyse.py`, `services/charts.py`,
+`web/charts.js` + `charts.css`; tests `tests/test_calc.py`, `tests/test_fsm_analyse.py`, `tests/test_charts.py`, `tests/test_charts_browser.py`).* Jarvis
+used to do arithmetic "in its head" and answer only in sentences. Three read-only, `approval=False` tools fix that WITHOUT an interpreter: nothing the
+model writes is ever executed - it picks from closed vocabularies and code does the sums. None of them is in `TEAM_TOOLS`; `fsm_analyse` and
+`show_chart` are in `NOT_BACKGROUND` (the first reads finance / pay / HR, both publish to the display) and `fsm_analyse` is `fsm_`-prefixed = untrusted output.
+- **`calculate(expression, values?)`** (`services/calc.py`): `ast.parse` + an evaluator that knows only numbers, `+ - * / // % **`, unary +/-, brackets,
+  `round abs min max sum avg pct pct_change sqrt` (`min max sum avg` also take `[a, b]` list literals) and NAMES only from the `values` dict (letters/digits/_,
+  starting with a letter, <= 40 chars). Everything else (attributes, subscripts, other calls, comprehensions, lambda, strings, comparisons, keyword args...) is
+  refused with a sentence. `Decimal` (34 digits) throughout; the answer is rounded to 2 dp half-to-even with the unrounded `exact` value, the expression
+  echoed and a rounding note. Caps: 500 chars, 200 nodes, depth 100, |exponent| <= 100 (so `9**9**9` is refused before anything is computed), numbers
+  <= 1e60, lists <= 200 items. Division by zero says which operator. If its inputs repeat a figure from owner-only data (`contains_sensitive`) the result
+  is itself noted as owner-only so `remember` refuses it.
+- **`fsm_analyse(resource, filters, period, group_by, metrics, having, order, limit, chart, chart_metric, chart_title, display, sample_rows)`**: aggregates
+  over the FSM read API page by page (`FsmData.scan`, an async generator - rows are never all held): metrics `count count(f) sum avg min max median distinct
+  pct_of_total[(f)]` (money in `Decimal`, 2 dp; `value`/`total`/`amount`... names and money-typed fields format as £), `group_by` up to two fields with date
+  buckets `field:day|week|month|quarter|year` (the calendar date AS WRITTEN, no time-zone conversion), `period` = a named range (`this_year`, `last_month`,
+  `last_12_months`...) or start/end on one date field resolved against an injectable `FsmAnalyse.today` and sent to the FSM as `[gte]/[lte]` filters AND
+  re-checked locally (an FSM that ignores a filter can't skew the answer), `having` (`count > 5`), `order`, top-N `limit` (20; 60 for dated; <= 100) with the
+  rest merged exactly into an `Other` row. Every field is validated against the catalog (nearest names on error). Caps (`FsmAnalyse.max_rows/max_pages/max_seconds`,
+  defaults `SCAN_MAX_ROWS` 50,000 / 120 pages / 60 s on the client's injectable clock; > 20,000 distinct groups refused): when it stops early the result says
+  `INCOMPLETE: scanned N of M rows - narrow your filters` (`truncated`, `truncation`). Values that aren't numbers / dates are counted in `notes`, never silently
+  dropped. Never returns raw rows (optional `sample_rows` <= 10, only the analysed fields). Privacy is `fsm_data`'s exactly (owner-only resources/groups,
+  manager = the rest, team = neither tool, demo FSM = says so and returns nothing, 403 scope_off / 404 messages); "What Jarvis did" gets resource + group_by +
+  rows scanned + who (`fsm_read` kind), never a value; a sensitive result's figures (in the spellings 49214 / 49,214 / 49,214.00) are noted so `remember` refuses them.
+- **Charts** (`services/charts.py` validates, `web/charts.js` draws): spec `{type: bar|line|pie|donut|stacked_bar, title, x_label, y_label, unit: number|gbp|percent,
+  series: [{name, points: [{label, value}]}]}`. Caps: bar 24 bars; line 6 series x 60 points; pie/donut 12 slices; stacked_bar 8 series x 24 categories; 240 points
+  total; text stripped of control chars / HTML / secret-looking strings; values finite and <= 1e15; pie/donut/stacked can't be negative. The model reaches it via
+  `fsm_analyse(chart=...)` (built from the groups: top-N + `Other`; a dated axis over the cap is an error saying use a coarser bucket) or `show_chart(spec)` for numbers it
+  already has (`owner_only=true` for finance/pay/HR figures; numbers that match a recent owner-only read are forced owner-only, and a manager is refused them). The spec
+  rides the existing `display` bus event (`{title, markdown, chart}`) into `openDisplay` in hud.js, above the table under it; nothing is stored or fetched. The chart is
+  inline SVG built with DOM APIs (`textContent` only - a test greps charts.js for `innerHTML`/`eval`/...), re-validated client-side, theme-aware (reads `--panel/--text/--muted/--line`,
+  a fixed 8-hue colour-vision-checked palette stepped per theme, redraws on `jarvis-theme` and on resize), `role="img"` + an `aria-label` summary, real `<button>` hit
+  targets with arrow-key roving and a tooltip (hover, focus, touch), a collapsible data table, `Download PNG` (canvas, exactly 1600x900, like the advert export) and
+  `Copy as CSV` (formula-looking labels get a leading `'`).
+- **Who is sent a sensitive chart:** the owner's bus is shared by the owner's and every manager's console, so a display panel can carry `"audience": "owner"`
+  (set by `fsm_analyse`/`show_chart` for owner-only data) and `access.event_visible()` is applied in `main.ws_events`' pump: only the principal owner's WebSocket
+  receives it; a manager's does not; a team session never gets `display` events at all. Test: `tests/test_charts.py::test_an_owner_only_chart_reaches_the_owners_console_and_no_one_elses`.
+  Caveat that predates this: managers share the owner's brain and conversation, so chat TEXT is still one shared surface (see "Not changed" above).
+- Prompt guidance lives in `PERSONA` "# Numbers and charts" (use the tools for more than a couple of figures; state period / filters / truncation / sample data; headline
+  in a sentence, detail on the display).
+
 - **Vans and equipment (`services/fsm_assets.py`, `Accreditations.refresh_fsm_assets`):** when the catalog has an enabled `assets` group,
   vehicle MOT / road tax / service dates and equipment / test-kit calibration dates come from it and the daily reminders (90/60/30/14/7/1
   days, then due-today and weekly overdue) run from them; the fleet insurance policy means no per-vehicle insurance. The catalog does not

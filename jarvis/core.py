@@ -29,6 +29,7 @@ from .knowledge import KnowledgeBase
 from .services.accountant import Accountant
 from .integrations.fsm_data import FsmData
 from .services.accreditations import Accreditations
+from .services.fsm_analyse import FsmAnalyse
 from .services.fsm_read import FsmRead
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
@@ -108,6 +109,7 @@ class Jarvis:
         self.fsm = FSMRouter(s, self.http)
         self.fsm_data = FsmData(self.fsm)  # the FSM's generic read-only data API (catalog + any resource); see integrations/fsm_data.py
         self.fsm_read = FsmRead(self)      # fsm_catalog / fsm_data: validation, who may read what, caps (services/fsm_read.py)
+        self.fsm_analyse = FsmAnalyse(self)  # fsm_analyse: totals / averages / groupings over the FSM, with optional charts (services/fsm_analyse.py)
         self.ram = (RamTracking(s, self.http, store=self.db) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
                     else DemoRamTracking(self.fsm))
         self.finance = build_finance(s, self.http, self.db)

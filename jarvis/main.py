@@ -684,6 +684,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                 msg = await q.get()
                 if allow is not None and msg["type"] not in allow:
                     continue
+                if not access.event_visible(msg, caller.role):  # e.g. a chart of finance / pay / HR figures: the owner's console only
+                    continue
                 if muted and msg["type"] == "proactive":
                     continue
                 await ws.send_json(msg)

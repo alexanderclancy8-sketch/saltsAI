@@ -88,3 +88,25 @@ def test_advisor_system_formats_with_new_steps():
     assert "three concrete recommendations" in text
     assert "risk mitigation" in text and "tax efficiency" in text and "business development" in text
     assert "HMRC" in text and "qualified accountant" in text
+
+
+def test_persona_tells_jarvis_to_use_the_number_tools_and_be_honest_about_them(settings):
+    text = _persona(settings)
+    assert "# Numbers and charts" in text
+    for tool in ("fsm_analyse", "calculate", "show_chart", "fsm_catalog"):
+        assert f"`{tool}`" in text
+    for rule in ("don't do it", "period and filters", "truncated", "demo or sample", "never quote a figure the tools did not",
+                 "headline number in one sentence", "owner's alone"):
+        assert rule in text, rule
+
+
+def test_the_team_prompt_does_not_mention_the_number_tools(settings):
+    from jarvis import access
+    from jarvis.brain.prompts import build_team_system
+
+    class KB:
+        def core_documents(self):
+            return ""
+
+    text = build_team_system(settings, KB(), access.Caller(access.TEAM, "Sam", "s"))[0]["text"]
+    assert "fsm_analyse" not in text and "show_chart" not in text

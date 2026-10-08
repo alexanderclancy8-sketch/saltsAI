@@ -151,6 +151,20 @@ TEAM_STATUS_KEYS = frozenset({"generated_at", "staff", "overdue_jobs", "presence
 TEAM_EVENTS = frozenset({"user_message", "thinking", "delta", "tool", "reply", "error", "stopped", "conversation_reset",
                          "reload"})
 
+# A display panel can be marked ``"audience": "owner"`` (a chart or table built from owner-only FSM data - finance, staff pay, HR).
+# The owner's bus is shared by the owner's and every manager's console, so the live connection (``main.ws_events``) asks this
+# before sending: only the principal owner's console receives such a panel. (A team console never sees "display" at all.)
+OWNER_AUDIENCE = "owner"
+
+
+def event_visible(event: object, role: str | None) -> bool:
+    """May a console signed in with ``role`` be sent this bus event? Everything is visible except a panel marked for the owner alone."""
+    data = event.get("data") if isinstance(event, dict) else None
+    if isinstance(data, dict) and data.get("audience") == OWNER_AUDIENCE:
+        return role == OWNER
+    return True
+
+
 # --- tools -----------------------------------------------------------------------------------------------------------------
 # The ONLY tools a team session's Jarvis (and a team session's background calls) may use. Read-only operational data,
 # plus `log_job`, which queues an approval for a human with the requester recorded (and never auto-runs: the standing

@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 from urllib.parse import quote
 
 import httpx
@@ -53,6 +53,9 @@ PAGE_SIZE = 500                # the FSM's per-request maximum
 DEFAULT_MAX_ROWS = 500         # rows one call returns by default
 HARD_MAX_ROWS = 5000           # the most any caller may ask a single fetch() for
 MAX_PAGES = 20                 # pages one fetch() follows
+SCAN_MAX_ROWS = 50_000         # rows one scan() (the analysis tool's reader) looks at
+SCAN_MAX_PAGES = 120           # pages one scan() follows (100 full pages = SCAN_MAX_ROWS)
+SCAN_MAX_SECONDS = 60.0        # wall time one scan() may take, measured on the client's own (injectable) clock
 MAX_CONCURRENT = 3             # requests in flight at once
 TIMEOUT_S = 20.0
 MAX_RETRY_AFTER_WAIT_S = 10.0  # a Retry-After up to this is slept through; longer is reported
@@ -555,6 +558,71 @@ class FsmData:
                 break
             off = nxt
         return FetchResult(resource, rows, total, truncated, pages, next_offset)
+
+    async def scan(self, resource: str, stats: ScanStats, *, filters: dict[str, Any] | None = None, q: str | None = None,
+                   fields: list[str] | None = None, order: str | None = None, updated_since: str | None = None,
+                   max_rows: int = SCAN_MAX_ROWS, max_pages: int = SCAN_MAX_PAGES,
+                   max_seconds: float = SCAN_MAX_SECONDS) -> AsyncIterator[list[dict[str, Any]]]:
+        """Pages of cleaned rows for an aggregation: far more rows than ``fetch`` returns to a model, but never held at once - each
+        page is handed on and dropped. Stops (and says so in ``stats``) at ``max_rows`` rows, ``max_pages`` pages or ``max_seconds``.
+        Raises FsmDataError like ``fetch``; rows already yielded are the caller's to keep or discard."""
+        if not _NAME.fullmatch(resource or ""):
+            raise FsmDataError("not_found", "That isn't a resource name the FSM could have.")
+        cat = await self.catalog()
+        base = self.build_params(filters, q, fields, order, updated_since)
+        max_rows = max(1, min(int(max_rows), SCAN_MAX_ROWS))
+        started = self._clock()
+        off = 0
+        while True:
+            if self._clock() - started > max_seconds:
+                stats.truncated, stats.reason = True, "time"
+                return
+            params = {**base, "limit": str(min(PAGE_SIZE, max_rows - stats.scanned)), "offset": str(off)}
+            try:
+                body = await self._get(DATA_PATH + quote(resource, safe=""), params, known_catalog=cat is not None)
+            except FsmDataError as e:
+                if e.kind in ("not_found", "scope_off", "bad_request"):
+                    await self.heal_catalog()
+                raise
+            stats.pages += 1
+            items = [i for i in (body.get("items") if isinstance(body.get("items"), list) else []) if isinstance(i, dict)]
+            room = max_rows - stats.scanned
+            page = [clean_row(i) for i in items[:room]]
+            stats.scanned += len(page)
+            if isinstance(body.get("total"), int) and not isinstance(body.get("total"), bool):
+                stats.total = body["total"]
+            nxt = body.get("next_offset")
+            nxt = nxt if isinstance(nxt, int) and not isinstance(nxt, bool) else None
+            if page:
+                yield page
+            if len(items) > room:
+                stats.truncated, stats.reason = True, "row_cap"
+                return
+            if nxt is None:
+                if body.get("truncated"):
+                    stats.truncated, stats.reason = True, "server"
+                return
+            if stats.scanned >= max_rows:
+                stats.truncated, stats.reason = True, "row_cap"
+                return
+            if nxt <= off or not items:
+                stats.truncated, stats.reason = True, "server"
+                return
+            if stats.pages >= max_pages:
+                stats.truncated, stats.reason = True, "page_cap"
+                return
+            off = nxt
+
+
+@dataclass
+class ScanStats:
+    """What a scan() did, filled in as it goes. ``truncated`` is True when it stopped before the end of the matching rows;
+    ``reason`` is then ``row_cap``, ``page_cap`` or ``time`` (the FSM's own ``truncated`` flag is ``server``)."""
+    scanned: int = 0
+    pages: int = 0
+    total: int | None = None
+    truncated: bool = False
+    reason: str = ""
 
 
 def _param_value(value: Any) -> str:
