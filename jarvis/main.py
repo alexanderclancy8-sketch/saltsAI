@@ -33,7 +33,7 @@ from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_service_url, verify_activity
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
-from .services import activity_feed, adverts, approval_inbox, chat_files, connection_tests, documents, images
+from .services import activity_feed, adverts, approval_inbox, chat_files, connection_tests, documents, images, rulebook
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
 from .services import entity_memory as entity_mem
@@ -958,6 +958,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def decide(action_id: int, decision: str, request: Request):
         j = J(request)
         if decision == "approve":
+            pending = j.db.get_action(action_id)
+            # A house rule changes how Jarvis works for everyone: only the principal owner approves one (services/rulebook.py).
+            if pending and pending["kind"] in rulebook.OWNER_APPROVAL_KINDS and caller_of(request).role != access.OWNER:
+                raise HTTPException(403, "Only the owner can approve a house rule.")
             return {"result": await j.actions.approve(action_id, by=speaker(request))}
         if decision == "deny":
             return {"result": await j.actions.deny(action_id, by=speaker(request))}
@@ -1010,7 +1014,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/memory", dependencies=[Depends(owner)])
     async def memory_list(request: Request):
-        return memory_book(request).listing()
+        data = memory_book(request).listing()
+        data["can_edit_rules"] = caller_of(request).role == access.OWNER   # house rules: the principal owner changes them
+        return data
 
     @app.post("/api/memory/facts/{fact_id}", dependencies=[Depends(owner), Depends(human_click)])
     async def memory_edit_fact(fact_id: int, body: MemoryTextIn, request: Request):
@@ -1023,6 +1029,30 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         memory_call(memory_book(request).delete_fact, fact_id)
         J(request).activity_feed.record("memory", speaker(request) or "the owner", f"Removed remembered fact #{fact_id}")
         return {"deleted": fact_id}
+
+    # House rules (services/rulebook.py): listed by GET /api/memory for owner and managers; reworded, switched off / on or deleted by
+    # the PRINCIPAL OWNER only (OWNER_ONLY in access.ROUTE_POLICY). The owner is the human, so an edit takes effect directly - after the
+    # same safety screen a proposal gets. Every change is a "Rule changed / removed" line in "What Jarvis did".
+    def rule_call(fn, *args):
+        try:
+            return fn(*args)
+        except rulebook.RuleError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    @app.post("/api/memory/rules/{rule_id}", dependencies=[Depends(principal), Depends(human_click)])
+    async def memory_edit_rule(rule_id: int, body: MemoryTextIn, request: Request):
+        return rule_call(J(request).rulebook.edit, rule_id, body.text, speaker(request) or "the owner")
+
+    @app.post("/api/memory/rules/{rule_id}/{state}", dependencies=[Depends(principal), Depends(human_click)])
+    async def memory_switch_rule(rule_id: int, state: str, request: Request):
+        if state not in ("on", "off"):
+            raise HTTPException(400, "state must be on or off")
+        return rule_call(J(request).rulebook.set_active, rule_id, state == "on", speaker(request) or "the owner")
+
+    @app.delete("/api/memory/rules/{rule_id}", dependencies=[Depends(principal), Depends(human_click)])
+    async def memory_delete_rule(rule_id: int, request: Request):
+        rule_call(J(request).rulebook.delete, rule_id, speaker(request) or "the owner")
+        return {"deleted": rule_id}
 
     @app.post("/api/memory/replies/{reply_id}", dependencies=[Depends(owner), Depends(human_click)])
     async def memory_edit_reply(reply_id: int, body: MemoryTextIn, request: Request):
@@ -1246,6 +1276,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     async def _teams_decide(j: Jarvis, decision: str, action_id: int, who: str) -> str:
         """Approve or deny straight through the ActionExecutor, as `who` (an allowlisted, JWT-verified sender)."""
         if decision == "approve":
+            pending = j.db.get_action(action_id)
+            if pending and pending["kind"] in rulebook.OWNER_APPROVAL_KINDS:   # house rules: the owner, on the console only
+                return f"Action #{action_id} is a house rule - only the owner can approve it, on the console. Nothing was approved."
             result = await j.actions.approve(action_id, by=who)
             done = result.startswith("Approved action #")
         else:

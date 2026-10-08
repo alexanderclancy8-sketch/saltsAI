@@ -24,7 +24,7 @@ from ..events import quiet_turn
 from ..redact import redact_text
 from ..services.conversation_quality import TurnRecord
 from ..services.tracking import requester_label
-from .prompts import build_system, build_team_system
+from .prompts import build_system, build_team_system, house_rules
 from .repeats import RepeatDetector, repeat_note
 from .tools import SERVER_TOOLS, TOOLS, dispatch, serialise
 from .web_research import WebTurn
@@ -70,11 +70,13 @@ class JarvisBrain:
     # ------------------------------------------------------------------ setup
     def refresh_system(self) -> None:
         if self.team:
-            self.system = build_team_system(self.s, self.j.kb, self.caller)
+            self.system = build_team_system(self.s, self.j.kb, self.caller,
+                                            rules=house_rules(self.j, self.caller))
             return
         self.system = build_system(self.s, self.j.kb, self.j.db, self.j.connections(),
                                    self.j.register.prompt_summary(), history_before_id=self._history_before,
-                                   fsm_data=self.j.fsm_read.prompt_block())
+                                   fsm_data=self.j.fsm_read.prompt_block(),
+                                   rules=house_rules(self.j, None))
 
     def reset(self) -> None:
         self.messages = []

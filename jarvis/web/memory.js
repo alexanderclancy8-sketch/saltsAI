@@ -5,6 +5,10 @@
  * rewords an entry in place; Delete asks "Delete this?" first. Both go to the owner-authenticated endpoints under
  * /api/memory and only change what Jarvis reads from his next message on.
  *
+ * "House rules" (services/rulebook.py) come first: how Jarvis works, each with who approved it and when. Only the principal owner
+ * (can_edit_rules) sees Edit, Switch off / on and Delete; a manager sees the list. A new rule is never added here - Jarvis
+ * suggests one and it waits in the owner's queue (this file never touches that queue).
+ *
  * A second tab, "Customers & sites", holds Jarvis's notes on each customer and site (entity_notes.js); this file only switches
  * between the two tabs and hands the shared helpers on.
  *
@@ -22,6 +26,7 @@
     { key: "learned", list: "#memory-learned", count: "#memory-learned-count", empty: "Nothing learned yet.", kind: "fact" },
     { key: "replies", list: "#memory-replies", count: "#memory-replies-count", empty: "No learned replies yet. Jarvis learns the short replies you keep typing.", kind: "reply" },
   ];
+  let canEditRules = false;
   const day = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); };
 
   function meta(kind, item) {
@@ -42,6 +47,36 @@
         <p>Delete this? ${kind === "fact" ? "Jarvis will stop using it from his next message." : "It will no longer be suggested."}</p>
         <div class="row"><button type="button" class="btn stop" data-mem="delete">Yes, delete</button><button type="button" class="btn" data-mem="keep">Keep it</button></div>
       </div></li>`;
+  }
+
+  // One house rule: the wording, whose Jarvis it applies to, who signed it off and when, and why. The owner gets the controls.
+  function ruleHtml(r) {
+    // (who signed it off and when, worded by the server: rulebook.listing's "signed_off" / "changed")
+    const meta = [`Applies to: ${esc(r.scope_label)}`, esc(r.signed_off), esc(r.changed)].filter(Boolean).join(" · ") + (r.active ? "" : " · Switched off");
+    const controls = canEditRules ? `<div class="row"><button type="button" class="btn" data-mem="edit">Edit</button>
+        <button type="button" class="btn" data-mem="toggle" data-on="${r.active ? "0" : "1"}">${r.active ? "Switch off" : "Switch on"}</button>
+        <button type="button" class="btn stop" data-mem="ask-delete">Delete</button></div>` : "";
+    return `<li class="mem-item" data-kind="rule" data-id="${r.id}" data-off="${r.active ? "0" : "1"}">
+      <div class="mem-view"><p class="mem-text">${esc(r.text)}</p><small class="mem-meta">${meta}</small>
+        ${r.reason ? `<small class="mem-meta">Why: ${esc(r.reason)}</small>` : ""}${controls}</div>
+      <form class="mem-edit" hidden>
+        <textarea class="mem-input" rows="2" maxlength="200" aria-label="Reword this house rule">${esc(r.text)}</textarea>
+        <p class="appr-error" role="alert" hidden></p>
+        <div class="row"><button type="submit" class="btn go" data-mem="save">Save</button><button type="button" class="btn" data-mem="cancel">Cancel</button></div>
+      </form>
+      <div class="mem-confirm" role="group" aria-label="Confirm delete" hidden>
+        <p>Delete this rule? Jarvis stops following it from his next message.</p>
+        <div class="row"><button type="button" class="btn stop" data-mem="delete">Yes, delete</button><button type="button" class="btn" data-mem="keep">Keep it</button></div>
+      </div></li>`;
+  }
+  function renderRules(block) {
+    const rules = (block && block.rules) || [], waiting = (block && block.pending_text) || "";
+    $("#memory-rules-count").textContent = rules.length ? String(rules.length) : "";
+    $("#memory-rules").innerHTML = rules.length ? rules.map(ruleHtml).join("")
+      : `<li class="empty">No house rules yet. When you correct Jarvis ("from now on..."), he suggests one for the owner to sign off.</li>`;
+    const p = $("#memory-rules-pending");
+    p.hidden = !waiting;
+    p.textContent = waiting;
   }
 
   // Two tabs: "What Jarvis knows" (the three lists here) and "Customers & sites" (entity_notes.js, notes per Salts FSM record).
@@ -69,6 +104,8 @@
     try { data = await (await host.api("/api/memory")).json(); }
     catch { showError("Couldn't load what Jarvis has learned. Try again in a moment."); return; }
     showError("");
+    canEditRules = data.can_edit_rules === true;
+    renderRules(data.rules);
     for (const sec of SECTIONS) {
       const items = data[sec.key] || [];
       $(sec.count).textContent = items.length ? String(items.length) : "";
@@ -76,7 +113,7 @@
     }
   }
   function showError(msg) { const e = $("#memory-error"); e.textContent = msg; e.hidden = !msg; }
-  const path = (li) => `/api/memory/${li.dataset.kind === "reply" ? "replies" : "facts"}/${li.dataset.id}`;
+  const path = (li) => `/api/memory/${{ reply: "replies", rule: "rules" }[li.dataset.kind] || "facts"}/${li.dataset.id}`;
   const show = (li, which) => {
     li.querySelector(".mem-view").hidden = which !== "view";
     li.querySelector(".mem-edit").hidden = which !== "edit";
@@ -95,12 +132,22 @@
     } catch { err.textContent = "That couldn't be saved - try again."; err.hidden = false; }
     finally { btn.disabled = false; }
   }
+  async function toggle(li, b) {
+    b.disabled = true;
+    try {
+      const r = await host.api(`${path(li)}/${b.dataset.on === "1" ? "on" : "off"}`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { showError(typeof d.detail === "string" ? d.detail : "That couldn't be changed."); b.disabled = false; return; }
+      host.toast(b.dataset.on === "1" ? "Switched on" : "Switched off", "Jarvis reads the change from his next message.");
+      await load();
+    } catch { showError("That couldn't be changed - try again."); b.disabled = false; }
+  }
   async function remove(li) {
     const btn = li.querySelector('[data-mem="delete"]'); btn.disabled = true;
     try {
       const r = await host.api(path(li), { method: "DELETE" });
       if (!r.ok && r.status !== 404) { const d = await r.json().catch(() => ({})); showError(typeof d.detail === "string" ? d.detail : "That couldn't be deleted."); btn.disabled = false; return; }
-      host.toast("Deleted", li.dataset.kind === "reply" ? "That reply won't be suggested any more." : "Jarvis has forgotten it.");
+      host.toast("Deleted", { reply: "That reply won't be suggested any more.", rule: "Jarvis won't follow that rule any more." }[li.dataset.kind] || "Jarvis has forgotten it.");
       await load();
     } catch { showError("That couldn't be deleted - try again."); btn.disabled = false; }
   }
@@ -115,6 +162,7 @@
       case "ask-delete": show(li, "confirm"); li.querySelector('[data-mem="keep"]').focus(); break;
       case "keep": show(li, "view"); li.querySelector('[data-mem="ask-delete"]').focus(); break;
       case "delete": remove(li); break;
+      case "toggle": toggle(li, b); break;
     }
   });
   document.addEventListener("input", (e) => {

@@ -157,6 +157,32 @@ tool) list/reword/delete the `memory` table, the `jarvis_notes` setting lines (r
 `Jarvis._seed_notes` would put them back on the next start) and learned replies (`reply_habits`, by id), then
 `brain.refresh_system()` so the next turn reads the change. Tests: `tests/test_memory_popup.py`.
 
+*House rules (`services/rulebook.py`, `j.rulebook`; table `house_rules`; tool `propose_rule`; Memory pop-up section "House rules"; tests
+`tests/test_rulebook.py`).* Standing instructions about HOW Jarvis behaves ("Always cc service@ on council replies"), so a correction needs
+no code change. Facts stay in `memory` (`remember`), one customer's preferences in entity memory - a rule is neither.
+- **In only through the gate.** `propose_rule(rule, reason, scope=owner|team|office|engineer|all)` (`approval=False`, handler does the checks
+  then `j.actions.queue("rule_add", ...)`) when the owner or a manager corrects Jarvis, or the self-reflection sees a repeated correction (its
+  card is flagged). The card (`approval_inbox._rows`: Rule / Why / Applies to / Suggested by / Who approves) shows the exact wording; not
+  editable. `ActionExecutor._execute` -> `Rulebook.activate` saves it ACTIVE only after approval, re-screening first (a failing screen = a
+  failed action). **Only the principal owner approves a rule**: `main.decide` 403s anyone else (`rulebook.OWNER_APPROVAL_KINDS`), rule cards
+  are never offered on Teams and a Teams approve is refused; standing approvals never match `rule_add`. Nothing is auto-applied.
+- **Refused at proposal** (nothing queued): a team caller (not in `TEAM_TOOLS`, and the handler refuses too); a turn that read untrusted
+  content (the `entity_memory` turn taint: email / attachment / web / document / FSM text / knowledge / a scheduled check; only the
+  `REFLECTION_CALLER` may propose from its own look back); no live turn (background); anything `rulebook.screen` refuses - changing the
+  approval gate or standing approvals, widening a role (engineers/office prices, finance, codes, manager access), following instructions in
+  emails/documents/web/FSM text, sharing codes or passwords, changing settings/code/permissions/safety rules, van-location privacy, plus
+  `entity_memory.screen`'s secrets/personal data (an email address is allowed). Negated restrictions ("Never give engineers prices") pass.
+  Duplicates, `MAX_PENDING` (5) waiting, `MAX_ACTIVE` (20) active, `RULE_MAX` 200 chars. Check mode: not in `CHECK_TOOLS` (blocked);
+  `NOT_BACKGROUND`. Not on the coverage line (it reads no business source).
+- **Prompt:** `prompts.house_rules(j, caller)` -> `Rulebook.prompt_block(audience)` into `build_system` (owner/manager: scopes owner, all)
+  and `build_team_system` (office: office/team/all; engineer: engineer/team/all; "the owner", never the owner's name), so both
+  `JarvisBrain` and `MaxBrain` get it. Labelled "House rules (approved by X)" and stated to sit UNDER the safety rules. Any change calls
+  `brain.refresh_system()` and `TeamSessions.refresh()`.
+- **Memory pop-up:** `GET /api/memory` adds `rules` (with `signed_off` "Approved by NAME on DATE", `changed`, `pending_text`) and
+  `can_edit_rules`; `POST /api/memory/rules/{id}` (reword, screened, direct), `POST .../{id}/on|off`, `DELETE .../{id}` are OWNER_ONLY +
+  same-origin. memory.js still never mentions approvals (a static test). "What Jarvis did": audit kind `rule` -> Memory, "Rule added (R3)
+  / Rule changed (R3...) / Rule removed (R3): <wording>".
+
 *Customer & site memory (`services/entity_memory.py`, `j.entity_memory`; Memory pop-up tab "Customers & sites", `web/entity_notes.js`;
 tests `tests/test_entity_memory.py`, `tests/test_entity_memory_browser.py`).* Running notes per customer / site, like a project per customer.
 - **Storage**: `entity_notes` (one row per `(entity_type customer|site, fsm_id)` - ALWAYS the Salts FSM id, never a name; `name` is a cached

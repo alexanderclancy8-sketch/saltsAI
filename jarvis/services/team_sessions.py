@@ -103,6 +103,14 @@ class TeamSessions:
             except RuntimeError:
                 pass
 
+    def refresh(self) -> None:
+        """Rebuild every open session's system prompt (a house rule changed: services/rulebook.py). Never raises."""
+        for s in list(self._sessions.values()):
+            try:
+                s.brain.refresh_system()
+            except Exception:  # noqa: BLE001
+                log.exception("Rebuilding a team session's prompt failed")
+
     async def close(self, team_role: str | None = None) -> None:
         """Drop every session - or, given ``office`` / ``engineer``, only that role's (its code was changed or switched off:
         the other role's people stay signed in and keep their conversations)."""

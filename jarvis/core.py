@@ -88,6 +88,7 @@ from .services.fsm_suggestions import FsmSuggestions
 from .services.upsell_drafts import UpsellDrafts
 from .services.suggestions import Suggestions
 from .services.team_access import TeamAccess, TeamCodes
+from .services.rulebook import Rulebook
 from .services.team_sessions import TeamSessions
 from .services.verification import ActionVerifier
 from .services.wrapup import WrapUp
@@ -225,6 +226,8 @@ class Jarvis:
         # Per-customer / per-site notes (services/entity_memory.py): its tap notes which tools brought outside content into a turn.
         self.entity_memory = EntityMemory(self)
         self.bus.add_tap(self.entity_memory.on_event)
+        # House rules (services/rulebook.py): owner-approved standing instructions read into every system prompt. Before the brains.
+        self.rulebook = Rulebook(self)
         # Team mode: the access codes (hashed, in the database) - ``team_access`` is the ENGINEER code (the pre-split team code),
         # ``office_access`` the office one, ``team_codes`` the pair - and one cut-down brain per team session.
         self.team_access = TeamAccess(self.db, access.ENGINEER)
