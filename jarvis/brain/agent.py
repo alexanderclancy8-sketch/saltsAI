@@ -134,10 +134,15 @@ class JarvisBrain:
                         access.current_caller.reset(token)
                 # who is asking, for the out-of-hours van look-up log (read by the tracking tools)
                 self.j.asked_by = requester_label(self.s, speaker, quiet_turn.get())
+                # customer / site notes: whether this is a live console turn, and what outside content it reads
+                memory = getattr(self.j, "entity_memory", None)
+                state = memory.begin_turn(attachments=bool(attachments), caller=access.current_caller.get()) if memory else None
                 try:
                     return await self._turn(text, mode, attachments, speaker)
                 finally:
                     self.j.asked_by = ""
+                    if memory is not None:
+                        memory.end_turn(state)
         finally:
             if task is not None:
                 self._active.discard(task)

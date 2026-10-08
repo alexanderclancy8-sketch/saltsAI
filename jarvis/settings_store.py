@@ -577,6 +577,11 @@ SECTIONS: tuple[Section, ...] = (
             Field("security_watch_cron", "Security review of Salts FSM's code", "cron"),
             Field("compliance_check_cron", "Compliance check", "cron", advanced=True),
             Field("self_learning_cron", "Self-reflection (what to remember)", "cron", advanced=True),
+            Field("entity_summaries_enabled", "Weekly customer & site summaries", "bool",
+                  "ON lets Jarvis suggest an updated summary of his notes on each customer or site whose notes changed that "
+                  "week. Each one only waits in Memory > Customers & sites until you accept or discard it - nothing is posted "
+                  "in the chat or sent anywhere.", advanced=True),
+            Field("entity_summaries_cron", "Weekly customer & site summaries", "cron", advanced=True),
             Field("conversation_quality_cron", "Weekly conversation quality summary", "cron", advanced=True),
             Field("conversation_quality_retention_days", "Keep conversation quality records (days)", "number",
                   advanced=True),

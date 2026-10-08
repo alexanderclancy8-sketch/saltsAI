@@ -128,6 +128,11 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("self-learning reflection", j.self_learning.reflect),
                   cron_trigger(s.self_learning_cron, timezone=s.timezone), id="self_learning",
                   max_instances=1, coalesce=True)
+    # Customer / site notes: propose updated pinned summaries (PENDING, in the Memory pop-up). Quiet: one collapsed activity line,
+    # never a chat message, Teams post or notification. The switch is read on every run, so turning it off takes effect at once.
+    sched.add_job(_check(j, "entity_summaries", "Customer & site note summaries", j.entity_memory.weekly_summaries),
+                  cron_trigger(s.entity_summaries_cron, timezone=s.timezone), id="entity_summaries",
+                  max_instances=1, coalesce=True)
     sched.add_job(_guard("conversation quality summary", j.quality.weekly_summary),
                   cron_trigger(s.conversation_quality_cron, timezone=s.timezone), id="conversation_quality",
                   max_instances=1, coalesce=True)

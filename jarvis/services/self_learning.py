@@ -75,7 +75,9 @@ class SelfLearning:
             "fact about how the business or a person works - that isn't already covered by what you already "
             "remember. Call `remember` once for each thing worth keeping, in your own words. Don't remember "
             "one-off requests, small talk, or anything already in your memory. If nothing durable stands out, "
-            "don't call remember at all - just say so briefly.\n\n"
+            "don't call remember at all - just say so briefly. Something durable about ONE customer or site (how they like "
+            "to be contacted, a recurring access problem) goes in entity_note_propose instead - it only becomes a note when a "
+            "person accepts it.\n\n"
             f"<transcript>\n{transcript}\n</transcript>"
             f"{quality_part}"
         )
