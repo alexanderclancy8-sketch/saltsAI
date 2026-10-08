@@ -518,8 +518,10 @@ def _src_memory(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
 
 # "company_check": a Companies House look-up (the company's name and number only - never anything about a person)
 # "fsm_read": a read of FSM records through fsm_data (the resource name and a row count - never a value)
+# "fsm_document": a read of a stored FSM document through fsm_document_read (its id, and its name unless it is owner-only - never its text)
 _AUDIT_KINDS = {"settings": "settings_change", "team_access": "settings_change", "memory": "memory", "export": "other",
-                "company_check": "other", "fsm_read": "other"}
+                "company_check": "other", "fsm_read": "other",
+                "fsm_document": "other"}
 
 
 def _src_audit(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
