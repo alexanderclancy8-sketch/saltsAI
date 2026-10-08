@@ -204,6 +204,15 @@ class Settings(BaseSettings):
     fsm_api_key_header: str = "Authorization"  # "Authorization" sends "Bearer <key>"
     fsm_endpoints_file: Path = ROOT_DIR / "fsm_endpoints.yaml"
     routine_checks_file: Path = ROOT_DIR / "routine_checks.yaml"
+    # Question checks (services/question_checks.py): the weekly accuracy scorecard. It asks the LIVE brain owner-style questions
+    # in check mode (reads only) and grades the answers against the live data. OFF by default and an OWNER-ONLY switch
+    # (settings_store.OWNER_ONLY_KEYS): each run uses the owner's Claude allowance. Weekly, 02:30 UK on Sunday by default; never
+    # inside the Mon-Fri working-hours peak; at most question_checks_max questions and question_checks_timeout_s each.
+    question_checks_file: Path = ROOT_DIR / "checks" / "questions.yaml"
+    question_checks_enabled: bool = False
+    question_checks_cron: str = "30 2 * * 0"
+    question_checks_max: int = 40
+    question_checks_timeout_s: int = 120
 
     # --- GitHub (FSM source + auto-fix) ----------------------------------
     github_token: str = ""

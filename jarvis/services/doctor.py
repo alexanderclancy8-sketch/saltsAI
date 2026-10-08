@@ -134,7 +134,7 @@ class Doctor:
         ("FSM documents", "_fsm_documents"), ("Keys", "_keys"),
         ("Automations", "_automations"),
         ("Agent runs", "_agent_runs"), ("Open requests", "_requests"), ("Pull requests", "_pull_requests"),
-        ("Tests and issues", "_tests_and_issues"),
+        ("Tests and issues", "_tests_and_issues"), ("Question checks", "_question_checks"),
     )
 
     def _hide_secrets(self, text: str) -> str:
@@ -239,6 +239,11 @@ class Doctor:
                             "A human pins a verified version / confirms the sandbox in mcp_plugins.yaml by pull request, "
                             f"installs npx or uvx on the host, or switches {label} off in Settings."))
         return out
+
+    # ------------------------------------------------------------------ 1b. the accuracy scorecard
+    async def _question_checks(self, now: datetime) -> list[Item]:
+        status, line, step = self.j.question_checks.doctor_line()
+        return [Item("Question checks", AMBER if status == "amber" else OK, line, step)]
 
     # ------------------------------------------------------------------ 2. demo data
     async def _demo(self, now: datetime) -> list[Item]:

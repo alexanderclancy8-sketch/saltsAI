@@ -583,6 +583,11 @@ SECTIONS: tuple[Section, ...] = (
                   "in the chat or sent anywhere.", advanced=True),
             Field("entity_summaries_cron", "Weekly customer & site summaries", "cron", advanced=True),
             Field("conversation_quality_cron", "Weekly conversation quality summary", "cron", advanced=True),
+            Field("question_checks_enabled", "Weekly question checks", "bool",
+                  "ON asks Jarvis about 40 owner-style questions once a week (02:30 on Sunday by default), checks each answer "
+                  "against your live systems and puts a scorecard in the Health drawer. It only READS - a check can't send, "
+                  "queue or change anything - but each run uses your Claude allowance. Only you can change this."),
+            Field("question_checks_cron", "Question checks", "cron", advanced=True),
             Field("conversation_quality_retention_days", "Keep conversation quality records (days)", "number",
                   advanced=True),
             Field("routine_test_interval_min", "Routine tests every (minutes)", "number", advanced=True),
@@ -635,6 +640,7 @@ OWNER_ONLY_KEYS = frozenset(f.key for s in SECTIONS if s.id == "standing" for f 
     "owner_email", "partner_email", "manager_emails", "management_emails", "jarvis_owner_password",
     "staff_report_key", "suggestions_publish_to_fsm",  # the switch that lets the FSM's Prepare button reach Jarvis
     "upsell_drafts_enabled",  # whether Jarvis may reword the FSM's upsell draft emails (it never sends them)
+    "question_checks_enabled", "question_checks_cron",  # the weekly accuracy run spends the owner's Claude allowance: owner's call
     "van_locations_out_of_hours",  # the last widens who can see where staff are out of hours
     "plugin_browser_use_enabled", "plugin_browser_allowed_domains",  # whether, and where, Jarvis may browse the web
     "engineer_model", "engineer_effort"}) | frozenset(  # which model / how hard the code-writing agents work: owner's call (cost)

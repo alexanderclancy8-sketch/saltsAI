@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY jarvis ./jarvis
 COPY knowledge ./knowledge
+COPY checks ./checks
 COPY *.yaml ./
 
 RUN useradd --create-home jarvis && mkdir -p /home/data && chown -R jarvis /home/data /app

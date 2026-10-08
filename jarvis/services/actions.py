@@ -21,6 +21,7 @@ import time
 from typing import Any
 
 from .. import access
+from ..brain import checkmode
 from ..db import Database
 from ..events import EventBus
 from ..integrations.microsoft365 import text_to_html
@@ -92,6 +93,7 @@ class ActionExecutor:
     def queue(self, kind: str, summary: str, payload: dict[str, Any]) -> int:
         """Record an action for approval - or, if (and only if) the owner's standing approval exactly covers it,
         record it as approved by that standing approval and run it. Everything else waits for a human."""
+        checkmode.guard("Queueing an approval")  # a question check (brain/checkmode.py) may only read
         # The payload that is judged is the payload that is stored and run: the canonical JSON form of it.
         payload = json.loads(json.dumps(payload))
         caller = access.current_caller.get()

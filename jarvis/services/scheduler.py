@@ -136,6 +136,10 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(_guard("conversation quality summary", j.quality.weekly_summary),
                   cron_trigger(s.conversation_quality_cron, timezone=s.timezone), id="conversation_quality",
                   max_instances=1, coalesce=True)
+    if getattr(s, "question_checks_enabled", False):  # the weekly accuracy scorecard: off by default (owner-only switch)
+        sched.add_job(_guard("question checks", j.question_checks.scheduled),
+                      cron_trigger(s.question_checks_cron, timezone=s.timezone), id="question_checks",
+                      max_instances=1, coalesce=True)
     sched.add_job(_guard("conversation quality retention", j.quality.prune_job),
                   cron_trigger("20 3 * * *", timezone=s.timezone), id="conversation_quality_retention",
                   max_instances=1, coalesce=True)

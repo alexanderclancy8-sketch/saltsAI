@@ -52,7 +52,7 @@ deploy_code() {
   tmp="$(mktemp -d)"
   host="$(az webapp show -g "$RG" -n "$APP_NAME" --query defaultHostName -o tsv)"
   ! jarvis_up "$host" || was_up=1
-  zip -qr "$tmp/jarvis.zip" jarvis knowledge requirements.txt ./*.yaml -x "*/__pycache__/*"
+  zip -qr "$tmp/jarvis.zip" jarvis knowledge checks requirements.txt ./*.yaml -x "*/__pycache__/*"
   echo "Uploading Jarvis to $APP_NAME..."
   for attempt in 1 2 3; do
     # --async: hand the zip over and don't hold the connection open while Azure installs the packages. That

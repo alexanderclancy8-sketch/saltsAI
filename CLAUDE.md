@@ -898,6 +898,58 @@ drawer) list each van's raw event, its age, RPM, our classification and the reas
 Phase 2 of the console redesign ("how Jarvis talks"): the question pop-up is a centred dialog over a real backdrop element (`.ask-scrim`) whose answers, and "Type my own answer", are real `<button>`s; Escape (anywhere on the page), Dismiss or a click on the backdrop closes it without sending, and the reply keeps an "Answer" button to bring it back. Tests: `tests/test_question_popup.py` (plus the node harness `tests/ask_dom_harness.js`).
 What surrounds a reply is built from what really happened, not from text the model wrote: `jarvis/brain/trace.py`'s `TurnTrace` (`j.trace`) listens to the event bus (`EventBus.add_tap`) from the `thinking` event, notes each `tool` start, and each brain merges `j.trace.finish()` into its final `reply` event: `sources` (named from the tools used, with "(demo data)" where that source is still demo), `elapsed_ms`, `panel` (the pop-up with the detail: approvals if the turn queued something, else what the model asked for via `offer_next_steps`, else the pop-up of the tools used - the mapping is `_TOOL_INFO` there, so a new read tool should be added to it) and up to two `follow_ups` (only from the `offer_next_steps` tool, which changes nothing, is not an approval and is in `NO_RECURSE`). hud.js shows a working line above the reply from the live `tool` events (`.step`), then the source-and-time line, the pop-up button and follow-up chips under it. Stop (`stopEverything()`, or sending a new message) abandons the reply being written and sets `S.stopped` so late events of that turn are ignored until the next `user_message`; server-side it cancels the API-brain task (the whole turn is rolled back so the history stays valid) or interrupts Claude Code (`MaxBrain._stop_requested` - no half-answer is published or stored). "How Jarvis talks" is the `talk_style` setting (`natural` default = `owner_name`, `formal` = `owner_salutation`), shown in Settings (`#set-talk`, saved through the same Save changes bar) and under Connections > You and the business; `prompts.address_for()` picks the name and `TALK_NATURAL`/`TALK_FORMAL` are appended to the persona. It is a display preference like `owner_salutation`, not an owner-only setting. Tests: `tests/test_talk_style.py`, `tests/test_reply_extras.py`, `tests/test_streaming_stop.py`, `tests/test_console_browser_phase2.py`.
 
+**What a reply rests on: the coverage line (`jarvis/brain/coverage.py`, `trace.py`; tests `tests/test_answer_coverage.py`,
+`tests/test_console_browser_coverage.py`).** Deterministic, never model self-assessment. Both brains publish every finished `tool` event with
+`coverage` = `coverage.call_facts(name, args, result)` (or `error_facts` for a raised call, `[]` for invalid input): per source label, a status
+- ok / partial (`truncated`: "scanned 50,000 of 64,200 rows", "showing 120 of 900 rows" - counts only) / demo (the FSM or Outlook demo, NOT
+gated by demo_guard) / withheld (`demo_data_withheld`, and composite `demo_guard.stub` sections) / not_connected (FSM demo `kind: demo`) /
+scope_off (+ group) / not_exposed (`kind: unavailable`, or a 404 on a resource the catalog lists) / owner_only / error / timeout / rate_limited /
+refused (team) / blocked (check mode) / bad_input (the model's own typo - ignored) / transcribed (`fsm_document_read` of a scan: the part is "Salts FSM document '<name>'"; Medium unless the reply says it was a transcribed scan; a cut-short document is partial; the FSM's `masked_by_fsm` count is listed under `caveats`; an ambiguous pick / no match is bad_input). `customer_balance` is the part "Salts FSM invoices (one customer)" (not found / ambiguous = bad_input, an engineer = refused). Customer / site notes injected by services/entity_memory.py (`TurnTrace.add_source` "Jarvis's notes on X") go in `coverage.notes` - never `checked`, never a needed source met, so they can't raise the confidence on their own. `TurnTrace` collects them from the bus and `finish(reply)` adds
+`coverage = coverage.summarise(facts, user_text, demo=demo_map(j), team=...)`: `checked`, `gaps[{source, kind, text}]`, `confidence`, `why`,
+`areas` (+ `spoken` for a Low voice turn when the reply didn't already name the gap). `AREAS` maps question words to the source groups a question
+needs (money -> Salts FSM AND Sage; vans_where -> RAM; vans_compliance -> FSM | register | RAM; stock -> stock records | FSM; operations -> FSM;
+email -> mailbox; policy -> knowledge base); a team turn never needs Sage or mail. Gaps are judged per part ("Salts FSM invoices"), so reading the
+jobs doesn't hide the invoices being switched off; an error on a part recovered by a later good read of that part is dropped. **Rules**
+(`confidence()`): Low = relied on demo data, an unrecovered error/timeout, a business question with nothing read, or >= 2 missing; Medium =
+truncated or exactly 1 missing; High otherwise. A tool that reads a business source must be in `trace._TOOL_INFO` (and gets a `TOOL_DETAIL`) or
+it names nothing. **Prompt:** `coverage.turn_note()` adds "[Coverage: this question needs Sage, which is not connected. Never state a figure as
+certain ...]" between the tag line and the text (never for small talk; the text still ends the message), and PERSONA "# Saying what you
+checked". **Stored:** `coverage.as_stored()` (no spoken line, labels and counts only) in `transcript.coverage` (assistant rows) and
+`turn_metrics.coverage`; `/api/transcript` returns it parsed; the reflection brief adds it to each Wrong-marked reply. **Console:** hud.js
+`coverageHtml()` - a `<details class="cov" data-level>` AFTER the unchanged `.src` line (one ellipsised row, chip, opens to Checked / Not checked /
+why; 44px on phones), also on reloaded transcript rows; a voice reply feeds `coverage.spoken` to the speaker after the text.
+
+**Question checks: the accuracy scorecard (`services/question_checks.py`, `brain/checkmode.py`, `checks/questions.yaml`, `web/checks.js`; tests
+`tests/test_question_checks.py`, `tests/test_console_browser_coverage.py`).**
+- **Suite:** `checks/questions.yaml` (43 checks; `Settings.question_checks_file`; packaged by the Dockerfile and both zip deploys) + owner-made
+  checks in `question_checks_custom`. Expectations are computed at run time: `number_from {tool|jarvis, args ({today}/{tomorrow}/{today+N}),
+  path, op value|len|sum, field, where (=, >0, <0...), top_by}` + `tolerance` (counts exact, else 0.5%), `mentions_from`, `must_mention_gap`,
+  `contains_any/all`, `not_contains`, `refuses` (+ `no_digits`), `checked_any` (from the reply's coverage), `policy` (knowledge base has it ->
+  must read it; else must say it isn't available). `needs: [fsm, sage, ram, mail, stock]` -> "skipped - demo data" while that is sample data
+  (also when the ground truth itself comes back demo/withheld); `only_when_not_connected` for gap checks; `as: owner|manager|team|office` (team = an ENGINEER, the least-privileged kind; office = engineer tools + `customer_balance`, built as `Caller(TEAM, team_role=...)`);
+  `sensitive` (default for money/people). `validate_expect()` is the one validator (YAML and the owner's edits); ground-truth tools must be in
+  `CHECK_TOOLS`.
+- **Runner:** per role, ONE brain built like the owner's (`effective_llm_backend`) with `check=True`, `caller` for manager/team, a private
+  `EventBus(check_ok=True)` and its own `TurnTrace`; `reset()` before every question (fresh conversation; `history_before_id=0` so no earlier
+  sessions in the prompt), typed mode, `asyncio.wait_for(timeout)` + `interrupt()`; the first "usage limit" reply skips the rest; at most
+  `question_checks_max` (40) questions reach the brain; ground truth is read first (as the owner, check mode) so an ungradable check costs
+  nothing. Results (`question_check_runs` / `question_check_results`, newest 26 runs) keep a <= 300-char redacted reply excerpt.
+- **Check mode can't send, queue or write - enforced in layers:** `dispatch(..., check=True)` (or `checkmode.active`, the SAME ContextVar as
+  `events.check_mode`) runs only `checkmode.CHECK_TOOLS` (pure reads; never `approval=True`; no log_job/email/remember/display/notify/van
+  look-ups/access codes; `entity_note_add` / `entity_note_propose` write and are refused, `entity_notes_get`, `fsm_document_read` and `customer_balance` read and run) and returns `{"blocked_in_check_mode": true}` otherwise; while it is set `ActionExecutor.queue`, `Notifier.notify` /
+  `send_owner_update` raise `CheckModeBlocked`, `db.add_transcript` / `remember` / `create_action` raise, and every bus except a `check_ok`
+  one drops events. MaxBrain passes `check` into its MCP tool handlers (ContextVars don't reach them) and drops the browsing plugin. Reads still
+  leave their normal "What Jarvis did" `fsm_read` audit lines.
+- **Schedule and cost:** `question_checks_enabled` (default OFF) and `question_checks_cron` (`30 2 * * 0`) are in Settings > Schedules and
+  `OWNER_ONLY_KEYS`; the job exists only when on; `scheduled()` also skips Mon-Fri 07:00-19:00 local and anything within 6 days of the last run.
+  "Run question checks now" (owner, `POST /api/checks/run`, background task) at most 2 a day and never two at once.
+- **Who sees what:** `GET /api/checks` MANAGER_OK (`scorecard(role)`: a manager gets "Owner only" for sensitive rows' expected/given/reason and no
+  candidates/controls); `POST /api/checks/run`, `/{check_id}/mark` (wrong | obsolete | clear; marked checks are skipped), `/candidates/{turn_id}`
+  (promote with an edited expectation) and `/candidates/{turn_id}/dismiss` are OWNER_ONLY + same-origin; team never (route 403, no Health drawer).
+- **Candidates:** Wrong verdicts (`turn_feedback` x `turn_metrics`, incl. its coverage) not yet promoted/dismissed, each with `template_for()`
+  (must_mention_gap / checked_any from the coverage + a placeholder the console refuses to save). Doctor line "Question checks: ...". Not
+  verified against the live model in CI (the runner runs on a scripted brain / the FakeClient).
+
 **Jarvis speaking up unprompted (`jarvis/services/proactive.py`, `j.proactive`; tests `tests/test_proactive.py`).** There is no
 new transport: a Jarvis-initiated message is a `proactive` event on the same `EventBus`/`/ws` the chat already uses, handled by
 `proactive(d)` in hud.js (shown as a message tagged "on my own"; read aloud by `say()` only when the session is in voice mode and

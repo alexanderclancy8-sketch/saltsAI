@@ -14,6 +14,7 @@ import logging
 from collections import deque
 from time import monotonic as _now  # a module-level name so tests can move the clock
 
+from ..brain import checkmode
 from ..config import Settings
 from ..db import Database
 from ..events import EventBus
@@ -66,6 +67,7 @@ class Notifier:
         `engineering=True` marks fix / pull request / deploy / triage / security-review notifications: those go
         to Teams only (see send_engineering_update) instead of Teams + email. `issue_id` lets a Teams delivery
         failure be shown against that issue on the issues list."""
+        checkmode.guard("Sending a notification")  # a question check (brain/checkmode.py) may only read
         # Bodies often carry str(exception), and httpx errors include the request URL (keys, webhook signatures).
         title, body = redact_text(title), redact_text(body)
         importance = importance_for(level, importance)
@@ -233,6 +235,7 @@ class Notifier:
                                   management_only: bool = False) -> str:
         """Owner updates are treated as management content by default (briefings, wrap-up, finance, HR...), so the
         email only goes out if OWNER_EMAIL is a real management address - never a shared inbox."""
+        checkmode.guard("Sending an update")
         sent = []
         recipient = email_to or self.s.owner_email
         held_back = False

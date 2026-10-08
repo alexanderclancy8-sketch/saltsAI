@@ -273,6 +273,27 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   what changed, never a value, a code or a message). Everything shown is cleaned like the approval cards, and also has live
   secrets, map points and postcodes taken out. Owners and managers see it; the team console doesn't; only the owner can export
   it (a spreadsheet-safe CSV), and the engineer home-point audit lines are the owner's alone.
+- **Every answer says what it rests on.** Under a reply that looked something up (or answered a business question) the console
+  shows one compact line, e.g. "Checked: Salts FSM invoices · Not checked: Sage (not connected) · Medium", that opens to the
+  detail. It is built from the tool calls Jarvis really made and what they returned (sample data withheld, a part of the FSM
+  switched off or not offered yet, owner-only data, a scan that stopped early, an error) plus a fixed list of which systems a
+  kind of question needs (money needs the FSM and Sage, a van's whereabouts needs RAM Tracking, ...). The High / Medium / Low
+  confidence follows fixed rules - never Jarvis's opinion of itself: High = everything needed was read, real and complete;
+  Medium = a scan was cut short or one needed source is missing; Low = sample data, an error, nothing checked for a business
+  question, or two or more sources missing. Spoken, he adds one short sentence only when it is Low ("I couldn't check Sage, it
+  isn't connected"). The same summary - source names and row counts, never a value - is kept with the conversation record.
+- **Question checks: a weekly accuracy scorecard (off by default, owner-only).** `checks/questions.yaml` holds about 40
+  owner-style questions (jobs, engineers, quotes, overdue money, vans and MOTs, renewals, stock, upsells, approvals, your own
+  policies, and things he must refuse, such as staff pay asked by a team member or a key-safe code). Each one's right answer is
+  read from your live systems when the check runs - never typed in - and the reply is graded automatically (the number within a
+  tolerance, the gap named, the refusal, the words). The run asks the real Jarvis in a sealed "check mode" that can only read:
+  it can't send, queue, remember or change anything, and nothing it says reaches your console or the conversation record.
+  Switch it on in Settings > Schedules (weekly, 02:30 on Sunday; never in working hours; at most 40 questions, 2 minutes
+  each; it stops if your Claude allowance runs out) or press **Run question checks now** in Health. The Health drawer shows the
+  score, each area, the trend and every failing question with what was expected and what was said (finance and staff-pay
+  detail is yours alone; the team console never sees it). A reply you mark **Wrong** appears there as a candidate: one click
+  turns it into a permanent check once you've written what the right answer must contain. While a system is still sample data
+  its checks are skipped ("demo data"), not failed.
 - **The Memory pop-up (Settings → Memory).** Lists what Jarvis has learned - "Things Jarvis should know", things he
   remembered himself, and the short replies he has learned - each one editable and deletable. A change is used from his very
   next message, and deleting a note also removes it from Settings so it can't come back on a restart.
