@@ -523,8 +523,10 @@ def _src_memory(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
 # "balance_lookup": one customer's balance looked up with customer_balance (the customer and who asked - never a figure)
 # "fsm_document": a read of a stored FSM document through fsm_document_read (its id, and its name unless it is owner-only - never its text)
 # "rule": a house rule added (approved by the owner), changed, switched on / off or removed (services/rulebook.py) - its number and wording
+# "schematic": a system schematic drawn / revised (its drawing number, revision and title) or exported (the format) - services/schematics.py
 _AUDIT_KINDS = {"settings": "settings_change", "team_access": "settings_change", "memory": "memory", "export": "other",
-                "company_check": "other", "fsm_read": "other", "balance_lookup": "other", "fsm_document": "other", "rule": "memory"}
+                "company_check": "other", "fsm_read": "other", "balance_lookup": "other", "fsm_document": "other", "rule": "memory",
+                "schematic": "draft"}
 
 
 def _src_audit(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
@@ -623,7 +625,7 @@ SOURCES = (
     _Source("agent_run", frozenset({"code_change", "other"}), _src_agent_runs),
     _Source("background", frozenset({"other"}), _src_background),
     _Source("memory", frozenset({"memory"}), _src_memory),
-    _Source("audit", frozenset({"settings_change", "memory", "other"}), _src_audit),
+    _Source("audit", frozenset({"settings_change", "memory", "other", "draft"}), _src_audit),
     _Source("document", frozenset({"draft"}), _src_documents),
     _Source("advert", frozenset({"draft"}), _src_adverts),
     _Source("upsell", frozenset({"draft"}), _src_upsell),

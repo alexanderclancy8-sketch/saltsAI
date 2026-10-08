@@ -27,6 +27,7 @@ from ..services.tracking import requester_label
 from .prompts import build_system, build_team_system, house_rules
 from .repeats import RepeatDetector, repeat_note
 from .tools import SERVER_TOOLS, TOOLS, dispatch, serialise
+from .trace import attachment as trace_attachment
 from .web_research import WebTurn
 
 log = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class JarvisBrain:
             result = await dispatch(self.j, tool, args, caller=self.caller, check=self.check)
             # what the result says about the sources it read (truncated, scope off, sample data withheld...): labels only
             bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "done",
-                                 "coverage": _facts(tool.name, args, result)})
+                                 "coverage": _facts(tool.name, args, result), **trace_attachment(tool.name, result)})
             return {"type": "tool_result", "tool_use_id": block.id, "content": serialise(result)}
         except Exception as e:  # noqa: BLE001 - report tool failures back to Claude so it can adapt
             log.exception("Tool %s failed", tool.name)

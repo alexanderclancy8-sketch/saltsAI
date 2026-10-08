@@ -562,7 +562,9 @@ def test_the_team_tools_are_a_short_explicit_allowlist_of_read_tools_plus_log_jo
         [n for n in TEAM_TOOLS if sensitive.search(n)]
     assert TEAM_TOOLS == {"fsm_jobs", "job_detail", "fsm_systems_due", "staff_overdue_jobs", "staff_today",
                           "engineer_locations", "nearest_engineer", "marketing_overview", "knowledge_search", "log_job",
-                          "run_in_background", "background_results", "find_similar_work"}
+                          "run_in_background", "background_results", "find_similar_work",
+                          # system schematics: no prices; draw saves to Jarvis's own records only (office: open / list only)
+                          "draw_schematic", "list_schematics", "open_schematic"}
 
 
 def test_everything_else_is_denied_to_a_team_caller_by_default_and_nothing_changes_for_the_owner():

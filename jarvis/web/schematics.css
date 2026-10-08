@@ -1,0 +1,54 @@
+/* JARVIS console - system schematics under a reply (web/schematics.js). The drawing sits IN the message, under its text (never over
+ * the chat), scrolls inside its own box (never the page) and takes its colours from the theme tokens through role classes, so it
+ * follows light / dark without a redraw. */
+.msg.has-sch { max-width: 100%; width: 100%; }
+.sch { margin: 8px 0 4px 16px; padding: 10px 12px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; max-width: 1100px; }
+.sch-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.sch-title { font-family: var(--f-display); font-weight: 600; font-size: 15px; color: var(--text); overflow-wrap: anywhere; }
+.sch-meta { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.sch-view { overflow: auto; max-height: min(75vh, 900px); border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.sch-view:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+/* fit: shrink to the box, never stretch (the svg's own width is the drawing's natural size); actual size: natural, scroll in the box */
+.sch-svg { display: block; max-width: 100%; height: auto; }
+.sch.actual .sch-svg { max-width: none; }
+.sch-note { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--warn); }
+.sch-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sch-actions .icon-btn { border-color: var(--line); color: var(--core); text-decoration: none; display: inline-flex; align-items: center; }
+.sch-actions .icon-btn:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; }
+.sch-status { margin: 0; font-size: 13px; color: var(--muted); }
+.sch-status:empty { display: none; }
+.sch-status.bad { color: var(--warn); }
+/* colour roles (the server sends roles, never colours) */
+.sch-svg .s-ink { stroke: var(--text); }
+.sch-svg .s-muted { stroke: var(--muted); }
+.sch-svg .s-accent { stroke: var(--warn); }
+.sch-svg .s-assumed { stroke: var(--muted); stroke-opacity: .8; }
+.sch-svg .s-line { stroke: var(--line); }
+.sch-svg .s-paper { stroke: var(--panel); }
+.sch-svg .s-none { stroke: none; }
+.sch-svg .f-paper { fill: var(--panel); }
+.sch-svg .f-soft { fill: var(--panel-hi); }
+.sch-svg .f-ink { fill: var(--text); }
+.sch-svg .f-accent { fill: var(--warn); }
+.sch-svg .f-assumed { fill: var(--muted); fill-opacity: .6; }
+.sch-svg .f-none { fill: none; }
+.sch-svg line, .sch-svg polyline { stroke-linecap: round; stroke-linejoin: round; }
+.sch-svg .t-ink { fill: var(--text); }
+.sch-svg .t-muted { fill: var(--muted); }
+.sch-svg .t-accent { fill: var(--warn); }
+.sch-svg .t-assumed { fill: var(--muted); fill-opacity: .85; font-style: italic; }
+.sch-svg .t-line, .sch-svg .t-paper { fill: var(--muted); }
+.sch-svg text { user-select: text; }
+@media (max-width: 640px) {
+  .sch { margin-left: 0; padding: 8px; }
+  .sch-view { max-height: 70vh; }
+}
+@media (forced-colors: active) {
+  .sch-svg .s-ink, .sch-svg .s-muted, .sch-svg .s-accent, .sch-svg .s-assumed { stroke: CanvasText; }
+  .sch-svg .t-ink, .sch-svg .t-muted, .sch-svg .t-accent, .sch-svg .t-assumed { fill: CanvasText; }
+}
+@media print {
+  .sch-actions, .sch-status { display: none; }
+}

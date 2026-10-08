@@ -95,6 +95,8 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "find_similar_work",
     # customer / site notes: tied to the live turn (who asked, what it read) and never kept in the background_calls table
     "entity_note_add", "entity_note_propose", "entity_notes_get",
+    # a schematic is shown under the live reply (the turn's trace): a background run would save it with no one to see it
+    "draw_schematic", "open_schematic",
     # a house rule proposal is judged on the live turn (who asked, whether it read an email / web page / document)
     "propose_rule",
 }
@@ -108,6 +110,8 @@ UNTRUSTED_TOOLS = {"company_check", "run_tests", "search_rankings", "seo_audit",
                    "draft_office_document", "action_items", "what_did_you_do",
                    # past quotes' and jobs' titles and line items, and past emails' subjects (services/similar_work.py)
                    "find_similar_work",
+                   # saved schematics: their labels came from FSM records, documents or a description (services/schematics.py)
+                   "list_schematics", "open_schematic",
                    # (also caught by the fsm_ prefix; named so a rename can't quietly drop them)
                    "fsm_data", "fsm_catalog", "fsm_analyse", "fsm_document_read"}
 
