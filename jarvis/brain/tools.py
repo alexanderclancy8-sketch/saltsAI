@@ -22,6 +22,7 @@ from ..services.accreditations import FSM_MANAGED
 from ..services.async_tools import DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S
 from ..services.fsm_analyse import MAX_LIMIT as ANALYSE_MAX_LIMIT, PRESETS as PERIOD_PRESETS
 from .pr_tools import build_pr_tools
+from .web_research import server_tools
 
 MAX_RESULT_CHARS = 60_000
 
@@ -3096,9 +3097,6 @@ TOOLS.extend(build_pr_tools(Tool))  # GitHub PR tools for Jarvis's own repo - se
 
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
-SERVER_TOOLS = [
-    {"type": "web_search_20260209", "name": "web_search", "max_uses": 5,
-     "user_location": {"type": "approximate", "city": "Bradford", "region": "England", "country": "GB",
-                       "timezone": "Europe/London"}},
-    {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
-]
+# The server-side web tools for an ordinary question (5 searches, 5 page reads per request). A turn's own budget - more
+# for a question that clearly needs research, and a hard cap per turn - comes from brain/web_research.py.
+SERVER_TOOLS = server_tools()

@@ -15,6 +15,9 @@ The confidence rules (``confidence()``), in order:
 * **Medium** when any of: a scan or list was cut short (truncated / INCOMPLETE); exactly one needed source is missing; an FSM
   document was a scan Jarvis transcribed with its own model and the reply doesn't say so.
 
+The turn's web searches and page reads (brain/web_research.py) are one more source, "The web (3 sources)", added by ``web_facts``: partial
+when it only searched and nothing was cited or read, an error when the web tools failed and nothing came back.
+
 Jarvis's own notes on a customer or site ("Jarvis's notes on Acme", services/entity_memory.py) are listed as NOTES, never as a
 checked system: they can't satisfy a question's need for a source, so they never raise the confidence by themselves. Caveats that
 don't change the rules (items the FSM masked in a document) are listed too.
@@ -41,6 +44,7 @@ MAIL = "Outlook"          # the trace's name for the owner's mailbox
 STOCK = "Stock records"
 REGISTER = "Accreditations register"
 KB = "Knowledge base"
+WEB = "The web"           # the turn's web searches and page reads (web_facts), the same name as the trace's source line
 
 # How a source is named on the coverage line (the trace's own names stay as they are for the source line above it).
 DISPLAY = {MAIL: "your mailbox"}
@@ -251,6 +255,25 @@ def _document_facts(a: dict[str, Any], result: Any) -> list[dict[str, str]]:
     else:
         status = OK
     return [_fact(FSM, status, detail, note)]
+
+
+def web_facts(web: dict[str, Any] | None) -> list[dict[str, str]]:
+    """The turn's web research (brain/web_research.py ``WebTurn.summary``) as facts: "The web (3 sources)" when pages were cited or
+    read; partial when it only searched (nothing cited or read, or - on the Max brain - search results only); an error when the
+    web tools failed and nothing came back. Counts only, never a title or an address."""
+    if not isinstance(web, dict):
+        return []
+    sources = [s for s in web.get("sources") or [] if isinstance(s, dict)]
+    real = [s for s in sources if s.get("kind") in ("cited", "read")]
+    if real:
+        return [_fact(WEB, OK, f"({len(real)} source{'' if len(real) == 1 else 's'})")]
+    if sources:
+        return [_fact(WEB, PARTIAL, "", "search results only - no page was read")]
+    if _int(web.get("errors")):
+        return [_fact(WEB, ERROR)]
+    if _int(web.get("searches")) or _int(web.get("reads")):
+        return [_fact(WEB, PARTIAL, "", "searched, but no page was cited or read")]
+    return []
 
 
 def error_facts(name: str, exc: BaseException) -> list[dict[str, str]]:

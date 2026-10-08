@@ -113,6 +113,7 @@ class TurnTrace:
         self.user_text = ""
         self.mode = "typed"
         self.entity_notes: list[str] = []   # "Jarvis's notes on X" this turn leaned on (add_source): notes, not a checked system
+        self.web: dict[str, Any] | None = None   # the turn's web budget record (add_web): sources really used, uses, errors
 
     # ------------------------------------------------------------------ feeding it
     def on_event(self, event_type: str, data: Any) -> None:
@@ -166,6 +167,20 @@ class TurnTrace:
         if self.active and label and label not in self.entity_notes:
             self.entity_notes.append(label)
 
+    def add_web(self, web: Any) -> None:
+        """The turn's web record (brain/web_research.py ``WebTurn``), handed over by the brain just before ``finish``: the numbered
+        sources its web tools really returned, and how many searches / page reads / errors there were. Ignored outside a turn."""
+        if not self.active:
+            return
+        try:
+            summary = web.summary()
+        except Exception:  # noqa: BLE001 - describing a turn must never break it
+            return
+        if summary.get("sources") or summary.get("searches") or summary.get("reads") or summary.get("errors"):
+            self.web = summary
+            if "The web" not in self.sources:
+                self.sources.append("The web")
+
     def offer(self, panel: str | None, follow_ups: list[str]) -> None:
         """The offer_next_steps tool: what the model chose to suggest. Ignored outside a turn."""
         if not self.active:
@@ -212,8 +227,13 @@ class TurnTrace:
             out["panel_title"] = PANEL_TITLES[panel]
         if self.follow_ups:
             out["follow_ups"] = list(self.follow_ups)
+        facts = list(self.facts)
+        if self.web:
+            if self.web.get("sources"):
+                out["web_sources"] = [dict(s) for s in self.web["sources"]]
+            facts += cov_mod.web_facts(self.web)
         try:
-            cov = cov_mod.summarise(self.facts, self.user_text, demo=cov_mod.demo_map(self.j), team=self.team,
+            cov = cov_mod.summarise(facts, self.user_text, demo=cov_mod.demo_map(self.j), team=self.team,
                                     notes=self.entity_notes, reply=reply)
         except Exception:  # noqa: BLE001 - describing a turn must never break it
             cov = None
