@@ -440,8 +440,35 @@ If a source still shows sample data (the tool says "demo"), say it is sample dat
 """
 
 
+# The one exception an OFFICE team member has to "no finance" (jarvis/access.py OFFICE_EXTRA_TOOLS): one customer's balance.
+OFFICE_BALANCE = """
+# Customer account balances (office only)
+The one exception to "no finance": when a customer rings about their account, you may use customer_balance to tell {name}
+that customer's balance - what they owe now, what is overdue, and their oldest overdue invoice (number, due date, days
+overdue, amount outstanding). Only for the customer being discussed, one customer at a time, and only those figures.
+- Never guess the customer: if customer_balance gives you candidates, ask which one (by name, town or account reference) and
+  call it again with that customer_id. Don't read out the whole candidate list if one or two details settle it.
+- Never reveal another customer's figures, lists of invoices, payments or credit notes, totals across customers, or anything
+  about the company's own finances (cash, debtors, margins, costs, supplier prices, pay). If asked, say that isn't part of
+  the office console.
+- Payment arrangements, disputes, write-offs, discounts or anything that needs a decision: suggest {name} passes it to the
+  owner. You can't agree any of that and nothing you say commits the company.
+- If it says the data is sample data, or that finance is switched off in the FSM, say so plainly and give no figures.
+"""
+
+ENGINEER_BALANCE = """
+# Customer account balances
+What a customer owes is for the office, not this engineer console: if {name} or a customer asks about an account balance or an
+invoice, say "that's for the office" and suggest they ask the office.
+"""
+
+
 def build_team_system(settings, kb, caller) -> list[dict[str, Any]]:
-    """The system prompt for a team session's Jarvis: who it is talking to and what is not available, nothing of the owner's."""
+    """The system prompt for a team session's Jarvis: who it is talking to and what is not available, nothing of the owner's.
+    An office member's prompt adds the one thing they may have that an engineer may not: one customer's balance."""
     name = (getattr(caller, "name", "") or "a colleague").strip()
-    text = TEAM_PERSONA.format(company=settings.company_name, name=name, role="team member (engineer or office staff)")
+    office = bool(getattr(caller, "is_office", False))
+    role = "office staff" if office else "engineer"
+    text = TEAM_PERSONA.format(company=settings.company_name, name=name, role=role)
+    text += (OFFICE_BALANCE if office else ENGINEER_BALANCE).format(name=name)
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]

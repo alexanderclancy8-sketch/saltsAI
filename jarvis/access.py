@@ -9,6 +9,20 @@ Three roles:
                 no Connections, no memory editing, no settings, no staff-report key, and a brain that can only use the
                 read-only operational tools listed in ``TEAM_TOOLS``.
 
+  Since the owner's decision of 2026-10-08 the team role has two kinds (``Caller.team_role``), each with its OWN code:
+
+  * ``engineer`` - exactly the team role as it was: ``TEAM_TOOLS`` and nothing more. The old single team code and every
+                   team session signed in with it ARE the engineer code and engineer sessions (least privilege, no data
+                   migration: same database key, same cookie key), so an upgrade gives nobody more than they had.
+  * ``office``   - the engineer allowlist plus ONE read-only tool, ``customer_balance`` (``OFFICE_EXTRA_TOOLS``): for one
+                   customer at a time, what they owe, what is overdue and their oldest overdue invoice - so the office can
+                   answer a customer who rings about their account. Nothing else finance-related (no invoice lists, payments,
+                   credit notes, company finance, pay, fsm_data / fsm_analyse) and the same console as an engineer.
+
+  Both kinds are tier ``team`` everywhere else - the route table, the console features, what stored work (approvals,
+  background calls) is filed and re-run as. Stored work only ever records ``team``, which is re-run as an ENGINEER: the
+  office's one extra tool never runs later, somewhere else, on a record's say-so.
+
 Team mode is enforced here, on the backend, in two places that this module is the single source of truth for:
 
 1. **Routes.** ``ROUTE_POLICY`` classifies EVERY route of the app (HTTP and WebSocket) as ``public``, ``page``, ``team``,
@@ -33,6 +47,16 @@ from dataclasses import dataclass
 OWNER, MANAGER, TEAM = "owner", "manager", "team"
 ROLES = (OWNER, MANAGER, TEAM)
 ROLE_LABEL = {OWNER: "Owner", MANAGER: "Manager", TEAM: "Team"}
+# The two kinds of team member. Each has its own access code (services/team_access.py). An unknown or missing kind is an
+# ENGINEER - least privilege, and what every team session from before the split is.
+OFFICE, ENGINEER = "office", "engineer"
+TEAM_ROLES = (OFFICE, ENGINEER)
+TEAM_ROLE_LABEL = {OFFICE: "Office", ENGINEER: "Engineer"}
+
+
+def team_role_of(raw: object) -> str:
+    """A team member's kind from a cookie, a request body or a parameter: ``office`` only when it says exactly that, else engineer."""
+    return OFFICE if str(raw or "").strip().lower() == OFFICE else ENGINEER
 
 # --- route levels ------------------------------------------------------------------------------------------------------
 PUBLIC = "public"    # no session needed (login, health, static files, the staff-key report form, the Teams webhook)
@@ -48,24 +72,59 @@ _NEEDS = {TEAM_OK: 0, MANAGER_OK: 1, OWNER_ONLY: 2}
 @dataclass(frozen=True)
 class Caller:
     """Who is acting. ``name`` and ``sid`` only exist for a team session (the name is whatever the person typed when
-    signing in - it labels their requests, it is not a verified identity)."""
+    signing in - it labels their requests, it is not a verified identity). ``team_role`` is the kind of team member
+    (``office`` / ``engineer``); anything but ``office`` - including the empty default - is an engineer."""
     role: str
     name: str = ""
     sid: str = ""
+    team_role: str = ""
 
     @property
     def is_team(self) -> bool:
         return self.role == TEAM
 
     @property
+    def kind(self) -> str:
+        """``office`` or ``engineer`` for a team member; "" for the owner and managers."""
+        return team_role_of(self.team_role) if self.role == TEAM else ""
+
+    @property
+    def is_office(self) -> bool:
+        return self.kind == OFFICE
+
+    @property
+    def is_engineer(self) -> bool:
+        return self.kind == ENGINEER
+
+    @property
+    def role_label(self) -> str:
+        """'Office' / 'Engineer' for a team member, else 'Owner' / 'Manager' (the console's top bar, the audit lines)."""
+        return TEAM_ROLE_LABEL[self.kind] if self.role == TEAM else ROLE_LABEL.get(self.role, self.role)
+
+    @property
     def label(self) -> str:
-        """How a person is named in logs, approval cards and the van-look-up log."""
-        return f"{self.name} (team)" if self.role == TEAM and self.name else ROLE_LABEL.get(self.role, self.role)
+        """How a person is named in logs, approval cards and the van-look-up log: "Sam (office)", "Sam (engineer)"."""
+        return f"{self.name} ({self.kind})" if self.role == TEAM and self.name else ROLE_LABEL.get(self.role, self.role)
 
     @property
     def requester(self) -> str:
-        """The stable key a background call is filed under ("" for the owner, managers and Jarvis himself)."""
-        return f"team:{self.name.strip().lower()}" if self.role == TEAM else ""
+        """The stable key a background call is filed under ("" for the owner, managers and Jarvis himself). An engineer keeps
+        the pre-split key (``team:<name>``) so their earlier background results are still theirs; office is ``office:<name>``,
+        so an office Sam and an engineer Sam never see each other's."""
+        if self.role != TEAM:
+            return ""
+        return f"{'office' if self.is_office else 'team'}:{self.name.strip().lower()}"
+
+
+# The suffixes ``Caller.label`` has ever put after a team member's name (an approval stored before the split says "(team)").
+TEAM_LABEL_SUFFIXES = (" (team)", " (office)", " (engineer)")
+
+
+def strip_team_label(label: str) -> str:
+    for suffix in TEAM_LABEL_SUFFIXES:
+        if label.endswith(suffix):
+            return label[: -len(suffix)]
+    return label
 
 
 # The caller of the tool call being run right now (set by brain.tools.dispatch for the duration of the handler, so code
@@ -77,7 +136,8 @@ current_caller: contextvars.ContextVar[Caller | None] = contextvars.ContextVar("
 # --- the role a piece of stored work runs with ----------------------------------------------------------------------------
 # An automation, a background call, a queued approval or a self-improvement request is created in one person's turn and run
 # later, somewhere else (the scheduler, a worker task, the approver's click). It must run with the permissions of whoever
-# CREATED it, never those of whoever's turn or click happens to trigger it. Each such record stores the creator's role
+# CREATED it, never those of whoever's turn or click happens to trigger it. (A team member's record stores ``team`` - never
+# office / engineer - and so is re-run as an ENGINEER: see the module docstring.) Each such record stores the creator's role
 # (owner | manager | team) and the run re-creates the creator's ``Caller`` from it, in the same ``current_caller`` context
 # variable a live chat turn uses, so every role-dependent tool (fsm_data's finance / pay / HR resources, fleet_diagnostics)
 # looks in the one place it already looks.
@@ -127,6 +187,25 @@ def role_meets(role: str | None, level: str) -> bool:
     return role in _RANK and _RANK[role] >= _NEEDS[level]
 
 
+# Routes an OFFICE session may use and an engineer may not: NONE. An office member's one extra (a customer's balance) is only
+# ever a chat answer from the ``customer_balance`` tool - never a route, a drawer, a pop-up or a download - so the office console
+# is exactly the engineer console. A route added here would be refused to engineers by ``route_allowed``; the inventory test
+# (tests/test_office_role.py) pins that this stays empty unless someone decides otherwise on purpose.
+OFFICE_ONLY_ROUTES: frozenset[str] = frozenset()
+
+
+def route_allowed(key: str, caller: Caller | None) -> bool:
+    """May ``caller`` use the route ``key`` (a ROUTE_POLICY key)? Unclassified = no (default deny)."""
+    level = ROUTE_POLICY.get(key)
+    if level is None:
+        return False
+    if level in (PUBLIC, PAGE):
+        return True
+    if caller is None or not role_meets(caller.role, level):
+        return False
+    return not (key in OFFICE_ONLY_ROUTES and caller.is_team and not caller.is_office)
+
+
 # --- what each role can see in the console -------------------------------------------------------------------------------
 FEATURES = {
     OWNER: {"approvals": True, "finance": True, "connections": True, "memory": True, "comms": True, "issues": True,
@@ -143,7 +222,7 @@ FEATURES = {
 # Keys of /api/status a team session receives. An allowlist, so a key added to the status later is withheld from team
 # until someone decides it is fine. (`staff`, `overdue_jobs`, `presence`, `voice`, `activity` are not finance, not
 # approvals, not settings; `accreditations` is cut down to what/date/days_left by the handler.)
-TEAM_STATUS_KEYS = frozenset({"generated_at", "staff", "overdue_jobs", "presence", "voice", "company", "role", "who",
+TEAM_STATUS_KEYS = frozenset({"generated_at", "staff", "overdue_jobs", "presence", "voice", "company", "role", "team_role", "who",
                               "accreditations", "fleet"})
 
 # What a team session's live connection ever carries: its own turns, and the signal to reconnect after a reload. Anything
@@ -186,19 +265,38 @@ TEAM_TOOLS = frozenset({
     "background_results",    # only the requester's own
 })
 
+# What an OFFICE team member has on top of TEAM_TOOLS - and nothing else. ``customer_balance`` is read-only and answers for ONE
+# customer at a time with three figures and one invoice (services/customer_balance.py); it is the office's only finance tool.
+OFFICE_EXTRA_TOOLS = frozenset({"customer_balance"})
+ENGINEER_TOOLS = TEAM_TOOLS
+OFFICE_TOOLS = TEAM_TOOLS | OFFICE_EXTRA_TOOLS
+
 # Folders of the knowledge base a team session's `knowledge_search` never reads.
 TEAM_KB_EXCLUDED = ("private/", "finance/")
 
 
+def tools_for(caller: Caller | None) -> frozenset[str] | None:
+    """The allowlist for a team caller (OFFICE_TOOLS / ENGINEER_TOOLS); None = no list (the owner, managers, scheduled jobs)."""
+    if caller is None or caller.role != TEAM:
+        return None
+    return OFFICE_TOOLS if caller.is_office else ENGINEER_TOOLS
+
+
 def tool_allowed(name: str, caller: Caller | None) -> bool:
     """May ``caller`` use the tool called ``name``? ``None`` (the owner's conversation, a scheduled job) and owner/manager
-    callers: yes, as before. A team caller: only if the name is in TEAM_TOOLS (default deny)."""
-    if caller is None or caller.role != TEAM:
-        return True
-    return name in TEAM_TOOLS
+    callers: yes, as before. A team caller: only if the name is in their kind's allowlist (default deny) - an engineer has
+    TEAM_TOOLS exactly, office has TEAM_TOOLS plus OFFICE_EXTRA_TOOLS."""
+    allowed = tools_for(caller)
+    return True if allowed is None else name in allowed
 
 
-def refusal(name: str) -> str:
+OFFICE_ONLY_REFUSAL = ("That's for the office: account balances are looked up by the office, not from an engineer's Jarvis. "
+                       "If a customer asks what they owe, pass them to the office.")
+
+
+def refusal(name: str, caller: Caller | None = None) -> str:
+    if name in OFFICE_EXTRA_TOOLS and caller is not None and caller.is_engineer:
+        return OFFICE_ONLY_REFUSAL
     return (f"{name} isn't available to you here. This is the team version of Jarvis, which covers jobs, engineers, "
             "systems and fleet but not finance, approvals, accounts, staff pay or settings. If you need that, ask the office.")
 
@@ -287,10 +385,14 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/activity/export.csv": OWNER_ONLY,
     # ---- the principal owner only: how each van's moving / stopped / parked state was decided (no positions, no homes)
     "GET /api/fleet/diagnostics": OWNER_ONLY,
-    # ---- the principal owner only: who may sign in as team
+    # ---- the principal owner only: who may sign in as team - the office code and the engineer code. The role-less POST /
+    # DELETE are the ENGINEER code (what the single team code was before the office/engineer split; kept so nothing that set
+    # the team code before quietly starts handing out office access).
     "GET /api/team-access": OWNER_ONLY,
     "POST /api/team-access": OWNER_ONLY,
     "DELETE /api/team-access": OWNER_ONLY,
+    "POST /api/team-access/{team_role}": OWNER_ONLY,
+    "DELETE /api/team-access/{team_role}": OWNER_ONLY,
     # ---- the principal owner only: where each engineer lives (a rounded map point, never the postcode). Sensitive personal
     # data: not for a manager, not for team, and deliberately not a tool.
     "GET /api/engineer-homes": OWNER_ONLY,

@@ -3197,40 +3197,49 @@ function send(text, mode = "typed", opts = {}) {
   $("#btn-settings-cancel").addEventListener("click", () => Settings.revert());
 
   // ------------------------------------------------------------------ team access (the owner's Settings)
-  // The code engineers and office staff use at /login (Team sign-in). Only the owner sees this and only the owner's session
-  // is accepted by /api/team-access. The code is typed here, goes to the server once and is stored only as a salted hash:
-  // it is never shown again, so the box is always empty.
+  // The two codes people use at /login (Team sign-in): the OFFICE code and the ENGINEER code - the code someone signs in with
+  // decides which they are. Only the owner sees this and only the owner's session is accepted by /api/team-access/<role>. A code
+  // is typed here, goes to the server once and is stored only as a salted hash: it is never shown again, so the box is always
+  // empty. Changing or switching off one code signs out only that role's people.
+  const TEAM_ROLES = { office: "Office", engineer: "Engineer" };
   const TeamAccess = {
     info: null,
     async load() {
-      if (!$("#team-access-status") || ROLE !== "owner") return;
+      if (!$("#team-access-sec") || ROLE !== "owner") return;
       try { this.info = await (await api("/api/team-access")).json(); } catch { this.info = null; }
       this.render();
     },
     render() {
-      const i = this.info, el = $("#team-access-status");
-      if (!el) return;
-      el.textContent = !i ? "Couldn't read the team access setting."
-        : i.enabled ? `On. Code last set ${i.updated_at ? new Date(i.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "earlier"}${i.sessions ? `; ${plural(i.sessions, "person", "people")} signed in now` : ""}.`
-          : "Off. Nobody can sign in to the team console.";
-      $("#btn-team-off").hidden = !(i && i.enabled);
-      $("#btn-team-set").textContent = i && i.enabled ? "Change code" : "Turn on with this code";
+      for (const role of Object.keys(TEAM_ROLES)) {
+        const el = $(`#team-access-status-${role}`);
+        if (!el) continue;
+        const i = this.info && this.info.roles ? this.info.roles[role] : null, label = TEAM_ROLES[role].toLowerCase();
+        el.textContent = !i ? "Couldn't read this setting."
+          : i.enabled ? `On. Code last set ${i.updated_at ? new Date(i.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "earlier"}${i.sessions ? `; ${plural(i.sessions, "person", "people")} signed in now` : ""}.`
+            : `Off. Nobody can sign in as ${label}.`;
+        $(`#btn-team-off-${role}`).hidden = !(i && i.enabled);
+        $(`#btn-team-set-${role}`).textContent = i && i.enabled ? "Change code" : "Turn on with this code";
+      }
     },
-    async send(method, body) {
-      const r = await api("/api/team-access", { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    async send(role, method, body) {
+      const r = await api(`/api/team-access/${role}`, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) { toast("Team access didn't change", data.detail || "Try again.", "warning"); return false; }
+      if (!r.ok) { toast(`${TEAM_ROLES[role]} code didn't change`, data.detail || "Try again.", "warning"); return false; }
       this.info = data; this.render(); return true;
     },
   };
-  $("#btn-team-set")?.addEventListener("click", async () => {
-    const box = $("#team-code"), code = box.value.trim();
-    if (code.length < 8) { toast("Use at least 8 characters", "Pick a code the team can remember, and tell them it.", "warning"); box.focus(); return; }
-    if (await TeamAccess.send("POST", { code })) { box.value = ""; toast("Team code saved", "Anyone signed in with the old code has been signed out."); }
-  });
-  $("#btn-team-off")?.addEventListener("click", async () => {
-    if (confirm("Switch off team sign-in? Everyone signed in as team will be signed out.") && await TeamAccess.send("DELETE")) toast("Team sign-in is off", "Nobody can sign in as team now.");
-  });
+  for (const role of Object.keys(TEAM_ROLES)) {
+    const label = TEAM_ROLES[role];
+    $(`#btn-team-set-${role}`)?.addEventListener("click", async () => {
+      const box = $(`#team-code-${role}`), code = box.value.trim();
+      if (code.length < 8) { toast("Use at least 8 characters", `Pick a code the ${label.toLowerCase()} staff can remember, and tell them it.`, "warning"); box.focus(); return; }
+      if (await TeamAccess.send(role, "POST", { code })) { box.value = ""; toast(`${label} code saved`, `Anyone signed in with the old ${label.toLowerCase()} code has been signed out.`); }
+    });
+    $(`#btn-team-off-${role}`)?.addEventListener("click", async () => {
+      if (confirm(`Switch off ${label.toLowerCase()} sign-in? Everyone signed in as ${label.toLowerCase()} will be signed out.`) && await TeamAccess.send(role, "DELETE"))
+        toast(`${label} sign-in is off`, `Nobody can sign in as ${label.toLowerCase()} now.`);
+    });
+  }
 
   // ------------------------------------------------------------------ engineer homes (the owner's Settings)
   // Fleet diagnostics (owner only; /api/fleet/diagnostics refuses everyone else): per van RAM's raw last_event, its age, engine RPM
@@ -3321,12 +3330,16 @@ function send(text, mode = "typed", opts = {}) {
     if (confirm("Remove every engineer's home? This deletes all the stored points and can't be undone.") && await Homes.send("DELETE", "/api/engineer-homes")) toast("All homes removed", "Every home point is deleted.");
   });
 
-  // The role, shown subtly in the top bar ("Team - Sam", "Owner", "Manager").
+  // The role, shown subtly in the top bar ("Office · Sam", "Engineer · Sam", "Owner", "Manager"). A team member's kind comes
+  // from the page (data-team-role); both kinds get the same console, office's one extra is a chat answer (customer_balance).
   (() => {
     const chip = $("#role-chip"); if (!chip) return;
-    const label = { owner: "Owner", manager: "Manager", team: "Team" }[ROLE] || ROLE;
+    const TEAM_ROLE = document.body.dataset.teamRole === "office" ? "office" : "engineer";
+    const label = TEAM ? (TEAM_ROLE === "office" ? "Office" : "Engineer") : ({ owner: "Owner", manager: "Manager" }[ROLE] || ROLE);
     chip.textContent = TEAM && WHO ? `${label} · ${WHO}` : label;
-    chip.title = TEAM ? "You are signed in to the team version of Jarvis (no finance, approvals or connections)" : `You are signed in as ${label.toLowerCase()}`;
+    chip.title = TEAM ? (TEAM_ROLE === "office"
+      ? "You are signed in to the office version of Jarvis (no finance, approvals or connections; it can tell you one customer's balance)"
+      : "You are signed in to the engineer version of Jarvis (no finance, approvals or connections)") : `You are signed in as ${label.toLowerCase()}`;
     chip.hidden = false;
   })();
 

@@ -392,15 +392,33 @@
       <div class="sec" id="team-access-sec">
         <h3>Team access</h3>
         <p class="empty">Engineers and office staff get a cut-down console: no Finance, Approvals or Connections. They sign in on the
-          login page with Team sign-in, their name and this code. Only you can set it; it is stored scrambled and never shown again.</p>
-        <p class="empty" id="team-access-status" role="status" style="margin:6px 0 14px">Loading…</p>
-        <div class="set-pair">
-          <label for="team-code">Team access code</label>
-          <input type="password" id="team-code" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="At least 8 characters">
+          login page with Team sign-in, their name and their code - the code decides whether they are office or engineer. Only you
+          can set the codes; they are stored scrambled and never shown again.</p>
+        <div class="team-code-block" id="team-access-office">
+          <h4>Office code</h4>
+          <p class="empty ta-note">The office can also tell a customer who rings what they owe, what is overdue and their oldest overdue invoice - one customer at a time, nothing else from Finance.</p>
+          <p class="empty ta-status" id="team-access-status-office" role="status">Loading…</p>
+          <div class="set-pair">
+            <label for="team-code-office">Office access code</label>
+            <input type="password" id="team-code-office" class="ta-code" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="At least 8 characters">
+          </div>
+          <div class="set-actions">
+            <button class="btn ta-set" id="btn-team-set-office" type="button">Turn on with this code</button>
+            <button class="btn ta-off" id="btn-team-off-office" type="button" hidden>Switch off</button>
+          </div>
         </div>
-        <div class="set-actions">
-          <button class="btn" id="btn-team-set" type="button">Turn on with this code</button>
-          <button class="btn" id="btn-team-off" type="button" hidden>Switch off</button>
+        <div class="team-code-block" id="team-access-engineer">
+          <h4>Engineer code</h4>
+          <p class="empty ta-note">Jobs, engineers, systems due, fleet and the knowledge base. No account balances.</p>
+          <p class="empty ta-status" id="team-access-status-engineer" role="status">Loading…</p>
+          <div class="set-pair">
+            <label for="team-code-engineer">Engineer access code</label>
+            <input type="password" id="team-code-engineer" class="ta-code" autocomplete="new-password" autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="At least 8 characters">
+          </div>
+          <div class="set-actions">
+            <button class="btn ta-set" id="btn-team-set-engineer" type="button">Turn on with this code</button>
+            <button class="btn ta-off" id="btn-team-off-engineer" type="button" hidden>Switch off</button>
+          </div>
         </div>
       </div>
       <div class="sec" id="homes-sec">

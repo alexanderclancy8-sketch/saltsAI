@@ -420,6 +420,11 @@ details.diff pre { max-height: 220px; overflow: auto; font-size: 11.5px; backgro
 .set-pair label { display: block; }
 .set-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .set-actions form { margin: 0; }
+/* -- Settings > Team access (owner only): two codes, office and engineer, each with its own status and controls -- */
+.team-code-block { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; min-width: 0; }
+.team-code-block h4 { margin: 0 0 6px; font-size: 14.5px; font-weight: 600; color: var(--text); }
+.team-code-block .ta-note { margin: 0 0 6px; }
+.team-code-block .ta-status { margin: 0 0 12px; overflow-wrap: anywhere; }
 /* -- Settings > Engineer homes (owner only): a postcode box per engineer, saved once, never shown again -- */
 .homes-radius { display: flex; gap: 8px; align-items: stretch; }
 .homes-radius input { flex: 1 1 90px; min-width: 0; }

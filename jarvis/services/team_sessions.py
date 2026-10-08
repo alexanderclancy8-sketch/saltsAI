@@ -48,6 +48,13 @@ class TeamSessions:
     def __len__(self) -> int:
         return len(self._sessions)
 
+    def count(self, team_role: str | None = None) -> int:
+        """Sessions open now - all of them, or only ``office`` / ``engineer`` ones."""
+        if team_role is None:
+            return len(self._sessions)
+        kind = access.team_role_of(team_role)
+        return sum(1 for s in self._sessions.values() if s.caller.kind == kind)
+
     def _build(self, caller: access.Caller) -> TeamSession:
         from ..brain.trace import TurnTrace
 
@@ -72,6 +79,9 @@ class TeamSessions:
             raise ValueError("Only a team session has a team brain")
         self._sweep()
         s = self._sessions.get(caller.sid)
+        if s is not None and (s.caller.kind, s.caller.name) != (caller.kind, caller.name):
+            self._drop(caller.sid)  # (a session id is random per cookie; never hand one person's brain to another caller)
+            s = None
         if s is None:
             if len(self._sessions) >= MAX_SESSIONS:
                 oldest = min(self._sessions, key=lambda k: self._sessions[k].last_used)
@@ -93,8 +103,11 @@ class TeamSessions:
             except RuntimeError:
                 pass
 
-    async def close(self) -> None:
-        for sid in list(self._sessions):
+    async def close(self, team_role: str | None = None) -> None:
+        """Drop every session - or, given ``office`` / ``engineer``, only that role's (its code was changed or switched off:
+        the other role's people stay signed in and keep their conversations)."""
+        kind = access.team_role_of(team_role) if team_role is not None else None
+        for sid in [k for k, v in self._sessions.items() if kind is None or v.caller.kind == kind]:
             s = self._sessions.pop(sid)
             if hasattr(s.brain, "close"):
                 try:
