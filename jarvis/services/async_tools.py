@@ -88,6 +88,9 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "fsm_document_read",
     # puts a chart on the display (a SILENT background call must really be silent)
     "show_chart",
+    # similar past work: quote values (owner-only ones too) and who may see prices depend on the live caller - read it in the
+    # conversation, never kept in the background_calls table
+    "find_similar_work",
     # customer / site notes: tied to the live turn (who asked, what it read) and never kept in the background_calls table
     "entity_note_add", "entity_note_propose", "entity_notes_get",
     # a house rule proposal is judged on the live turn (who asked, whether it read an email / web page / document)
@@ -101,6 +104,8 @@ UNTRUSTED_TOOLS = {"company_check", "run_tests", "search_rankings", "seo_audit",
                    "technical_watch", "job_detail", "search_conversation_history", "issues_list", "answer_questionnaire",
                    "capture_supplier_bill", "bid_assessment", "bid_document", "audit_evidence", "edit_office_document",
                    "draft_office_document", "action_items", "what_did_you_do",
+                   # past quotes' and jobs' titles and line items, and past emails' subjects (services/similar_work.py)
+                   "find_similar_work",
                    # (also caught by the fsm_ prefix; named so a rename can't quietly drop them)
                    "fsm_data", "fsm_catalog", "fsm_analyse", "fsm_document_read"}
 
