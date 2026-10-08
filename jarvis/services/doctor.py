@@ -130,7 +130,8 @@ class Doctor:
     # ------------------------------------------------------------------ running
     # (name shown when the check itself breaks, method name) - looked up at run time, one broken check never stops the rest
     CHECKS = (
-        ("Plugins", "_plugins"), ("Data sources", "_demo"), ("FSM data access", "_fsm_data"), ("Keys", "_keys"),
+        ("Plugins", "_plugins"), ("Data sources", "_demo"), ("FSM data access", "_fsm_data"),
+        ("FSM documents", "_fsm_documents"), ("Keys", "_keys"),
         ("Automations", "_automations"),
         ("Agent runs", "_agent_runs"), ("Open requests", "_requests"), ("Pull requests", "_pull_requests"),
         ("Tests and issues", "_tests_and_issues"),
@@ -269,6 +270,30 @@ class Doctor:
                          "Nothing to do here - it starts working by itself once the FSM ships /api/jarvis/catalog.")]
         return [Item(name, AMBER, f"FSM data access: {_clip(info.get('message'), 120)}",
                      "Check the FSM key under Connections; Jarvis tries again by itself.")]
+
+    # ------------------------------------------------------------------ 2c. reading inside FSM documents
+    async def _fsm_documents(self, now: datetime) -> list[Item]:
+        """'FSM documents: text on/off, files on/off' - from the same (cached) catalog the data line uses."""
+        name = "FSM documents"
+        info = await self.j.fsm_read.summary()
+        state = info["state"]
+        if state == "demo":
+            return [Item(name, OK, "FSM documents: not available - Salts FSM is not connected yet (sample data only).",
+                         "Set FSM_BASE_URL and the API key under Connections.")]
+        cat = self.j.fsm_data.cached
+        if state != "ok" or cat is None:
+            return [Item(name, OK if state == "unavailable" else AMBER,
+                         "FSM documents: text off, files off - " + ("the FSM doesn't expose its data API yet." if state == "unavailable"
+                                                                    else f"{_clip(info.get('message'), 120)}"),
+                         "" if state == "unavailable" else "Jarvis tries again by itself; check the FSM key under Connections.")]
+        if not cat.document_text:
+            return [Item(name, OK, "FSM documents: text off, files off - this FSM doesn't expose document reading yet.",
+                         "Nothing to do here - it starts working by itself once the FSM ships its document text routes.")]
+        files = cat.document_files
+        return [Item(name, OK, f"FSM documents: text on, files {'on' if files else 'off'}."
+                     + ("" if files else " Scans and photos can't be transcribed while the files switch is off."),
+                     "" if files else "Switch on 'Jarvis may download document files' in the FSM (Settings > Integrations > "
+                                      "Jarvis access) so scanned documents can be transcribed.")]
 
     # ------------------------------------------------------------------ 3. keys (names only)
     async def _keys(self, now: datetime) -> list[Item]:

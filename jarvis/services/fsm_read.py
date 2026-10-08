@@ -130,6 +130,9 @@ class FsmRead:
                 cut = text[:PROMPT_GROUP_CHARS].rsplit(", ", 1)[0]
                 text = f"{cut}, +{len(names) - cut.count(', ') - 1} more"
             lines.append(f"- {g.name}{'' if g.enabled else ' (switched off in the FSM)'}: {text}")
+        if cat.document_text:
+            lines.append("`fsm_document_read` reads the text inside a document in the register (certificates, RAMS, reports, quotes)"
+                         + ("; scans and photos are transcribed." if cat.document_files else "; scans can't be transcribed (files off)."))
         return "\n".join(lines)
 
     def connection_line(self) -> str:
