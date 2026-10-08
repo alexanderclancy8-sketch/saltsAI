@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="/static/hud.css">
   <link rel="stylesheet" href="/static/ask.css">
   <link rel="stylesheet" href="/static/charts.css">
+  <link rel="stylesheet" href="/static/drawings.css">
 </head>
 <body class="app" data-hud="idle">
 <header class="topbar">
@@ -54,6 +55,7 @@
     <!--role:manager--><button type="button" class="rail-item" data-pop="finance">Finance <span class="rail-count" id="rc-finance">0</span></button><!--/role:manager-->
     <button type="button" class="rail-item" data-pop="presence">Presence</button>
     <button type="button" class="rail-item" data-pop="upcoming">Coming up <span class="rail-count" id="rc-upcoming">0</span></button>
+    <button type="button" class="rail-item" data-pop="drawings">Drawings</button>
   </nav>
 
   <main class="stage">
@@ -336,6 +338,37 @@
       </div>
     </section>
 
+    <!-- Drawings on floor plans (drawings.js + drawing_symbols.js, services/plan_drawings.py): device layouts and zone charts.
+         Jarvis proposes, a person adjusts, then exports. Everyone has the rail item; a team member sees the drawings linked to a job
+         (an engineer can edit them, office can view and export). Only owner / managers upload a plan (the form is a manager region). -->
+    <section class="pop" id="pop-drawings" data-title="Drawings" hidden>
+      <div id="drw-list-view" class="drw-list-view">
+        <p class="sub drw-intro">Device layouts and zone charts drawn on a floor plan. Jarvis can propose a first draft; you check it, move,
+          add and delete, then export a PDF or PNG. Positions are a draft for a competent person to check - not a design.</p>
+        <!--role:manager--><div class="sec" id="drw-new-sec">
+          <h3>New drawing</h3>
+          <form id="drw-new" class="drw-new">
+            <label>Floor plan (PDF, PNG or JPEG)<input type="file" id="drw-file" accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"></label>
+            <div class="drw-row">
+              <label>What to draw<select id="drw-kind"><option value="devices">Device layout</option><option value="zones">Zone chart</option></select></label>
+              <label>PDF page<input type="number" id="drw-page" min="1" max="500" value="1"></label>
+            </div>
+            <label>Title<input type="text" id="drw-title" maxlength="120" placeholder="e.g. Ground floor fire alarm"></label>
+            <label>Site<input type="text" id="drw-site" maxlength="120"></label>
+            <label>Job ref (engineers can then open it on site)<input type="text" id="drw-job" maxlength="40"></label>
+            <div class="row"><button class="btn primary" type="submit" id="drw-create">Upload and open</button></div>
+            <p class="empty" id="drw-new-error" role="alert" hidden></p>
+          </form>
+        </div><!--/role:manager-->
+        <div class="sec">
+          <h3>Drawings <span class="count" id="drw-count"></span></h3>
+          <ul class="mem-list" id="drw-list"><li class="empty">Loading…</li></ul>
+        </div>
+      </div>
+      <div id="drw-editor" class="drw-editor" hidden></div>
+      <p class="empty" id="drw-error" role="alert" hidden></p>
+    </section>
+
     <!--role:manager--><section class="pop" id="pop-demo" data-title="Demo data" hidden>
       <div class="sec">
         <h3>Sources still showing samples</h3>
@@ -539,6 +572,8 @@
 <script src="/static/activity.js"></script>
 <script src="/static/checks.js"></script>
 <script src="/static/faults.js"></script>
+<script src="/static/drawing_symbols.js"></script>
+<script src="/static/drawings.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

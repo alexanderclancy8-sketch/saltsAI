@@ -818,7 +818,9 @@ def test_the_office_status_and_page_carry_no_finance(kinds):
     for needle in ('id="pop-finance"', 'id="pop-approvals"', 'id="pop-connections"', 'id="pop-memory"', 'id="pop-activity"',
                    "team-access-sec", "activity-export"):
         assert needle not in page, needle
-    assert re.findall(r'<section class="pop" id="pop-(\w+)"', page) == ["ops", "fleet", "presence", "upcoming", "settings"]
+    # (drawings: only the ones linked to a job, view and export only for office - services/plan_drawings.py; no upload form)
+    assert re.findall(r'<section class="pop" id="pop-(\w+)"', page) == ["ops", "fleet", "presence", "upcoming", "drawings", "settings"]
+    assert 'id="drw-new"' not in page
 
 
 def test_the_owners_settings_shows_both_codes_and_no_code_ever(kinds):

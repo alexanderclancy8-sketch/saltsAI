@@ -65,6 +65,7 @@ from .services.supplier_bills import PurchaseOrderBook, SupplierBills
 from .services.async_tools import AsyncTools
 from .services.entity_memory import EntityMemory
 from .services.faults import FaultLog
+from .services.plan_drawings import PlanDrawings
 from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
@@ -204,6 +205,8 @@ class Jarvis:
         self.activity = ActivityLog(self)  # every scheduled check's runs; the chat shows one quiet line per check
         # Fault reports: what of Jarvis's own broke, kept in his own database only - never sent anywhere (services/faults.py)
         self.faults = FaultLog(self)
+        # Drawings on floor plans: device layouts and zone charts (Jarvis proposes, a person adjusts, then exports)
+        self.drawings = PlanDrawings(self)
         self.activity_feed = ActivityFeed(self)  # "What Jarvis did": a read-only union of everything proposed, changed and decided
         # Owner set / clear of an engineer's home point: engineer name and time only, never a postcode or a point.
         self.homes.audit = lambda action, detail: self.activity.record("engineer_homes", "Engineer homes", CHANGED, detail)

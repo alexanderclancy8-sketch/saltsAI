@@ -19,4 +19,5 @@ python-docx>=1.1  # Word rendering of drafted documents - pure Python
 pillow>=10  # draws the headline, navy branding and logo onto draft social media graphics (also pulled in by reportlab)
 openpyxl>=3.1 # Excel (.xlsx) building and reading of drafted documents / email attachments - pure Python
 pypdf>=4.0  # text of emailed / attached PDFs (customer purchase orders) and the page pictures of scans - pure Python; needs cryptography (above) for AES-encrypted PDFs and pillow (above) to decode scan images
+pypdfium2>=4.30,<6  # renders a chosen page of a floor-plan PDF to a picture and the exported drawing to PNG (services/plan_drawings.py) - a self-contained wheel (PDFium), no system package
 piper-tts>=1.8  # free, local neural TTS - the default voice when no paid ElevenLabs/Azure key is configured

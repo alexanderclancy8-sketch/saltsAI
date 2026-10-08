@@ -371,6 +371,51 @@ document and, for a scan or photo only, the file. One read-only tool, `fsm_docum
   Prompt: `PERSONA` (after the email PDF paragraph) - use it for certificates, RAMS, reports, quotes/proposals and site documents, quote the name,
   say when it was a transcribed scan.
 
+*Drawings on floor plans: device layouts and zone charts (`services/plan_drawings.py`, `j.drawings`; tool `draw_on_plan`; console rail item +
+pop-up **Drawings**, `web/drawings.js` + `drawings.css`; symbols `web/drawing_symbols.js`; tables `drawing_plans`, `drawings`; tests
+`tests/test_plan_drawings.py`, `tests/test_plan_drawings_browser.py` (Playwright)).* **Jarvis proposes, a person adjusts, then exports** - Claude can
+read a plan picture but its pixel placement is not survey-accurate, so a proposal is only ever a draft loaded into an editor.
+- **Plans in:** a console upload (`POST /api/drawings`, multipart: PDF - a chosen page - PNG, JPEG, WebP; 25 MB), or for the tool `plan_ref` =
+  `drawing:<n>` / `plan:<id>` / `email:<message id>` (+ `attachment_name`, `mailbox`; `GraphMail.image_attachments` was added next to `pdf_attachments`)
+  / `fsm_document:<id>` (only what `fsm_document_read`'s rules allow: the FSM decides the group, managers only compliance / commercial / operations, and
+  the FSM only serves the FILE of a scan or photo). `render_plan` re-encodes everything (flattened on white, <= `MAX_PLAN_EDGE` 3000 px, nothing else of
+  the original kept); a PDF page is rendered by **pypdfium2** (added to requirements: a self-contained wheel, no system package) - without it only a
+  scanned page (the biggest picture on it, via pypdf) can be used and a vector page says "export it as PNG".
+- **Proposal** (`PlanDrawings.propose`, one `llm.structured` vision call, schema `PlanProposal`, effort medium; capped at `PROPOSALS_PER_HOUR` 20): the model
+  sees a copy with a faint grid of tenths (`model_image`), returns normalised 0-1 devices (type, x, y, label, note, CCTV `direction`) or zones (number,
+  name, floor, polygon). The plan is UNTRUSTED: the system prompt says writing on it is data, never instructions; the person's brief is fenced in
+  `<<<REQUEST ... REQUEST>>>` (markers inside it defused). Everything returned goes through `clean_content` - the closed vocabulary (`DEVICE_TYPES`,
+  read from the symbol file; `ALIASES` map common words), coordinates clamped to 0..1 (NaN / bool dropped), zones need a number 1-999 and a real
+  polygon (3..`MAX_ZONE_POINTS` 60, evenly thinned), caps `MAX_DEVICES` 600 / `MAX_ZONES` 99, text cleaned (control / bidi characters, money amounts,
+  secret-looking strings) and capped. Spacing figures in the prompt are "rules of thumb, guidance only"; nothing ever claims BS 5839 compliance.
+- **Tool `draw_on_plan(plan_ref, kind: devices|zones, brief, page, attachment_name, mailbox, title, site_name, job_ref)`**: not approval-gated
+  (it saves a NEW draft drawing - never overwrites one a person worked on - and changes no other record), owner / manager only (not in `TEAM_TOOLS`;
+  the service refuses a team caller too), in `UNTRUSTED_TOOLS` (labels were read off the plan), `NOT_BACKGROUND` (it publishes a `display` event with
+  `drawing_id`, which hud.js turns into an "Open in the drawing editor" button) and in `checkmode.CHECK_TOOLS`: in a question check it PROPOSES only and
+  saves nothing (`checkmode.is_active()`; `add_plan` / `create` / `save` / `delete` also call `checkmode.guard`).
+- **Editor** (vanilla JS, Pointer Events so mouse and touch are one path, `touch-action: none` on the SVG): the plan `<image>` under an SVG overlay in the
+  plan's pixel space (turned in 90-degree steps; content is always stored against the plan AS UPLOADED, `rotate_point` / `toView` / `fromView`); Move (drag
+  devices, zone corners or a whole zone; empty space pans a zoomed plan), Add device (palette), Draw zone (tap corners, Finish or tap the first corner),
+  You are here, relabel / type / camera direction / delete, Undo (snapshots, 60) and Ctrl+Z, arrow keys / Delete on the selection, Turn, zoom, title block,
+  Save (with the version it was opened at: a newer save elsewhere is 409 "saved since you opened it"), Export PDF / PNG (unsaved changes are saved
+  first), and for owner / managers "Ask Jarvis to propose" (`POST .../propose` returns a draft that is loaded, NOT saved) and Delete. The drawer widens
+  while a drawing is open (`.drawer.drw-wide`, still `min(var(--drawer-w), 100%)`), is full-screen on a phone, and never covers the chat once closed;
+  leaving with unsaved changes asks "Discard unsaved drawing changes?". Symbols are drawn with DOM APIs from `drawing_symbols.js` (strict JSON between
+  `DRAWING-SYMBOLS-JSON-START/END` markers - the server's PDF renderer `draw_symbol` reads the SAME block, so a symbol is changed in one place; they are
+  commonly used symbols, explicitly NOT a formal BS set). The plan is shown on white in both themes; the chrome follows the theme tokens.
+- **Export** (`render_pdf`, reportlab; `pdf_to_png` renders that PDF with pypdfium2 at 150 dpi, so PNG == PDF): A4 / A3 landscape; header ("DEVICE LAYOUT
+  - DRAFT" / "FIRE ALARM ZONE CHART - DRAFT"), the plan turned as set, devices with labels (device layout) or coloured numbered zones + "YOU ARE HERE"
+  (zone chart), a legend with counts per type + total or the zone list in number order, a title block (logo, site, address, panel location, job ref,
+  revision, date, paper "not to scale", Drawn by Salts Fire & Security) and on every export `DISCLAIMER` ("Draft layout prepared with Jarvis – to be checked
+  by a competent person before installation.") plus `NOT_A_DESIGN`. No prices exist anywhere in a drawing. Attaching to an FSM job or emailing is NOT
+  wired (a person downloads); if it is added it must go through `ActionExecutor.queue`. There was no quote-drafting tool with line items to send counts to,
+  so counts are only shown.
+- **Who** (`PlanDrawings.may_manage / may_edit / may_view`; routes in `access.ROUTE_POLICY`): owner + managers everything; a team member sees only
+  drawings with a `job_ref`; an ENGINEER may open, edit (not unlink the job) and export them; OFFICE may open and export only (`POST /api/drawings/{id}`
+  is TEAM_OK and the handler answers office 403 - a handler rule, so `OFFICE_ONLY_ROUTES` stays empty). Upload, delete and propose are MANAGER_OK.
+  The upload form is a `role:manager` region, so a team page has the pop-up without it. Every create / save / export / proposal / delete is an
+  audit line (kind `drawing` -> "draft" in What Jarvis did: number, title, who - never the contents).
+
 *Suggestions with a Prepare button (`services/fsm_suggestions.py`, `j.fsm_suggestions`; tests `tests/test_fsm_suggestions.py`,
 `tests/test_console_browser_suggestions.py`).* "One step ahead": Jarvis offers to do the groundwork, in its own Approvals drawer AND in
 the Salts FSM Action Centre (the office's inbox). Stage 1 is one kind, `quote_followup`: a SENT quote with no response for 7 to 60 days
