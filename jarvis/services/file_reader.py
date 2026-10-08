@@ -220,6 +220,9 @@ _R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 
+_BAD_XML_BYTES = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]|&#(?:x0*(?:[0-8bcef]|1[0-9a-f])|0*(?:[0-8]|11|12|1[4-9]|2[0-9]|3[01]));", re.I)
+
+
 def _xml(z: zipfile.ZipFile, part: str) -> ET.Element | None:
     """One XML part parsed safely: a DOCTYPE / entity declaration (the 'billion laughs' trick) is refused outright."""
     try:
@@ -230,6 +233,11 @@ def _xml(z: zipfile.ZipFile, part: str) -> ET.Element | None:
         raise FileProblem("zip_bomb", "the file contains XML that tries to define entities, so I won't open it.")
     try:
         return ET.fromstring(raw)
+    except ET.ParseError:
+        pass
+    # XML 1.0 forbids control characters, but real files sometimes carry one (a stray bell character in pasted text): drop them and retry
+    try:
+        return ET.fromstring(_BAD_XML_BYTES.sub(b"", raw))
     except ET.ParseError:
         return None
 

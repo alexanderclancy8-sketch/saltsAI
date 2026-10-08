@@ -196,11 +196,11 @@ def pptx_file(slides: list[dict] | None = None, vba: bool = False) -> bytes:
     return buf.getvalue()
 
 
-def zip_bomb(entries: int = 1, part_size: int = 60_000_000) -> bytes:
+def zip_bomb(entries: int = 1, part_size: int = 60_000_000, part: str = "word/document.xml") -> bytes:
     """A small zip that inflates enormously (or has a huge number of parts) - looks like a Word file."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("word/document.xml", b"0" * part_size)
+        z.writestr(part, b"0" * part_size)
         for i in range(entries - 1):
             z.writestr(f"junk/{i}.txt", b"x")
     return buf.getvalue()
