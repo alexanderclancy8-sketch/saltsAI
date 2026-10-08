@@ -133,6 +133,13 @@ class TurnTrace:
         if panel and panel in self.allowed:
             self.panels.append(panel)
 
+    def add_source(self, label: str) -> None:
+        """A source that is not a tool call: the customer / site notes added to a tool result (services/entity_memory.py), named
+        so the source line says the answer leaned on them ("Jarvis's notes on Acme"). Ignored outside a turn."""
+        label = " ".join(str(label or "").split())[:80]
+        if self.active and label and label not in self.sources:
+            self.sources.append(label)
+
     def offer(self, panel: str | None, follow_ups: list[str]) -> None:
         """The offer_next_steps tool: what the model chose to suggest. Ignored outside a turn."""
         if not self.active:

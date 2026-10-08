@@ -189,6 +189,10 @@ def test_the_levels_are_what_the_spec_says(world):
                 "GET /api/settings", "POST /api/settings", "POST /api/settings/test/{section}", "GET /api/memory",
                 "POST /api/memory/facts/{fact_id}", "DELETE /api/memory/facts/{fact_id}",
                 "POST /api/memory/replies/{reply_id}", "DELETE /api/memory/replies/{reply_id}",
+                "GET /api/entity-notes", "GET /api/entity-notes/{entity_type}/{fsm_id}",
+                "POST /api/entity-notes/{entity_type}/{fsm_id}/notes", "POST /api/entity-notes/{entity_type}/{fsm_id}/summary",
+                "POST /api/entity-notes/entry/{entry_id}", "DELETE /api/entity-notes/entry/{entry_id}",
+                "POST /api/entity-notes/entry/{entry_id}/{decision}",
                 "GET /api/staff-report-address", "GET /auth/sage/start", "GET /auth/sage/callback", "POST /api/briefing",
                 "POST /api/wrapup", "GET /api/digests", "GET /api/transcript", "POST /api/tests/run",
                 # suggestions: Prepare drafts and queues an approval, Not now snoozes it in Salts FSM - never for a team session
@@ -196,6 +200,7 @@ def test_the_levels_are_what_the_spec_says(world):
         assert p[key] == MANAGER_OK, key
     assert p["GET /api/team-access"] == p["POST /api/team-access"] == p["DELETE /api/team-access"] == OWNER_ONLY
     assert p["POST /api/team-access/{team_role}"] == p["DELETE /api/team-access/{team_role}"] == OWNER_ONLY
+    assert p["POST /api/entity-notes/{entity_type}/{fsm_id}/forget"] == OWNER_ONLY
     assert p["POST /api/chat"] == p["GET /api/status"] == p["WS /ws"] == TEAM_OK
     assert p["POST /api/teams/messages"] == PUBLIC and p["GET /"] == PAGE
 
@@ -256,7 +261,13 @@ APPROVAL_ENDPOINTS = [("GET", "/api/approvals"), ("GET", "/api/approvals/inbox")
 CONNECTION_ENDPOINTS = [("GET", "/api/settings"), ("POST", "/api/settings"), ("POST", "/api/settings/test/claude"),
                         ("GET", "/api/staff-report-address"), ("POST", "/api/brand/logo"), ("POST", "/api/tts/sample")]
 MEMORY_ENDPOINTS = [("GET", "/api/memory"), ("POST", "/api/memory/facts/1"), ("DELETE", "/api/memory/facts/1"),
-                    ("POST", "/api/memory/replies/1"), ("DELETE", "/api/memory/replies/1")]
+                    ("POST", "/api/memory/replies/1"), ("DELETE", "/api/memory/replies/1"),
+                    # customer & site notes (services/entity_memory.py): owner and manager only, forget-all the owner's alone
+                    ("GET", "/api/entity-notes"), ("GET", "/api/entity-notes/customer/C1"),
+                    ("POST", "/api/entity-notes/customer/C1/notes"), ("POST", "/api/entity-notes/customer/C1/summary"),
+                    ("POST", "/api/entity-notes/customer/C1/forget"), ("POST", "/api/entity-notes/entry/1"),
+                    ("DELETE", "/api/entity-notes/entry/1"), ("POST", "/api/entity-notes/entry/1/accept"),
+                    ("POST", "/api/entity-notes/entry/1/discard")]
 OWNER_DATA_ENDPOINTS = [("GET", "/api/transcript"), ("GET", "/api/quality"), ("DELETE", "/api/quality"),
                         ("GET", "/api/issues"), ("POST", "/api/issues/1/fix"), ("POST", "/api/tests/run"),
                         ("GET", "/api/reply-suggestions"), ("POST", "/api/feedback"), ("GET", "/api/documents/x/pdf"),

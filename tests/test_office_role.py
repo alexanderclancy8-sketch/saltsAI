@@ -648,6 +648,24 @@ async def test_neither_office_nor_engineer_can_read_fsm_documents(fsm, who):
     assert api.requests == [] and j.db.background_calls(5) == []
 
 
+ENTITY_TOOLS = ("entity_note_add", "entity_note_propose", "entity_notes_get")
+
+
+@pytest.mark.parametrize("who", [PAT, SAM, LEGACY], ids=["office", "engineer", "pre-split-team"])
+@pytest.mark.parametrize("name", ENTITY_TOOLS)
+async def test_neither_office_nor_engineer_gets_the_customer_and_site_memory_tools(fsm, who, name):
+    """Customer & site notes (entity_note_add / entity_note_propose / entity_notes_get) are the owner's and managers': in neither
+    team list, refused at dispatch and in the background, and nothing is read or written."""
+    j, api, _ = fsm
+    assert name in TOOLS_BY_NAME and name not in OFFICE_TOOLS and name not in access.ENGINEER_TOOLS
+    assert not tool_allowed(name, who) and tool_allowed(name, OWNER) and tool_allowed(name, MANAGER)
+    tool = TOOLS_BY_NAME[name]
+    out = await dispatch(j, tool, tool.model.model_construct(), caller=who)
+    assert out == access.refusal(name, who) and "isn't available to you here" in out
+    assert "error" in j.async_tools.start(name, {}, "SILENT", caller=who)
+    assert api.requests == [] and j.db.background_calls(5) == []
+
+
 async def test_the_owner_only_fsm_data_finance_rule_is_unchanged_for_managers(fsm):
     j, _, _ = fsm
     out = await dispatch(j, TOOLS_BY_NAME["fsm_data"], TOOLS_BY_NAME["fsm_data"].model(resource="invoices"), caller=MANAGER)
@@ -696,7 +714,10 @@ def test_the_inventory_distinguishes_office_and_engineer_and_office_has_no_route
     office = {k for k in ROUTE_POLICY if route_allowed(k, PAT)}
     engineer = {k for k in ROUTE_POLICY if route_allowed(k, SAM)}
     assert office == engineer == {k for k in ROUTE_POLICY if route_allowed(k, LEGACY)} == team_ok
-    for key in ("POST /api/team-access/{team_role}", "DELETE /api/team-access/{team_role}", "GET /api/activity",
+    for key in ("GET /api/entity-notes", "GET /api/entity-notes/{entity_type}/{fsm_id}",
+                "POST /api/entity-notes/{entity_type}/{fsm_id}/notes", "POST /api/entity-notes/entry/{entry_id}/{decision}",
+                "POST /api/entity-notes/{entity_type}/{fsm_id}/forget",
+                "POST /api/team-access/{team_role}", "DELETE /api/team-access/{team_role}", "GET /api/activity",
                 "GET /api/activity/export.csv", "GET /api/approvals", "GET /api/settings", "GET /api/memory", "POST /api/briefing"):
         assert not route_allowed(key, PAT) and not route_allowed(key, SAM), key
     assert route_allowed("POST /api/team-access/{team_role}", OWNER) and not route_allowed("POST /api/team-access/{team_role}", MANAGER)
@@ -770,6 +791,10 @@ OFFICE_NAMED = [
     ("POST", "/api/team-access/office"), ("DELETE", "/api/team-access/office"), ("POST", "/api/team-access/engineer"),
     # Memory
     ("GET", "/api/memory"), ("POST", "/api/memory/facts/1"), ("DELETE", "/api/memory/facts/1"),
+    # Memory > Customers & sites (customer / site notes)
+    ("GET", "/api/entity-notes"), ("GET", "/api/entity-notes/customer/1"), ("POST", "/api/entity-notes/customer/1/notes"),
+    ("POST", "/api/entity-notes/customer/1/summary"), ("POST", "/api/entity-notes/entry/1"), ("DELETE", "/api/entity-notes/entry/1"),
+    ("POST", "/api/entity-notes/entry/1/accept"), ("POST", "/api/entity-notes/customer/1/forget"),
     # exports and owner data
     ("GET", "/api/transcript"), ("GET", "/api/documents/x/pdf"), ("GET", "/api/staff-report-address"), ("GET", "/api/fleet/diagnostics"),
     ("GET", "/api/engineer-homes"),

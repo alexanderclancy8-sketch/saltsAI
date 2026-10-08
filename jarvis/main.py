@@ -36,6 +36,8 @@ from .redact import install_log_redaction, redact_text
 from .services import activity_feed, adverts, approval_inbox, chat_files, connection_tests, documents, images
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
+from .services import entity_memory as entity_mem
+from .services.entity_memory import EntityNoteError
 from .services.engineer_homes import DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, HomeError
 from .services.team_access import CodeRejected
 from .services.tracking import requester_label
@@ -87,6 +89,14 @@ class DismissFailedIn(BaseModel):
 
 class MemoryTextIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
+
+
+class EntityTextIn(BaseModel):
+    text: str = Field(max_length=1000)
+
+
+class ForgetEntityIn(BaseModel):
+    confirm: bool = False
 
 
 class TTSIn(BaseModel):
@@ -947,6 +957,64 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         J(request).activity_feed.record("memory", speaker(request) or "the owner", f"Removed learned reply #{reply_id}")
         return {"deleted": reply_id}
 
+    # ------------------------------------------------------------------ customer & site notes (Memory pop-up > Customers & sites)
+    # Owner and manager (MANAGER_OK in access.ROUTE_POLICY; a team session gets 403 before the handler runs), and forgetting
+    # everything on one customer is the principal owner's alone. Every change is a same-origin click. Accept / Discard of a
+    # suggested note is ONLY here - no brain tool reaches it. "What Jarvis did" records the customer's name and who, never the text.
+    def entity_call(fn, *args):
+        try:
+            return fn(*args)
+        except EntityNoteError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    def who_and_role(request: Request) -> tuple[str, str]:
+        caller = caller_of(request)
+        return (speaker(request) or "the owner"), (caller.role if caller is not None else access.MANAGER)
+
+    @app.get("/api/entity-notes", dependencies=[Depends(owner)])
+    async def entity_notes_list(request: Request, q: str = ""):
+        q = q[:120]
+        out = J(request).entity_memory.listing(q)
+        out["fsm_matches"] = await J(request).entity_memory.search_fsm(q) if q.strip() else []
+        return out
+
+    @app.post("/api/entity-notes/entry/{entry_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def entity_note_edit(entry_id: int, body: EntityTextIn, request: Request):
+        return entity_call(J(request).entity_memory.edit_entry, entry_id, body.text, who_and_role(request)[0])
+
+    @app.delete("/api/entity-notes/entry/{entry_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def entity_note_delete(entry_id: int, request: Request):
+        entity_call(J(request).entity_memory.delete_entry, entry_id, who_and_role(request)[0])
+        return {"deleted": entry_id}
+
+    @app.post("/api/entity-notes/entry/{entry_id}/{decision}", dependencies=[Depends(owner), Depends(human_click)])
+    async def entity_note_decide(entry_id: int, decision: str, request: Request):
+        who, role = who_and_role(request)
+        return entity_call(J(request).entity_memory.decide, entry_id, decision, who, role)
+
+    @app.get("/api/entity-notes/{entity_type}/{fsm_id}", dependencies=[Depends(owner)])
+    async def entity_notes_view(entity_type: str, fsm_id: str, request: Request):
+        return entity_call(J(request).entity_memory.entity_view, entity_type, fsm_id)
+
+    @app.post("/api/entity-notes/{entity_type}/{fsm_id}/notes", dependencies=[Depends(owner), Depends(human_click)])
+    async def entity_notes_add(entity_type: str, fsm_id: str, body: EntityTextIn, request: Request):
+        who, role = who_and_role(request)
+        try:
+            return await J(request).entity_memory.console_add(entity_type, fsm_id, body.text, who, role)
+        except EntityNoteError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    @app.post("/api/entity-notes/{entity_type}/{fsm_id}/summary", dependencies=[Depends(owner), Depends(human_click)])
+    async def entity_notes_summary(entity_type: str, fsm_id: str, body: EntityTextIn, request: Request):
+        return entity_call(J(request).entity_memory.set_summary, entity_type, fsm_id, body.text, who_and_role(request)[0])
+
+    @app.post("/api/entity-notes/{entity_type}/{fsm_id}/forget", dependencies=[Depends(principal), Depends(human_click)])
+    async def entity_notes_forget(entity_type: str, fsm_id: str, body: ForgetEntityIn, request: Request):
+        if not body.confirm:
+            raise HTTPException(400, "Confirm first: this forgets every note on them.")
+        entity_call(J(request).entity_memory.forget_all, entity_type, fsm_id, who_and_role(request)[0])
+        return {"forgotten": True}
+
     # ------------------------------------------------------------------ suggestions
     @app.post("/api/suggestions/refresh", dependencies=[Depends(owner)])
     async def refresh_suggestions(request: Request):
@@ -1078,6 +1146,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                                     manager: bool = False) -> None:
         if manager:  # the partner or another approver, not the owner themself (see mark_manager)
             access.current_caller.set(access.Caller(access.MANAGER, name))
+        entity_mem.turn_channel.set(entity_mem.TEAMS)  # customer / site notes are never read into a turn that answers in Teams
         try:
             reply = await j.brain.ask(text, "typed", speaker=name)
             await j.teamsbot.reply(service_url, conversation_id, reply)
