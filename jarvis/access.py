@@ -263,6 +263,13 @@ ROUTE_POLICY: dict[str, str] = {
     "DELETE /api/memory/facts/{fact_id}": MANAGER_OK,
     "POST /api/memory/replies/{reply_id}": MANAGER_OK,
     "DELETE /api/memory/replies/{reply_id}": MANAGER_OK,
+    "GET /api/entity-notes": MANAGER_OK,                    # customer & site notes (Memory pop-up): read, add, reword, delete,
+    "GET /api/entity-notes/{entity_type}/{fsm_id}": MANAGER_OK,  # and Accept / Discard a suggested note - never team
+    "POST /api/entity-notes/{entity_type}/{fsm_id}/notes": MANAGER_OK,
+    "POST /api/entity-notes/{entity_type}/{fsm_id}/summary": MANAGER_OK,
+    "POST /api/entity-notes/entry/{entry_id}": MANAGER_OK,
+    "DELETE /api/entity-notes/entry/{entry_id}": MANAGER_OK,
+    "POST /api/entity-notes/entry/{entry_id}/{decision}": MANAGER_OK,
     "POST /api/suggestions/refresh": MANAGER_OK,
     "POST /api/suggestions/{key:path}/prepare": MANAGER_OK,   # drafts the work and queues it for approval; runs nothing
     "POST /api/suggestions/{key:path}/snooze": MANAGER_OK,    # Not now: quiet here and in Salts FSM until tomorrow
@@ -283,6 +290,8 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/settings/test/{section}": MANAGER_OK,
     "GET /auth/sage/start": MANAGER_OK,                     # finance connection
     "GET /auth/sage/callback": MANAGER_OK,
+    # ---- the principal owner only: forget every note on one customer / site (after a confirm)
+    "POST /api/entity-notes/{entity_type}/{fsm_id}/forget": OWNER_ONLY,
     # ---- the principal owner only: the activity list as a CSV file (it leaves the system, so it is the owner's click alone)
     "GET /api/activity/export.csv": OWNER_ONLY,
     # ---- the principal owner only: how each van's moving / stopped / parked state was decided (no positions, no homes)

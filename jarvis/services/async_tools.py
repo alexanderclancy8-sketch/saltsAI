@@ -85,6 +85,8 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "fsm_document_read",
     # puts a chart on the display (a SILENT background call must really be silent)
     "show_chart",
+    # customer / site notes: tied to the live turn (who asked, what it read) and never kept in the background_calls table
+    "entity_note_add", "entity_note_propose", "entity_notes_get",
 }
 
 # Tools whose output includes text written by someone else (an email, a repository file, a customer's note in the FSM,

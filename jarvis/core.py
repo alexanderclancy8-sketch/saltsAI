@@ -60,6 +60,7 @@ from .services.performance import PerformanceReviewer, StaffRegister
 from .services.po_intake import PoIntake
 from .services.supplier_bills import PurchaseOrderBook, SupplierBills
 from .services.async_tools import AsyncTools
+from .services.entity_memory import EntityMemory
 from .services.proactive import Proactive
 from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
@@ -212,6 +213,9 @@ class Jarvis:
         # Describes each chat turn from the tool events (source line, pop-up button, follow-ups) - see brain/trace.py.
         self.trace = TurnTrace(self)
         self.bus.add_tap(self.trace.on_event)
+        # Per-customer / per-site notes (services/entity_memory.py): its tap notes which tools brought outside content into a turn.
+        self.entity_memory = EntityMemory(self)
+        self.bus.add_tap(self.entity_memory.on_event)
         # Team mode: the access code for engineers/office staff (hashed, in the database) and one cut-down brain per team session.
         self.team_access = TeamAccess(self.db)
         self.team_sessions = TeamSessions(self)

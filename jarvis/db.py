@@ -365,6 +365,37 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     outcome TEXT NOT NULL DEFAULT '',
     requested_role TEXT NOT NULL DEFAULT ''
 );
+-- Per-customer / per-site memory (services/entity_memory.py). Keyed by the Salts FSM id, never a name; name is a cached label.
+CREATE TABLE IF NOT EXISTS entity_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    fsm_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    summary_updated_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (entity_type, fsm_id)
+);
+-- One short note (or a proposed summary) on an entity: active (Jarvis reads it), pending (waits for a person's Accept) or
+-- discarded. source: owner | manager | jarvis-proposal. flag: why a person should check it (e.g. it followed an email).
+CREATE TABLE IF NOT EXISTS entity_note_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'note',
+    text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_role TEXT NOT NULL DEFAULT '',
+    flag TEXT NOT NULL DEFAULT '',
+    needs_owner INTEGER NOT NULL DEFAULT 0,
+    decided_at TEXT NOT NULL DEFAULT '',
+    decided_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_entity_note_entries_entity ON entity_note_entries (entity_id, status);
 """
 
 # Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).

@@ -87,6 +87,11 @@ async def _dispatch(j, tool: Tool, args: BaseModel) -> Any:
         demo_sources = demo_guard.end(token)
     if demo_sources:
         return demo_guard.refusal(tool.name, demo_sources, j.settings.owner_name or "the owner")
+    # Customer / site notes (services/entity_memory.py): a live console turn (owner or manager) gets the notes of the customers and
+    # sites this result names by FSM id, fenced and labelled as notes. Never a team caller, a scheduled turn or a Teams turn.
+    memory = getattr(j, "entity_memory", None)
+    if memory is not None:
+        result = await memory.after_tool(tool.name, result, access.current_caller.get())
     return result
 
 
@@ -1002,6 +1007,25 @@ class RememberIn(BaseModel):
 
 class ForgetIn(BaseModel):
     memory_id: int
+
+
+ENTITY_TYPE_DESC = "'customer' or 'site' (a site is one premises of a customer)"
+ENTITY_DESC = ("Which customer or site: its Salts FSM id if you have it (from fsm_data / fsm_jobs / an earlier answer), otherwise "
+               "its name exactly as said. A name that matches more than one record comes back as candidates to ask about.")
+
+
+class EntityNoteIn(BaseModel):
+    entity_type: Literal["customer", "site"] = Field(description=ENTITY_TYPE_DESC)
+    entity: str = Field(min_length=1, max_length=120, description=ENTITY_DESC)
+    text: str = Field(min_length=3, max_length=300, description="The note, in a short plain sentence (at most 300 characters), "
+                                                                "e.g. 'Prefers a call before an engineer is sent' or 'Gate is locked "
+                                                                "after 6pm - ring the site manager'. Never a code, password, "
+                                                                "phone number or anything personal.")
+
+
+class EntityNotesGetIn(BaseModel):
+    entity_type: Literal["customer", "site"] = Field(description=ENTITY_TYPE_DESC)
+    entity: str = Field(min_length=1, max_length=120, description=ENTITY_DESC)
 
 
 class OpenRequestIn(BaseModel):
@@ -2274,6 +2298,18 @@ async def forget(j, a: ForgetIn):
     return "Forgotten."
 
 
+async def entity_note_add(j, a: EntityNoteIn):
+    return await j.entity_memory.add_from_tool(a.entity_type, a.entity, a.text, proposal=False)
+
+
+async def entity_note_propose(j, a: EntityNoteIn):
+    return await j.entity_memory.add_from_tool(a.entity_type, a.entity, a.text, proposal=True)
+
+
+async def entity_notes_get(j, a: EntityNotesGetIn):
+    return await j.entity_memory.get_for_tool(a.entity_type, a.entity)
+
+
 async def note_open_request(j, a: OpenRequestIn):
     rid = history.add_open_request(j.db, a.request)
     j.brain.refresh_system()
@@ -2927,6 +2963,24 @@ TOOLS: list[Tool] = [
     Tool("remember", "Save a fact or preference the owner wants you to remember long term.", RememberIn, remember,
          "Making a note"),
     Tool("forget", "Delete a remembered fact by its number.", ForgetIn, forget, "Forgetting that"),
+    Tool("entity_note_add", "Save a note about ONE customer or site when the owner or a manager tells you to ('remember for "
+                            "Acme: they want a call before we send anyone'). It is kept against that customer's / site's Salts FSM "
+                            "id and read back whenever they come up. Give the FSM id if you have it; a name that matches more than "
+                            "one record (or only loosely) comes back as 'choose_one' candidates - ask which, by name and id, never "
+                            "pick. If this turn read an email, a document, FSM text or a web page, the note is only kept as a "
+                            "suggestion for a person to accept - say so. Refuses codes, passwords, phone numbers, email addresses "
+                            "and personal details (say the refusal plainly). Not for general facts (use remember).",
+         EntityNoteIn, entity_note_add, "Noting that for them"),
+    Tool("entity_note_propose", "Suggest a note about ONE customer or site that you noticed and is worth keeping (a stated "
+                                "preference, how they like to be contacted, a recurring access issue) - only when nobody asked you "
+                                "to remember it. It is NOT saved: it waits in Memory > Customers & sites until a person accepts "
+                                "it. Same rules as entity_note_add (ids, never guess, nothing secret or personal).",
+         EntityNoteIn, entity_note_propose, "Suggesting a note"),
+    Tool("entity_notes_get", "Read your saved notes (summary and recent notes) on ONE customer or site, by FSM id or exact "
+                             "name. Notes are added to tool results automatically when a customer or site comes up by id; use "
+                             "this when they haven't been, before advising on that customer. They are notes people saved, not "
+                             "facts from Salts FSM, and may be out of date. Live console conversations only.",
+         EntityNotesGetIn, entity_notes_get, "Checking my notes"),
     Tool("note_open_request", "Record a request that isn't finished yet (queued for approval, waiting on "
                               "information, or failed) so it is carried forward into later sessions. Only Jarvis' "
                               "own to-do list - it does not do or approve anything.", OpenRequestIn,
