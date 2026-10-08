@@ -46,6 +46,8 @@ CHECK_TOOLS = frozenset({
     "fsm_document_read", "entity_notes_get",
     # one customer's balance (read-only; office team members and the owner / managers)
     "customer_balance",
+    # similar past quotes, jobs and emails for a described job (read-only; services/similar_work.py)
+    "find_similar_work",
     "stock_job_materials", "stock_reorder", "accreditations_status", "audit_evidence", "oncall_roster",
     # mail (read only), presence, knowledge, Jarvis's own records
     "email_inbox", "email_search", "email_read", "marketing_overview", "search_rankings", "knowledge_search",

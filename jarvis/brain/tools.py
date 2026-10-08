@@ -461,6 +461,26 @@ class QuotesIn(BaseModel):
     status: str | None = Field(None, description="e.g. sent, accepted, declined")
 
 
+class FindSimilarWorkIn(BaseModel):
+    description: str = Field(min_length=3, max_length=4000, description="The job or enquiry in plain words - what was asked for, "
+                             "e.g. 'quote for a 12-zone Gent addressable fire alarm in a 3-storey care home', or the text of an "
+                             "enquiry email. Include the system, manufacturer, kind of building and size (zones, devices, floors) "
+                             "when known.")
+    customer: str | None = Field(None, max_length=100, description="Only past work for this customer (name as it appears in the "
+                                                                   "FSM). Leave blank for any customer.")
+    site_type: str | None = Field(None, max_length=60, description="Only this kind of building, e.g. 'care home', 'school', "
+                                                                   "'warehouse', 'flats'. Leave blank for any.")
+    system_type: str | None = Field(None, max_length=60, description="Only this kind of system, e.g. 'fire alarm', 'emergency "
+                                                                     "lighting', 'intruder alarm', 'CCTV', 'access control'.")
+    manufacturer: str | None = Field(None, max_length=60, description="Only work with this manufacturer's kit, e.g. 'Gent', "
+                                                                      "'Advanced', 'Paxton', 'Texecom'.")
+    date_from: str | None = Field(None, description="Only past work dated on or after this day, YYYY-MM-DD")
+    date_to: str | None = Field(None, description="Only past work dated on or before this day, YYYY-MM-DD")
+    include_emails: bool = Field(True, description="Also search past emails in the mailbox for similar enquiries and quotes "
+                                                   "(owner and managers only)")
+    limit: int = Field(5, ge=1, le=10, description="How many of the most similar to return (1-10)")
+
+
 class SourceSearchIn(BaseModel):
     query: str = Field(description="Code search terms, e.g. a class, route or error message")
 
@@ -1352,6 +1372,12 @@ async def fsm_contracts_renewing(j, a: DaysAheadIn):
 
 async def fsm_quotes(j, a: QuotesIn):
     return {"demo": j.fsm.demo, "quotes": await j.fsm.quotes(a.status)}
+
+
+async def find_similar_work(j, a: FindSimilarWorkIn):
+    return await j.similar_work.find(a.description, customer=a.customer, site_type=a.site_type, system_type=a.system_type,
+                                     manufacturer=a.manufacturer, date_from=a.date_from, date_to=a.date_to,
+                                     include_emails=a.include_emails, limit=a.limit)
 
 
 async def fsm_source_search(j, a: SourceSearchIn):
@@ -2552,6 +2578,14 @@ TOOLS: list[Tool] = [
     Tool("fsm_contracts_renewing", "Maintenance contracts due for renewal within N days (or already past renewal).",
          DaysAheadIn, fsm_contracts_renewing, "Checking contract renewals"),
     Tool("fsm_quotes", "Quotes in Salts FSM, optionally filtered by status.", QuotesIn, fsm_quotes, "Checking quotes"),
+    Tool("find_similar_work", "Have we done something like this before? For a quote request, a described job or an enquiry email: "
+                              "finds the most similar past Salts FSM quotes and jobs (and past emails) by system type, manufacturer, "
+                              "kind of building and customer, size (zones, devices, floors) and value, and says WHY each matched - "
+                              "reference, customer/site, date, value, won/lost/open, key line items and the FSM record id. With 3 or "
+                              "more similar priced quotes it also gives a pricing guide (range, median, typical line items) worked out "
+                              "by code and saying how many quotes it rests on - quote it as given, never invent or adjust a figure. "
+                              "Read-only. Team callers get no prices and no emails.",
+         FindSimilarWorkIn, find_similar_work, "Looking for similar past work"),
     Tool("fsm_source_search", "Search the Salts FSM source code on GitHub - use to explain how a feature works.",
          SourceSearchIn, fsm_source_search, "Searching the FSM code"),
     Tool("fsm_source_read", "Read a file (or list a folder) from the Salts FSM source code on GitHub.",
