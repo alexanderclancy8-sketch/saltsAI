@@ -463,8 +463,39 @@ transcript or metrics, a prompt with nothing of the owner's) on its OWN event bu
 `reload` (`access.TEAM_EVENTS`) - never approvals, notifications, proactive posts or finance. `/api/status` for team is built
 from `TEAM_STATUS_KEYS` and reads only staff, overdue jobs, presence and accreditations; the page itself is cut down
 server-side (`<!--role:...-->` regions in `index.html`). A team request that queues an approval (`log_job`) always waits for a
-human, never consults the standing approvals, and is stamped "asked for by NAME (team)" on the card. When you add a route, add
-it to `ROUTE_POLICY`; when you add a tool, it is denied to team until you add it to `TEAM_TOOLS` on purpose.
+human, never consults the standing approvals, and is stamped "asked for by NAME (engineer|office)" on the card. When you add a route,
+add it to `ROUTE_POLICY`; when you add a tool, it is denied to team until you add it to `TEAM_TOOLS` on purpose.
+
+*Office and engineer (owner's decision 2026-10-08; `access.py`, `services/team_access.py`, `services/customer_balance.py`; tests
+`tests/test_office_role.py`, `tests/test_office_role_browser.py`).* The team role has two kinds (`Caller.team_role`; `Caller.kind` is
+`office` only when it says exactly that, anything else is `engineer`). Each has its OWN code: Settings > Team access shows "Office code" and
+"Engineer code" (`POST`/`DELETE /api/team-access/{office|engineer}`, principal owner only; the role-less `/api/team-access` routes are the
+ENGINEER code), both salted scrypt (kv `team_access` = engineer, `team_access_office` = office), and the two can never be the same
+(`TeamCodes.set_code` refuses) because at `/login/team` THE CODE DECIDES THE ROLE (`TeamCodes.match`). Cookies are signed with a per-role key
+(the engineer key is the pre-split team key, unchanged; office adds `|office|`) and carry the role inside the signed body (`"r": "office"`;
+none = engineer), so rotating or clearing one code signs out only that role (`TeamSessions.close(role)`). **Migration:** the pre-split team
+code and every pre-split team cookie ARE the engineer code / engineer sessions (same kv key, same cookie key, no data change) - least
+privilege; office starts off. Engineer = `TEAM_TOOLS` exactly (`ENGINEER_TOOLS`); office = `TEAM_TOOLS | OFFICE_EXTRA_TOOLS` where
+`OFFICE_EXTRA_TOOLS = {"customer_balance"}` - nothing else finance-related. Both kinds are tier `team` everywhere else (routes, features,
+the cut-down page, `TEAM_EVENTS`); `access.OFFICE_ONLY_ROUTES` is EMPTY (the balance is a chat answer only) and `access.route_allowed` is what
+the guard calls. Stored work (approvals, background calls) records `team` and is re-run as an ENGINEER (never write "office" to a role
+column - `stored_role` would read it as manager). Labels: "Sam (office)" / "Sam (engineer)"; requester keys `office:<name>` /
+`team:<name>` (engineer keeps the pre-split key). The top bar chip reads `body[data-team-role]`: "Office · Pat" / "Engineer · Sam".
+`customer_balance(customer, customer_id?, site?)`: read-only, not approval-gated, in `NOT_BACKGROUND`; owner and managers may use it, an
+engineer gets `access.OFFICE_ONLY_REFUSAL` ("That's for the office"). A DEDICATED read path (never `fsm_read.read`/`fsm_analyse`): customers
+`fields=id,name,account_ref,billing_address` (the address only to name a town for candidates), sites `id,name,customer_id,postcode,
+invoice_to_site`, invoices `id,invoice_no,due_at,outstanding,status,site_id,bill_to`, always `filter[customer_id]` (rows re-checked, then
+dropped page by page via `FsmData.scan`). One customer per call, resolved by FSM id: an exact account ref or name, or a single hit whose
+name/ref contains the query; otherwise `kind: "ambiguous"` with at most 8 candidates (name, town, account ref) and the model asks and calls
+again with `customer_id` - never a guess. Returns `owed`, `overdue` (Decimal strings, from the FSM's own `outstanding`; overdue = due
+before the company's today, injectable `today`), `oldest_overdue_invoice` {invoice_no, due_date, days_overdue, outstanding} and nothing
+else. Demo FSM -> "sample data", no figures; finance (or customers) scope off -> plain message. Sites ("Invoices go to this site"): an
+invoice to a site still carries the customer's id with `bill_to=site`, so a customer's balance is the whole account (with a note when some
+is addressed to its sites); `site=` a site with `invoice_to_site` -> only that site's invoices addressed to the site; a site without it ->
+the customer's account, said so. Office: `OFFICE_LOOKUPS_PER_HOUR` (30) per session (owner/manager unlimited). Every lookup that reaches a
+customer writes one `balance_lookup` audit line (customer name + FSM id, who, role - never a figure); the figures are noted with
+`fsm_read.note_sensitive_text` so `remember` refuses them. The office prompt (`prompts.OFFICE_BALANCE`) allows only the customer being
+discussed and sends payment arrangements / disputes to the owner; the engineer prompt says balances are for the office.
 
 *Engineer home points (`services/engineer_homes.py`; tests `tests/test_engineer_homes.py`, `tests/test_engineer_homes_browser.py`).* RAM's
 public API has no address labels (only lat/lng, registration, driver), so "home" in Fleet / `who_is_home` / `van_day` comes from a point
@@ -873,7 +904,7 @@ What surrounds a reply is built from what really happened, not from text the mod
 - ok / partial (`truncated`: "scanned 50,000 of 64,200 rows", "showing 120 of 900 rows" - counts only) / demo (the FSM or Outlook demo, NOT
 gated by demo_guard) / withheld (`demo_data_withheld`, and composite `demo_guard.stub` sections) / not_connected (FSM demo `kind: demo`) /
 scope_off (+ group) / not_exposed (`kind: unavailable`, or a 404 on a resource the catalog lists) / owner_only / error / timeout / rate_limited /
-refused (team) / blocked (check mode) / bad_input (the model's own typo - ignored) / transcribed (`fsm_document_read` of a scan: the part is "Salts FSM document '<name>'"; Medium unless the reply says it was a transcribed scan; a cut-short document is partial; the FSM's `masked_by_fsm` count is listed under `caveats`; an ambiguous pick / no match is bad_input). Customer / site notes injected by services/entity_memory.py (`TurnTrace.add_source` "Jarvis's notes on X") go in `coverage.notes` - never `checked`, never a needed source met, so they can't raise the confidence on their own. `TurnTrace` collects them from the bus and `finish(reply)` adds
+refused (team) / blocked (check mode) / bad_input (the model's own typo - ignored) / transcribed (`fsm_document_read` of a scan: the part is "Salts FSM document '<name>'"; Medium unless the reply says it was a transcribed scan; a cut-short document is partial; the FSM's `masked_by_fsm` count is listed under `caveats`; an ambiguous pick / no match is bad_input). `customer_balance` is the part "Salts FSM invoices (one customer)" (not found / ambiguous = bad_input, an engineer = refused). Customer / site notes injected by services/entity_memory.py (`TurnTrace.add_source` "Jarvis's notes on X") go in `coverage.notes` - never `checked`, never a needed source met, so they can't raise the confidence on their own. `TurnTrace` collects them from the bus and `finish(reply)` adds
 `coverage = coverage.summarise(facts, user_text, demo=demo_map(j), team=...)`: `checked`, `gaps[{source, kind, text}]`, `confidence`, `why`,
 `areas` (+ `spoken` for a Low voice turn when the reply didn't already name the gap). `AREAS` maps question words to the source groups a question
 needs (money -> Salts FSM AND Sage; vans_where -> RAM; vans_compliance -> FSM | register | RAM; stock -> stock records | FSM; operations -> FSM;
@@ -890,12 +921,12 @@ why; 44px on phones), also on reloaded transcript rows; a voice reply feeds `cov
 
 **Question checks: the accuracy scorecard (`services/question_checks.py`, `brain/checkmode.py`, `checks/questions.yaml`, `web/checks.js`; tests
 `tests/test_question_checks.py`, `tests/test_console_browser_coverage.py`).**
-- **Suite:** `checks/questions.yaml` (41 checks; `Settings.question_checks_file`; packaged by the Dockerfile and both zip deploys) + owner-made
+- **Suite:** `checks/questions.yaml` (43 checks; `Settings.question_checks_file`; packaged by the Dockerfile and both zip deploys) + owner-made
   checks in `question_checks_custom`. Expectations are computed at run time: `number_from {tool|jarvis, args ({today}/{tomorrow}/{today+N}),
   path, op value|len|sum, field, where (=, >0, <0...), top_by}` + `tolerance` (counts exact, else 0.5%), `mentions_from`, `must_mention_gap`,
   `contains_any/all`, `not_contains`, `refuses` (+ `no_digits`), `checked_any` (from the reply's coverage), `policy` (knowledge base has it ->
   must read it; else must say it isn't available). `needs: [fsm, sage, ram, mail, stock]` -> "skipped - demo data" while that is sample data
-  (also when the ground truth itself comes back demo/withheld); `only_when_not_connected` for gap checks; `as: owner|manager|team`;
+  (also when the ground truth itself comes back demo/withheld); `only_when_not_connected` for gap checks; `as: owner|manager|team|office` (team = an ENGINEER, the least-privileged kind; office = engineer tools + `customer_balance`, built as `Caller(TEAM, team_role=...)`);
   `sensitive` (default for money/people). `validate_expect()` is the one validator (YAML and the owner's edits); ground-truth tools must be in
   `CHECK_TOOLS`.
 - **Runner:** per role, ONE brain built like the owner's (`effective_llm_backend`) with `check=True`, `caller` for manager/team, a private
@@ -905,7 +936,7 @@ why; 44px on phones), also on reloaded transcript rows; a voice reply feeds `cov
   nothing. Results (`question_check_runs` / `question_check_results`, newest 26 runs) keep a <= 300-char redacted reply excerpt.
 - **Check mode can't send, queue or write - enforced in layers:** `dispatch(..., check=True)` (or `checkmode.active`, the SAME ContextVar as
   `events.check_mode`) runs only `checkmode.CHECK_TOOLS` (pure reads; never `approval=True`; no log_job/email/remember/display/notify/van
-  look-ups/access codes; `entity_note_add` / `entity_note_propose` write and are refused, `entity_notes_get` and `fsm_document_read` read and run) and returns `{"blocked_in_check_mode": true}` otherwise; while it is set `ActionExecutor.queue`, `Notifier.notify` /
+  look-ups/access codes; `entity_note_add` / `entity_note_propose` write and are refused, `entity_notes_get`, `fsm_document_read` and `customer_balance` read and run) and returns `{"blocked_in_check_mode": true}` otherwise; while it is set `ActionExecutor.queue`, `Notifier.notify` /
   `send_owner_update` raise `CheckModeBlocked`, `db.add_transcript` / `remember` / `create_action` raise, and every bus except a `check_ok`
   one drops events. MaxBrain passes `check` into its MCP tool handlers (ContextVars don't reach them) and drops the browsing plugin. Reads still
   leave their normal "What Jarvis did" `fsm_read` audit lines.
@@ -1001,8 +1032,8 @@ wrapper `run_in_background(tool, args, policy, timeout_s)`, which returns at onc
   output stays in the row and `background_results` wraps it in UNTRUSTED TOOL OUTPUT markers. Tools that publish to the display,
   notify or message as a side effect (`show_on_display`, `send_update_to_owner`, drafts, briefings, reports...) are in
   `NOT_BACKGROUND` (a test scans handlers for `.publish(`/`notifier.`/`send_mail(`). Also capped at `MAX_STARTED_PER_HOUR` (30) starts,
-  and finished rows older than 30 days are pruned at start-up. TODO for Team mode: tool lookup in `start()` must use the caller's
-  allowed-tool set.
+  and finished rows older than 30 days are pruned at start-up. (Team mode: `start()` checks `access.tool_allowed` with the caller -
+  an office caller's set or an engineer's.)
 - Add a tool to `NOT_BACKGROUND` if it depends on the live turn; don't add a path from a result into approvals or settings.
 
 ## No OpenAI dependency: Azure Speech listening and Claude-designed graphics

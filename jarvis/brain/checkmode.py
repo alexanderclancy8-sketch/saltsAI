@@ -44,6 +44,8 @@ CHECK_TOOLS = frozenset({
     # FSM documents (read-only; a scan may be transcribed by Jarvis's own model) and Jarvis's own customer / site notes (read only -
     # entity_note_add / entity_note_propose WRITE and stay off this list)
     "fsm_document_read", "entity_notes_get",
+    # one customer's balance (read-only; office team members and the owner / managers)
+    "customer_balance",
     "stock_job_materials", "stock_reorder", "accreditations_status", "audit_evidence", "oncall_roster",
     # mail (read only), presence, knowledge, Jarvis's own records
     "email_inbox", "email_search", "email_read", "marketing_overview", "search_rankings", "knowledge_search",

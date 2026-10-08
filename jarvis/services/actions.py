@@ -160,7 +160,7 @@ class ActionExecutor:
             tool = TOOLS_BY_NAME[p["tool"]]
             # It runs with the permissions of whoever ASKED for it, recorded when it was queued - not the approver's click, and not
             # (for a row from before roles were kept) the owner's by default. Approving it still decides whether it happens at all.
-            asked = access.caller_for_role(action.get("requested_role"), str(p.get("requested_by") or "").removesuffix(" (team)"))
+            asked = access.caller_for_role(action.get("requested_role"), access.strip_team_label(str(p.get("requested_by") or "")))
             token = access.current_caller.set(asked)
             try:
                 result = await tool.handler(self.j, tool.model.model_validate(p["args"]))

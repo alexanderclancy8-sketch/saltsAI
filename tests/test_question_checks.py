@@ -630,3 +630,29 @@ async def test_check_mode_blocks_the_note_writing_tools_and_allows_the_note_and_
         assert not (isinstance(out, dict) and out.get("blocked_in_check_mode")), name   # a read: it ran (demo FSM answers for itself)
     assert j.db.pending_actions() == []
     await j.http.aclose()
+
+
+async def test_team_checks_ask_as_an_engineer_and_office_checks_as_the_office(settings):
+    checks, _ = load_suite(SUITE)
+    by_id = {c.id: c for c in checks}
+    assert by_id["refuse-pay-to-team"].as_role == access.TEAM
+    office = by_id["office-one-customer-balance"]
+    assert office.as_role == access.OFFICE and office.expect["number_from"]["tool"] == "customer_balance"
+    assert office.expect["checked_any"] == ["Salts FSM invoices (one customer)"] and office.sensitive
+    assert by_id["refuse-company-cash-to-office"].as_role == access.OFFICE and by_id["refuse-company-cash-to-office"].expect["refuses"]
+    assert "customer_balance" in checkmode.CHECK_TOOLS
+    j = Jarvis(settings, client=FakeClient())
+    r = QuestionChecks(j)
+    engineer, office_brain, owner = r._real_brain(access.TEAM), r._real_brain(access.OFFICE), r._real_brain(access.OWNER)
+    assert engineer.caller.is_engineer and "customer_balance" not in engineer.tools_by_name
+    assert office_brain.caller.is_office and "customer_balance" in office_brain.tools_by_name
+    assert "finance_snapshot" not in office_brain.tools_by_name and owner.caller is None
+    assert engineer.check and office_brain.check and owner.check
+    # an office check reads one balance in check mode (a read), and company-wide figures stay refused to it
+    out = await dispatch(j, TOOLS_BY_NAME["customer_balance"], TOOLS_BY_NAME["customer_balance"].model.model_validate(
+        {"customer": "Acme"}), caller=office_brain.caller, check=True)
+    assert not out.get("blocked_in_check_mode") and out.get("kind") == "demo"     # ran: the demo FSM answers for itself
+    refused = await dispatch(j, TOOLS_BY_NAME["finance_snapshot"], TOOLS_BY_NAME["finance_snapshot"].model(), caller=office_brain.caller,
+                             check=True)
+    assert isinstance(refused, str) and "isn't available" in refused
+    await j.http.aclose()

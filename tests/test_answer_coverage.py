@@ -367,3 +367,15 @@ async def test_the_trace_counts_injected_notes_as_notes(settings):
     stored = json.loads(cov.as_stored(out["coverage"]))
     assert stored["notes"] == ["Jarvis's notes on Acme"]
     await j.http.aclose()
+
+
+def test_customer_balance_is_one_customers_invoices():
+    [f] = call_facts("customer_balance", {"customer": "Acme"}, {"customer": "Acme Ltd", "owed": 1200.0, "overdue": 300.0})
+    assert f == {"src": "Salts FSM", "status": cov.OK, "detail": "invoices (one customer)"}
+    c = summarise([f], "How much does Acme owe us?", demo=real(Sage=True))
+    assert c["checked"] == ["Salts FSM invoices (one customer)"] and "1200" not in json.dumps(c)
+    kinds = {k: call_facts("customer_balance", {}, {"error": "x", "kind": k})[0]["status"]
+             for k in ("not_found", "ambiguous", "bad_request", "office_only", "demo", "scope_off", "unavailable", "rate_limited")}
+    assert kinds == {"not_found": cov.BAD_INPUT, "ambiguous": cov.BAD_INPUT, "bad_request": cov.BAD_INPUT, "office_only": cov.REFUSED,
+                     "demo": cov.NOT_CONNECTED, "scope_off": cov.SCOPE_OFF, "unavailable": cov.NOT_EXPOSED,
+                     "rate_limited": cov.RATE_LIMITED}

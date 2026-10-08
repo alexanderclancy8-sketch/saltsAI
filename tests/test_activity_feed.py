@@ -763,8 +763,16 @@ def test_team_access_and_memory_changes_are_recorded_without_the_code_or_the_tex
     assert c.post(f"/api/memory/facts/{mid}", json={"text": "A new wording that mentions nothing"}).status_code == 200
     assert c.delete(f"/api/memory/facts/{mid}").status_code == 200
     lines = audit_lines(app.j)
-    assert "Set a new team access code (everyone signed in as team was signed out)" in lines
-    assert "Switched team access off (everyone signed in as team was signed out)" in lines
+    # (the role-less /api/team-access is the ENGINEER code since the office / engineer split, and the line now names which
+    # code changed and that only that role was signed out - tests/test_office_role.py)
+    assert "Set a new engineer access code (everyone signed in as engineer was signed out)" in lines
+    assert "Switched engineer access off (everyone signed in as engineer was signed out)" in lines
+    c.post("/api/team-access/office", json={"code": "an-office-code-5555"})
+    c.delete("/api/team-access/office")
+    lines = audit_lines(app.j)
+    assert "Set a new office access code (everyone signed in as office was signed out)" in lines
+    assert "Switched office access off (everyone signed in as office was signed out)" in lines
+    assert "an-office-code-5555" not in json.dumps(lines)
     assert f"Reworded remembered fact #{mid}" in lines and f"Removed remembered fact #{mid}" in lines
     assert "another-team-code-4444" not in json.dumps(lines) and "A new wording" not in json.dumps(lines)
 

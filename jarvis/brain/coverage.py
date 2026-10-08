@@ -63,7 +63,11 @@ TOOL_DETAIL = {
     "finance_snapshot": "accounts", "finance_aged": "aged debt", "finance_vat": "VAT", "finance_cashflow": "cash flow",
     "finance_corporation_tax": "corporation tax", "finance_profit_and_loss": "profit and loss",
     "finance_credit_control": "credit control", "finance_deadlines": "deadlines",
+    "customer_balance": "invoices (one customer)",
 }
+# customer_balance (services/customer_balance.py): its own refusal kinds. A name that matched nothing / several customers is the
+# question's input, not a gap in the data; an engineer asking is a refusal.
+_BALANCE_KIND = {"not_found": "bad_input", "bad_request": "bad_input", "ambiguous": "bad_input", "office_only": "refused"}
 FSM_DATA_TOOLS = ("fsm_data", "fsm_analyse")
 DOC_TOOL = "fsm_document_read"
 
@@ -202,6 +206,10 @@ def call_facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
         return [_fact(s, OK, detail) for s in sources]
     if not isinstance(result, dict):
         return [_fact(s, OK, detail) for s in sources]
+    if "error" in result and result.get("kind") and short == "customer_balance":
+        kind = str(result["kind"])
+        return [_fact(s, _BALANCE_KIND.get(kind) or _FSM_KIND.get(kind, ERROR), detail,
+                      str(result.get("group") or "") if kind == "scope_off" else "") for s in sources]
     if "error" in result and result.get("kind"):
         status = _FSM_KIND.get(str(result["kind"]), ERROR)
         if result["kind"] == "not_found" and "did_you_mean" not in result:

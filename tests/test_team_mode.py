@@ -1,5 +1,10 @@
 """Console redesign Phase 4b, item 5: Team mode - a cut-down console for engineers and office staff, enforced on the backend.
 
+Since the office / engineer split (2026-10-08, tests/test_office_role.py) the single team code of this file IS the engineer code
+and ``SAM`` (a team caller with no kind) is an ENGINEER: every restriction pinned here still holds, unchanged, for an engineer -
+and the labels now say which kind of team member asked ("Sam (engineer)", where they said "Sam (team)"), which is the only
+reason assertions below changed. What office adds (one tool) and keeps out is pinned in test_office_role.py.
+
 Roles: owner (everything), manager (as today), team (new). A team member signs in at /login/team with a name and the team
 access code the owner set; they get a team session and nothing more. What is pinned here:
 
@@ -194,6 +199,7 @@ def test_the_levels_are_what_the_spec_says(world):
                 "POST /api/suggestions/{key:path}/prepare", "POST /api/suggestions/{key:path}/snooze"):
         assert p[key] == MANAGER_OK, key
     assert p["GET /api/team-access"] == p["POST /api/team-access"] == p["DELETE /api/team-access"] == OWNER_ONLY
+    assert p["POST /api/team-access/{team_role}"] == p["DELETE /api/team-access/{team_role}"] == OWNER_ONLY
     assert p["POST /api/entity-notes/{entity_type}/{fsm_id}/forget"] == OWNER_ONLY
     assert p["POST /api/chat"] == p["GET /api/status"] == p["WS /ws"] == TEAM_OK
     assert p["POST /api/teams/messages"] == PUBLIC and p["GET /"] == PAGE
@@ -265,7 +271,9 @@ MEMORY_ENDPOINTS = [("GET", "/api/memory"), ("POST", "/api/memory/facts/1"), ("D
 OWNER_DATA_ENDPOINTS = [("GET", "/api/transcript"), ("GET", "/api/quality"), ("DELETE", "/api/quality"),
                         ("GET", "/api/issues"), ("POST", "/api/issues/1/fix"), ("POST", "/api/tests/run"),
                         ("GET", "/api/reply-suggestions"), ("POST", "/api/feedback"), ("GET", "/api/documents/x/pdf"),
-                        ("GET", "/api/team-access"), ("POST", "/api/team-access"), ("DELETE", "/api/team-access")]
+                        ("GET", "/api/team-access"), ("POST", "/api/team-access"), ("DELETE", "/api/team-access"),
+                        ("POST", "/api/team-access/office"), ("DELETE", "/api/team-access/office"),
+                        ("POST", "/api/team-access/engineer"), ("DELETE", "/api/team-access/engineer")]
 
 
 @pytest.mark.parametrize("method,path", FINANCE_ENDPOINTS + APPROVAL_ENDPOINTS + CONNECTION_ENDPOINTS + MEMORY_ENDPOINTS
@@ -534,7 +542,9 @@ def test_the_fleet_panel_works_for_team_and_is_logged_against_them(clients):
     _, team_c, w = clients
     assert team_c.get("/api/tracking").status_code == 200
     # the look-up label for a team member names them, never the owner's display
-    assert Caller(access.TEAM, "Sam", "x").label == "Sam (team)"
+    # (an engineer since the split: a team caller with no kind is an engineer; office is named as office)
+    assert Caller(access.TEAM, "Sam", "x").label == "Sam (engineer)"
+    assert Caller(access.TEAM, "Sam", "x", access.OFFICE).label == "Sam (office)"
 
 
 # -------------------------------------------------------------------------------------------------- tools: allowlist
@@ -685,12 +695,12 @@ async def test_a_job_logged_by_a_team_member_only_queues_names_who_asked_and_ski
     session = j.team_sessions.get(SAM)
     await session.brain.ask("Log a call-out at Unit 4 for a panel fault", "typed", speaker=SAM.label)
     (action,) = j.db.pending_actions()
-    assert action["status"] == "pending" and action["payload"]["requested_by"] == "Sam (team)"
-    assert action["summary"].endswith("(asked for by Sam (team))") and action["kind"] == "fsm_write"
+    assert action["status"] == "pending" and action["payload"]["requested_by"] == "Sam (engineer)"
+    assert action["summary"].endswith("(asked for by Sam (engineer))") and action["kind"] == "fsm_write"
     assert action["payload"]["path"] == "/jobs" and "requested_by" not in action["payload"]["body"]
     from jarvis.services import approval_inbox
     card = approval_inbox.view(action)
-    assert card["details"][0] == {"label": "Asked for by", "value": "Sam (team)", "block": False}
+    assert card["details"][0] == {"label": "Asked for by", "value": "Sam (engineer)", "block": False}
 
 
 async def test_standing_approvals_are_not_even_consulted_for_a_team_requester_but_still_work_for_the_owner(settings):
@@ -929,7 +939,7 @@ def test_team_chat_over_http_uses_the_team_brain_and_ignores_attachments_and_lea
         w.settings, w.j.team_access.digest(), team_c.cookies[auth.TEAM_COOKIE]).sid))
     first_user_turn = session.brain.messages[0]["content"]
     assert isinstance(first_user_turn, list) and all(b["type"] == "text" for b in first_user_turn)  # the attachment was dropped
-    assert "from Sam (team)" in first_user_turn[-1]["text"]
+    assert "from Sam (engineer)" in first_user_turn[-1]["text"]
     assert team_c.post("/api/conversation/reset").status_code == 200 and session.brain.messages == []
     assert team_c.post("/api/interrupt").json() == {"stopped": False}
 

@@ -72,7 +72,7 @@ class CheckPromoteIn(BaseModel):
     question: str = Field(min_length=3, max_length=400)
     expect: dict[str, Any]
     area: str = Field("other", max_length=20)
-    as_role: str = Field("owner", pattern="^(owner|manager|team)$")
+    as_role: str = Field("owner", pattern="^(owner|manager|team|office)$")
     needs: list[str] = Field(default_factory=list, max_length=5)
 
 
@@ -196,8 +196,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         # Cached on the ASGI scope itself (one per connection), never in scope["state"], which a server may share.
         if "jarvis.caller" not in conn.scope:
             j = getattr(conn.app.state, "j", None)
-            digest = j.team_access.digest() if j is not None else ""
-            conn.scope["jarvis.caller"] = auth.role_of(settings, conn, trusted_owner_email, digest)
+            digests = j.team_codes.digests() if j is not None else {}
+            conn.scope["jarvis.caller"] = auth.role_of(settings, conn, trusted_owner_email, digests)
         return conn.scope["jarvis.caller"]
 
     async def guard(conn: HTTPConnection) -> None:
@@ -217,7 +217,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         caller = caller_of(conn)
         if caller is None:
             raise HTTPException(status_code=401, detail="Not signed in")
-        if not access.role_meets(caller.role, level):
+        if not access.route_allowed(key, caller):  # the role's level, and (office / engineer) access.OFFICE_ONLY_ROUTES
             raise HTTPException(status_code=403, detail="That isn't available in the team version of Jarvis."
                                 if caller.is_team else "Only the owner can do that.")
 
@@ -287,8 +287,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return RedirectResponse("/login")
         # The role goes into the page itself (hud.js reads it to build the right console, and it also hides what a role
         # must not see before the first paint). It is only a presentation hint: every route enforces the role itself.
+        # A team member's kind (office / engineer) rides along for the top bar's label only: both get the same console.
+        team_role = f' data-team-role="{caller.kind}"' if caller.is_team else ""
         page = (WEB / "index.html").read_text(encoding="utf-8").replace(
-            '<body class="app"', f'<body class="app" data-role="{caller.role}" data-who="{html_lib.escape(caller.name)}"', 1)
+            '<body class="app"', f'<body class="app" data-role="{caller.role}"{team_role} data-who="{html_lib.escape(caller.name)}"', 1)
         # And the markup itself is cut down for a team member: the Finance, Approvals, Comms, Issues, Health, Memory and
         # Connections sections, the settings that are not theirs and the owner's shortcuts are not in the page they are sent
         # (index.html marks them with role comments: "owner" = only the owner, "manager" = owner and manager, "team" = only
@@ -302,8 +304,8 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
     @app.get("/api/me", dependencies=[Depends(member)])
     async def me(request: Request):
         caller = caller_of(request)
-        return {"role": caller.role, "name": caller.name, "label": access.ROLE_LABEL[caller.role],
-                "features": access.FEATURES[caller.role]}
+        return {"role": caller.role, "name": caller.name, "label": caller.role_label,
+                **({"team_role": caller.kind} if caller.is_team else {}), "features": access.FEATURES[caller.role]}
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page():
@@ -321,8 +323,9 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.post("/login/team")
     async def login_team(request: Request, name: str = Form(""), code: str = Form(...)):
-        """Team sign-in: a name and the team access code the owner set in Settings. The cookie it gives is a team session
-        and nothing more (auth.read_team_session / access.ROUTE_POLICY). Wrong codes are slowed down and rate-limited."""
+        """Team sign-in: a name and a team access code the owner set in Settings - THE CODE DECIDES THE ROLE (the office code
+        gives an office session, the engineer code an engineer one). The cookie it gives is a team session and nothing more
+        (auth.read_team_session / access.ROUTE_POLICY). Wrong codes are slowed down and rate-limited."""
         ip = request.client.host if request.client else "?"
         window, now = login_failures[ip], time.time()
         while window and now - window[0] > 900:
@@ -333,12 +336,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         who = access.clean_name(name)
         if not who:
             return RedirectResponse("/login?team=1&error=name", status_code=303)
-        if not await asyncio.to_thread(j.team_access.verify, code):  # scrypt is slow on purpose: not on the event loop
+        team_role = await asyncio.to_thread(j.team_codes.match, code)  # scrypt is slow on purpose: not on the event loop
+        if team_role is None:
             window.append(now)
             await asyncio.sleep(LOGIN_DELAY_S)  # slow down guessing
             return RedirectResponse("/login?team=1&error=1", status_code=303)
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(auth.TEAM_COOKIE, auth.make_team_session(settings, j.team_access.digest(), who),
+        resp.set_cookie(auth.TEAM_COOKIE, auth.make_team_session(settings, j.team_codes[team_role].digest(), who, team_role),
                         max_age=auth.TEAM_SESSION_DAYS * 86400, httponly=True, samesite="lax",
                         secure=settings.public_base_url.startswith("https"))
         return resp
@@ -581,7 +585,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data = {"generated_at": datetime.now().isoformat(timespec="seconds"), "staff": board, "overdue_jobs": overdue,
                 "presence": presence, "voice": j.voice.client_config(), "company": settings.company_name,
                 "fleet": {"connected": not j.vehicle_tracking_status().startswith(("DEMO", "NOT CONNECTED")), "why": ""},
-                "role": caller.role, "who": caller.name, "accreditations": coming}
+                "role": caller.role, "team_role": caller.kind, "who": caller.name, "accreditations": coming}
         return {k: v for k, v in data.items() if k in access.TEAM_STATUS_KEYS}
 
     @app.get("/api/status", dependencies=[Depends(member)])
@@ -1315,7 +1319,7 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         # Team access (who may sign in to the cut-down console) is the principal owner's to see and change.
         caller = caller_of(request) if request is not None else None
         if caller is not None and caller.role == access.OWNER:
-            data["context"]["team_access"] = {**j.team_access.info(), "sessions": len(j.team_sessions)}
+            data["context"]["team_access"] = team_access_view(j)
         return data
 
     @app.get("/api/staff-report-address", dependencies=[Depends(owner)])
@@ -1332,34 +1336,64 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     # ---- team access: the code engineers and office staff sign in with. Principal owner only (access.ROUTE_POLICY), a
     # same-origin click for the changes, and the code itself is never stored, returned or logged - only a salted hash.
+    # Two codes since the office / engineer split: /api/team-access/office and /api/team-access/engineer set or switch off one
+    # role's code and sign out only that role's sessions. The role-less POST / DELETE are the ENGINEER code (what the single
+    # team code was), so anything that set "the team code" before still hands out exactly what it did - engineer access.
+    def team_access_view(j: Jarvis) -> dict[str, Any]:
+        """What the owner's Settings shows: per role, on/off, when set and how many are signed in. Never a code or a hash.
+        The top-level keys are the engineer code's (the pre-split shape)."""
+        roles = {role: {**info, "sessions": j.team_sessions.count(role)} for role, info in j.team_codes.info().items()}
+        return {**roles[access.ENGINEER], "sessions": len(j.team_sessions), "roles": roles}
+
+    def _team_role_param(team_role: str) -> str:
+        if team_role not in access.TEAM_ROLES:
+            raise HTTPException(404, "There is no such team role. Use office or engineer.")
+        return team_role
+
+    async def _set_team_code(j: Jarvis, team_role: str, code: str) -> dict[str, Any]:
+        label = access.TEAM_ROLE_LABEL[team_role]
+        try:
+            await asyncio.to_thread(j.team_codes.set_code, team_role, code, "the owner")
+        except CodeRejected as e:
+            raise HTTPException(400, str(e)) from None
+        j.db.add_notification("info", f"{label} code set", f"{label} staff can sign in at /login (Team sign-in) with the new code. "
+                              f"Anyone signed in with the old {label.lower()} code has been signed out.")
+        j.activity_feed.record("team_access", "the owner",
+                               f"Set a new {label.lower()} access code (everyone signed in as {label.lower()} was signed out)")
+        log.info("%s access code changed by the owner (previous %s sessions are signed out).", label, team_role)
+        await j.team_sessions.close(team_role)  # the old code's sessions can't sign in again; drop their conversations too
+        return team_access_view(j)
+
+    async def _clear_team_code(j: Jarvis, team_role: str) -> dict[str, Any]:
+        label = access.TEAM_ROLE_LABEL[team_role]
+        j.team_codes[team_role].clear()
+        j.db.add_notification("info", f"{label} sign-in switched off",
+                              f"Nobody can sign in as {label.lower()} now, and anyone who was has been signed out.")
+        j.activity_feed.record("team_access", "the owner",
+                               f"Switched {label.lower()} access off (everyone signed in as {label.lower()} was signed out)")
+        log.info("%s access switched off by the owner.", label)
+        await j.team_sessions.close(team_role)
+        return team_access_view(j)
+
     @app.get("/api/team-access", dependencies=[Depends(principal)])
     async def team_access_info(request: Request):
-        j = J(request)
-        return {**j.team_access.info(), "sessions": len(j.team_sessions)}
+        return team_access_view(J(request))
 
     @app.post("/api/team-access", dependencies=[Depends(principal), Depends(human_click)])
     async def team_access_set(body: TeamCodeIn, request: Request):
-        j = J(request)
-        try:
-            await asyncio.to_thread(j.team_access.set_code, body.code, "the owner")
-        except CodeRejected as e:
-            raise HTTPException(400, str(e)) from None
-        j.db.add_notification("info", "Team access code set", "Engineers and office staff can sign in at /login with the new "
-                              "code. Anyone signed in with the old one has been signed out.")
-        j.activity_feed.record("team_access", "the owner", "Set a new team access code (everyone signed in as team was signed out)")
-        log.info("Team access code changed by the owner (previous team sessions are signed out).")
-        await j.team_sessions.close()  # the old code's sessions can't sign in again; drop their conversations too
-        return {**j.team_access.info(), "sessions": len(j.team_sessions)}
+        return await _set_team_code(J(request), access.ENGINEER, body.code)  # the role-less form is the engineer code
 
     @app.delete("/api/team-access", dependencies=[Depends(principal), Depends(human_click)])
     async def team_access_clear(request: Request):
-        j = J(request)
-        j.team_access.clear()
-        j.db.add_notification("info", "Team access switched off", "Nobody can sign in as team now, and anyone who was has been signed out.")
-        j.activity_feed.record("team_access", "the owner", "Switched team access off (everyone signed in as team was signed out)")
-        log.info("Team access switched off by the owner.")
-        await j.team_sessions.close()
-        return {**j.team_access.info(), "sessions": len(j.team_sessions)}
+        return await _clear_team_code(J(request), access.ENGINEER)
+
+    @app.post("/api/team-access/{team_role}", dependencies=[Depends(principal), Depends(human_click)])
+    async def team_access_set_role(team_role: str, body: TeamCodeIn, request: Request):
+        return await _set_team_code(J(request), _team_role_param(team_role), body.code)
+
+    @app.delete("/api/team-access/{team_role}", dependencies=[Depends(principal), Depends(human_click)])
+    async def team_access_clear_role(team_role: str, request: Request):
+        return await _clear_team_code(J(request), _team_role_param(team_role))
 
     # ---- engineer homes: where each engineer lives, kept as a rounded map point so Fleet / who_is_home can say "home". The
     # principal owner only (access.ROUTE_POLICY), a same-origin click for every change, and deliberately NOT a brain tool.

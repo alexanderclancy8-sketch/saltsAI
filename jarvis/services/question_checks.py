@@ -67,7 +67,9 @@ log = logging.getLogger(__name__)
 AREAS = ("jobs", "engineers", "quotes", "money", "vans", "contracts", "stock", "upsells", "suggestions", "approvals",
          "policies", "standards", "refusals", "people", "other")
 SENSITIVE_AREAS = frozenset({"money", "people"})
-ROLES = (access.OWNER, access.MANAGER, access.TEAM)
+# Who a check asks as. "team" is an ENGINEER (the least-privileged team kind - access.team_role_of); "office" is the office kind of
+# team member (the engineer allowlist plus customer_balance).
+ROLES = (access.OWNER, access.MANAGER, access.TEAM, access.OFFICE)
 NEEDS = ("fsm", "sage", "ram", "mail", "stock")
 EXPECT_KEYS = frozenset({"number_from", "tolerance", "mentions_from", "must_mention_gap", "contains_any", "contains_all",
                          "not_contains", "refuses", "no_digits", "checked_any", "policy"})
@@ -186,7 +188,7 @@ def _check_from(raw: dict[str, Any], origin: str = "suite") -> tuple[Check | Non
         return None, f"{cid}: unknown area {area!r} ({', '.join(AREAS)})"
     role = str(raw.get("as") or access.OWNER).strip().lower()
     if role not in ROLES:
-        return None, f"{cid}: 'as' must be owner, manager or team"
+        return None, f"{cid}: 'as' must be owner, manager, team (an engineer) or office"
     needs = [str(n).lower() for n in raw.get("needs") or []]
     only = [str(n).lower() for n in raw.get("only_when_not_connected") or []]
     if set(needs + only) - set(NEEDS):
@@ -648,7 +650,14 @@ class QuestionChecks:
         from .team_sessions import access_panels
 
         j = self.j
-        caller = None if role == access.OWNER else access.Caller(role, "Question check", sid="question-check")
+        if role == access.OWNER:
+            caller = None
+        elif role in (access.TEAM, access.OFFICE):   # a team member: "team" is an engineer, "office" the office kind
+            caller = access.Caller(access.TEAM, "Question check", sid=f"question-check-{role}",
+                                   team_role=access.OFFICE if role == access.OFFICE else access.ENGINEER)
+        else:
+            caller = access.Caller(role, "Question check", sid="question-check")
+        team = caller is not None and caller.is_team
         bus = EventBus(check_ok=True)   # private: nothing a check says reaches a console
         if j.settings.effective_llm_backend == "max":
             from ..brain.max_backend import MaxBrain
@@ -658,7 +667,7 @@ class QuestionChecks:
             from ..brain.agent import JarvisBrain
 
             brain = JarvisBrain(j, caller=caller, bus=bus, check=True)
-        brain.trace = TurnTrace(j, panels=access_panels() if role == access.TEAM else None, team=role == access.TEAM)
+        brain.trace = TurnTrace(j, panels=access_panels() if team else None, team=team)
         bus.add_tap(brain.trace.on_event)
         return brain
 

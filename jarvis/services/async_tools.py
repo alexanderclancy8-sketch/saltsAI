@@ -69,6 +69,9 @@ ARGS_CHARS = 1000
 NOT_BACKGROUND = set(NO_RECURSE) | {
     "run_in_background", "background_results", "engineer_locations", "fleet_diagnostics", "who_is_home", "nearest_engineer", "van_day",
     "timesheet_check",
+    # one customer's balance: its figures are never kept in the background_calls table, and an office lookup is rate-limited
+    # and audited in the turn that asked for it (services/customer_balance.py)
+    "customer_balance",
     # push to the display or the owner directly
     "show_on_display", "send_update_to_owner", "ask_user", "offer_next_steps", "doctor",
     # write a document, report or letter and show it on the display (and/or notify)
@@ -163,7 +166,7 @@ class AsyncTools:
         if tool is None:
             return {"error": f"There is no tool called {tool_name!r}."}
         if not access.tool_allowed(tool.name, caller):  # the caller's own allowed set, not the global registry
-            return {"error": access.refusal(tool.name)}
+            return {"error": access.refusal(tool.name, caller)}
         if tool.name in NOT_BACKGROUND:
             return {"error": f"{tool.name} can't be run in the background - call it normally."}
         try:

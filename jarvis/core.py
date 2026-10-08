@@ -8,6 +8,7 @@ from datetime import date
 
 import httpx
 
+from . import access
 from .brain import llm, plugins
 from .brain.agent import JarvisBrain
 from .brain.trace import TurnTrace
@@ -32,6 +33,7 @@ from .services.accreditations import Accreditations
 from .services.fsm_analyse import FsmAnalyse
 from .services.fsm_documents import FsmDocuments
 from .services.fsm_read import FsmRead
+from .services.customer_balance import CustomerBalance
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.standing_approvals import StandingApprovals
@@ -83,7 +85,7 @@ from .services.stores import Stores
 from .services.fsm_suggestions import FsmSuggestions
 from .services.upsell_drafts import UpsellDrafts
 from .services.suggestions import Suggestions
-from .services.team_access import TeamAccess
+from .services.team_access import TeamAccess, TeamCodes
 from .services.team_sessions import TeamSessions
 from .services.verification import ActionVerifier
 from .services.wrapup import WrapUp
@@ -219,8 +221,13 @@ class Jarvis:
         # Per-customer / per-site notes (services/entity_memory.py): its tap notes which tools brought outside content into a turn.
         self.entity_memory = EntityMemory(self)
         self.bus.add_tap(self.entity_memory.on_event)
-        # Team mode: the access code for engineers/office staff (hashed, in the database) and one cut-down brain per team session.
-        self.team_access = TeamAccess(self.db)
+        # Team mode: the access codes (hashed, in the database) - ``team_access`` is the ENGINEER code (the pre-split team code),
+        # ``office_access`` the office one, ``team_codes`` the pair - and one cut-down brain per team session.
+        self.team_access = TeamAccess(self.db, access.ENGINEER)
+        self.office_access = TeamAccess(self.db, access.OFFICE)
+        self.team_codes = TeamCodes(self.team_access, self.office_access)
+        # customer_balance: one customer's balance for the office (and the owner / managers), see services/customer_balance.py
+        self.customer_balance = CustomerBalance(self)
         self.team_sessions = TeamSessions(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":

@@ -41,7 +41,8 @@ _TOOL_INFO: dict[str, tuple[tuple[str, ...], str | None]] = {
     **{n: ((_FSM,), None) for n in ("fsm_data", "fsm_analyse", "fsm_document_read", "fsm_query", "fsm_systems_due", "ppm_schedule_plan", "fsm_contracts_renewing",
                                     "fsm_quotes", "fsm_source_search", "fsm_source_read", "staff_certifications",
                                     "unbilled_jobs", "remedial_quotes", "contract_renewals", "out_of_hours_calls",
-                                    "route_optimise_advice", "timesheet_check", "false_alarm_analysis", "upsell_opportunities")},
+                                    "route_optimise_advice", "timesheet_check", "false_alarm_analysis", "upsell_opportunities",
+                                    "customer_balance")},   # (a balance is a chat answer only: no pop-up, the office has no Finance)
     **{n: (("Stock records",), None) for n in ("stock_levels", "stock_usage", "stock_job_materials")},
     **{n: (("RAM Tracking",), "fleet") for n in ("engineer_locations", "nearest_engineer", "van_day", "fleet_diagnostics")},
     **{n: (("Sage",), "finance") for n in ("finance_snapshot", "finance_aged", "finance_vat", "finance_cashflow",
