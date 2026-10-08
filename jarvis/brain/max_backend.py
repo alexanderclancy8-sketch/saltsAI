@@ -36,12 +36,14 @@ from ..services.tracking import requester_label
 from .prompts import build_system, build_team_system
 from .repeats import RepeatDetector, repeat_note
 from .tools import TOOLS, TOOLS_BY_NAME, dispatch, serialise
+from .web_research import WebTurn
 from ..services.entity_memory import turn_channel
 
 log = logging.getLogger(__name__)
 SERVER = "jarvis"
 CHAT_BUILTINS = ["WebSearch", "WebFetch", "Read"]
 BLOCKED = ["Bash", "Write", "Edit", "NotebookEdit", "KillShell", "Task"]
+WEB_MATCHER = "WebSearch|WebFetch"   # Claude Code's own web tools: the per-turn web budget and source hooks
 # For the engineer-loop callers of run_once() (self_improve.py, fixer.py) that request Write/Edit on purpose,
 # confined to a throwaway Workspace checkout - everything BLOCKED disallows except those two.
 ENGINEER_BLOCKED = ["Bash", "NotebookEdit", "KillShell", "Task"]
@@ -157,6 +159,7 @@ class MaxBrain:
         self.uploads.mkdir(parents=True, exist_ok=True)
         self._jobs: asyncio.Queue | None = None
         self._worker: asyncio.Task | None = None
+        self._web = WebTurn()  # this turn's web budget and sources (replaced at the start of every turn)
         self._client = None
         self._client_key: tuple[str, str, str, str] | None = None  # (effort, model, system prompt, plugins) it started with
         self._fresh_start = False
@@ -280,7 +283,10 @@ class MaxBrain:
         await self._disconnect()
         if self._fresh_start:
             self.session_id, self._fresh_start = None, False
-        more: dict[str, Any] = {"hooks": extra.hooks()} if extra.guard is not None else {}
+        hooks = extra.hooks() or {}
+        if not self.team:   # (a team session has no web tools at all)
+            hooks = self._with_web_hooks(hooks)
+        more: dict[str, Any] = {"hooks": hooks} if hooks else {}
         options = base_options(
             self.s, model=model, system_prompt=self.system + extra.prompt, effort=effort,
             tools=[] if self.team else CHAT_BUILTINS, mcp_servers={SERVER: self.server, **extra.mcp_servers},
@@ -294,6 +300,32 @@ class MaxBrain:
         log.info("Claude Code started in %.1fs (effort %s, model %s)", time.monotonic() - started, effort, model)
         self._client, self._client_key = client, key
         return client
+
+    # ------------------------------------------------------------------ web budget and sources (brain/web_research.py)
+    def _with_web_hooks(self, hooks: dict[str, Any]) -> dict[str, Any]:
+        """Claude Code's own WebSearch / WebFetch get the same per-turn budget as the API brain's web tools (a PreToolUse hook
+        that can only DENY, once the turn's cap is spent) and the same record of the sources they really returned (a
+        PostToolUse hook that only reads). Both look at ``self._web``, which every turn replaces."""
+        from claude_agent_sdk import HookMatcher
+
+        out = dict(hooks)
+        out["PreToolUse"] = list(out.get("PreToolUse") or []) + [HookMatcher(matcher=WEB_MATCHER, hooks=[self._web_guard])]
+        out["PostToolUse"] = list(out.get("PostToolUse") or []) + [HookMatcher(matcher=WEB_MATCHER, hooks=[self._web_seen])]
+        return out
+
+    async def _web_guard(self, input_data: dict[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
+        try:
+            reason = self._web.allow(str(input_data.get("tool_name", "")))
+        except Exception:  # a bug here refuses the call, never lets it through uncounted  # noqa: BLE001
+            reason = "the web budget couldn't be checked"
+        if not reason:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                       "permissionDecisionReason": f"Refused by Jarvis: {reason}"}}
+
+    async def _web_seen(self, input_data: dict[str, Any], tool_use_id: str | None, context: Any) -> dict[str, Any]:
+        self._web.note_sdk_result(input_data.get("tool_name"), input_data.get("tool_input"), input_data.get("tool_response"))
+        return {}
 
     async def _disconnect(self) -> None:
         client, self._client, self._client_key = self._client, None, None
@@ -365,6 +397,7 @@ class MaxBrain:
         first_words: float | None = None
         parts: list[str] = []
         result = None
+        self._web = WebTurn.for_question(text)
         self._in_turn, self._stop_requested = True, False
         try:
             client = await self._connected(self.s.voice_effort if mode == "voice" else self.s.chat_effort,
@@ -435,6 +468,8 @@ class MaxBrain:
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
         trace = self.trace if self.isolated else self.j.trace
+        if trace is not None and not self.team:
+            trace.add_web(self._web)   # the numbered sources WebSearch / WebFetch really returned, and the coverage line's web entry
         extras = trace.finish(reply) if trace is not None else {}
         if not self.isolated:
             db.add_transcript("assistant", reply, coverage.as_stored(extras.get("coverage")))
