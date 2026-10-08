@@ -182,6 +182,14 @@ def excerpt(text: str | None, limit: int = EXCERPT_CHARS) -> str:
     return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
 
 
+def _coverage_suffix(stored: str) -> str:
+    """' (coverage: Checked: ... · Not checked: ... · Low)' for a reply whose coverage was kept - what it really rested on."""
+    from ..brain.coverage import line, loads
+
+    text = line(loads(stored))
+    return f" (coverage: {text})" if text else ""
+
+
 def _pct(values: list[float], p: float) -> int | None:
     vals = sorted(v for v in values if v is not None)
     if not vals:
@@ -222,11 +230,13 @@ class TurnRecord:
     def tools(self, n: int = 1) -> None:
         self.tool_count += n
 
-    def finish(self, reply: str = "", *, ok: bool = True, interrupted: bool = False) -> None:
+    def finish(self, reply: str = "", *, ok: bool = True, interrupted: bool = False,
+               coverage: dict[str, Any] | None = None) -> None:
+        """``coverage``: what the reply was built from (brain/coverage.py) - kept with the record, labels only."""
         if self._done or self.turn_id is None:
             return
         self._done = True
-        self.service._finish(self, reply, ok, interrupted)  # noqa: SLF001
+        self.service._finish(self, reply, ok, interrupted, coverage)  # noqa: SLF001
 
 
 class ConversationQuality:
@@ -284,14 +294,18 @@ class ConversationQuality:
             return [row["text"]]
         return [prev["reply_text"]] if prev and prev["reply_text"] else []
 
-    def _finish(self, rec: TurnRecord, reply: str, ok: bool, interrupted: bool) -> None:
+    def _finish(self, rec: TurnRecord, reply: str, ok: bool, interrupted: bool,
+                coverage: dict[str, Any] | None = None) -> None:
         try:
+            from ..brain.coverage import as_stored
+
             flags = lint_spoken_reply(reply, self._wake()) if rec.mode == "voice" and ok and not interrupted else []
             self.db.execute(
                 "UPDATE turn_metrics SET reply_text = ?, first_delta_ms = ?, total_ms = ?, tool_calls = ?,"
-                " failed = ?, interrupted = ?, format_flags = ? WHERE id = ?",
+                " failed = ?, interrupted = ?, format_flags = ?, coverage = ? WHERE id = ?",
                 (excerpt(reply), rec.first_delta_ms, int((time.monotonic() - rec.started) * 1000),
-                 rec.tool_count, int(not ok and not interrupted), int(interrupted), ",".join(flags), rec.turn_id))
+                 rec.tool_count, int(not ok and not interrupted), int(interrupted), ",".join(flags), as_stored(coverage),
+                 rec.turn_id))
         except Exception as e:  # noqa: BLE001
             log.warning("turn metrics not saved: %s", e)
 
@@ -442,7 +456,8 @@ class ConversationQuality:
         # Verdicts are picked up by when they were given (a "wrong" tapped today on yesterday's reply still counts).
         self._brief_at = now_iso()
         feedback = self.db.query(
-            "SELECT f.*, COALESCE(t.user_text, '') AS user_text, COALESCE(t.reply_text, '') AS reply_text"
+            "SELECT f.*, COALESCE(t.user_text, '') AS user_text, COALESCE(t.reply_text, '') AS reply_text,"
+            " COALESCE(t.coverage, '') AS coverage"
             " FROM turn_feedback f LEFT JOIN turn_metrics t ON t.id = f.turn_id"
             " WHERE f.created_at > ? ORDER BY f.id", (self.db.get_kv(LAST_FEEDBACK_KEY) or "",))
         newest_turn = max(ids + [last_turn])
@@ -455,7 +470,7 @@ class ConversationQuality:
         if wrong:
             parts.append("\nReplies the owner marked WRONG (what was asked -> what you said -> their note):")
             parts += [f"- \"{f['user_text'][:300]}\" -> \"{f['reply_text'][:400]}\" -> note: {f['note'][:300] or '(none)'}"
-                      for f in wrong[:20]]
+                      + _coverage_suffix(f["coverage"]) for f in wrong[:20]]
         bad_format = [r for r in rows if r["mode"] == "voice" and r["format_flags"]]
         if bad_format:
             parts.append("\nSpoken replies that broke the spoken format (flags -> reply):")

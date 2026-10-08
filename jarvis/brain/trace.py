@@ -20,6 +20,8 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from . import coverage as cov_mod
+
 # The pop-ups a reply may point at: the rail sections of the console (hud.js POPS, minus Settings/Connections/Demo).
 PANELS = ("approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming")
 PANEL_TITLES = {"approvals": "Approvals", "activity": "What Jarvis did", "comms": "Comms", "issues": "Issues", "health": "Health", "ops": "Ops",
@@ -36,7 +38,7 @@ _TOOL_INFO: dict[str, tuple[tuple[str, ...], str | None]] = {
     **{n: ((_FSM,), "ops") for n in ("fsm_jobs", "staff_today", "staff_productivity", "staff_overdue_jobs",
                                      "attendance_check", "job_detail", "lone_worker_check", "staff_review",
                                      "office_productivity")},
-    **{n: ((_FSM,), None) for n in ("fsm_query", "fsm_systems_due", "ppm_schedule_plan", "fsm_contracts_renewing",
+    **{n: ((_FSM,), None) for n in ("fsm_data", "fsm_analyse", "fsm_query", "fsm_systems_due", "ppm_schedule_plan", "fsm_contracts_renewing",
                                     "fsm_quotes", "fsm_source_search", "fsm_source_read", "staff_certifications",
                                     "unbilled_jobs", "remedial_quotes", "contract_renewals", "out_of_hours_calls",
                                     "route_optimise_advice", "timesheet_check", "false_alarm_analysis", "upsell_opportunities")},
@@ -88,12 +90,15 @@ def clean_follow_ups(items: Any) -> list[str]:
 
 
 class TurnTrace:
-    def __init__(self, j, panels: Any = None) -> None:
+    def __init__(self, j, panels: Any = None, team: bool | None = None) -> None:
         """``panels``: the pop-ups this trace may ever point at (a team session's trace is limited to the ones its console
-        has); None means all of them, as for the owner."""
+        has); None means all of them, as for the owner. ``team``: a team session's trace (default: whenever ``panels`` is
+        limited) - its coverage line never counts a source the team version can't read (Sage, mail) as missing."""
         self.j = j
         self.allowed = frozenset(PANELS if panels is None else panels)
+        self.team = (panels is not None) if team is None else bool(team)
         self.active = False
+        self._next_text = ""
         self._reset()
 
     def _reset(self) -> None:
@@ -103,20 +108,29 @@ class TurnTrace:
         self.offered_panel: str | None = None
         self.follow_ups: list[str] = []
         self.pending_before = 0
+        self.facts: list[dict[str, str]] = []   # what each finished tool call said about its sources (coverage.call_facts)
+        self.user_text = ""
+        self.mode = "typed"
 
     # ------------------------------------------------------------------ feeding it
     def on_event(self, event_type: str, data: Any) -> None:
         """EventBus tap. Never raises: describing a turn must not be able to break one."""
         try:
-            if event_type == "thinking":
-                self.begin()
+            if event_type == "user_message" and isinstance(data, dict):
+                self._next_text = str(data.get("text") or "")
+            elif event_type == "thinking":
+                self.begin(str((data or {}).get("mode") or "typed") if isinstance(data, dict) else "typed")
             elif event_type == "tool" and self.active and isinstance(data, dict) and data.get("state") == "start":
                 self.note_tool(str(data.get("name") or ""))
+            elif event_type == "tool" and self.active and isinstance(data, dict) and data.get("state") in ("done", "error"):
+                self.note_result(data)
         except Exception:  # noqa: BLE001
             self.active = False
 
-    def begin(self) -> None:
+    def begin(self, mode: str = "typed") -> None:
+        text, self._next_text = self._next_text, ""
         self._reset()
+        self.user_text, self.mode = text, mode
         self.active = True
         self.started = time.monotonic()
         try:
@@ -131,6 +145,15 @@ class TurnTrace:
                 self.sources.append(s)
         if panel and panel in self.allowed:
             self.panels.append(panel)
+
+    def note_result(self, data: dict[str, Any]) -> None:
+        """A finished tool call: the facts the brain worked out from its result (``coverage``), or - for a call that raised
+        and carried none - an error for every source that tool reads."""
+        facts = data.get("coverage")
+        if isinstance(facts, list):
+            self.facts += [f for f in facts if isinstance(f, dict) and f.get("src") and f.get("status")][:20]
+        elif data.get("state") == "error":
+            self.facts += [{"src": s, "status": cov_mod.ERROR} for s in cov_mod.tool_sources(str(data.get("name") or ""))]
 
     def offer(self, panel: str | None, follow_ups: list[str]) -> None:
         """The offer_next_steps tool: what the model chose to suggest. Ignored outside a turn."""
@@ -147,8 +170,9 @@ class TurnTrace:
         except Exception:  # noqa: BLE001
             return False
 
-    def finish(self) -> dict[str, Any]:
-        """The extras for the ``reply`` event; {} when no turn is being traced (a background turn)."""
+    def finish(self, reply: str = "") -> dict[str, Any]:
+        """The extras for the ``reply`` event; {} when no turn is being traced (a background turn). ``reply`` (what was
+        said) only decides whether a spoken Low-confidence turn still needs its one-sentence gap note."""
         if not self.active:
             return {}
         self.active = False
@@ -177,4 +201,14 @@ class TurnTrace:
             out["panel_title"] = PANEL_TITLES[panel]
         if self.follow_ups:
             out["follow_ups"] = list(self.follow_ups)
+        try:
+            cov = cov_mod.summarise(self.facts, self.user_text, demo=cov_mod.demo_map(self.j), team=self.team)
+        except Exception:  # noqa: BLE001 - describing a turn must never break it
+            cov = None
+        if cov:
+            if self.mode == "voice":
+                said = cov_mod.spoken(cov, reply)
+                if said:
+                    cov["spoken"] = said
+            out["coverage"] = cov
         return out

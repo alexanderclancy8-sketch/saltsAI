@@ -194,6 +194,7 @@
       if (name === "demo") renderDemo();
       if (name === "memory") window.JarvisMemory?.load();
       if (name === "activity") window.JarvisActivity?.load();
+      if (name === "health") window.JarvisChecks?.load();
       if (name === "settings" && ROLE === "owner") { TeamAccess.load(); Homes.load(); }
       if ((name === "settings" || name === "connections") && !TEAM) {
         if (!Settings.loaded) Settings.load();
@@ -518,6 +519,7 @@
   // as ordinary chat text - never through decide()/the approvals path.
   if (!TEAM) window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
   if (!TEAM) window.JarvisActivity?.init({ api: (p, o) => api(p, o), role: ROLE }); // the "What Jarvis did" pop-up (activity.js): a read-only list
+  if (!TEAM) window.JarvisChecks?.init({ api: (p, o) => api(p, o), role: ROLE, toast: (a, b, c) => toast(a, b, c) }); // question checks (checks.js) in Health
   window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 
   // ------------------------------------------------------------------ self-echo guard
@@ -809,7 +811,10 @@
     if (TEAM) { S.chatReady = true; return; } // a team member starts a fresh conversation: the owner's record is not theirs
     try {
       const rows = await (await api("/api/transcript")).json();
-      rows.slice(-20).forEach((r) => addMessage(r.role, r.text, time(r.created_at)));
+      rows.slice(-20).forEach((r) => {
+        const el = addMessage(r.role, r.text, time(r.created_at));
+        if (r.role === "assistant" && r.coverage) el.insertAdjacentHTML("beforeend", coverageHtml(r.coverage));
+      });
       S.hasHistory = rows.length > 0;
     } catch { /* ignore */ }
     S.chatReady = true; syncChatCards();   // approval cards go after the history, never above it
@@ -1162,6 +1167,21 @@ function send(text, mode = "typed", opts = {}) {
   // the line goes and a source-and-time line goes underneath, with a button for the matching pop-up when there is
   // detail behind the answer and up to two follow-up questions (all of it sent by the server on the "reply" event).
   const showStep = (msg, text) => { const st = msg?.querySelector(".step"); if (st) { st.textContent = text; st.hidden = false; } };
+  // The coverage line under a reply (brain/coverage.py): what was really checked, what wasn't and why, and a High / Medium /
+  // Low confidence worked out by fixed rules from the turn's real tool calls - never the model's opinion of itself. One
+  // collapsed line ("Checked: Salts FSM jobs · Not checked: Sage (not connected) · Medium") that opens to the detail.
+  const COV_LEVELS = ["High", "Medium", "Low"];
+  function coverageHtml(c) {
+    if (!c || typeof c !== "object" || !COV_LEVELS.includes(c.confidence)) return "";
+    const checked = (Array.isArray(c.checked) ? c.checked : []).filter((x) => typeof x === "string");
+    const gaps = (Array.isArray(c.gaps) ? c.gaps : []).map((g) => (g && typeof g.text === "string" ? g.text : "")).filter(Boolean);
+    const line = `Checked: ${checked.join(", ") || "nothing"}` + (gaps.length ? ` · Not checked: ${gaps.join(", ")}` : "");
+    const list = (items) => items.length ? `<ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="cov-none">Nothing</p>`;
+    return `<details class="cov" data-level="${esc(c.confidence)}"><summary aria-label="${esc(line)}. Confidence ${esc(c.confidence)}.">` +
+      `<span class="cov-line">${esc(line)}</span><span class="cov-chip">${esc(c.confidence)}</span></summary>` +
+      `<div class="cov-body"><div class="cov-col"><b>Checked</b>${list(checked)}</div><div class="cov-col"><b>Not checked</b>${list(gaps)}</div>` +
+      `<p class="cov-why">${esc(c.confidence)} confidence: ${esc(c.why || "")}</p></div></details>`;
+  }
   function replyExtras(msg, d, steps) {
     if (!msg || d.replace) return;
     if (typeof d.elapsed_ms === "number") {
@@ -1169,6 +1189,7 @@ function send(text, mode = "typed", opts = {}) {
       const src = d.sources?.length ? "Source: " + d.sources.join(", ") : "No systems checked";
       msg.insertAdjacentHTML("beforeend", `<div class="src"${steps.length ? ` title="${esc(steps.join(" · "))}"` : ""}>${esc(src)} · ${esc(secs)}</div>`);
     }
+    if (d.coverage) msg.insertAdjacentHTML("beforeend", coverageHtml(d.coverage));
     const chips = [];
     if (window.JarvisAsk?.canReopen?.()) chips.push(`<button type="button" class="reply-chip answer" data-reask>Answer</button>`);
     if (d.panel && POPS.includes(d.panel)) chips.push(`<button type="button" class="reply-chip panel" data-pop="${esc(d.panel)}">Open ${esc(d.panel_title || d.panel)}</button>`);
@@ -1236,7 +1257,12 @@ function send(text, mode = "typed", opts = {}) {
           const el = addMessage("assistant", d.text);
           replyExtras(el, d, []);
         }
-        if (speaksThisTurn(d.mode)) { if (d.replace) speaker.feed(d.text); speaker.flush(); }
+        if (speaksThisTurn(d.mode)) {
+          if (d.replace) speaker.feed(d.text);
+          // Low confidence only: one short sentence naming the gap ("I couldn't check Sage, it isn't connected."), built by the server.
+          if (typeof d.coverage?.spoken === "string" && d.coverage.spoken) speaker.feed(" " + d.coverage.spoken.slice(0, 160));
+          speaker.flush();
+        }
         if (S.voiceTurn === "pending") S.voiceTurn = "replied";
         if (!speaker.active) { setHud("idle"); extendFollowUp(); if (S.voiceTurn === "replied") finishVoiceTurn(); }
         caption(captionPreview(d.text));

@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ValidationError
 
-from . import plugins
+from . import checkmode, coverage, plugins
 from .. import access
 from ..redact import redact_text
 from ..events import quiet_turn
@@ -62,10 +62,11 @@ def base_options(settings, *, model: str | None = None, **kw: Any):
                               permission_mode="dontAsk", **kw)
 
 
-def build_sdk_tools(j, tools: list | None = None, caller: access.Caller | None = None, bus=None) -> list:
+def build_sdk_tools(j, tools: list | None = None, caller: access.Caller | None = None, bus=None, check: bool = False) -> list:
     """``caller`` / ``bus``: for a Team-mode session's brain - every call is dispatched as that caller (so
     ``access.tool_allowed`` applies even if the SDK were somehow asked for another tool) and its tool events go to that
-    session's own bus. The owner's brain passes neither."""
+    session's own bus. The owner's brain passes neither. ``check``: a question check's brain - every call is dispatched in
+    check mode (brain/checkmode.py: reads only)."""
     from claude_agent_sdk import tool
 
     events = bus or j.bus
@@ -76,16 +77,18 @@ def build_sdk_tools(j, tools: list | None = None, caller: access.Caller | None =
             events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "start"})
             try:
                 parsed = _t.model.model_validate(args or {})
-                result = await dispatch(j, _t, parsed, caller=caller)
-                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "done"})
+                result = await dispatch(j, _t, parsed, caller=caller, check=check)
+                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "done",
+                                        "coverage": _facts(_t.name, parsed, result)})
                 return {"content": [{"type": "text", "text": serialise(result)}]}
             except ValidationError as e:
-                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
+                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error", "coverage": []})
                 return {"content": [{"type": "text", "text": json.dumps({"INVALID_INPUT": e.errors(include_url=False)},
                                                                          default=str)}], "is_error": True}
             except Exception as e:  # noqa: BLE001
                 log.exception("Tool %s failed", _t.name)
-                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error"})
+                events.publish("tool", {"id": call_id, "name": _t.name, "label": _t.label, "state": "error",
+                                        "coverage": coverage.error_facts(_t.name, e)})
                 return {"content": [{"type": "text", "text": redact_text(f"{type(e).__name__}: {e}")[:2000]}],
                         "is_error": True}
 
@@ -93,13 +96,23 @@ def build_sdk_tools(j, tools: list | None = None, caller: access.Caller | None =
     return sdk_tools
 
 
-def build_mcp_server(j, tool_names: list[str] | None = None, caller: access.Caller | None = None, bus=None):
+def build_mcp_server(j, tool_names: list[str] | None = None, caller: access.Caller | None = None, bus=None,
+                     check: bool = False):
     from claude_agent_sdk import create_sdk_mcp_server
 
     tools = [t for t in TOOLS if tool_names is None or t.name in tool_names] if tool_names is not None else None
     if caller is not None:  # never expose a tool the caller may not use, whatever names were asked for
         tools = [t for t in (tools if tools is not None else TOOLS) if access.tool_allowed(t.name, caller)]
-    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j, tools, caller, bus))
+    return create_sdk_mcp_server(SERVER, tools=build_sdk_tools(j, tools, caller, bus, check))
+
+
+def _facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
+    """coverage.call_facts, never raising: describing a result must not be able to break the tool call."""
+    try:
+        return coverage.call_facts(name, args, result)
+    except Exception:  # noqa: BLE001
+        log.exception("coverage facts failed for %s", name)
+        return []
 
 
 def _tool_label(name: str) -> str:
@@ -122,15 +135,21 @@ class MaxBrain:
     from the task that connected it, so a single worker task owns it and handles messages one at a time.
     """
 
-    def __init__(self, j, caller: access.Caller | None = None, bus=None):
+    def __init__(self, j, caller: access.Caller | None = None, bus=None, check: bool = False):
+        """``check=True``: the question-check runner's brain (brain/checkmode.py) - its own bus and conversation, no
+        transcript or metrics, no browsing plugin, and every tool call dispatched in check mode (reads only)."""
         self.j = j
         self.s = j.settings
         self.caller = caller
         self.team = caller is not None and caller.is_team
+        self.check = check
+        self.isolated = self.team or check
         self.bus = bus or j.bus
         self.trace = None  # a team session describes its own turns (set by TeamSessions); the owner's is j.trace
+        self.last_extras: dict[str, Any] = {}
         self.tools = [t for t in TOOLS if access.tool_allowed(t.name, caller)]
-        self.server = build_mcp_server(j, [t.name for t in self.tools], caller, bus) if self.team else build_mcp_server(j)
+        self.server = (build_mcp_server(j, [t.name for t in self.tools], caller, bus, check) if self.isolated
+                       else build_mcp_server(j))
         self.session_id: str | None = None
         self.messages: list[dict[str, Any]] = []  # kept for interface parity (history lives in the session)
         self.uploads = self.s.data_dir / "uploads"
@@ -143,7 +162,7 @@ class MaxBrain:
         self._in_turn = False          # a chat turn is being generated right now
         self._stop_requested = False   # the owner pressed Stop during it: wind it down quietly, publish no reply
         self._repeats = RepeatDetector()
-        self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
+        self._history_before = 0 if check else self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
         self.refresh_system()
 
     def refresh_system(self) -> None:
@@ -157,7 +176,7 @@ class MaxBrain:
     def reset(self) -> None:
         self.session_id = None
         self._fresh_start = True  # the worker restarts Claude Code without the old conversation
-        if not self.team:
+        if not self.isolated:
             self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
         self.bus.publish("conversation_reset", None)
@@ -193,11 +212,11 @@ class MaxBrain:
                   speaker: str | None = None) -> str:
         # The worker task runs the turn, so a background (silent) turn has to say so explicitly - a context variable
         # set here would not reach it. See events.quiet_turn.
-        if self.team:
-            attachments = None  # a team session has no attachments (and no file reading: the Read tool is not offered)
+        if self.isolated:
+            attachments = None  # a team session / a check has no attachments (and a team one no file reading at all)
         # (the asker's role travels the same way: a manager's turn on the shared brain is marked in a context variable by main.py)
         return await self._submit(("ask", text, mode, attachments, speaker, quiet_turn.get(),
-                                   None if self.team else access.current_caller.get()))
+                                   None if self.isolated else access.current_caller.get()))
 
     async def warm(self) -> None:
         """Start Claude Code ahead of the first message, so that one is quick too."""
@@ -249,8 +268,8 @@ class MaxBrain:
 
     async def _connected(self, effort: str, model: str):
         """The running Claude Code client, restarted only if effort, model, instructions or the conversation changed."""
-        # read-only browsing, only if switched on AND every safeguard is met; never for a team session
-        extra = plugins.PluginSetup() if self.team else plugins.chat_setup(self.s)
+        # read-only browsing, only if switched on AND every safeguard is met; never for a team session or a check
+        extra = plugins.PluginSetup() if self.isolated else plugins.chat_setup(self.s)
         key = (effort, model, self.system, extra.signature)
         if self._client is not None and self._client_key == key and not self._fresh_start:
             return self._client
@@ -285,6 +304,15 @@ class MaxBrain:
     async def _turn(self, text: str, mode: str, attachments: list[dict[str, str]] | None,
                     speaker: str | None = None, quiet: bool = False, asker: access.Caller | None = None) -> str:
         token = quiet_turn.set(quiet)
+        if self.check:
+            ctoken = checkmode.active.set(True)
+            who = access.current_caller.set(self.caller)
+            try:
+                return await self._turn_events(text, mode, attachments, speaker)
+            finally:
+                access.current_caller.reset(who)
+                checkmode.active.reset(ctoken)
+                quiet_turn.reset(token)
         if self.team:
             # the caller travels with the turn, never in the shared j.asked_by that belongs to the owner's turn
             who = access.current_caller.set(self.caller)
@@ -312,11 +340,15 @@ class MaxBrain:
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
         repeat = repeat_note(self._repeats.check(text))
+        try:  # which sources this question needs that aren't connected, so the answer names the gap (brain/coverage.py)
+            repeat += coverage.turn_note(text, coverage.demo_map(self.j), self.team)
+        except Exception:  # noqa: BLE001
+            pass
         files = self._save_attachments(attachments)
         note =("\n\nAttached files (open them with the Read tool): " + ", ".join(files)) if files else ""
-        if not self.team:  # a team session is never written to the owner's transcript or metrics
+        if not self.isolated:  # a team session / a check is never written to the owner's transcript or metrics
             db.add_transcript("user", text)
-        qt = (TurnRecord(self.j.quality, None, mode) if self.team  # a record with no id measures nothing
+        qt = (TurnRecord(self.j.quality, None, mode) if self.isolated  # a record with no id measures nothing
               else self.j.quality.begin(text, mode))  # conversation-quality metrics; never raises (see conversation_quality.py)
         bus.publish("user_message", {"text": text, "mode": mode, "attachments": [a.get("name") for a in attachments or []]})
         bus.publish("thinking", {"mode": mode, "turn_id": qt.turn_id})
@@ -394,12 +426,13 @@ class MaxBrain:
             bus.publish("error", {"message": msg, "detail": redact_text(detail)[:300]})
             return msg
         reply = "".join(parts).strip() or (result.result if result else "") or ""
-        if not self.team:
-            db.add_transcript("assistant", reply)
-        qt.finish(reply)
-        trace = self.trace if self.team else self.j.trace
-        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id,
-                              **(trace.finish() if trace is not None else {})})
+        trace = self.trace if self.isolated else self.j.trace
+        extras = trace.finish(reply) if trace is not None else {}
+        if not self.isolated:
+            db.add_transcript("assistant", reply, coverage.as_stored(extras.get("coverage")))
+        qt.finish(reply, coverage=extras.get("coverage"))
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **extras})
+        self.last_extras = extras
         return reply
 
 

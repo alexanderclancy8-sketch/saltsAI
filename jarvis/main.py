@@ -62,6 +62,18 @@ class FeedbackIn(BaseModel):
     turn_id: int | None = None  # default: Jarvis's most recent turn
 
 
+class CheckMarkIn(BaseModel):
+    state: str = Field(pattern="^(obsolete|wrong|clear)$")
+
+
+class CheckPromoteIn(BaseModel):
+    question: str = Field(min_length=3, max_length=400)
+    expect: dict[str, Any]
+    area: str = Field("other", max_length=20)
+    as_role: str = Field("owner", pattern="^(owner|manager|team)$")
+    needs: list[str] = Field(default_factory=list, max_length=5)
+
+
 class VoiceEventIn(BaseModel):
     kind: str = Field(max_length=40)  # stt_failure | stt_empty | echo_suppressed | first_audio
     ms: float | None = None           # first_audio only: milliseconds from sending the request to the first sound
@@ -498,7 +510,45 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
 
     @app.get("/api/transcript", dependencies=[Depends(owner)])
     async def transcript(request: Request):
-        return J(request).db.recent_transcript(40)
+        from .brain.coverage import loads
+
+        # each reply's coverage line comes back as the stored summary (labels and counts only - brain/coverage.py)
+        return [{**r, "coverage": loads(r.get("coverage"))} for r in J(request).db.recent_transcript(40)]
+
+    # ------------------------------------------------------------------ question checks (the accuracy scorecard)
+    # Read: owner or manager (finance / people detail is the owner's alone, inside scorecard()). Run / mark / promote: the principal
+    # owner only (access.ROUTE_POLICY), each a same-origin click. Nothing here approves, sends or queues anything.
+    @app.get("/api/checks", dependencies=[Depends(owner)])
+    async def checks_scorecard(request: Request):
+        role = caller_of(request).role
+        data = await asyncio.to_thread(J(request).question_checks.scorecard, role)
+        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/checks/run", dependencies=[Depends(principal), Depends(human_click)])
+    async def checks_run(request: Request):
+        return J(request).question_checks.start_manual()
+
+    @app.post("/api/checks/{check_id}/mark", dependencies=[Depends(principal), Depends(human_click)])
+    async def checks_mark(check_id: str, body: CheckMarkIn, request: Request):
+        try:
+            return J(request).question_checks.mark(check_id, body.state, speaker(request) or "the owner")
+        except KeyError:
+            raise HTTPException(404, "No such check.") from None
+
+    @app.post("/api/checks/candidates/{turn_id}", dependencies=[Depends(principal), Depends(human_click)])
+    async def checks_promote(turn_id: int, body: CheckPromoteIn, request: Request):
+        try:
+            return J(request).question_checks.promote(turn_id, body.question, body.expect, body.area, body.as_role, body.needs,
+                                                      speaker(request) or "the owner")
+        except KeyError:
+            raise HTTPException(404, "No such reply.") from None
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+
+    @app.post("/api/checks/candidates/{turn_id}/dismiss", dependencies=[Depends(principal), Depends(human_click)])
+    async def checks_dismiss(turn_id: int, request: Request):
+        J(request).question_checks.dismiss_candidate(turn_id)
+        return {"dismissed": turn_id}
 
     async def _safe(coro, label: str) -> dict[str, Any]:
         # A misconfigured or unreachable connection (a wrong FSM address, Sage down, ...) must degrade

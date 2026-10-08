@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import history
+from .events import check_mode  # a question check (brain/checkmode.py) may only read
 
 TRANSCRIPT_REDACTED_KEY = "transcript:redacted_v1"
 
@@ -118,11 +119,14 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- coverage: for a reply, what it was built from (brain/coverage.py as_stored): source labels, gap kinds, row counts and the
+-- High/Medium/Low confidence - never a value from the data, a secret or the spoken gap sentence. '' for the owner's lines.
 CREATE TABLE IF NOT EXISTS transcript (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
     role TEXT NOT NULL,
-    text TEXT NOT NULL
+    text TEXT NOT NULL,
+    coverage TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS metrics (
     day TEXT NOT NULL,
@@ -149,7 +153,57 @@ CREATE TABLE IF NOT EXISTS turn_metrics (
     echo_suspect INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0,
     interrupted INTEGER NOT NULL DEFAULT 0,
-    format_flags TEXT DEFAULT ''
+    format_flags TEXT DEFAULT '',
+    coverage TEXT DEFAULT ''
+);
+-- Question checks (services/question_checks.py): the accuracy scorecard. A run, one row per check in it (the reply excerpt is
+-- <= 300 chars, redacted; finance/people rows are shown to the owner alone), the owner's own checks made from Wrong-marked
+-- replies, and the owner's "wrong / obsolete" marks. The newest 26 runs are kept.
+CREATE TABLE IF NOT EXISTS question_check_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    trigger TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'running',
+    total INTEGER NOT NULL DEFAULT 0,
+    passed INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    note TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS question_check_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    check_id TEXT NOT NULL,
+    area TEXT NOT NULL,
+    question TEXT NOT NULL,
+    as_role TEXT NOT NULL DEFAULT 'owner',
+    status TEXT NOT NULL,
+    reason TEXT DEFAULT '',
+    expected TEXT DEFAULT '',
+    given TEXT DEFAULT '',
+    sensitive INTEGER NOT NULL DEFAULT 0,
+    coverage TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_qc_results_run ON question_check_results(run_id);
+CREATE TABLE IF NOT EXISTS question_checks_custom (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    area TEXT NOT NULL,
+    expect TEXT NOT NULL,
+    as_role TEXT NOT NULL DEFAULT 'owner',
+    needs TEXT NOT NULL DEFAULT '[]',
+    sensitive INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    created_by TEXT DEFAULT '',
+    source_turn INTEGER
+);
+CREATE TABLE IF NOT EXISTS question_check_flags (
+    check_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    at TEXT NOT NULL,
+    by TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS voice_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -440,6 +494,11 @@ class Database:
             cols_now = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
             if "requested_role" not in cols_now:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN requested_role TEXT NOT NULL DEFAULT ''")
+        # What each reply was built from (brain/coverage.py): kept with the transcript line and the reply's quality record.
+        for table in ("transcript", "turn_metrics"):
+            cols_now = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "coverage" not in cols_now:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN coverage TEXT DEFAULT ''")
 
     # -- low level ----------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> int:
@@ -576,6 +635,8 @@ class Database:
     def remember(self, fact: str) -> int:
         """Stores a fact and returns its id - or, if the same fact is already remembered, returns the existing id
         without adding a duplicate (the scheduled self-reflection can easily re-learn something it already knows)."""
+        if check_mode.get():
+            raise RuntimeError("Nothing is remembered during a question check")
         fact = fact.strip()
         existing = self.find_memory(fact)
         if existing is not None:
@@ -654,6 +715,8 @@ class Database:
                       approved_by: str = "", requested_role: str = "") -> int:
         """`status`/`approved_by` are only ever set to "approved"/"standing approval: ..." by ActionExecutor.queue(),
         when the owner's own standing approval (services/standing_approvals.py) covers this exact action."""
+        if check_mode.get():
+            raise RuntimeError("Nothing is queued during a question check")
         return self.execute(
             "INSERT INTO pending_actions (created_at, kind, summary, payload_json, status, approved_by, decided_at, requested_role)"
             " VALUES (?,?,?,?,?,?,?,?)",
@@ -904,10 +967,12 @@ class Database:
         return self._delete_count("DELETE FROM engineer_homes")
 
     # -- transcript --------------------------------------------------------------------
-    def add_transcript(self, role: str, text: str) -> None:
+    def add_transcript(self, role: str, text: str, coverage: str = "") -> None:
         """Store one turn, redacted (credentials and access codes never reach the table). For the owner's words,
         cumulative speech-to-text partials are collapsed, and a longer version of the immediately preceding
         unanswered line replaces it - so only the final version of an utterance is kept."""
+        if check_mode.get():
+            raise RuntimeError("The transcript is not written during a question check")
         text = history.redact_history(text)
         if role == "user":
             text = history.collapse_cumulative(text)
@@ -920,7 +985,8 @@ class Database:
                 if age <= history.PARTIAL_WINDOW_S:
                     self.execute("UPDATE transcript SET text = ? WHERE id = ?", (text, last["id"]))
                     return
-        self.execute("INSERT INTO transcript (created_at, role, text) VALUES (?,?,?)", (now_iso(), role, text))
+        self.execute("INSERT INTO transcript (created_at, role, text, coverage) VALUES (?,?,?,?)",
+                     (now_iso(), role, text, str(coverage or "")[:4000]))
 
     def recent_transcript(self, limit: int = 30) -> list[dict[str, Any]]:
         return list(reversed(self.query("SELECT * FROM transcript ORDER BY id DESC LIMIT ?", (limit,))))

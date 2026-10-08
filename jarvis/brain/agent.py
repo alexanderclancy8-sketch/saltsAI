@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import anthropic
 from pydantic import ValidationError
 
-from . import llm
+from . import checkmode, coverage, llm
 from .. import access
 from ..events import quiet_turn
 from ..redact import redact_text
@@ -36,23 +36,32 @@ class JarvisBrain:
     """``caller``/``bus`` are only given for a Team-mode session (services/team_sessions.py): that brain has its own
     conversation, its own event bus (so nothing it says reaches the owner's console and nothing of the owner's reaches
     it), only the tools ``access.tool_allowed`` lets a team caller use, no web tools, a prompt that says who it is talking
-    to, and it never writes the owner's transcript or metrics. With neither given it is the owner's brain exactly as before."""
+    to, and it never writes the owner's transcript or metrics. With neither given it is the owner's brain exactly as before.
 
-    def __init__(self, j, caller: access.Caller | None = None, bus=None):
+    ``check=True``: the question-check runner's brain (services/question_checks.py, brain/checkmode.py). The owner's prompt and
+    tools (or a team caller's), but its own conversation (no earlier sessions in the prompt), its own bus, no transcript, no
+    conversation-quality record, and every tool call dispatched in check mode - only pure reads run; nothing is sent, queued
+    or written."""
+
+    def __init__(self, j, caller: access.Caller | None = None, bus=None, check: bool = False):
         self.j = j
         self.s = j.settings
         self.caller = caller
         self.team = caller is not None and caller.is_team
+        self.check = check
+        self.isolated = self.team or check   # never writes the owner's transcript, metrics or "who is asking"
         self.bus = bus or j.bus
         self.client: anthropic.AsyncAnthropic = j.client
         self.messages: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._active: set[asyncio.Task] = set()
         self._repeats = RepeatDetector()
+        self.last_extras: dict[str, Any] = {}  # the extras of the latest reply (the question-check runner reads its coverage)
         self.tools_by_name = {t.name: t for t in TOOLS if access.tool_allowed(t.name, caller)}
         self.tools = [t.definition() for t in self.tools_by_name.values()] + (
             SERVER_TOOLS if self.s.web_search_enabled and not self.team else [])
-        self._history_before = self.j.db.last_transcript_id()  # turns up to here are "earlier sessions"
+        # turns up to here are "earlier sessions" (a check brain sees none of them: each question starts clean)
+        self._history_before = 0 if check else self.j.db.last_transcript_id()
         self.trace = None  # a team session describes its own turns (set by TeamSessions); the owner's is j.trace
         self.refresh_system()
 
@@ -67,7 +76,7 @@ class JarvisBrain:
 
     def reset(self) -> None:
         self.messages = []
-        if not self.team:
+        if not self.isolated:
             self._history_before = self.j.db.last_transcript_id()
         self.refresh_system()
         self.bus.publish("conversation_reset", None)
@@ -102,17 +111,20 @@ class JarvisBrain:
         try:
             args = tool.model.model_validate(block.input if isinstance(block.input, dict) else {})
         except ValidationError as e:
-            bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "error"})
+            bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "error", "coverage": []})
             return {"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                     "content": json.dumps({"INVALID_INPUT": json.dumps(block.input, default=str),
                                            "errors": e.errors(include_url=False)}, default=str)}
         try:
-            result = await dispatch(self.j, tool, args, caller=self.caller)
-            bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "done"})
+            result = await dispatch(self.j, tool, args, caller=self.caller, check=self.check)
+            # what the result says about the sources it read (truncated, scope off, sample data withheld...): labels only
+            bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "done",
+                                 "coverage": _facts(tool.name, args, result)})
             return {"type": "tool_result", "tool_use_id": block.id, "content": serialise(result)}
         except Exception as e:  # noqa: BLE001 - report tool failures back to Claude so it can adapt
             log.exception("Tool %s failed", tool.name)
-            bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "error"})
+            bus.publish("tool", {"id": block.id, "name": tool.name, "label": tool.label, "state": "error",
+                                 "coverage": coverage.error_facts(tool.name, e)})
             return {"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                     "content": redact_text(f"{type(e).__name__}: {e}")[:2000]}
 
@@ -124,6 +136,15 @@ class JarvisBrain:
             self._active.add(task)
         try:
             async with self._lock:
+                if self.check:
+                    # A question check: every tool call in this turn is dispatched in check mode (reads only).
+                    token = checkmode.active.set(True)
+                    who = access.current_caller.set(self.caller)
+                    try:
+                        return await self._turn(text, mode, None, speaker)
+                    finally:
+                        access.current_caller.reset(who)
+                        checkmode.active.reset(token)
                 if self.team:
                     # A team turn never touches the owner's global "who is asking": the caller travels in a context
                     # variable (tools read it through tools._asker), so a team turn and an owner turn can overlap.
@@ -157,13 +178,13 @@ class JarvisBrain:
         now = datetime.now(ZoneInfo(self.s.timezone))
         who = f" · from {speaker}" if speaker else ""
         tag = f"[{'spoken' if mode == 'voice' else 'typed'} · {now:%A %d %B %Y, %H:%M} UK time{who}]"
-        note = repeat_note(self._repeats.check(text))
+        note = repeat_note(self._repeats.check(text)) + _coverage_note(self.j, text, self.team)
         content = self._attachment_blocks(attachments) + [{"type": "text", "text": f"{tag}\n{note}{text}"}]
         rollback_to = len(self.messages)
         self.messages.append({"role": "user", "content": content})
-        if not self.team:  # a team session is never written to the owner's transcript or metrics
+        if not self.isolated:  # a team session / a question check is never written to the owner's transcript or metrics
             db.add_transcript("user", text)
-        qt = (TurnRecord(self.j.quality, None, mode) if self.team  # a record with no id measures nothing
+        qt = (TurnRecord(self.j.quality, None, mode) if self.isolated  # a record with no id measures nothing
               else self.j.quality.begin(text, mode))  # conversation-quality metrics; never raises (see conversation_quality.py)
         bus.publish("user_message", {"text": text, "mode": mode,
                                      "attachments": [a.get("name") for a in attachments or []]})
@@ -201,11 +222,12 @@ class JarvisBrain:
                 if response.stop_reason == "refusal":
                     del self.messages[rollback_to:]
                     msg = "I'm afraid I can't help with that one."
-                    bus.publish("reply", {"text": msg, "mode": mode, "replace": True, "turn_id": qt.turn_id,
-                                          **self._trace_extras()})
-                    if not self.team:
-                        db.add_transcript("assistant", msg)
-                    qt.finish(msg)
+                    extras = self._trace_extras(msg)
+                    bus.publish("reply", {"text": msg, "mode": mode, "replace": True, "turn_id": qt.turn_id, **extras})
+                    if not self.isolated:
+                        db.add_transcript("assistant", msg, coverage.as_stored(extras.get("coverage")))
+                    qt.finish(msg, coverage=extras.get("coverage"))
+                    self.last_extras = extras
                     return msg
 
                 self.messages.append({"role": "assistant", "content": response.content})
@@ -253,13 +275,33 @@ class JarvisBrain:
             return "Sorry, something went wrong on my side."
 
         reply = "".join(reply_parts).strip()
-        if not self.team:
-            db.add_transcript("assistant", reply)
-        qt.finish(reply)
-        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **self._trace_extras()})
+        extras = self._trace_extras(reply)
+        if not self.isolated:
+            db.add_transcript("assistant", reply, coverage.as_stored(extras.get("coverage")))
+        qt.finish(reply, coverage=extras.get("coverage"))
+        bus.publish("reply", {"text": reply, "mode": mode, "turn_id": qt.turn_id, **extras})
+        self.last_extras = extras
         return reply
 
-    def _trace_extras(self) -> dict[str, Any]:
-        """Source line / pop-up button / follow-ups for the reply: the owner's trace, or the team session's own."""
-        trace = self.trace if self.team else self.j.trace
-        return trace.finish() if trace is not None else {}
+    def _trace_extras(self, reply: str = "") -> dict[str, Any]:
+        """Source line / pop-up button / follow-ups / coverage for the reply: the owner's trace, or the team session's (or
+        the question check's) own."""
+        trace = self.trace if self.isolated else self.j.trace
+        return trace.finish(reply) if trace is not None else {}
+
+
+def _facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
+    """coverage.call_facts, never raising: describing a result must not be able to break the tool call."""
+    try:
+        return coverage.call_facts(name, args, result)
+    except Exception:  # noqa: BLE001
+        log.exception("coverage facts failed for %s", name)
+        return []
+
+
+def _coverage_note(j, text: str, team: bool) -> str:
+    """The line telling the model, before it answers, which sources this question needs that aren't connected. Never raises."""
+    try:
+        return coverage.turn_note(text, coverage.demo_map(j), team)
+    except Exception:  # noqa: BLE001
+        return ""

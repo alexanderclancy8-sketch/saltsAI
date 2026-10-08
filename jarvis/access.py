@@ -241,6 +241,7 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/feedback": MANAGER_OK,
     "POST /api/voice-events": MANAGER_OK,
     "GET /api/quality": MANAGER_OK,
+    "GET /api/checks": MANAGER_OK,                          # the question-check scorecard (finance / people detail: owner only)
     "DELETE /api/quality": MANAGER_OK,
     "GET /api/transcript": MANAGER_OK,
     "POST /api/tts/sample": MANAGER_OK,
@@ -285,6 +286,11 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /auth/sage/callback": MANAGER_OK,
     # ---- the principal owner only: the activity list as a CSV file (it leaves the system, so it is the owner's click alone)
     "GET /api/activity/export.csv": OWNER_ONLY,
+    # ---- the principal owner only: question checks spend the owner's Claude allowance and decide what "right" means
+    "POST /api/checks/run": OWNER_ONLY,
+    "POST /api/checks/{check_id}/mark": OWNER_ONLY,
+    "POST /api/checks/candidates/{turn_id}": OWNER_ONLY,
+    "POST /api/checks/candidates/{turn_id}/dismiss": OWNER_ONLY,
     # ---- the principal owner only: how each van's moving / stopped / parked state was decided (no positions, no homes)
     "GET /api/fleet/diagnostics": OWNER_ONLY,
     # ---- the principal owner only: who may sign in as team

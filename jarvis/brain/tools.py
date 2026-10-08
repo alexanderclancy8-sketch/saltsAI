@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .. import access, demo_guard, history
+from . import checkmode
 from ..humanize import human_datetime
 from ..integrations.microsoft365 import mailbox_for
 from ..redact import redact_text
@@ -47,20 +48,30 @@ class Tool:
                 "eager_input_streaming": True}
 
 
-async def dispatch(j, tool: Tool, args: BaseModel, caller: access.Caller | None = None) -> Any:
+async def dispatch(j, tool: Tool, args: BaseModel, caller: access.Caller | None = None, check: bool = False) -> Any:
     """Run a read-only tool now; anything that changes something is queued for the owner's approval.
 
     ``caller`` is who is asking (None = the owner's own conversation, a scheduled job or Jarvis himself, as always). This is
     the one chokepoint every conversation's tool calls pass through, so it is where Team mode is enforced for tools:
     ``access.tool_allowed`` refuses anything outside a team caller's allowlist even if some other layer offered it. While the
-    handler runs, the caller is available as ``access.current_caller`` (the approval queue records who asked for an action)."""
+    handler runs, the caller is available as ``access.current_caller`` (the approval queue records who asked for an action).
+
+    ``check`` (or an already-running question check, ``checkmode.active``): the question-check runner's brain is asking. Only a
+    tool on ``checkmode.CHECK_TOOLS`` runs - never one with ``approval=True``, never one that sends, queues or writes - and the
+    check-mode flag stays set for the whole call, so the approval queue, notifier, transcript and bus refuse anything else."""
     caller = caller if caller is not None else access.current_caller.get()
     if not access.tool_allowed(tool.name, caller):
         return access.refusal(tool.name)
+    check = check or checkmode.is_active()
+    if check and not checkmode.tool_allowed(tool):
+        return checkmode.refusal(tool.name)
     token = access.current_caller.set(caller) if caller is not None else None
+    ctoken = checkmode.active.set(True) if check else None
     try:
         return await _dispatch(j, tool, args)
     finally:
+        if ctoken is not None:
+            checkmode.active.reset(ctoken)
         if token is not None:
             access.current_caller.reset(token)
 

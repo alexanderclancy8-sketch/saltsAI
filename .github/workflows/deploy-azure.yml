@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Package
-        run: zip -r jarvis.zip jarvis knowledge requirements.txt *.yaml -x "knowledge/private/*" "*/__pycache__/*"
+        run: zip -r jarvis.zip jarvis knowledge checks requirements.txt *.yaml -x "knowledge/private/*" "*/__pycache__/*"
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}

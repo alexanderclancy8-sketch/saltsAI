@@ -245,6 +245,20 @@
         <ul class="list" id="tests"></ul>
         <div style="margin-top:10px"><button class="btn" id="btn-run-tests" type="button">Run tests now</button></div>
       </div>
+      <div class="sec" id="qc">
+        <h3>Question checks <span class="count" id="qc-score"></span></h3>
+        <p class="qc-summary sub" id="qc-summary">Loading…</p>
+        <div class="qc-trend" id="qc-trend" role="img" aria-label="Score over the last runs" hidden></div>
+        <ul class="list qc-areas" id="qc-areas"></ul>
+        <div id="qc-failing"></div>
+        <details class="qc-candidates" id="qc-candidates-wrap" hidden>
+          <summary>Candidate checks from replies marked Wrong <span id="qc-cand-count"></span></summary>
+          <ul class="list" id="qc-candidates"></ul>
+        </details>
+        <p class="sub" id="qc-problems"></p>
+        <div class="row" style="margin-top:10px"><button class="btn" id="btn-run-checks" type="button" hidden>Run question checks now</button>
+          <span class="sub" id="qc-run-note"></span></div>
+      </div>
       <div class="sec">
         <h3>Alerts</h3>
         <ul class="list" id="notifications"></ul>
@@ -456,6 +470,7 @@
 <script src="/static/charts.js"></script>
 <script src="/static/memory.js"></script>
 <script src="/static/activity.js"></script>
+<script src="/static/checks.js"></script>
 <script src="/static/hud.js"></script>
 </body>
 </html>

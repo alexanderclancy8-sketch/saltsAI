@@ -72,6 +72,7 @@ from .services.routine_tests import RoutineTester
 from .services.fsm_engineer import FsmEngineer
 from .services.security_watch import SecurityWatch
 from .services.conversation_quality import ConversationQuality
+from .services.question_checks import QuestionChecks
 from .services.self_improve import SelfImprove
 from .services.self_learning import SelfLearning
 from .services.site_access import SiteAccessCodes
@@ -202,6 +203,8 @@ class Jarvis:
         self.quality = ConversationQuality(self)  # per-turn metrics + feedback; must exist before the brain below
         self.quality.prune()  # retention for its tables (default 90 days); also run daily by the scheduler
         self.self_learning = SelfLearning(self)
+        # The weekly accuracy scorecard: asks a check-mode brain (reads only) and grades against the live data. Off by default.
+        self.question_checks = QuestionChecks(self)
         self.weekly_digest = WeeklyDigest(self)
         self.reply_suggestions = ReplySuggestions(self)
         self.site_access = SiteAccessCodes(self)
