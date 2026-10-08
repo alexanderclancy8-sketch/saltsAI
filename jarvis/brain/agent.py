@@ -27,6 +27,7 @@ from ..services.tracking import requester_label
 from .prompts import build_system, build_team_system, house_rules
 from .repeats import RepeatDetector, repeat_note
 from .tools import SERVER_TOOLS, TOOLS, dispatch, serialise
+from .web_research import WebTurn
 
 log = logging.getLogger(__name__)
 MAX_STEPS = 25
@@ -58,8 +59,9 @@ class JarvisBrain:
         self._repeats = RepeatDetector()
         self.last_extras: dict[str, Any] = {}  # the extras of the latest reply (the question-check runner reads its coverage)
         self.tools_by_name = {t.name: t for t in TOOLS if access.tool_allowed(t.name, caller)}
-        self.tools = [t.definition() for t in self.tools_by_name.values()] + (
-            SERVER_TOOLS if self.s.web_search_enabled and not self.team else [])
+        self.web = bool(self.s.web_search_enabled and not self.team)
+        self._own_tools = [t.definition() for t in self.tools_by_name.values()]
+        self.tools = self._own_tools + (SERVER_TOOLS if self.web else [])
         # turns up to here are "earlier sessions" (a check brain sees none of them: each question starts clean)
         self._history_before = 0 if check else self.j.db.last_transcript_id()
         self.trace = None  # a team session describes its own turns (set by TeamSessions); the owner's is j.trace
@@ -201,11 +203,19 @@ class JarvisBrain:
         params = llm.request_params(self.s, effort, compaction=self.s.jarvis_compaction, model=self.s.model_for(mode))
         reply_parts: list[str] = []
         json_retries = 0
+        # this turn's web budget (more for a question that clearly needs research, a hard cap per turn) and the sources
+        # its web tools really used (brain/web_research.py)
+        web = WebTurn.for_question(text)
         try:
             for _ in range(MAX_STEPS):
+                tools = self._own_tools + web.tools() if self.web else self.tools
+                # once a kind's budget is spent its tool stays defined (max_uses 1) and a short note asks the model to answer
+                # from what it has - after the cached system prompt, so the cache still holds
+                spent = web.spent_note() if self.web else ""
+                system = self.system + [{"type": "text", "text": spent}] if spent else self.system
                 try:
                     async with self.client.beta.messages.stream(
-                        max_tokens=32000, system=self.system, messages=self.messages, tools=self.tools,
+                        max_tokens=32000, system=system, messages=self.messages, tools=tools,
                         cache_control={"type": "ephemeral"}, **params,
                     ) as stream:
                         async for event in stream:
@@ -219,6 +229,8 @@ class JarvisBrain:
                                                      "label": label, "state": "start"})
                         response = await stream.get_final_message()
                     json_retries = 0
+                    if self.web:
+                        web.note_response(response.content)
                 except ValueError:
                     # Tool-input JSON the SDK could not parse at all: no tool_use id to answer, so retry the step.
                     json_retries += 1
@@ -282,7 +294,7 @@ class JarvisBrain:
             return "Sorry, something went wrong on my side."
 
         reply = "".join(reply_parts).strip()
-        extras = self._trace_extras(reply)
+        extras = self._trace_extras(reply, web)
         if not self.isolated:
             db.add_transcript("assistant", reply, coverage.as_stored(extras.get("coverage")))
         qt.finish(reply, coverage=extras.get("coverage"))
@@ -290,11 +302,15 @@ class JarvisBrain:
         self.last_extras = extras
         return reply
 
-    def _trace_extras(self, reply: str = "") -> dict[str, Any]:
-        """Source line / pop-up button / follow-ups / coverage for the reply: the owner's trace, or the team session's (or
-        the question check's) own."""
+    def _trace_extras(self, reply: str = "", web: WebTurn | None = None) -> dict[str, Any]:
+        """Source line / pop-up button / follow-ups / coverage / numbered web sources for the reply: the owner's trace, or the
+        team session's (or the question check's) own."""
         trace = self.trace if self.isolated else self.j.trace
-        return trace.finish(reply) if trace is not None else {}
+        if trace is None:
+            return {}
+        if web is not None:
+            trace.add_web(web)
+        return trace.finish(reply)
 
 
 def _facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:

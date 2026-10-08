@@ -316,6 +316,14 @@ body.checks-sheet .shell { z-index: 3; }
 .msg .cov .cov-body ul { margin: 2px 0 0; padding-left: 16px; }
 .msg .cov .cov-body li, .msg .cov .cov-none { overflow-wrap: anywhere; margin: 0; }
 .msg .cov .cov-why { grid-column: 1 / -1; margin: 2px 0 0; }
+/* The numbered web sources under a reply (hud.js webSourcesHtml): part of the message's own flow, never an overlay. */
+.msg .web-src { margin: 6px 0 0; padding: 0 0 0 34px; font-size: 12.5px; line-height: 1.45; color: var(--muted); max-width: 100%; }
+.msg .web-src li { margin: 1px 0; overflow-wrap: anywhere; }
+.msg .web-src li::marker { font-family: var(--f-mono); font-size: 11px; }
+.msg .web-src a { color: var(--core); text-decoration: none; }
+.msg .web-src a:hover, .msg .web-src a:focus-visible { text-decoration: underline; }
+.msg .web-src a:focus-visible { outline: 2px solid var(--core); outline-offset: 2px; border-radius: 3px; }
+.msg .web-src .web-host { margin-left: 6px; font-family: var(--f-mono); font-size: 11px; }
 .msg .extras { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 0 16px; }
 .reply-chip { background: none; border: 1px solid var(--line); border-radius: 99px; padding: 5px 13px; font: inherit; font-size: 13px; line-height: 1.3;
   color: var(--muted); cursor: pointer; text-align: left; max-width: 100%; overflow-wrap: anywhere; }
@@ -816,6 +824,8 @@ input.mem-input { min-height: 0; }
   .msg .fb { gap: 8px; }
   .msg .fb-note { min-height: 44px; font-size: 16px; }   /* a real 44px button: an invisible pad would sit under the message box */
   .msg .cov summary { min-height: 44px; }   /* the coverage line opens with a tap */
+  .msg .web-src a { display: block; padding: 6px 0 0; }   /* a source link is a comfortable tap (its number stays on line one) */
+  .msg .web-src .web-host { display: block; margin: 0 0 4px; }
   .orb-badge::after { content: ""; position: absolute; inset: -12px; }
   .set-checkbox input { width: 22px; height: 22px; }
   .set-checkbox label { padding: 11px 0; flex: 1; }
