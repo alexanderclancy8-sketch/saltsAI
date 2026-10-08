@@ -72,6 +72,8 @@ def _digit_tokens(text: str) -> set[str]:
         tok = tok.strip(".,:;-")
         if len(tok) >= 3 and any(c.isdigit() for c in tok):
             out.add(tok)
+            if "," in tok:   # "48,213.55" and "48213.55" are the same figure
+                out.add(tok.replace(",", ""))
     return out
 
 
@@ -243,6 +245,25 @@ class FsmRead:
         return {"error": f"{res.name} has no {kind} {text}. Its {kind}s are: {shown or 'none listed'}.", "kind": "bad_request",
                 "resource": res.name}
 
+    def validate_filters(self, res: Resource, filters: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, Any] | None]:
+        """(the filters as the FSM wants them, None) or ({}, a plain error dict): every key is a filterable field (optionally
+        field[gte] / field[lte]) with a single text / number / true-false value. Shared by fsm_data and fsm_analyse."""
+        field_names, filter_names = res.field_names, res.filters
+        params_filters: dict[str, str] = {}
+        for key, value in (filters or {}).items():
+            m = FILTER_KEY.fullmatch(str(key).strip())
+            if not m:
+                return {}, {"error": f"'{clean_text(key, 40)}' isn't a filter name. Use a field name, or field[gte] / field[lte].",
+                            "kind": "bad_request", "resource": res.name}
+            name, op = m.group(1), m.group(2)
+            if name not in filter_names:
+                return {}, self._field_error("filter", [name], res, filter_names)
+            if isinstance(value, (dict, list)) or value is None:
+                return {}, {"error": f"The value for filter '{name}' must be a single text, number or true/false.", "kind": "bad_request",
+                            "resource": res.name}
+            params_filters[f"{name}[{op}]" if op else name] = clean_text(value if not isinstance(value, bool) else str(value).lower(), 200)
+        return params_filters, None
+
     async def read(self, resource: str, *, filters: dict[str, Any] | None = None, q: str | None = None,
                    fields: list[str] | None = None, order: str | None = None, updated_since: str | None = None,
                    limit: int | None = None, offset: int = 0) -> dict[str, Any]:
@@ -276,19 +297,9 @@ class FsmRead:
             bad = [f for f in fields if field_names and f not in field_names]
             if bad:
                 return self._field_error("field", bad, res, field_names)
-        params_filters: dict[str, str] = {}
-        for key, value in (filters or {}).items():
-            m = FILTER_KEY.fullmatch(str(key).strip())
-            if not m:
-                return {"error": f"'{clean_text(key, 40)}' isn't a filter name. Use a field name, or field[gte] / field[lte].",
-                        "kind": "bad_request", "resource": res.name}
-            name, op = m.group(1), m.group(2)
-            if name not in filter_names:
-                return self._field_error("filter", [name], res, filter_names)
-            if isinstance(value, (dict, list)) or value is None:
-                return {"error": f"The value for filter '{name}' must be a single text, number or true/false.", "kind": "bad_request",
-                        "resource": res.name}
-            params_filters[f"{name}[{op}]" if op else name] = clean_text(value if not isinstance(value, bool) else str(value).lower(), 200)
+        params_filters, bad_filter = self.validate_filters(res, filters)
+        if bad_filter:
+            return bad_filter
         if order:
             ord_field = order[1:] if order.startswith("-") else order
             if field_names and ord_field not in field_names:
