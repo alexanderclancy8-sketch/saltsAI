@@ -34,6 +34,7 @@ from .services.fsm_analyse import FsmAnalyse
 from .services.fsm_documents import FsmDocuments
 from .services.fsm_read import FsmRead
 from .services.customer_balance import CustomerBalance
+from .services.similar_work import SimilarWork
 from .services.actions import ActionExecutor
 from .services.advisor import Advisor
 from .services.standing_approvals import StandingApprovals
@@ -228,6 +229,8 @@ class Jarvis:
         self.team_codes = TeamCodes(self.team_access, self.office_access)
         # customer_balance: one customer's balance for the office (and the owner / managers), see services/customer_balance.py
         self.customer_balance = CustomerBalance(self)
+        # find_similar_work: similar past quotes, jobs and emails for a described job (services/similar_work.py), read-only
+        self.similar_work = SimilarWork(self)
         self.team_sessions = TeamSessions(self)
         self._seed_notes()
         if s.effective_llm_backend == "max":
