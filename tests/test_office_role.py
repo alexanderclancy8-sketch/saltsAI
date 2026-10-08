@@ -617,6 +617,7 @@ OFFICE_FINANCE_TOOL_CALLS = [
     ("fsm_data", {"resource": "customers"}), ("fsm_data", {"resource": "payslips"}), ("fsm_catalog", {"group": "finance"}),
     ("fsm_analyse", {"resource": "invoices", "metrics": [{"op": "sum", "field": "outstanding"}]}),
     ("finance_snapshot", {}), ("finance_aged", {}), ("finance_cashflow", {}), ("business_health", {}),
+    ("fsm_document_read", {"document_id": "doc-1"}), ("fsm_document_read", {"query": "invoice", "category": "finance"}),
 ]
 
 
@@ -629,6 +630,22 @@ async def test_an_office_caller_cannot_reach_any_other_finance(fsm, name, args):
     assert out == access.refusal(name, PAT) and "isn't available to you here" in out
     assert [r for r in api.requests if "/data/" in r.url.path] == []
     assert "error" in j.async_tools.start(name, args, "SILENT", caller=PAT)
+
+
+@pytest.mark.parametrize("who", [PAT, SAM, LEGACY], ids=["office", "engineer", "pre-split-team"])
+async def test_neither_office_nor_engineer_can_read_fsm_documents(fsm, who):
+    """fsm_document_read (FSM documents: owner any group, managers compliance/commercial/operations) is in neither team list:
+    refused at dispatch, in the background, and by the document service's own group rule, before anything is fetched."""
+    j, api, _ = fsm
+    assert "fsm_document_read" not in OFFICE_TOOLS and "fsm_document_read" not in access.ENGINEER_TOOLS
+    assert not tool_allowed("fsm_document_read", who)
+    tool = TOOLS_BY_NAME["fsm_document_read"]
+    out = await dispatch(j, tool, tool.model.model_construct(document_id="doc-1"), caller=who)
+    assert out == access.refusal("fsm_document_read", who) and "isn't available to you here" in out
+    assert "error" in j.async_tools.start("fsm_document_read", {"document_id": "doc-1"}, "SILENT", caller=who)
+    for group in ("compliance", "commercial", "operations", "finance", "people", None):
+        assert not j.fsm_documents.allowed(group, who), group
+    assert api.requests == [] and j.db.background_calls(5) == []
 
 
 async def test_the_owner_only_fsm_data_finance_rule_is_unchanged_for_managers(fsm):
