@@ -68,7 +68,7 @@ def fence(name: str, kind_label: str, text: str, extra: str = "") -> str:
 
 
 def _text_attachment(name: str, text: str, kind_label: str, extra: str = "") -> dict[str, str]:
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:80]
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:70]
     return {"name": name, "mime": "text/plain", "save_as": f"{safe}.txt",
             "data": base64.b64encode(fence(name, kind_label, text, extra).encode("utf-8")).decode("ascii")}
 

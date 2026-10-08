@@ -167,7 +167,8 @@ class MaxBrain:
 
         paths = []
         for a in attachments or []:
-            name = re.sub(r"[^A-Za-z0-9._-]", "_", a.get("name") or "file")[:80]
+            # (a PDF / Word / Excel / PowerPoint file arrives already read, as text, with the name to save it under)
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", a.get("save_as") or a.get("name") or "file")[:80]
             path = self.uploads / f"{datetime.now():%Y%m%d-%H%M%S}-{name}"
             try:
                 path.write_bytes(base64.b64decode(a.get("data", "")))
@@ -423,7 +424,7 @@ def _stage_pdf(tmp: Path, n: int, block: dict[str, Any]) -> str:
 
     from ..services import file_reader
 
-    title = re.sub(r"[^\w .,'()&-]", "", str(block.get("title") or ""))[:100]
+    title = re.sub(r"[^\w .,()&-]", "", str(block.get("title") or ""))[:100]
     raw = base64.b64decode(block["source"]["data"])
     out = ""
     chunks, total = file_reader.pdf_chunks(raw, MAX_STAGED_PDF_PAGES, MAX_STAGED_PDF_PAGES)
