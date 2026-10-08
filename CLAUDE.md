@@ -632,6 +632,43 @@ never leaks into a test run). For engineer-loop services, build a small `FakeGit
 `asyncio.sleep()` polling loop (CI-watching, deploy-waiting) needs that patched out in tests
 (`monkeypatch.setattr("jarvis.services.x.asyncio.sleep", instant_sleep)`) or it will actually wait.
 
+**Reading files from outside: email attachments and console uploads (`services/file_reader.py`, `services/chat_files.py`, `Documents.read_*`).**
+Everything is pure Python (pypdf, Pillow, python-docx, openpyxl, zipfile) because App Service Linux has no tesseract / poppler / ffmpeg - never
+add a dependency that needs a system package. `file_reader` is the shared toolbox: `sniff()` (what a file IS from its first bytes and, for
+zips, its parts), `classify_upload()` (the name's extension must agree with the bytes; old `.doc/.xls/.ppt` and macro-enabled files are
+refused with a plain "Save As .docx" sentence), `open_office_zip()` (entry-count and inflated-size cap; XML with a DOCTYPE/ENTITY is refused;
+only XML is ever read, a `vbaProject.bin` is never touched), `pptx_to_markdown()` (slide titles, text, tables, notes; no python-pptx),
+and the PDF helpers. `FileProblem` (a `ValueError`) carries a plain sentence and a `code`; `describe_failure()` turns any exception into
+"I couldn't read 'X.pdf': ..." - every failure must name the file and the reason, never a generic "can't open".
+**Email path.** `GraphMail._fetch_attachments` lists attachments WITHOUT `contentBytes` (`$select=id,name,size,contentType,isInline`) and
+fetches each file from `/attachments/{id}/$value` (works at any size; the JSON `contentBytes` is unreliable above ~3 MB, which silently
+dropped scanned POs and made the tool answer "no PDF attachments"). `pdf_attachments` / `office_attachments` return `{name, data}` for a
+readable file and `{name, problem, size[, detail]}` for one that is a OneDrive/SharePoint link (`referenceAttachment`), an attached email
+(`itemAttachment`), over the limit (PDF 25 MB, Office 15 MB), an empty or failed download, or an old/macro Office format - so every caller
+that needs bytes (po_intake, supplier_bills, ooh) filters on `data`. `Documents.read_pdf_attachments` / `read_attachments` turn those into
+owner-facing sentences, and when nothing matched say what the email DOES carry (`attachment_overview`). The tool result is kept under the
+60,000-character `serialise()` cut (`Documents._fit`) so the JSON is never chopped mid-file.
+**PDF chain** (`Documents.read_pdf_bytes`): the text layer (`pdf_to_text`, first 30 pages) -> if it is a scan (under 40 characters of text, or
+over half the pages have none) the model transcribes it, 6 pages per call, up to 18 pages (`_transcribe_pdf`), flagged `ocr=true` -> else a
+plain message ("password protected", "damaged", "a scan and the transcription step failed on this server (...)", "missing component").
+On the API backend the PDF goes to the model as a `document` block. On the **Claude Max backend** `run_once` cannot give a model a PDF
+natively: it can only `Read` a file, and Claude Code reads a PDF of more than a few pages only by page range, which needs poppler
+(`pdftoppm`). So `max_backend._stage_pdf` puts a text PDF's text in the prompt (plus the first 10 pages as a file), turns a scan into
+JPEG page images with pypdf + Pillow (`file_reader.pdf_page_images`, up to 8 pages; `Read` opens pictures anywhere), and only falls back
+to writing the PDF. `llm.structured(..., max_turns=)` exists because each page image is a separate `Read` turn. This staging also serves
+po_intake, supplier_bills and the out-of-hours reports (all pass PDF `document` blocks to `llm.structured`). Not verifiable offline: that
+Claude Code on App Service really opens the staged JPEGs (the tests assert what is staged, not what the CLI does with it).
+**Console attach path.** The attach button (`role:manager` markup, owner + manager only; a team session's attachments are dropped before
+anything is read) accepts photos, PDFs, Word, Excel, PowerPoint and text. `hud.js` checks first (extension vs first bytes, 5 files, 20 MB each,
+25 MB total) and shows each refusal as an error chip under the attachment strip; `main.files_for_turn` -> `chat_files.prepare` re-checks on
+the server (authoritative) and READS each file with the same readers: a PDF/Word/Excel/PowerPoint file reaches the brain as a
+`text/plain` attachment fenced as untrusted data (`<file_content>`, the closing marker cannot be forged, control characters stripped,
+`save_as` = `<name>.txt` so the Max brain's `Read` can open it), images and txt/csv/md/json behave as before. A refused file is reported in
+`attachment_errors` (HTTP), a `notification` event (WebSocket) and a note on the turn so the reply says why. Nothing read is stored in
+memory or the transcript. An upload over ~12 MB is sent over `POST /api/chat/stream` instead of the WebSocket (16 MB message cap).
+Tests: `tests/test_email_pdf_failures.py`, `tests/test_console_attachments.py`, `tests/test_console_attach_browser.py` (Playwright),
+fixtures in `tests/file_fixtures.py` (real tiny PDF / scanned PDF / docx / xlsx / pptx built in code).
+
 ### Testing rules: clocks and time zones
 
 CI runs on ubuntu in UTC, developers run the suite on Windows in a local zone, and the real date keeps moving. Three "red on
