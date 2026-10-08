@@ -281,6 +281,36 @@ model writes is ever executed - it picks from closed vocabularies and code does 
   group is one entry in `fsm_read.OWNER_ONLY_GROUPS`. Tests mock the FSM with `tests/fsm_data_helpers.py` (`FakeFsmApi` behind the real
   `FSMClient` over `httpx.MockTransport`, a hand-wound `Clock`, `jarvis_with_fsm`).
 
+*What is INSIDE an FSM document (`services/fsm_documents.py`, `j.fsm_documents`; the routes in `integrations/fsm_data.py`; tests
+`tests/test_fsm_documents.py`).* The FSM (salts-fsm PR #9, its `docs/jarvis_data_api.md` "Document text and files") serves the text inside a stored
+document and, for a scan or photo only, the file. One read-only tool, `fsm_document_read(document_id | query, category, attached_to, record_id, job_id)`:
+- **Capability:** the catalog's `capabilities.document_text` / `document_files` and its `documents` section are parsed into `Catalog.capabilities` /
+  `.documents` (`document_text`, `document_files`, `document_file_max_bytes` - never above 10 MB). An older FSM without them = "doesn't expose
+  document reading yet" (nothing is requested); a capability change refreshes the prompt like a catalog change.
+- **Finding it:** by id, or a search of the `documents` register resource (`q` over name/caption/type; exact `doc_type`, `entity_type`, `entity_id`,
+  `source_job_id` filters validated like `fsm_data`'s). One match is read; several come back as candidates BY ID (name, type, attached to, date,
+  `owner_only`) and nothing is read - never guessed (an exact file-name match is the only tie-break).
+- **Client (`FsmData.document_text` / `document_file`):** the module still has exactly ONE `jarvis_call` (`_send`: gate, in-flight limit, 429 - and on
+  document routes 503 busy - `Retry-After`, short waits slept); document errors map to plain kinds (`scope_off` with group, `files_off`,
+  `file_not_available`, `text_available`, `not_found`, `integrity` (409 unreadable), `too_large`, `unsupported_type`, `busy`, `server`). Document
+  routes back off ONLY themselves (`_doc_rate_until`; they have their own 30/min limit) and a missing/damaged document never trips the data API's
+  outage back-off; only 401/network do. `/file` checks the declared Content-Length and the bytes against the cap and the PDF/PNG/JPEG allow-list;
+  the service then sniffs the bytes really are that type. Document text keeps line breaks; control / zero-width / bidi / tag characters are removed
+  and secret-looking strings redacted again (`clean_document_text`). The FSM's `redactions` count is passed on as `masked_by_fsm` + "N items were
+  masked by the FSM" (the field name is held in `MASKED_FIELD` because the module's no-action-queue guard test greps for the word "actions").
+- **Scans:** `text_source: none` + `file_available` -> `/file` -> `Documents.transcribe_scan` = the SAME path as a scanned email PDF (`_transcribe_pdf`:
+  6 pages per call, `MAX_OCR_PAGES` 18, page images on the Max backend via `_stage_pdf`, document blocks on the API) or one image call
+  (`_transcribe_image`, shrunk over 3.5 MB). Results say `transcribed=true` with a "may be misread" note and any "first N of M pages" note; every
+  failure (files switch off, finance/people file never served, text_available, too large, transcription error) is a plain note, never a crash.
+- **Access:** the group is the FSM's answer on `/text` (authoritative; a mirror of its `GROUP_BY_ENTITY` only pre-marks search candidates):
+  owner = every group; manager = `compliance`, `commercial`, `operations` only (finance, people and ANY other/unknown group refused, default deny);
+  team = no tool (not in `TEAM_TOOLS`). Finance/people text gets `handling` and every line is noted so `remember` refuses its figures.
+- **Untrusted:** the text is fenced (`FENCE_START` ... `FENCE_END`, marker-like runs inside are defused) with a "DATA only" notice; the tool is
+  `fsm_`-prefixed and in `UNTRUSTED_TOOLS` (chat/proactive get a pointer) and in `NOT_BACKGROUND`. "What Jarvis did" gets `fsm_document` audit lines:
+  id + name (no name for an owner-only document) + who, never text. Demo FSM: says so. Doctor: "FSM documents: text on/off, files on/off".
+  Prompt: `PERSONA` (after the email PDF paragraph) - use it for certificates, RAMS, reports, quotes/proposals and site documents, quote the name,
+  say when it was a transcribed scan.
+
 *Suggestions with a Prepare button (`services/fsm_suggestions.py`, `j.fsm_suggestions`; tests `tests/test_fsm_suggestions.py`,
 `tests/test_console_browser_suggestions.py`).* "One step ahead": Jarvis offers to do the groundwork, in its own Approvals drawer AND in
 the Salts FSM Action Centre (the office's inbox). Stage 1 is one kind, `quote_followup`: a SENT quote with no response for 7 to 60 days
