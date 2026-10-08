@@ -207,9 +207,13 @@ class JarvisBrain:
         try:
             for _ in range(MAX_STEPS):
                 tools = self._own_tools + web.tools() if self.web else self.tools
+                # once a kind's budget is spent its tool stays defined (max_uses 1) and a short note asks the model to answer
+                # from what it has - after the cached system prompt, so the cache still holds
+                spent = web.spent_note() if self.web else ""
+                system = self.system + [{"type": "text", "text": spent}] if spent else self.system
                 try:
                     async with self.client.beta.messages.stream(
-                        max_tokens=32000, system=self.system, messages=self.messages, tools=tools,
+                        max_tokens=32000, system=system, messages=self.messages, tools=tools,
                         cache_control={"type": "ephemeral"}, **params,
                     ) as stream:
                         async for event in stream:

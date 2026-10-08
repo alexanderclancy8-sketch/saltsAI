@@ -6,10 +6,12 @@ request's ``max_uses``); the Claude Max brain has Claude Code's own ``WebSearch`
 web budget and record on either:
 
 * **Budget.** A question that clearly needs research (``is_research``: a standard, a regulation, "find three suppliers",
-  "which panels support X", "compare") gets a bigger budget than an ordinary one, and every turn has a hard cap per kind
-  (searches, page reads) whatever the question. The API brain asks for ``tools()`` before each request (a spent kind is
-  left out of the request, so the model can't use it again this turn); the Max brain asks ``allow()`` from a PreToolUse
-  hook, which denies the call once the cap is reached.
+  "which panels support X", "compare") gets a bigger budget than an ordinary one, and every turn has a cap per kind
+  (searches, page reads) whatever the question. The API brain asks for ``tools()`` before each request (never more than
+  is left of the cap; once a kind is spent it stays defined with ``max_uses: 1`` - leaving it out could make the API
+  reject the turn's own history - and ``spent_note()`` tells the model to answer from what it has), so its true ceiling
+  is the cap plus one per later request in the turn, bounded by the tool loop's step limit (``agent.MAX_STEPS``). The Max
+  brain asks ``allow()`` from a PreToolUse hook, which denies the call once the cap is reached (a hard cap).
 * **Sources.** Built only from what the tools really returned - never from text the model wrote. API: the citations the
   API attaches to the reply (``web_search_result_location``: url and title) and the pages ``web_fetch`` read. Max: the pages
   ``WebFetch`` read and, when it read none, the links ``WebSearch`` returned (Claude Code gives no citations). Only http(s)
@@ -59,9 +61,15 @@ def is_research(text: Any) -> bool:
 
 
 def server_tools(research: bool = False, used: dict[str, int] | None = None) -> list[dict[str, Any]]:
-    """The web tool definitions for one API request: the per-request budget, never past what is left of the turn's cap. A kind
-    whose cap is spent is left out. With nothing used on an ordinary question this is exactly what every request always sent
-    (so the prompt cache is unchanged for ordinary turns)."""
+    """The web tool definitions for one API request: the per-request budget, never past what is left of the turn's cap. With
+    nothing used on an ordinary question this is exactly what every request always sent (so the prompt cache is unchanged for
+    ordinary turns).
+
+    A kind whose cap is spent is NEVER left out of the request: the conversation already holds that tool's
+    ``server_tool_use`` blocks, and the API may reject history naming a tool the request doesn't define. It stays in with
+    ``max_uses: 1`` (the API's smallest), and ``WebTurn.spent_note()`` tells the model the budget is spent. So the true
+    ceiling per kind is the turn's cap plus one for each later request in the turn - itself bounded by the tool loop's step
+    limit (``agent.MAX_STEPS``)."""
     used = used or {}
     per_request = RESEARCH_REQUEST if research else ORDINARY_REQUEST
     per_turn = RESEARCH_TURN if research else ORDINARY_TURN
@@ -69,8 +77,7 @@ def server_tools(research: bool = False, used: dict[str, int] | None = None) -> 
     for base in (SEARCH_TOOL, FETCH_TOOL):
         name = base["name"]
         left = per_turn[name] - int(used.get(name, 0))
-        if left > 0:
-            out.append({**base, "max_uses": min(per_request[name], left)})
+        out.append({**base, "max_uses": min(per_request[name], left) if left > 0 else 1})
     return out
 
 
@@ -123,6 +130,20 @@ class WebTurn:
 
     def cap(self, kind: str) -> int:
         return (RESEARCH_TURN if self.research else ORDINARY_TURN)[kind]
+
+    def spent(self) -> list[str]:
+        """The kinds whose per-turn cap is used up."""
+        return [k for k in ("web_search", "web_fetch") if self.used[k] >= self.cap(k)]
+
+    def spent_note(self) -> str:
+        """API brain: a short note for the next request once a kind's cap is spent (the tool itself stays defined with
+        ``max_uses: 1``, see ``server_tools``), or '' while there is budget left."""
+        kinds = self.spent()
+        if not kinds:
+            return ""
+        what = " and ".join({"web_search": "web searches", "web_fetch": "page reads"}[k] for k in kinds)
+        return (f"[Web budget: the {what} for this question are used up. Don't search or read any more pages - answer from "
+                "what you already have, cite it, and say plainly what you couldn't confirm.]")
 
     def allow(self, sdk_tool: str) -> str | None:
         """Max brain (PreToolUse): None to let the call run (and count it), or why it is refused."""

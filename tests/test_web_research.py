@@ -83,13 +83,30 @@ def test_an_ordinary_turn_sends_exactly_what_every_request_always_did():
     assert SERVER_TOOLS[0]["user_location"]["city"] == "Bradford"
 
 
-def test_a_research_turn_gets_more_per_request_and_the_turn_cap_is_hard():
+def test_a_research_turn_gets_more_per_request_and_never_more_than_the_cap_leaves():
     assert {t["name"]: t["max_uses"] for t in wr.server_tools(True)} == {"web_search": 10, "web_fetch": 8}
     left = wr.server_tools(True, {"web_search": wr.RESEARCH_TURN["web_search"] - 3, "web_fetch": 0})
     assert {t["name"]: t["max_uses"] for t in left} == {"web_search": 3, "web_fetch": 8}   # never past the turn's cap
+
+
+def test_a_spent_kind_stays_defined_with_max_uses_one_never_left_out():
+    # the history holds that tool's server_tool_use blocks; the API may reject a request that no longer defines the tool
     spent = wr.server_tools(True, {"web_search": wr.RESEARCH_TURN["web_search"], "web_fetch": 99})
-    assert spent == []                                                                    # a spent kind is left out
-    assert wr.server_tools(False, {"web_search": wr.ORDINARY_TURN["web_search"]})[0]["name"] == "web_fetch"
+    assert {t["name"]: t["max_uses"] for t in spent} == {"web_search": 1, "web_fetch": 1}
+    assert [t["type"] for t in spent] == ["web_search_20260209", "web_fetch_20260209"]
+    one = wr.server_tools(False, {"web_search": wr.ORDINARY_TURN["web_search"]})
+    assert {t["name"]: t["max_uses"] for t in one} == {"web_search": 1, "web_fetch": 5}
+
+
+def test_the_spent_note_names_what_is_used_up_only_once_it_is():
+    web = wr.WebTurn()
+    assert web.spent() == [] and web.spent_note() == ""
+    web.used["web_search"] = wr.ORDINARY_TURN["web_search"]
+    note = web.spent_note()
+    assert web.spent() == ["web_search"] and "web searches" in note and "page reads" not in note
+    assert "answer from what you already have" in note and "couldn't confirm" in note
+    web.used["web_fetch"] = wr.ORDINARY_TURN["web_fetch"] + 2
+    assert "web searches and page reads" in web.spent_note()
 
 
 def test_the_max_brains_guard_counts_and_denies_once_the_cap_is_spent():
@@ -202,17 +219,28 @@ async def test_an_ordinary_question_keeps_the_ordinary_budget_and_shows_no_web_s
     await j.http.aclose()
 
 
+def system_text(call):
+    return " ".join(b["text"] for b in call["system"])
+
+
 async def test_the_turn_cap_holds_across_requests_in_one_turn(settings):
     per = wr.ORDINARY_TURN["web_search"]
     script = [message([search_use(n) for n in range(5)], "pause_turn"),
               message([search_use(n) for n in range(5, per)], "pause_turn"),
+              message([search_use(per)], "pause_turn"),      # the one extra use a spent kind's max_uses 1 allows
               message([text_block("That's what I found.")])]
     j = Jarvis(settings, client=FakeClient(script))
     q = j.bus.subscribe()
     await j.brain.ask("Is it raining in Leeds?", "typed")
     calls = j.client.beta.messages.calls
-    assert [web_tools(c).get("web_search") for c in calls] == [5, per - 5, None]   # spent: not offered again this turn
-    assert [web_tools(c).get("web_fetch") for c in calls] == [5, 5, 5]
+    # spent: still defined (the history names it) but with max_uses 1 - so the true ceiling is the cap + 1 per later request
+    assert [web_tools(c).get("web_search") for c in calls] == [5, per - 5, 1, 1]
+    assert [web_tools(c).get("web_fetch") for c in calls] == [5, 5, 5, 5]
+    notes = ["[Web budget:" in system_text(c) for c in calls]
+    assert notes == [False, False, True, True]                  # ...and the model is told to answer from what it has
+    assert "web searches" in system_text(calls[-1]) and "page reads" not in system_text(calls[-1]).split("[Web budget:")[1]
+    assert calls[2]["system"][:-1] == calls[0]["system"]          # the note is added after the cached prompt, never into it
+    assert "cache_control" not in calls[2]["system"][-1]
     r = reply_of(drain(q))
     assert "web_sources" not in r   # it searched, but nothing was cited or read...
     assert r["coverage"]["confidence"] == "Medium" and "no page was cited or read" in cov.line(r["coverage"])  # ...and says so
@@ -220,6 +248,7 @@ async def test_the_turn_cap_holds_across_requests_in_one_turn(settings):
     j.client.beta.messages.script.append(message([text_block("Hello again.")]))
     await j.brain.ask("Anything else on the weather?", "typed")
     assert web_tools(j.client.beta.messages.calls[-1]) == {"web_search": 5, "web_fetch": 5}
+    assert "[Web budget:" not in system_text(j.client.beta.messages.calls[-1])
     await j.http.aclose()
 
 
