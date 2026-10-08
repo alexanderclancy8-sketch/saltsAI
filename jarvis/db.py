@@ -450,6 +450,22 @@ CREATE TABLE IF NOT EXISTS entity_note_entries (
     updated_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_entity_note_entries_entity ON entity_note_entries (entity_id, status);
+-- House rules (services/rulebook.py): standing instructions about HOW Jarvis behaves. A row only ever exists because the principal
+-- owner approved a rule_add action on the console, or edited one in the Memory pop-up. status: active | disabled.
+CREATE TABLE IF NOT EXISTS house_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT 'owner',
+    status TEXT NOT NULL DEFAULT 'active',
+    proposed_by TEXT NOT NULL DEFAULT '',
+    approved_by TEXT NOT NULL DEFAULT '',
+    approved_at TEXT NOT NULL DEFAULT '',
+    action_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL DEFAULT ''
+);
 """
 
 # Columns of false_alarm_log a caller may set (never interpolated from user input - this is the whitelist).

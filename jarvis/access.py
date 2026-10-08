@@ -389,6 +389,11 @@ ROUTE_POLICY: dict[str, str] = {
     "POST /api/settings/test/{section}": MANAGER_OK,
     "GET /auth/sage/start": MANAGER_OK,                     # finance connection
     "GET /auth/sage/callback": MANAGER_OK,
+    # ---- the principal owner only: house rules change how Jarvis works for everyone (services/rulebook.py). Managers see them in
+    # GET /api/memory; only the owner rewords, switches off / on or deletes one (and only the owner approves a new one: main.decide).
+    "POST /api/memory/rules/{rule_id}": OWNER_ONLY,
+    "POST /api/memory/rules/{rule_id}/{state}": OWNER_ONLY,
+    "DELETE /api/memory/rules/{rule_id}": OWNER_ONLY,
     # ---- the principal owner only: forget every note on one customer / site (after a confirm)
     "POST /api/entity-notes/{entity_type}/{fsm_id}/forget": OWNER_ONLY,
     # ---- the principal owner only: the activity list as a CSV file (it leaves the system, so it is the owner's click alone)

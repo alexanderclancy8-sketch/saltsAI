@@ -114,6 +114,15 @@ def _rows(kind: str, p: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         if p.get("diff"):
             rows.append(row("Code change", p["diff"], True))
         return "Deploy a fix", rows
+    if kind == "rule_add":   # a house rule (services/rulebook.py): the exact wording, why, and who it applies to
+        from .rulebook import SCOPE_LABELS, scope_of
+
+        rows = [row("Rule", p.get("rule", ""), True), row("Why", p.get("reason", ""), True),
+                row("Applies to", SCOPE_LABELS[scope_of(p.get("scope"))]), row("Suggested by", p.get("proposed_by", ""))]
+        if p.get("flag"):
+            rows.append(row("Check first", p["flag"], True))
+        rows.append(row("Who approves", "Only the owner, here on the console"))
+        return "New house rule", rows
     if kind.startswith("tool:"):
         name = str(p.get("tool", kind[5:]))
         return _tool_label(name), [row("Tool", name), row("Details", p.get("args"), True)]

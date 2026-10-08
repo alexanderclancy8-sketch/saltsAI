@@ -336,6 +336,14 @@
       <div class="mem-panel" id="mem-panel-general" role="tabpanel" aria-labelledby="mem-tab-general">
       <p class="empty" id="memory-intro">What Jarvis has learned about the business. Reword or delete anything that is out of date or wrong;
         he reads the change from his very next message.</p>
+      <!-- House rules (services/rulebook.py): how Jarvis works, each one approved by the owner. Only the owner changes them. -->
+      <div class="sec" id="memory-rules-sec">
+        <h3>House rules <span class="count" id="memory-rules-count"></span></h3>
+        <p class="mem-meta" id="memory-rules-intro">How Jarvis works, in rules the owner approved. Tell Jarvis "from now on..." to suggest one;
+          it only applies once the owner approves it.</p>
+        <p class="mem-meta" id="memory-rules-pending" hidden></p>
+        <ul class="mem-list" id="memory-rules"></ul>
+      </div>
       <div class="sec" id="memory-notes-sec">
         <h3>Things Jarvis should know <span class="count" id="memory-notes-count"></span></h3>
         <ul class="mem-list" id="memory-notes"><li class="empty">Loading…</li></ul>
