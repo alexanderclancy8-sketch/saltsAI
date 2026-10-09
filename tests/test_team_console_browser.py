@@ -39,7 +39,7 @@ SHOTS = os.environ.get("JARVIS_SHOTS")
 OWNER_PW = "a-local-test-password"
 TEAM_CODE = "team-code-for-the-browser"
 SECRETS = ("SECRET-FINANCE-APPROVAL", "SECRET-ISSUE-TITLE", "SECRET-MEMORY-NOTE", "SECRET-NOTIFICATION", "SECRET-INBOX-MAIL")
-TEAM_RAIL = ["ops", "fleet", "presence", "upcoming"]
+TEAM_RAIL = ["ops", "fleet", "presence", "upcoming", "drawings"]
 OWNER_ONLY_POPS = ["approvals", "comms", "issues", "health", "finance", "demo", "memory", "connections"]
 FORBIDDEN_API = re.compile(r"/api/(approvals|settings|memory|transcript|issues|feedback|reply-suggestion|voice-events|quality|"
                            r"team-access|staff-report-address|tests|briefing|wrapup|digests|suggestions|documents|images)")
@@ -310,7 +310,7 @@ def test_the_owners_console_still_has_everything_and_the_team_controls(browser, 
     try:
         _sign_in_owner(page, srv.url)
         assert page.evaluate("[...document.querySelectorAll('.rail-item')].map(b => b.dataset.pop)") == [
-            "approvals", "activity", "comms", "issues", "health", "ops", "fleet", "finance", "presence", "upcoming"]
+            "approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance", "presence", "upcoming", "drawings"]
         assert page.evaluate("[...document.querySelectorAll('.tb-btn')].map(b => b.textContent.trim())") == [
             "Voice on", "Speaks up", "Connections", "Settings"]
         assert page.text_content("#role-chip") == "Owner"

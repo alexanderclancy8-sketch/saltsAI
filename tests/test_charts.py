@@ -362,7 +362,8 @@ def test_the_console_loads_charts_before_hud_and_hud_hands_the_chart_over():
     index = (WEB / "index.html").read_text(encoding="utf-8")
     assert index.index("/static/charts.js") < index.index("/static/hud.js") and "/static/charts.css" in index
     hud = (WEB / "hud.js").read_text(encoding="utf-8")
-    assert 'openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id, d.chart)' in hud and "window.JarvisCharts.mount(" in hud
+    # (the display event also carries a drafted floor-plan drawing's id since services/plan_drawings.py: "Open in the drawing editor")
+    assert 'openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id, d.chart, d.drawing_id)' in hud and "window.JarvisCharts.mount(" in hud
     assert (WEB / "charts.css").exists()
 
 

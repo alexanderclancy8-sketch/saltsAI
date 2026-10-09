@@ -36,11 +36,13 @@ POPS = {  # rail item -> (drawer title, an element that proves the right content
     "comms": ("Comms", "#inbox"),
     "issues": ("Issues and fixes", "#issues"),
     "health": ("Health", "#btn-run-tests"),
+    "faults": ("Faults", "#faults-open"),
     "ops": ("Operations", "#ops-kpis"),
     "fleet": ("Fleet", "#fleet-status"),
     "finance": ("Finance", "#finance"),
     "presence": ("Presence", "#presence"),
     "upcoming": ("Coming up", "#deadlines"),
+    "drawings": ("Drawings", "#drw-list"),
 }
 
 

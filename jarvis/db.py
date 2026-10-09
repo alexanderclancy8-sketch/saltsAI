@@ -473,6 +473,43 @@ CREATE TABLE IF NOT EXISTS faults (
     resolved_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_faults_key ON faults (key, status);
+-- Drawings on floor plans (services/plan_drawings.py): device layouts and zone charts. drawing_plans holds the plan picture each
+-- drawing is drawn on (a rendered PDF page or a re-encoded image, at most 3000 px, nothing else of the original file); drawings
+-- holds the title block fields and the content (devices / zones / "you are here" / rotation, JSON, validated on every save) with a
+-- version so a save over someone else's newer save is refused. No prices are ever part of a drawing.
+CREATE TABLE IF NOT EXISTS drawing_plans (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    page INTEGER NOT NULL DEFAULT 1,
+    pages INTEGER NOT NULL DEFAULT 1,
+    image BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS drawings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    site_name TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    panel_location TEXT NOT NULL DEFAULT '',
+    job_ref TEXT NOT NULL DEFAULT '',
+    revision TEXT NOT NULL DEFAULT '',
+    drawing_date TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    proposed_by_jarvis INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_drawings_updated ON drawings (updated_at);
 -- System schematics (services/schematics.py): one row per drawing, the latest revision number; each revision's normalised spec
 -- (the model's structured description - never markup or code) is in schematic_revisions. Exports are rendered on demand.
 CREATE TABLE IF NOT EXISTS schematics (

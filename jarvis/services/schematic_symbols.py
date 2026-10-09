@@ -2,8 +2,9 @@
 
 These are Salts' own clear, consistent drawing symbols for fire and security line diagrams. They are NOT a formal standard (no
 BS / EN / IEC symbol set is claimed) - each one is a simple shape with a short code, explained in the legend printed on every
-drawing. (Another feature, floor-plan device layouts, may define its own symbols in ``jarvis/web/drawing_symbols.js``; when both
-exist the two sets should be merged into one place. Keep every schematic symbol HERE, nowhere else.)
+drawing. This is also the symbol set of the floor-plan drawings (device layouts and zone charts, services/plan_drawings.py: its
+``DEVICE_TYPES`` are a subset of these keys and it draws these primitives in the editor and its exports), so ONE definition serves
+both. Keep every symbol HERE, nowhere else.)
 
 A symbol is DATA: a list of primitives in a unit box from -1 to 1 on both axes (y grows downwards), drawn centred on a point at a
 given size by ``expand()``. The same primitives are rendered by every output - the console's SVG (web/schematics.js only draws

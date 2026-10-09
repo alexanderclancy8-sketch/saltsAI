@@ -99,6 +99,8 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "draw_schematic", "open_schematic",
     # a house rule proposal is judged on the live turn (who asked, whether it read an email / web page / document)
     "propose_rule",
+    # a drafted drawing on a floor plan: saved for the live caller and put on the display (services/plan_drawings.py)
+    "draw_on_plan",
 }
 
 # Tools whose output includes text written by someone else (an email, a repository file, a customer's note in the FSM,
@@ -110,6 +112,8 @@ UNTRUSTED_TOOLS = {"company_check", "run_tests", "search_rankings", "seo_audit",
                    "draft_office_document", "action_items", "what_did_you_do",
                    # past quotes' and jobs' titles and line items, and past emails' subjects (services/similar_work.py)
                    "find_similar_work",
+                   # labels and notes read off a floor plan picture (services/plan_drawings.py)
+                   "draw_on_plan",
                    # saved schematics: their labels came from FSM records, documents or a description (services/schematics.py)
                    "list_schematics", "open_schematic",
                    # (also caught by the fsm_ prefix; named so a rename can't quietly drop them)

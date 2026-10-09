@@ -968,18 +968,19 @@ def test_the_console_page_carries_the_role_for_the_ui_and_the_team_console_has_n
 
 
 # ------------------------------------------------------------------------------- the page itself is cut down for team
-TEAM_POPS = {"ops", "fleet", "presence", "upcoming", "settings"}
+TEAM_POPS = {"ops", "fleet", "presence", "upcoming", "drawings", "settings"}   # drawings: the ones linked to a job (plan_drawings.py)
 
 
 def test_the_page_a_team_member_is_sent_has_no_markup_for_sections_they_cannot_use(clients):
     owner_c, team_c, w = clients
     team = team_c.get("/").text
-    assert re.findall(r'<section class="pop" id="pop-(\w+)"', team) == ["ops", "fleet", "presence", "upcoming", "settings"]
+    assert re.findall(r'<section class="pop" id="pop-(\w+)"', team) == ["ops", "fleet", "presence", "upcoming", "drawings", "settings"]
     assert set(re.findall(r'<section class="pop" id="pop-(\w+)"', team)) == TEAM_POPS  # a new pop-up is not team's by default
     for needle in ('id="pop-finance"', 'id="pop-approvals"', 'id="pop-connections"', 'id="pop-memory"', 'id="pop-comms"',
                    'id="pop-issues"', 'id="pop-health"', 'id="pop-demo"', 'data-pop="finance"', 'data-pop="approvals"',
                    'data-pop="connections"', 'btn-connections', 'btn-proactive-mute', 'team-access-sec', "Connect Sage",
-                   "Staff report problems", "Copy staff report link", "role:manager", "role:owner", "role:team"):
+                   "Staff report problems", "Copy staff report link", "role:manager", "role:owner", "role:team",
+                   'id="drw-new"', 'id="drw-file"'):   # a team member can't upload a plan (only owner / managers create drawings)
         assert needle not in team, needle
     assert [m for m in re.findall(r'data-pop="(\w+)">', team) if m in ("ops", "fleet", "presence", "upcoming")] == ["ops", "fleet", "presence", "upcoming"]
     assert "Today's jobs" in team and "Give me my briefing" not in team and "cash flow" not in team.lower()

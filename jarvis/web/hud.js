@@ -174,7 +174,7 @@
   // ONE drawer component: every section of the console (and Settings / Connections) is a .pop inside #drawer-body.
   // Drawer.show(name) reveals one and slides the drawer in from the right; it is closed by the Close button,
   // Escape, or a click on the scrim (outside). It is never wider than the viewport (see .drawer in hud.css).
-  const POPS = ["approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance", "presence", "upcoming", "demo", "memory", "settings", "connections"];
+  const POPS = ["approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance", "presence", "upcoming", "drawings", "demo", "memory", "settings", "connections"];
   const Drawer = {
     current: null, opener: null,
     isOpen() { return $("#drawer").classList.contains("open"); },
@@ -182,6 +182,9 @@
       if (!POPS.includes(name) || !document.getElementById(`pop-${name}`)) return; // (a team page has no Finance, Approvals ...)
       const first = !this.isOpen();
       if (first) this.opener = opener || document.activeElement;
+      // leaving an open drawing with unsaved changes asks first (drawings.js); any other pop-up gets the normal drawer width
+      if (this.current === "drawings" && name !== "drawings" && window.JarvisDrawings?.dirty() && !confirm("Discard unsaved drawing changes?")) return;
+      if (name !== "drawings") { window.JarvisDrawings?.close(); $("#drawer").classList.remove("drw-wide"); }
       this.current = name;
       $$("#drawer-body .pop").forEach((p) => { p.hidden = p.id !== `pop-${name}`; });
       $("#drawer-title").textContent = $(`#pop-${name}`).dataset.title;
@@ -196,6 +199,7 @@
       if (name === "activity") window.JarvisActivity?.load();
       if (name === "health") window.JarvisChecks?.load();
       if (name === "faults") window.JarvisFaults?.load();
+      if (name === "drawings" && !(opener && opener.dataset && opener.dataset.keepDrawing)) window.JarvisDrawings?.load();
       if (name === "settings" && ROLE === "owner") { TeamAccess.load(); Homes.load(); }
       if ((name === "settings" || name === "connections") && !TEAM) {
         if (!Settings.loaded) Settings.load();
@@ -206,6 +210,9 @@
     close() {
       if (!this.isOpen()) return true;
       if (Settings.dirty() && !confirm("Discard unsaved connection changes?")) return false;
+      if (this.current === "drawings" && window.JarvisDrawings?.dirty() && !confirm("Discard unsaved drawing changes?")) return false;
+      window.JarvisDrawings?.close();
+      $("#drawer").classList.remove("drw-wide");
       Settings.revert();
       $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open");
       $("#drawer").setAttribute("aria-hidden", "true");
@@ -524,6 +531,8 @@
   if (!TEAM) window.JarvisMemory?.init({ api: (p, o) => api(p, o), toast }); // the Memory pop-up (memory.js): list / reword / delete what Jarvis has learned
   if (!TEAM) window.JarvisActivity?.init({ api: (p, o) => api(p, o), role: ROLE }); // the "What Jarvis did" pop-up (activity.js): a read-only list
   if (!TEAM) window.JarvisFaults?.init({ api: (p, o) => api(p, o), toast: (a, b, c) => toast(a, b, c) }); // fault reports (faults.js)
+  // drawings on floor plans (drawings.js): every role - a team member sees the drawings linked to a job, office view-only
+  window.JarvisDrawings?.init({ api: (p, o) => api(p, o), toast: (a, b, c) => toast(a, b, c), role: ROLE });
   if (!TEAM) window.JarvisChecks?.init({ api: (p, o) => api(p, o), role: ROLE, toast: (a, b, c) => toast(a, b, c) }); // question checks (checks.js) in Health
   window.JarvisAsk?.init({ send: (t, m, o) => send(t, m, o), say, speakNow: () => shouldSpeak(S.lastMode) && S.mine, mode: () => S.lastMode });
 
@@ -1321,7 +1330,7 @@ function send(text, mode = "typed", opts = {}) {
       case "owner_update":
         toast("Update sent", `${d.subject} → ${d.channels.join(", ") || "display"}`);
         break;
-      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id, d.chart); break;
+      case "display": openDisplay(d.title, d.markdown, d.doc_id, d.image_id, d.advert_id, d.chart, d.drawing_id); break;
       case "ask": window.JarvisAsk?.show(d); break; // small question pop-up (ask.js) - separate from approvals
       case "approvals": S.approvals = d; loadInboxSoon(); break;
       case "suggestions": S.suggestions = d; renderSuggestions(); break;
@@ -1341,7 +1350,7 @@ function send(text, mode = "typed", opts = {}) {
 
   // ------------------------------------------------------------------ display overlay
   let chartHandle = null; // the chart on the display now (charts.js); torn down before the next panel replaces it
-  function openDisplay(title, markdown, docId, imageId, advertId, chart) {
+  function openDisplay(title, markdown, docId, imageId, advertId, chart, drawingId) {
     $("#display-title").textContent = title;
     // Download buttons only for stored, drafted documents / graphics (the id is a 32-char hex string from the server).
     const dl = $("#display-downloads");
@@ -1365,6 +1374,17 @@ function send(text, mode = "typed", opts = {}) {
       chartHandle = window.JarvisCharts.mount(host, chart, { hideTitle: String(chart.title || "").trim() === String(title || "").trim() });
     }
     if (advertId && /^[0-9a-f]{32}$/.test(advertId)) showAdvert(advertId);
+    if (Number.isInteger(drawingId) && drawingId > 0 && window.JarvisDrawings) { // draw_on_plan: a draft drawing to check in the editor
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn go drw-open-from-display"; b.textContent = "Open in the drawing editor";
+      b.addEventListener("click", () => {
+        $("#display").classList.remove("open");
+        b.dataset.keepDrawing = "1";
+        Drawer.show("drawings", b);
+        window.JarvisDrawings.open(drawingId);
+      });
+      $("#display-body").prepend(b);
+    }
     $("#display").classList.add("open");
     $("#display-close").focus({ preventScroll: true }); // keyboard/screen-reader users land inside the dialog
   }

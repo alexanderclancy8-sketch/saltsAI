@@ -48,6 +48,9 @@ CHECK_TOOLS = frozenset({
     "customer_balance",
     # similar past quotes, jobs and emails for a described job (read-only; services/similar_work.py)
     "find_similar_work",
+    # a drafted layout / zone chart on a floor plan: in a check it only PROPOSES (a vision read + compute); saving the drawing is a
+    # write and is skipped (services/plan_drawings.py checks checkmode itself, and checkmode.guard refuses the save underneath)
+    "draw_on_plan",
     "stock_job_materials", "stock_reorder", "accreditations_status", "audit_evidence", "oncall_roster",
     # mail (read only), presence, knowledge, Jarvis's own records
     "email_inbox", "email_search", "email_read", "marketing_overview", "search_rankings", "knowledge_search",

@@ -345,6 +345,13 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/voices": TEAM_OK,
     "WS /ws": TEAM_OK,                     # a team session gets its own bus and only TEAM_EVENTS
     "WS /ws/stt": TEAM_OK,
+    # drawings on floor plans (services/plan_drawings.py): a team member sees only drawings linked to a job; an ENGINEER may edit
+    # them, office may only view and export (the save handler refuses office with 403 - a handler rule, not a route of its own)
+    "GET /api/drawings": TEAM_OK,
+    "GET /api/drawings/{drawing_id}": TEAM_OK,
+    "GET /api/drawings/{drawing_id}/plan": TEAM_OK,
+    "GET /api/drawings/{drawing_id}/export/{fmt}": TEAM_OK,
+    "POST /api/drawings/{drawing_id}": TEAM_OK,
     # system schematics: list, view (the laid-out drawing) and download SVG / PNG / PDF. No prices on a drawing; a download needs no
     # approval (it sends and changes nothing; it leaves a "What Jarvis did" line). Engineers and office may view and export.
     "GET /api/schematics": TEAM_OK,
@@ -376,6 +383,9 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/approvals/history": MANAGER_OK,
     "POST /api/approvals/{action_id}/{decision}": MANAGER_OK,
     "GET /api/activity": MANAGER_OK,                        # "What Jarvis did": everything proposed, changed and decided (read only)
+    "POST /api/drawings": MANAGER_OK,                       # drawings: upload a plan / create, delete, and ask Jarvis to propose a
+    "DELETE /api/drawings/{drawing_id}": MANAGER_OK,        # layout (a model call) - never team
+    "POST /api/drawings/{drawing_id}/propose": MANAGER_OK,
     "GET /api/faults": MANAGER_OK,                          # fault reports (services/faults.py): list, copy as markdown for
     "GET /api/faults/report": MANAGER_OK,                   # Claude Code, mark fixed. Internal only - never sent outside Jarvis
     "GET /api/faults/{fault_id}/report": MANAGER_OK,

@@ -34,6 +34,8 @@ from .integrations.teamsbot import TeamsBotError, same_service_url, trusted_serv
 from .integrations.voice import STT_ATTEMPT_TIMEOUT_S, STTError, VoiceError
 from .redact import install_log_redaction, redact_text
 from .services import activity_feed, adverts, approval_inbox, chat_files, connection_tests, documents, images, rulebook
+from .services import plan_drawings
+from .services.plan_drawings import PlanSourceError, StaleDrawing
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
 from .services import entity_memory as entity_mem
@@ -101,6 +103,17 @@ class DismissFailedIn(BaseModel):
 
 class MemoryTextIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
+
+
+class DrawingSaveIn(BaseModel):
+    version: int = Field(ge=1)
+    meta: dict[str, Any] = Field(default_factory=dict)       # title block fields (validated in services/plan_drawings.clean_meta)
+    content: dict[str, Any] | None = None                    # devices / zones / you_are_here / rotation / paper (clean_content)
+
+
+class DrawingProposeIn(BaseModel):
+    brief: str = Field("", max_length=1500)
+    kind: str | None = None
 
 
 class EntityTextIn(BaseModel):
@@ -1029,6 +1042,110 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
             return J(request).faults.mark_fixed(fault_id, speaker(request) or "the owner")
         except LookupError as e:
             raise HTTPException(404, str(e)) from None
+
+    # ------------------------------------------------------------------ drawings on floor plans (the Drawings pop-up; services/plan_drawings.py)
+    # Jarvis proposes, a person adjusts, then exports. Owner / managers: everything. Team: the drawings linked to a job - an engineer
+    # may open, edit and export them, office may open and export them (the save handler refuses office: PermissionError -> 403).
+    # Upload, delete and "Ask Jarvis to propose" are MANAGER_OK. Every change is a same-origin click; every save / export / create /
+    # delete is a "drawing" line in What Jarvis did. Nothing here sends or attaches a drawing anywhere: downloading is the only way out.
+    nostore = {"Cache-Control": "no-store"}
+
+    def drawing_or_404(request: Request, drawing_id: str) -> dict[str, Any]:
+        row = J(request).drawings._row(drawing_id)
+        if row is None or not J(request).drawings.may_view(caller_of(request), row):
+            raise HTTPException(404, "That drawing doesn't exist (or isn't one you can open).")
+        return row
+
+    @app.get("/api/drawings", dependencies=[Depends(member)])
+    async def drawings_list(request: Request):
+        return JSONResponse(J(request).drawings.listing(caller_of(request)), headers=nostore)
+
+    @app.post("/api/drawings", dependencies=[Depends(owner), Depends(human_click)])
+    async def drawings_create(request: Request, plan: UploadFile = File(...), kind: str = Form("devices"), page: int = Form(1),
+                              title: str = Form(""), site_name: str = Form(""), job_ref: str = Form(""), address: str = Form(""),
+                              panel_location: str = Form("")):
+        dr = J(request).drawings
+        if kind not in plan_drawings.KINDS:
+            raise HTTPException(400, "Choose a device layout or a zone chart.")
+        raw = await plan.read(plan_drawings.MAX_UPLOAD_BYTES + 1)
+        name = plan.filename or "plan"
+        try:
+            img = await dr.plan_from_upload(raw, name, page)
+        except PlanSourceError as e:
+            raise HTTPException(422, str(e)) from None
+        by = speaker(request) or "the owner"
+        where = f" (page {img.page} of {img.pages})" if img.pages > 1 else ""
+        plan_id = dr.add_plan(img, f"Uploaded: {plan_drawings.clean_text(name, 80)}{where}", by)
+        row = dr.create(kind=kind, plan_id=plan_id, by=by, meta={"title": title, "site_name": site_name, "job_ref": job_ref,
+                                                                 "address": address, "panel_location": panel_location})
+        return JSONResponse(dr.view(row, caller_of(request)), headers=nostore)
+
+    @app.get("/api/drawings/{drawing_id}", dependencies=[Depends(member)])
+    async def drawings_get(request: Request, drawing_id: str):
+        row = drawing_or_404(request, drawing_id)
+        return JSONResponse(J(request).drawings.view(row, caller_of(request)), headers=nostore)
+
+    @app.get("/api/drawings/{drawing_id}/plan", dependencies=[Depends(member)])
+    async def drawings_plan(request: Request, drawing_id: str):
+        row = drawing_or_404(request, drawing_id)
+        plan = J(request).drawings.plan_image(row["plan_id"])
+        if plan is None:
+            raise HTTPException(404, "This drawing's plan isn't stored any more.")
+        return Response(plan.data, media_type=plan.mime, headers={"Cache-Control": "private, max-age=3600",
+                                                                  "X-Content-Type-Options": "nosniff"})
+
+    @app.post("/api/drawings/{drawing_id}", dependencies=[Depends(member), Depends(human_click)])
+    async def drawings_save(request: Request, drawing_id: str, body: DrawingSaveIn):
+        try:
+            out = J(request).drawings.save(drawing_id, body.model_dump(), caller_of(request), speaker(request) or "the owner")
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from None
+        except PermissionError as e:
+            raise HTTPException(403, str(e)) from None
+        except StaleDrawing as e:
+            raise HTTPException(409, str(e)) from None
+        return JSONResponse(out, headers=nostore)
+
+    @app.delete("/api/drawings/{drawing_id}", dependencies=[Depends(owner), Depends(human_click)])
+    async def drawings_delete(request: Request, drawing_id: str):
+        try:
+            J(request).drawings.delete(drawing_id, speaker(request) or "the owner")
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from None
+        return {"deleted": True}
+
+    @app.post("/api/drawings/{drawing_id}/propose", dependencies=[Depends(owner), Depends(human_click)])
+    async def drawings_propose(request: Request, drawing_id: str, body: DrawingProposeIn):
+        """Jarvis's first draft for the editor to load. It is NOT saved: the person adjusts it and presses Save."""
+        dr = J(request).drawings
+        row = drawing_or_404(request, drawing_id)
+        plan = dr.plan_image(row["plan_id"])
+        if plan is None:
+            raise HTTPException(404, "This drawing's plan isn't stored any more.")
+        kind = body.kind if body.kind in plan_drawings.KINDS else row["kind"]
+        out = await dr.propose(plan, kind, body.brief)
+        if "error" in out:
+            return JSONResponse(out, status_code=422, headers=nostore)
+        dr.record(speaker(request) or "the owner", f"Jarvis proposed a {plan_drawings.KIND_LABEL[kind].lower()} for drawing "
+                                                   f"D{row['id']}: {row['title']} (not saved until a person saves it)",
+                  f"drawing D{row['id']}")
+        return JSONResponse(out, headers=nostore)
+
+    @app.get("/api/drawings/{drawing_id}/export/{fmt}", dependencies=[Depends(member), Depends(human_click)])
+    async def drawings_export(request: Request, drawing_id: str, fmt: str, paper: str = "A3"):
+        if fmt not in plan_drawings.FORMATS:
+            raise HTTPException(404, "Export as pdf or png.")
+        row = drawing_or_404(request, drawing_id)
+        try:
+            data, mime, filename = await asyncio.to_thread(J(request).drawings.export, row, fmt, paper.upper(),
+                                                           speaker(request) or "the owner")
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from None
+        except plan_drawings.FileProblem as e:
+            raise HTTPException(503, e.message) from None
+        except ImportError:
+            raise HTTPException(503, "Drawing export isn't installed on this server.") from None
+        return Response(data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{filename}"', **nostore})
 
     # ------------------------------------------------------------------ memory (the Memory pop-up)
     # What Jarvis has learned: list / reword / delete. Console-only (owner session + same-origin click); not a brain

@@ -68,8 +68,9 @@ def test_the_rail_has_exactly_the_nine_dashboard_sections_plus_activity_and_memo
     # "activity" (What Jarvis did) is the tenth: the pinned inventory is now these ten, in this order (tests/test_hud_layout.py also pins the roles)
     rail = INDEX[INDEX.index('<nav class="rail"'):INDEX.index("</nav>", INDEX.index('<nav class="rail"'))]
     # (and "faults" - Jarvis's own fault reports, services/faults.py - the eleventh, after Health)
+    # (and "drawings" - floor-plan layouts and zone charts, services/plan_drawings.py - the twelfth, last)
     assert re.findall(r'data-pop="(\w+)"', rail) == ["approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance",
-                                                    "presence", "upcoming"]
+                                                    "presence", "upcoming", "drawings"]
     assert 'data-pop="memory"' not in rail and 'id="btn-open-memory"' in _pop("settings") and 'data-pop="memory"' in _pop("settings")
     assert '"memory"' in HUD[HUD.index("const POPS"):HUD.index("const Drawer")] and 'JarvisMemory?.load()' in HUD
     assert INDEX.index("/static/memory.js") < INDEX.index("/static/hud.js")

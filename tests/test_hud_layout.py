@@ -17,9 +17,11 @@ ASK_CSS = (WEB / "ask.css").read_text(encoding="utf-8")
 # The rail inventory, in order. "Activity" (What Jarvis did) joined in the activity-page change, right after Approvals: the two are used
 # together (what is waiting, then what has been done), and the phone chip strip keeps Approvals pinned first. The roles are part of the
 # pin since then: a team console keeps exactly the four it always had, and Activity (like Approvals) is for owner and manager only.
-RAIL = ["approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance", "presence", "upcoming"]
+# "Drawings" (floor-plan device layouts and zone charts, services/plan_drawings.py) is the twelfth, last, for every role and with no
+# count: engineers open the drawings linked to their jobs on site.
+RAIL = ["approvals", "activity", "comms", "issues", "health", "faults", "ops", "fleet", "finance", "presence", "upcoming", "drawings"]
 RAIL_MANAGER_ONLY = ["approvals", "activity", "comms", "issues", "health", "faults", "finance"]
-RAIL_NO_COUNT = ["activity", "presence"]
+RAIL_NO_COUNT = ["activity", "presence", "drawings"]
 # Everything the old dashboard showed must be reachable in a pop-up: element id -> the pop-up that holds it.
 DASHBOARD_PANELS = {
     "approvals": ["approvals", "suggestions"],
@@ -147,8 +149,8 @@ def test_rail_has_the_ten_sections_each_with_a_popup_and_the_right_roles():
     assert 'class="label">On request<' in INDEX
     items = re.findall(r'<button type="button" class="rail-item" data-pop="(\w+)">[^<]+?(?:<span class="rail-count" id="rc-(\w+)">[^<]*</span>)?</button>', INDEX)
     assert [a for a, _ in items] == RAIL
-    assert len(RAIL) == len(set(RAIL)) == 11       # nine, then ten (Activity), then eleven (Faults: Jarvis's own fault reports), deliberately
-    assert [a for a, b in items if not b] == RAIL_NO_COUNT and all(a == b for a, b in items if b)   # Activity and Presence have no count
+    assert len(RAIL) == len(set(RAIL)) == 12       # nine, ten (Activity), eleven (Faults), then twelve (Drawings), deliberately
+    assert [a for a, b in items if not b] == RAIL_NO_COUNT and all(a == b for a, b in items if b)   # Activity, Presence, Drawings: no count
     # who gets each item: exactly the manager-only ones sit inside a manager region, so a team console keeps ops, fleet, presence, coming up
     for name in RAIL:
         wrapped = re.search(rf'<!--role:manager--><button type="button" class="rail-item" data-pop="{name}">', INDEX) is not None

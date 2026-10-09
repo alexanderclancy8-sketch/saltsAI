@@ -104,6 +104,14 @@ def is_office_attachment(name: str, content_type: str = "") -> bool:
     return (name or "").strip().lower().endswith(OFFICE_EXTENSIONS + _UNREADABLE_OFFICE)
 
 
+PLAN_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+
+
+def is_plan_image_attachment(name: str, content_type: str = "") -> bool:
+    """A PNG / JPEG picture attached to an email (a photo or export of a floor plan for services/plan_drawings.py)."""
+    return (name or "").strip().lower().endswith(PLAN_IMAGE_EXTENSIONS) or (content_type or "").lower() in ("image/png", "image/jpeg")
+
+
 def select_office_attachments(items: list[dict[str, Any]], max_bytes: int = 15_000_000) -> list[dict[str, str]]:
     """The Word/Excel file attachments (name + base64 data) from a Graph /attachments listing."""
     out = []
@@ -261,6 +269,12 @@ class GraphMail:
         and macro-enabled formats, which are listed with a problem and never downloaded)."""
         return await self._fetch_attachments(message_id, mailbox, is_office_attachment, max_bytes,
                                              lambda n: n.strip().lower().endswith(OFFICE_EXTENSIONS))
+
+    async def image_attachments(self, message_id: str, mailbox: str | None = None,
+                                max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
+        """PNG / JPEG attachments of a message as base64 (a floor plan sent as a picture). Read-only; the same contract as
+        ``pdf_attachments`` for a file that can't be read (an entry with a ``problem`` and no ``data``)."""
+        return await self._fetch_attachments(message_id, mailbox, is_plan_image_attachment, max_bytes, lambda n: True)
 
     async def attachment_overview(self, message_id: str, mailbox: str | None = None) -> list[dict[str, Any]]:
         """Every attachment of a message, content not downloaded: name, size, kind (file / item / reference) and type. Used
@@ -547,6 +561,10 @@ class DemoMail:
 
     async def office_attachments(self, message_id: str, mailbox: str | None = None,
                                  max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
+        return []
+
+    async def image_attachments(self, message_id: str, mailbox: str | None = None,
+                                max_bytes: int = 15_000_000) -> list[dict[str, Any]]:
         return []
 
     async def attachment_overview(self, message_id: str, mailbox: str | None = None) -> list[dict[str, Any]]:
