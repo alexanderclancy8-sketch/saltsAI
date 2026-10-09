@@ -30,6 +30,7 @@ import httpx
 
 from ..integrations.redact import redact
 from ..integrations.teamsbot import trusted_service_url
+from . import fsm_renewals
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +120,8 @@ def _details(action: dict[str, Any]) -> str:
         if kind == "fsm_write":
             review = f"REVIEW {_dump(p['needs_human_review'])} " if p.get("needs_human_review") else ""
             return _tidy(f"{p.get('method', '')} {p.get('path', '')} {review}{_dump(p.get('body'))}", 420, TRUNCATED)
+        if kind == fsm_renewals.SEND_KIND:   # a customer-facing send, offered like email_send: who, how much, what it says
+            return _tidy(fsm_renewals.teams_text(p), 420, TRUNCATED)
         if kind.startswith("tool:"):
             return _tidy(f"Tool {p.get('tool', '')} with {_dump(p.get('args'))}", 420, TRUNCATED)
         # accept_quote, sage_invoices, deploy_fix, po_acknowledgement...

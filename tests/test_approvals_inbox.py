@@ -145,6 +145,8 @@ def test_every_kind_has_a_card_and_only_the_closed_list_can_be_edited():
         "accept_quote_from_po": {"quote_id": "Q1", "job_body": {"x": 1}, "po_number": "PO9", "ack_to": "a@b.co"},
         "po_acknowledgement": {"to": "a@b.co", "quote_id": "Q1", "source_message_id": "m"},
         "deploy_fix": {"issue_id": 4, "pr_number": 9}, "tool:pr_merge": {"tool": "pr_merge", "args": {"number": 3}},
+        "fsm_renewal_send": {"renewal_id": "ren-1", "version": "a" * 64, "recipients": ["a@b.co"], "customer": "C",
+                             "pdf": "/api/fsm/renewals/ren-1/pdf"},
         "something_new": {"a": 1},
     }
     editable = set()

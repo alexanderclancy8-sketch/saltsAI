@@ -829,6 +829,21 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                                  "Cache-Control": "no-store"})
 
+    # ------------------------------------------------------------------ a Salts FSM renewal's PDF (services/fsm_renewals.py)
+    # The PDF exactly as Salts FSM will attach it, for the link on a renewal's approval card. Owner and managers only; read-only.
+    @app.get("/api/fsm/renewals/{renewal_id}/pdf", dependencies=[Depends(owner)])
+    async def fsm_renewal_pdf(renewal_id: str, request: Request):
+        from .services.fsm_renewals import RenewalsError
+
+        try:
+            data = await J(request).fsm_renewals.pdf(renewal_id)
+        except RenewalsError as e:
+            status = {"bad_request": 400, "not_found": 404, "scope_off": 403, "unavailable": 404, "demo": 503}.get(e.kind, 502)
+            raise HTTPException(status, e.message) from None
+        return Response(data, media_type="application/pdf",
+                        headers={"Content-Disposition": 'inline; filename="renewal.pdf"', "Cache-Control": "no-store",
+                                 "X-Content-Type-Options": "nosniff"})
+
     # ------------------------------------------------------------------ system schematics (services/schematics.py)
     # Every signed-in role (owner, manager, engineer, office) may list, view and download them: a drawing carries no prices, and a
     # download sends and changes nothing (no approval) - it leaves a "What Jarvis did" line. The scene is primitives laid out by code;

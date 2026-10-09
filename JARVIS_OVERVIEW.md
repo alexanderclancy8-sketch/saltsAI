@@ -78,7 +78,7 @@ raise a purchase order to any supplier by natural description, materials used pe
 performance review, update someone's role/targets, overdue jobs, expiring certifications.
 
 **Customers & growth** - customer health score (spend trend, overdue debt, repeat faults, declined quotes,
-inactivity), contract renewals due (with the standard uplift, or a "call first" flag if at risk), marketing
+inactivity), contract renewals due in Salts FSM (prepare the FSM's draft, or send a drafted one for approval; a "call first" flag if at risk), marketing
 overview (social followers, Google reviews, search rankings), SEO audit (own site or a competitor's),
 competitor audit (Google rating/reviews + SEO side by side).
 

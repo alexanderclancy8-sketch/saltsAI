@@ -78,7 +78,8 @@ HIDE_POSTCODES = True              # see Cleaner: the conservative reading of "p
 APPROVALS_LINK = {"pop": "approvals", "label": "Open in Approvals"}
 _PR_URL = re.compile(r"^https://github\.com/[\w.\-]+/[\w.\-]+/pull/\d+$")
 
-EMAIL_KINDS = {"email_send", "tool:email_send", sa.PO_ACK_KIND, "review_requests"}
+EMAIL_KINDS = {"email_send", "tool:email_send", sa.PO_ACK_KIND, "review_requests",
+               "fsm_renewal_send"}   # a renewal Salts FSM emails once a person approves it (services/fsm_renewals.py)
 JOB_KINDS = {"accept_quote", "accept_quote_from_po", "tool:log_job"}
 FSM_KINDS = {"fsm_write", "tool:fsm_change"}
 CODE_KINDS = {"deploy_fix", "tool:issue_fix"}
@@ -90,7 +91,7 @@ _JOB_PATH = re.compile(r"^/(?:api/)?jobs/?$")
 _SAMPLE_SOURCE = {**{k: "mail" for k in EMAIL_KINDS}, **{k: "fsm" for k in JOB_KINDS | FSM_KINDS},
                   "sage_invoices": demo_guard.ACCOUNTS, "tool:stock_move": demo_guard.STOCK,
                   "tool:stock_stocktake": demo_guard.STOCK, "tool:stock_item_update": demo_guard.STOCK,
-                  "tool:staff_update_role": demo_guard.STAFF}
+                  "tool:staff_update_role": demo_guard.STAFF, "fsm_renewal_send": "fsm"}
 
 # ------------------------------------------------------------------------------------------------ cleaning
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
@@ -526,9 +527,10 @@ def _src_memory(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:
 # "drawing": a drawing on a floor plan created, proposed by Jarvis, saved, exported or deleted (services/plan_drawings.py) - its number,
 #            title and who, never its contents
 # "schematic": a system schematic drawn / revised (its drawing number, revision and title) or exported (the format) - services/schematics.py
+# "fsm_renewal": a renewal draft prepared (or priced) in Salts FSM by fsm_renewal_prepare - the customer, contract and renewal id, and who asked
 _AUDIT_KINDS = {"settings": "settings_change", "team_access": "settings_change", "memory": "memory", "export": "other",
                 "company_check": "other", "fsm_read": "other", "balance_lookup": "other", "fsm_document": "other", "rule": "memory",
-                "drawing": "draft", "schematic": "draft"}
+                "drawing": "draft", "schematic": "draft", "fsm_renewal": "fsm_change"}
 
 
 def _src_audit(ctx: _Ctx, limit: int) -> tuple[list[dict[str, Any]], bool]:

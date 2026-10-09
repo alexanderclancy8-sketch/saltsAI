@@ -370,6 +370,7 @@ ROUTE_POLICY: dict[str, str] = {
     "GET /api/transcript": MANAGER_OK,
     "POST /api/tts/sample": MANAGER_OK,
     "GET /api/documents/{doc_id}/{fmt}": MANAGER_OK,
+    "GET /api/fsm/renewals/{renewal_id}/pdf": MANAGER_OK,  # a Salts FSM renewal's PDF, for its approval card (read only)
     "GET /api/images/{image_name}": MANAGER_OK,
     "GET /api/adverts/{advert_name}": MANAGER_OK,
     "POST /api/adverts/{advert_id}/revise": MANAGER_OK,

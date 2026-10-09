@@ -1841,8 +1841,11 @@ function send(text, mode = "typed", opts = {}) {
   const APPR_STATE = { pending: "Waiting for you", approved: "Approved - running", done: "Done", failed: "Failed", denied: "Not sent" };
 
   function detailsHtml(v) {
+    // A row may carry ONE kind of link: Jarvis's own route for a Salts FSM renewal PDF (the server only ever sets that path).
+    const link = (r) => typeof r.href === "string" && /^\/api\/fsm\/renewals\/[A-Za-z0-9._:%-]{1,120}\/pdf$/.test(r.href)
+      ? `<a href="${esc(r.href)}" target="_blank" rel="noopener">${esc(r.value)}</a>` : esc(r.value);
     return `<dl class="appr-detail">${(v.details || []).map((r) =>
-      `<div class="appr-row${r.block ? " block" : ""}"><dt>${esc(r.label)}</dt><dd>${esc(r.value)}</dd></div>`).join("")}</dl>`;
+      `<div class="appr-row${r.block ? " block" : ""}"><dt>${esc(r.label)}</dt><dd>${link(r)}</dd></div>`).join("")}</dl>`;
   }
   function editFormHtml(v, where) {
     const fields = (v.editable_fields || []).map((f) => {

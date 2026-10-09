@@ -78,7 +78,7 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "show_on_display", "send_update_to_owner", "ask_user", "offer_next_steps", "doctor",
     # write a document, report or letter and show it on the display (and/or notify)
     "generate_image", "business_advice", "issue_report", "false_alarm_evidence_report", "audit_evidence_pack",
-    "meeting_actions", "prepare_renewal", "draft_customer_emails", "draft_credit_control", "draft_sales_followup",
+    "meeting_actions", "draft_customer_emails", "draft_credit_control", "draft_sales_followup",
     "draft_job_summary", "draft_quote_scope", "regulatory_watch", "technical_watch",
     # send or notify the owner (display, push, Teams, email) when they run
     # puts its report card on the display (same reason as doctor): a SILENT background call must really be silent
@@ -90,6 +90,9 @@ NOT_BACKGROUND = set(NO_RECURSE) | {
     "fsm_document_read",
     # puts a chart on the display (a SILENT background call must really be silent)
     "show_chart",
+    # renewals in Salts FSM: writing a draft there, and queueing a customer send for approval, happen in the conversation that
+    # asked for them (the owner sees the result and the card), never as a silent background call
+    "fsm_renewal_prepare", "fsm_renewal_send",
     # similar past work: quote values (owner-only ones too) and who may see prices depend on the live caller - read it in the
     # conversation, never kept in the background_calls table
     "find_similar_work",

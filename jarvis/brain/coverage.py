@@ -72,6 +72,8 @@ TOOL_DETAIL = {
     "finance_corporation_tax": "corporation tax", "finance_profit_and_loss": "profit and loss",
     "finance_credit_control": "credit control", "finance_deadlines": "deadlines",
     "customer_balance": "invoices (one customer)",
+    # renewals done through Salts FSM (services/fsm_renewals.py): the coverage line reads "Salts FSM renewals"
+    "fsm_renewals_due": "renewals", "fsm_renewal_prepare": "renewals", "fsm_renewal_send": "renewals",
 }
 # customer_balance (services/customer_balance.py): its own refusal kinds. A name that matched nothing / several customers is the
 # question's input, not a gap in the data; an engineer asking is a refusal.

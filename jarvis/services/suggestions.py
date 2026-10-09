@@ -143,15 +143,29 @@ class Suggestions:
                     f"{cust['customer']} is showing warning signs in the customer health watch. Explain what's going "
                     f"on, recommend how to win them back, and draft an email to arrange a call, for my approval.",
                     1 if cust["status"] == "at risk" else 2)
-        renewals = await safe(j.renewals.due())
-        for r in ((renewals or {}).get("renewals") or []):
-            if r["letter_prepared"] or r["days_left"] < 0 or r["customer_health"] in ("at risk", "watch"):
+        # Renewals are done in Salts FSM (services/fsm_renewals.py): offer to prepare a due one there, or to send a drafted one.
+        # Nothing here prepares or sends: the prompt is what the owner's click asks Jarvis to do. No FSM renewals yet = no lines.
+        renewals = await safe(j.fsm_renewals.due())
+        status_of = {str(c.get("customer", "")).lower(): c.get("status") for c in ((health or {}).get("customers") or [])}
+        for c in ((renewals or {}).get("contracts") or [])[:20]:
+            if status_of.get(str(c.get("customer") or "").lower()) in ("at risk", "watch") or (c.get("days_left") or 0) < 0:
                 continue  # at-risk customers get the "plan a call" suggestion instead
-            new = r["annual_value"] * (1 + j.settings.renewal_uplift_pct / 100)
-            add(f"renewal:{r['contract']}", f"Send renewal for {r['customer']} ({r['site']}) - £{r['annual_value']:,.0f} → "
-                                             f"£{new:,.0f}, due in {r['days_left']} days?",
-                f"{j.settings.renewal_uplift_pct:g}% uplift; customer health {r['customer_health'] or 'n/a'}.",
-                f"Prepare the renewal letter for contract {r['contract']} for my approval.", 2)
+            who = f"{c.get('customer') or 'a customer'}" + (f" ({c['site']})" if c.get("site") else "")
+            r = c.get("renewal") or {}
+            if not r and c.get("can_prepare"):
+                missing = [n.get("message", "") for n in (c.get("needs") or []) if n.get("code") not in ("not_prepared",)]
+                add(f"renewal:{c['contract_id']}",
+                    f"Prepare the renewal for {who} in Salts FSM - £{float(c.get('current_value') or 0):,.0f} a year, "
+                    f"due in {c.get('days_left')} days?",
+                    "Nobody has prepared it yet." + (" " + " ".join(missing) if missing else ""),
+                    f"Prepare the renewal for contract {c['contract_id']} ({who}) in Salts FSM with fsm_renewal_prepare, "
+                    "then show me what it would send.", 2)
+            elif r.get("status") == "DRAFT" and c.get("ready_to_send"):
+                add(f"renewal:{c['contract_id']}",
+                    f"The renewal for {who} is drafted in Salts FSM - send it?",
+                    f"£{float(r.get('current_total') or 0):,.0f} now, £{float(r.get('proposed_total') or 0):,.0f} next year (+VAT).",
+                    f"Queue the Salts FSM renewal {r.get('id')} for {who} for sending with fsm_renewal_send so I can check and "
+                    "approve it.", 2)
         ooh = await safe(j.ooh.calls())
         for call in ((ooh or {}).get("needing_a_job") or [])[:3]:
             add(f"ooh:{call['site']}:{call['time']}",

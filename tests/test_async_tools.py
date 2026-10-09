@@ -486,7 +486,8 @@ def test_tools_that_publish_or_send_as_a_side_effect_cannot_run_in_the_backgroun
     for name in ("show_on_display", "send_update_to_owner", "ask_user", "generate_image", "suggestions",
                  "morning_briefing", "end_of_day_wrap_up", "weekly_digest_now", "fsm_engineer_audit",
                  "regulatory_watch", "technical_watch", "business_advice", "issue_report", "meeting_actions",
-                 "audit_evidence_pack", "false_alarm_evidence_report", "prepare_renewal", "draft_customer_emails",
+                 "audit_evidence_pack", "false_alarm_evidence_report", "fsm_renewal_prepare", "fsm_renewal_send",
+                 "draft_customer_emails",
                  "draft_credit_control", "draft_sales_followup", "draft_job_summary", "draft_quote_scope"):
         assert name in NOT_BACKGROUND, name
 
