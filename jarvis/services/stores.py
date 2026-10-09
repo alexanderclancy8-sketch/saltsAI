@@ -45,8 +45,9 @@ DEMO_VANS = ["Van - Dan Harper", "Van - Priya Shah", "Van - Tom Wilkinson", "Van
 
 
 class Stores:
-    def __init__(self, db: Database, demo_seed: bool = False, fsm=None):
+    def __init__(self, db: Database, demo_seed: bool = False, fsm=None, sample: bool = True):
         self.db = db
+        self.sample = sample  # sample data on/off (JARVIS_SAMPLE_DATA); off: no stock source at all is "not connected"
         # Kept as the live router (not resolved to None here) so that, exactly like staff/accountant/tracker,
         # a Salts FSM connection made later on the Settings page is picked up without a Jarvis restart - see
         # sync()/record() below, which check whether it's still in demo mode fresh on every call instead.
@@ -60,6 +61,14 @@ class Stores:
     @property
     def demo(self) -> bool:
         return self.db.get_kv("stock_demo_seeded") == "1"
+
+    def has_items(self) -> bool:
+        return self.db.query_one("SELECT sku FROM stock_items LIMIT 1") is not None
+
+    @property
+    def unconnected(self) -> bool:
+        """No stock source at all (sample data off): Salts FSM isn't connected and Jarvis's own ledger is empty."""
+        return not self.sample and not self.demo and bool(getattr(self.fsm, "demo", True)) and not self.has_items()
 
     # ------------------------------------------------------------------ Salts FSM sync
     async def sync(self, force: bool = False) -> None:
@@ -218,6 +227,8 @@ class Stores:
         """Serving the seeded sample stock: tells a tool call (jarvis/demo_guard.py) not to hand it to the model."""
         if self.demo:
             demo_guard.touch(demo_guard.STOCK)
+        elif self.unconnected:
+            demo_guard.touch(demo_guard.STOCK, sample=False)  # nothing to report: "not connected", not "no stock"
 
     def levels(self, location: str | None = None, search: str | None = None) -> dict[str, Any]:
         self._sample()

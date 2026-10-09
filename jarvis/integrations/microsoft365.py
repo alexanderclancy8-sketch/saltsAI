@@ -618,6 +618,61 @@ class DemoMail:
         return out
 
 
+class NoMail(DemoMail):
+    """Microsoft 365 when it isn't connected and sample data is off: an empty mailbox that sends nothing. ``demo`` stays True
+    (it is not the real mailbox, so nothing reads or sends through it as if it were); a read inside a tool call stops the
+    tool with a plain "not connected" answer (``demo_guard.touch(MAIL, sample=False)``)."""
+
+    sample = False
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.s = settings
+        self._messages = []
+
+    @staticmethod
+    def _none() -> None:
+        from .. import demo_guard
+
+        demo_guard.touch(demo_guard.MAIL, sample=False)
+
+    async def list_messages(self, unread_only: bool = False, top: int = 15, since_hours: int | None = None,
+                            folder: str = "inbox", mailbox: str | None = None) -> list[dict[str, Any]]:
+        self._none()
+        return []
+
+    async def search_messages(self, query: str, top: int = 15, mailbox: str | None = None) -> list[dict[str, Any]]:
+        self._none()
+        return []
+
+    async def get_message(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        self._none()
+        raise KeyError("Microsoft 365 isn't connected, so there are no emails to read")
+
+    async def send_mail(self, to: list[str], subject: str, body_html: str, cc: list[str] | None = None,
+                        bcc: list[str] | None = None, sensitivity: str | None = None) -> GuardedMessage:
+        raise RuntimeError("Microsoft 365 isn't connected, so nothing was sent. Connect it in Settings → Connections.")
+
+    async def send_to_owner(self, to: str, subject: str, body_html: str) -> tuple[bool, str]:
+        return False, ""  # nothing to send it with; the notifier only emails through a connected mailbox anyway
+
+    async def create_reply_draft(self, message_id: str, comment: str) -> dict[str, Any]:
+        raise RuntimeError("Microsoft 365 isn't connected, so no draft was made. Connect it in Settings → Connections.")
+
+    async def check(self) -> str:
+        return "Microsoft 365 not connected"
+
+    async def recent_meetings(self, days: int = 7) -> list[dict[str, Any]]:
+        self._none()
+        return []
+
+    async def meeting_transcript(self, join_url: str) -> str:
+        self._none()
+        return ""
+
+    async def activity(self, days: int = 30) -> dict[str, dict[str, Any]]:
+        return {}  # who sent how many emails: nothing to count (read alongside the FSM, so it doesn't stop the review)
+
+
 class TeamsDeliveryError(RuntimeError):
     """A Teams webhook post failed. The message never contains the webhook URL."""
 

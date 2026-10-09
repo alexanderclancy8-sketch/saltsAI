@@ -131,7 +131,7 @@ class NotConnected(Exception):
     """Salts FSM is showing sample data: nothing real to attach a note to."""
 
 
-DEMO_MESSAGE = ("Salts FSM isn't connected yet (it is showing sample data), so there are no real customers or sites to keep notes on. "
+DEMO_MESSAGE = ("Salts FSM isn't connected yet, so there are no real customers or sites to keep notes on. "
                 "Connect Salts FSM under Connections first.")
 
 

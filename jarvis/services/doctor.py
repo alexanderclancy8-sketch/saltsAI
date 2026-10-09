@@ -253,6 +253,15 @@ class Doctor:
 
     # ------------------------------------------------------------------ 2. demo data
     async def _demo(self, now: datetime) -> list[Item]:
+        if not demo_guard.sample_on(self.j):
+            # Sample data off (production): nothing is sample. The sources that aren't connected are listed ONCE, neutrally -
+            # not connecting something is the owner's choice, not a fault.
+            missing = demo_guard.not_connected_sources(self.j)
+            if not missing:
+                return [Item("Data sources", OK, "Every data source is connected.")]
+            names = ", ".join(m["name"] for m in missing)
+            return [Item("Data sources", OK, f"Not connected yet: {names}. Jarvis says so instead of answering from them.",
+                         f"Connect them in {demo_guard.WHERE} when you want Jarvis to use them.")]
         demo = demo_guard.demo_now(self.j)
         out = []
         for key, source in demo_guard.SOURCES.items():
@@ -273,7 +282,7 @@ class Doctor:
                                    f"scope off: {', '.join(off) if off else 'none'}.",
                          "A group that is scope off can be switched on in the FSM's Jarvis access settings." if off else "")]
         if state == "demo":
-            return [Item(name, OK, "FSM data access: not available - Salts FSM is not connected yet (sample data only).",
+            return [Item(name, OK, "FSM data access: not available - Salts FSM is not connected yet.",
                          "Set FSM_BASE_URL and the API key under Connections.")]
         if state == "unavailable":
             return [Item(name, AMBER, "FSM data access: the FSM doesn't expose its data API yet, so Jarvis uses its older "
@@ -289,7 +298,7 @@ class Doctor:
         info = await self.j.fsm_read.summary()
         state = info["state"]
         if state == "demo":
-            return [Item(name, OK, "FSM documents: not available - Salts FSM is not connected yet (sample data only).",
+            return [Item(name, OK, "FSM documents: not available - Salts FSM is not connected yet.",
                          "Set FSM_BASE_URL and the API key under Connections.")]
         cat = self.j.fsm_data.cached
         if state != "ok" or cat is None:
@@ -346,8 +355,10 @@ class Doctor:
         if not missing:
             out.append(Item(name, OK, "RAM Tracking: " + ", ".join(n for n, _ in RAM_KEYS) + " are all set"))
         elif len(missing) == len(RAM_KEYS):
-            out.append(Item(name, AMBER, "RAM Tracking: none of " + ", ".join(n for n, _ in RAM_KEYS) +
-                            " are set, so the vehicle data is DEMO.", "Enter the four RAM Tracking details under Connections."))
+            out.append(Item(name, AMBER if demo_guard.sample_on(self.j) else OK, "RAM Tracking: none of " + ", ".join(n for n, _ in RAM_KEYS) +
+                            (" are set, so the vehicle data is DEMO." if demo_guard.sample_on(self.j)
+                             else " are set, so vehicle tracking is not connected."),
+                            "Enter the four RAM Tracking details under Connections."))
         else:
             out.append(Item(name, RED, "RAM Tracking: not set - " + ", ".join(missing) + "; vehicle tracking cannot connect.",
                             "Enter the missing RAM Tracking details under Connections."))

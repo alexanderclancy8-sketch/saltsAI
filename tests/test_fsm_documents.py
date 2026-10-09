@@ -746,7 +746,7 @@ async def test_a_demo_fsm_says_so_and_reads_nothing(settings):
         assert j.fsm.demo
         for args in ({"document_id": "doc-1"}, {"query": "RAMS"}):
             out = await call(j, args)
-            assert out["kind"] == "demo" and out["demo"] is True and "sample data" in out["error"]
+            assert out["kind"] == "demo" and out["demo"] is True and "isn't connected" in out["error"]
     finally:
         await j.http.aclose()
 

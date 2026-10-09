@@ -89,8 +89,13 @@ class MarketingTracker:
         self.client = client
 
     @property
+    def connected(self) -> bool:
+        return any(self.src.configured().values())
+
+    @property
     def demo(self) -> bool:
-        return not any(self.src.configured().values())
+        """Sample follower figures stand in (sample data on and nothing connected)."""
+        return not self.connected and bool(getattr(self.s, "sample_data", True))
 
     async def snapshot(self) -> dict[str, Any]:
         """Record today's numbers for every connected platform (run daily)."""
@@ -126,7 +131,11 @@ class MarketingTracker:
         demo = self.demo
         if demo:
             demo_guard.touch(demo_guard.SOCIALS)  # sample follower counts: never handed to the model as real
+        elif not self.connected:
+            demo_guard.touch(demo_guard.SOCIALS, sample=False)  # nothing connected: "not connected", not "no followers"
         out: dict[str, Any] = {"demo": demo, "connected": self.src.configured(), "platforms": {}}
+        if not demo and not self.connected:
+            out["not_connected"] = demo_guard.panel_message(demo_guard.SOCIALS)
         for platform in self.PLATFORMS:
             metrics = ("rating", "reviews") if platform == "google_reviews" else ("followers",)
             pdata = {}

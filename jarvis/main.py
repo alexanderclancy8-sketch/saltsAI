@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Any
 
-from . import access, auth
+from . import access, auth, demo_guard
 from .brain.prompts import address_for
 from .config import Settings, get_settings
 from .core import Jarvis
@@ -597,8 +597,13 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                   if t["days_left"] <= 60 and "insurance" not in str(t["what"]).lower()][:6]
         data = {"generated_at": datetime.now().isoformat(timespec="seconds"), "staff": board, "overdue_jobs": overdue,
                 "presence": presence, "voice": j.voice.client_config(), "company": settings.company_name,
-                "fleet": {"connected": not j.vehicle_tracking_status().startswith(("DEMO", "NOT CONNECTED")), "why": ""},
+                "fleet": {"connected": not j.vehicle_tracking_status().startswith(("DEMO", "NOT CONNECTED", "not connected")),
+                          "why": ""},
+                # sample data off: the pop-ups whose source isn't connected show this instead of an empty list
+                "not_connected": {k: v for k, v in demo_guard.panel_messages(j).items() if k in ("staff", "overdue_jobs", "presence")},
                 "role": caller.role, "team_role": caller.kind, "who": caller.name, "accreditations": coming}
+        for k, msg in data["not_connected"].items():   # sample data off: the pop-up's tidy empty state, never an empty list
+            data[k] = {"not_connected": msg}
         return {k: v for k, v in data.items() if k in access.TEAM_STATUS_KEYS}
 
     @app.get("/api/status", dependencies=[Depends(member)])
@@ -621,7 +626,11 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
                     resolved_issues=[j.issues.summary(i) for i in j.db.list_issues("resolved", 5)],
                     accreditations=[t for t in j.accreditations.status()["timeline"] if t["days_left"] <= 60][:6],
                     sage={"configured": isinstance(j.finance, SageFinance),
-                          "connected": isinstance(j.finance, SageFinance) and j.finance.connected})
+                          "connected": isinstance(j.finance, SageFinance) and j.finance.connected},
+                    # Sample data on/off (JARVIS_SAMPLE_DATA). Off: each pop-up whose source isn't connected shows its
+                    # "Not connected yet - connect X in Settings -> Connections" line, and the top-bar pill counts these.
+                    sample_data=demo_guard.sample_on(j), not_connected=demo_guard.panel_messages(j),
+                    not_connected_sources=demo_guard.not_connected_sources(j))
         return data
 
     @app.get("/api/tracking", dependencies=[Depends(member)])

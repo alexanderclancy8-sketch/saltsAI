@@ -323,7 +323,7 @@ async def test_sample_fsm_and_mail_data_are_never_a_source(settings):
     j = Jarvis(settings, client=FakeClient())      # no FSM address, no Microsoft 365: both are sample data
     try:
         out = await run(j)
-        assert out["demo"] is True and out["matches"] == [] and "sample data" in out["note"]
+        assert out["demo"] is True and out["matches"] == [] and "isn't connected" in out["note"]
         assert out["sources"]["quotes"]["status"] == "demo" and out["sources"]["emails"]["status"] == "not_connected"
         facts = cov.call_facts("find_similar_work", {}, out)
         assert {"src": "Salts FSM", "status": cov.NOT_CONNECTED, "detail": "quotes"} in facts

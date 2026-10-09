@@ -15,7 +15,7 @@ kept current and is the best starting point for "what does Jarvis do".
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 
-python -m jarvis                       # run locally: http://localhost:8000 (demo data with no .env configured)
+python -m jarvis                       # run locally: http://localhost:8000 (demo data with no .env configured; JARVIS_SAMPLE_DATA=1 forces it on)
 
 python -m pytest -q                    # full suite (what CI runs)
 python -m pytest -q tests/test_agent_and_api.py            # one file
@@ -965,9 +965,34 @@ vehicle-enquiry host are listed individually, never all of `gov.uk`. The single 
 alias tables so small API differences don't break things - e.g. `jarvis/integrations/fsm.py`'s `ALIASES` maps
 `jobNumber`/`job_number`/`reference`/`number` all onto one `ref` field. `jarvis/db.py` itself only holds Jarvis's
 own state: issues, notifications, memory, pending actions, the stock ledger, automations. Every integration with
-external, optional config (FSM, Sage, GitHub, RAM Tracking, Microsoft 365, ...) has a `demo`/fallback
-implementation (`DemoFSM`, `DemoMail`, `DemoRamTracking`, `CsvFinance`) used whenever the real one isn't
-configured, so the whole app runs believably with zero setup - preserve this when adding a new integration.
+external, optional config (FSM, Sage, GitHub, RAM Tracking, Microsoft 365, ...) has a stand-in used whenever the real one
+isn't configured. Which stand-in depends on **the sample-data switch** (`Settings.sample_data`, env `JARVIS_SAMPLE_DATA`):
+
+- **Off** (production - the default on Azure, where `WEBSITE_SITE_NAME` is set, and wherever a `.env` is used): the source is simply
+  "not connected". `NoFSM`, `NoMail`, `NoFinance`, `NoRamTracking` serve nothing (writes raise "isn't connected, nothing was changed"),
+  no stock is seeded, there is no example staff register or accreditations file, no sample social figures. They keep `demo = True`
+  (they are not the real thing, so every `x.demo` check keeps away from them) and call `demo_guard.touch(source, sample=False)`
+  where they would have served data, so a tool that needed one returns `demo_guard.not_connected_result()` (`connected: false`,
+  `not_connected: [{source, to_connect}]`, `where: "Settings → Connections"`, no "demo"/"sample" wording). `tools.dispatch()` also turns
+  any result that still flags `demo: true` / `kind: demo` into that answer. The console: `/api/status` carries `sample_data`,
+  `not_connected` (`demo_guard.panel_messages`: pop-up -> "Not connected yet - connect X in Settings → Connections") and
+  `not_connected_sources`; `Briefings.status()` puts `{"not_connected": msg}` in place of each such panel's data, and hud.js
+  (`ncMsg`/`ncHtml`) shows that sentence with an Open Connections button - never sample rows or DEMO badges; the top-bar pill reads
+  "Not connected: N" and opens the same pop-up (titled "Not connected"). Connection lines read "not connected - ..." (lower case;
+  "NOT CONNECTED - ..." stays "set up but failing"). Briefing: unconnected parts are left out (`demo_guard.leave_out`) and named ONCE in
+  a `not_connected` line; wrap-up and advice just leave them out. Trace: "Sage (not connected)"; coverage `summarise(..., sample=False)`
+  marks such a source NOT_CONNECTED, never DEMO. Question checks: "skipped - not connected". Doctor: one neutral OK line listing them.
+  Prompt: `prompts.sample_off_persona()` swaps "# Sample data is never an answer" for "# Systems that aren't connected" (say it once).
+  `demo_guard.demo_now()` is always empty, so the sample-data safety net never fires. On start, `services/sample_cleanup.py` removes
+  ONCE (kv `sample_data:cleanup_v1`) only demonstrably seeded rows: the seeded stock (exact seed rows, untouched since, only while
+  `stock_demo_seeded` = "1") and stored suggestions resting on a source that isn't connected (never a Prepare-button one).
+- **On** (a bare local run with no `.env` - `python -m jarvis` from a checkout - and the test suite, via `tests/conftest.py`): the
+  believable demo implementations (`DemoFSM`, `DemoMail`, `DemoFinance`, `DemoRamTracking`, the seeded stock, the example register...)
+  so the whole app runs with zero setup, exactly as before. Tests of production behaviour pass `sample_data=False`
+  (`tests/test_sample_data_off.py`, `tests/test_console_browser_not_connected.py`).
+
+When adding an integration, give it both: a demo stand-in for sample data on and a "not connected" one (serves nothing, `touch(key,
+sample=False)`, a `Source` in `demo_guard.SOURCES`) for sample data off.
 
 **Settings are triple-layered**: `jarvis/config.py`'s `Settings` (pydantic-settings, reads `.env`/env vars) is
 the base/fallback layer; `jarvis/settings_store.py`'s `SettingsStore` lets the owner override any field from the
@@ -1091,7 +1116,8 @@ only publishes an `ask` bus event and returns at once (no blocking); the chosen/
 chat message. It is separate from, and must never call or imitate, the approval path (`decide()`, `/api/approvals`,
 `ActionExecutor`). Tests: `tests/test_ask_user.py`.
 Phase 3 of the console redesign ("fixes found on 2 Oct"):
-(1) **Sample data is never reasoned from** (`jarvis/demo_guard.py`). A demo source (`DemoFinance`, the seeded stock, sample social figures, the
+(1) **Sample data is never reasoned from** (`jarvis/demo_guard.py`; with sample data OFF - production - there is no sample data at all, see
+"the sample-data switch" above, and this only matters with it on). A demo source (`DemoFinance`, the seeded stock, sample social figures, the
 example staff register, `DemoRamTracking`) calls `demo_guard.touch(source)` where it serves sample figures; inside `tools.dispatch()` that raises
 `DemoDataBlocked` (a BaseException, so no `except Exception` fallback can swallow it), the tool's result is replaced by `demo_guard.refusal()`
 (`demo_data_withheld`, which source, what to connect) and the persona's "Sample data is never an answer" rule tells him to say so. Composite answers
@@ -1117,13 +1143,14 @@ drawer) list each van's raw event, its age, RPM, our classification and the reas
 `tests/test_activity_log.py`, `tests/test_stt_status.py`, `tests/test_ramtracking_connection.py`, `tests/test_ramtracking_schema.py`,
 `tests/test_staff_report_link.py`, `tests/test_console_browser_phase3.py`.
 Phase 2 of the console redesign ("how Jarvis talks"): the question pop-up is a centred dialog over a real backdrop element (`.ask-scrim`) whose answers, and "Type my own answer", are real `<button>`s; Escape (anywhere on the page), Dismiss or a click on the backdrop closes it without sending, and the reply keeps an "Answer" button to bring it back. Tests: `tests/test_question_popup.py` (plus the node harness `tests/ask_dom_harness.js`).
-What surrounds a reply is built from what really happened, not from text the model wrote: `jarvis/brain/trace.py`'s `TurnTrace` (`j.trace`) listens to the event bus (`EventBus.add_tap`) from the `thinking` event, notes each `tool` start, and each brain merges `j.trace.finish()` into its final `reply` event: `sources` (named from the tools used, with "(demo data)" where that source is still demo), `elapsed_ms`, `panel` (the pop-up with the detail: approvals if the turn queued something, else what the model asked for via `offer_next_steps`, else the pop-up of the tools used - the mapping is `_TOOL_INFO` there, so a new read tool should be added to it) and up to two `follow_ups` (only from the `offer_next_steps` tool, which changes nothing, is not an approval and is in `NO_RECURSE`). hud.js shows a working line above the reply from the live `tool` events (`.step`), then the source-and-time line, the pop-up button and follow-up chips under it. Stop (`stopEverything()`, or sending a new message) abandons the reply being written and sets `S.stopped` so late events of that turn are ignored until the next `user_message`; server-side it cancels the API-brain task (the whole turn is rolled back so the history stays valid) or interrupts Claude Code (`MaxBrain._stop_requested` - no half-answer is published or stored). "How Jarvis talks" is the `talk_style` setting (`natural` default = `owner_name`, `formal` = `owner_salutation`), shown in Settings (`#set-talk`, saved through the same Save changes bar) and under Connections > You and the business; `prompts.address_for()` picks the name and `TALK_NATURAL`/`TALK_FORMAL` are appended to the persona. It is a display preference like `owner_salutation`, not an owner-only setting. Tests: `tests/test_talk_style.py`, `tests/test_reply_extras.py`, `tests/test_streaming_stop.py`, `tests/test_console_browser_phase2.py`.
+What surrounds a reply is built from what really happened, not from text the model wrote: `jarvis/brain/trace.py`'s `TurnTrace` (`j.trace`) listens to the event bus (`EventBus.add_tap`) from the `thinking` event, notes each `tool` start, and each brain merges `j.trace.finish()` into its final `reply` event: `sources` (named from the tools used, with "(demo data)" where that source is still demo - "(not connected)" with sample data off), `elapsed_ms`, `panel` (the pop-up with the detail: approvals if the turn queued something, else what the model asked for via `offer_next_steps`, else the pop-up of the tools used - the mapping is `_TOOL_INFO` there, so a new read tool should be added to it) and up to two `follow_ups` (only from the `offer_next_steps` tool, which changes nothing, is not an approval and is in `NO_RECURSE`). hud.js shows a working line above the reply from the live `tool` events (`.step`), then the source-and-time line, the pop-up button and follow-up chips under it. Stop (`stopEverything()`, or sending a new message) abandons the reply being written and sets `S.stopped` so late events of that turn are ignored until the next `user_message`; server-side it cancels the API-brain task (the whole turn is rolled back so the history stays valid) or interrupts Claude Code (`MaxBrain._stop_requested` - no half-answer is published or stored). "How Jarvis talks" is the `talk_style` setting (`natural` default = `owner_name`, `formal` = `owner_salutation`), shown in Settings (`#set-talk`, saved through the same Save changes bar) and under Connections > You and the business; `prompts.address_for()` picks the name and `TALK_NATURAL`/`TALK_FORMAL` are appended to the persona. It is a display preference like `owner_salutation`, not an owner-only setting. Tests: `tests/test_talk_style.py`, `tests/test_reply_extras.py`, `tests/test_streaming_stop.py`, `tests/test_console_browser_phase2.py`.
 
 **What a reply rests on: the coverage line (`jarvis/brain/coverage.py`, `trace.py`; tests `tests/test_answer_coverage.py`,
 `tests/test_console_browser_coverage.py`).** Deterministic, never model self-assessment. Both brains publish every finished `tool` event with
 `coverage` = `coverage.call_facts(name, args, result)` (or `error_facts` for a raised call, `[]` for invalid input): per source label, a status
 - ok / partial (`truncated`: "scanned 50,000 of 64,200 rows", "showing 120 of 900 rows" - counts only) / demo (the FSM or Outlook demo, NOT
-gated by demo_guard) / withheld (`demo_data_withheld`, and composite `demo_guard.stub` sections) / not_connected (FSM demo `kind: demo`) /
+gated by demo_guard) / withheld (`demo_data_withheld`, and composite `demo_guard.stub` sections) / not_connected (FSM demo `kind: demo`,
+`demo_guard.not_connected_result`, a `connected: false` stub; with sample data off every stand-in source is not_connected, never demo) /
 scope_off (+ group) / not_exposed (`kind: unavailable`, or a 404 on a resource the catalog lists) / owner_only / error / timeout / rate_limited /
 refused (team) / blocked (check mode) / bad_input (the model's own typo - ignored) / transcribed (`fsm_document_read` of a scan: the part is "Salts FSM document '<name>'"; Medium unless the reply says it was a transcribed scan; a cut-short document is partial; the FSM's `masked_by_fsm` count is listed under `caveats`; an ambiguous pick / no match is bad_input). `customer_balance` is the part "Salts FSM invoices (one customer)" (not found / ambiguous = bad_input, an engineer = refused). `find_similar_work` gives one fact per part from its `sources`: "Salts FSM quotes", "Salts FSM jobs", "your mailbox past emails". Customer / site notes injected by services/entity_memory.py (`TurnTrace.add_source` "Jarvis's notes on X") go in `coverage.notes` - never `checked`, never a needed source met, so they can't raise the confidence on their own. `TurnTrace` collects them from the bus and `finish(reply)` adds
 `coverage = coverage.summarise(facts, user_text, demo=demo_map(j), team=...)`: `checked`, `gaps[{source, kind, text}]`, `confidence`, `why`,
@@ -1170,6 +1197,7 @@ untrusted data (Security section; `web_` is an `UNTRUSTED_PREFIXES` entry).
   path, op value|len|sum, field, where (=, >0, <0...), top_by}` + `tolerance` (counts exact, else 0.5%), `mentions_from`, `must_mention_gap`,
   `contains_any/all`, `not_contains`, `refuses` (+ `no_digits`), `checked_any` (from the reply's coverage), `policy` (knowledge base has it ->
   must read it; else must say it isn't available). `needs: [fsm, sage, ram, mail, stock]` -> "skipped - demo data" while that is sample data
+  ("skipped - not connected" with sample data off)
   (also when the ground truth itself comes back demo/withheld); `only_when_not_connected` for gap checks; `as: owner|manager|team|office` (team = an ENGINEER, the least-privileged kind; office = engineer tools + `customer_balance`, built as `Caller(TEAM, team_role=...)`);
   `sensitive` (default for money/people). `validate_expect()` is the one validator (YAML and the owner's edits); ground-truth tools must be in
   `CHECK_TOOLS`.

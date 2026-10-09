@@ -57,7 +57,8 @@ DISPLAY = {MAIL: "your mailbox"}
 DEMO_SOURCE = {"accounts": SAGE, "stock": STOCK, "vehicles": RAM, "staff": "Staff register", "socials": "Google and socials"}
 _DEMO_LABEL_TO_SOURCE = {"the accounts (Sage)": SAGE, "the stock records": STOCK, "RAM Tracking": RAM,
                          "the staff register": "Staff register",
-                         "the social media and Google review figures": "Google and socials"}
+                         "the social media and Google review figures": "Google and socials",
+                         "Salts FSM": FSM, "Outlook (Microsoft 365)": MAIL}
 
 # What part of a source a tool reads ("Salts FSM jobs", "Sage aged debt"). The FSM data tools name their resource instead.
 TOOL_DETAIL = {
@@ -171,15 +172,17 @@ def _truncation_note(result: dict[str, Any]) -> str:
     return "only part of the data was read"
 
 
-def _stubs(value: Any, depth: int = 0) -> list[str]:
-    """Labels of sample-data sections a composite tool (briefing, wrap-up, advice) replaced with demo_guard.stub()."""
-    found: list[str] = []
+def _stubs(value: Any, depth: int = 0) -> list[tuple[str, str]]:
+    """(label, status) of the sections a composite tool (briefing, wrap-up, advice) replaced with demo_guard.stub(): WITHHELD
+    for sample data, NOT_CONNECTED for a source that simply isn't connected (sample data off)."""
+    found: list[tuple[str, str]] = []
     if depth > 3:
         return found
     if isinstance(value, dict):
         nc = value.get("not_connected")
         if isinstance(nc, list) and "error" in value:
-            found += [str(x) for x in nc if isinstance(x, str)]
+            status = NOT_CONNECTED if value.get("connected") is False else WITHHELD
+            found += [(str(x), status) for x in nc if isinstance(x, str)]
         for v in value.values():
             if isinstance(v, (dict, list)):
                 found += _stubs(v, depth + 1)
@@ -203,12 +206,15 @@ def call_facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
     short = name.removeprefix("mcp__jarvis__")
     if isinstance(result, dict) and result.get("blocked_in_check_mode"):
         return [_fact(s, BLOCKED) for s in tool_sources(short)] or [_fact(short, BLOCKED)]
-    if isinstance(result, dict) and result.get("demo_data_withheld"):
+    plain_nc = isinstance(result, dict) and result.get("connected") is False and isinstance(result.get("not_connected"), list) \
+        and "error" not in result   # demo_guard.not_connected_result: sample data off, the source isn't connected
+    if isinstance(result, dict) and (result.get("demo_data_withheld") or plain_nc):
+        status = WITHHELD if result.get("demo_data_withheld") else NOT_CONNECTED
         out = []
         for item in result.get("not_connected") or []:
             label = item.get("source") if isinstance(item, dict) else None
-            out.append(_fact(_DEMO_LABEL_TO_SOURCE.get(str(label), str(label or "a source")), WITHHELD))
-        return out or [_fact(s, WITHHELD) for s in tool_sources(short)]
+            out.append(_fact(_DEMO_LABEL_TO_SOURCE.get(str(label), str(label or "a source")), status))
+        return out or [_fact(s, status) for s in tool_sources(short)]
     sources = tool_sources(short)
     if not sources:
         return []
@@ -245,8 +251,8 @@ def call_facts(name: str, args: Any, result: Any) -> list[dict[str, str]]:
         out += [_fact(s, DEMO, detail) for s in sources]
     else:
         out += [_fact(s, OK, detail) for s in sources]
-    for label in _stubs(result):
-        out.append(_fact(_DEMO_LABEL_TO_SOURCE.get(label, label), WITHHELD))
+    for label, status in _stubs(result):
+        out.append(_fact(_DEMO_LABEL_TO_SOURCE.get(label, label), status))
     return out
 
 
@@ -360,11 +366,15 @@ def confidence(*, relied_on_demo: bool, failed: int, missing: int, truncated: bo
 
 
 def summarise(facts: list[dict[str, str]], user_text: str = "", *, demo: dict[str, bool] | None = None, team: bool = False,
-              tools_used: int = 0, notes: list[str] | None = None, reply: str = "") -> dict[str, Any] | None:
+              tools_used: int = 0, notes: list[str] | None = None, reply: str = "", sample: bool = True) -> dict[str, Any] | None:
     """The coverage of one turn, or None when there is nothing to say (no source read, no business question, no notes used).
     ``notes``: the "Jarvis's notes on X" labels the turn leaned on (listed, never counted as a checked system). ``reply``: what was
-    said - only to see whether a transcribed scan was owned up to."""
+    said - only to see whether a transcribed scan was owned up to. ``demo``: which sources are served by a stand-in right now.
+    ``sample=False`` (sample data off): a stand-in serves nothing, so such a source is "not connected", never "sample data"."""
     demo = demo or {}
+    if not sample:
+        facts = [{**f, "status": NOT_CONNECTED} if (f["status"] in READ or f["status"] == WITHHELD) and demo.get(f["src"])
+                 else {**f, "status": NOT_CONNECTED} if f["status"] in (DEMO, WITHHELD) else f for f in facts]
     areas = areas_of(user_text)
     used_notes = list(dict.fromkeys(" ".join(str(n).split())[:80] for n in (notes or []) if str(n).strip()))[:8]
     if not facts and not areas and not used_notes:

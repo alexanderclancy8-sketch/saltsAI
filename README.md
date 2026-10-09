@@ -57,16 +57,23 @@ everything and puts suggestions on the display, for example "Invoice 14 complete
 J24099 - Priya is nearest?" or "Reorder 4 items from Fire Alarm Wholesale?". "Do it" makes Jarvis prepare the work,
 which then waits for your Approve.
 
-Anything not connected yet runs on clearly labelled **demo data**, so you can try it straight away.
+In production anything not connected yet simply says **"Not connected yet"** - in the pop-ups, in Jarvis's answers and in
+the briefing (once) - with what to connect in Settings → Connections. Jarvis never shows or uses made-up figures there.
+For trying it out on your own computer, **demo data** (clearly labelled sample figures) can be switched on instead.
 
 ## Try it now (demo mode)
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # add a Claude credential (see below); leave the rest blank for demo data
-python -m jarvis                # open http://localhost:8000
+python -m jarvis                # open http://localhost:8000 - with no .env at all, everything runs on demo data
 ```
+
+To add a Claude credential (see below) put it in a `.env` (`cp .env.example .env`) and add `JARVIS_SAMPLE_DATA=1` to keep the
+demo data. **The sample-data switch (`JARVIS_SAMPLE_DATA`)**: unset, it is ON only for a bare local run with no `.env`, and OFF
+everywhere else - on Azure App Service (detected from `WEBSITE_SITE_NAME`) it is always off unless you set it to 1 yourself.
+With it off, the first start also removes, once, the sample stock an earlier demo run seeded and any stored suggestion built
+from sample data (only rows that are demonstrably sample data - nothing you or a real system created).
 
 Without `JARVIS_OWNER_PASSWORD` Jarvis only answers on the machine it runs on. Set a password before putting it
 anywhere else. Use Chrome or Edge for voice.
@@ -90,7 +97,7 @@ checks it for real, and setup steps for the fiddly ones (Microsoft 365, Sage, Te
 saving reloads Jarvis with the new settings straight away, and secrets are stored encrypted. This replaces
 editing `.env` / App Service settings by hand for everything except the two YAML endpoint files below.
 
-Do these in any order; each one replaces demo data as soon as it's set.
+Do these in any order; each one starts working (instead of "not connected") as soon as it's set.
 
 1. **Microsoft 365 (Outlook + Teams).** Quickest: in Azure Cloud Shell run
    `APP_NAME=<your app name> bash infra/deploy.sh m365` - it registers Jarvis in Entra ID, requests the
@@ -277,11 +284,11 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   it (a spreadsheet-safe CSV), and the engineer home-point audit lines are the owner's alone.
 - **Every answer says what it rests on.** Under a reply that looked something up (or answered a business question) the console
   shows one compact line, e.g. "Checked: Salts FSM invoices · Not checked: Sage (not connected) · Medium", that opens to the
-  detail. It is built from the tool calls Jarvis really made and what they returned (sample data withheld, a part of the FSM
+  detail. It is built from the tool calls Jarvis really made and what they returned (a system not connected, a part of the FSM
   switched off or not offered yet, owner-only data, a scan that stopped early, an error) plus a fixed list of which systems a
   kind of question needs (money needs the FSM and Sage, a van's whereabouts needs RAM Tracking, ...). The High / Medium / Low
   confidence follows fixed rules - never Jarvis's opinion of itself: High = everything needed was read, real and complete;
-  Medium = a scan was cut short or one needed source is missing; Low = sample data, an error, nothing checked for a business
+  Medium = a scan was cut short or one needed source is missing; Low = demo data, an error, nothing checked for a business
   question, or two or more sources missing. Spoken, he adds one short sentence only when it is Low ("I couldn't check Sage, it
   isn't connected"). The same summary - source names and row counts, never a value - is kept with the conversation record.
 - **Question checks: a weekly accuracy scorecard (off by default, owner-only).** `checks/questions.yaml` holds about 40
@@ -294,8 +301,8 @@ uploads and register files) lives in `/home/data`, which survives restarts and r
   each; it stops if your Claude allowance runs out) or press **Run question checks now** in Health. The Health drawer shows the
   score, each area, the trend and every failing question with what was expected and what was said (finance and staff-pay
   detail is yours alone; the team console never sees it). A reply you mark **Wrong** appears there as a candidate: one click
-  turns it into a permanent check once you've written what the right answer must contain. While a system is still sample data
-  its checks are skipped ("demo data"), not failed.
+  turns it into a permanent check once you've written what the right answer must contain. While a system isn't connected
+  its checks are skipped ("not connected"; "demo data" in demo mode), not failed.
 - **The Memory pop-up (Settings → Memory).** Lists what Jarvis has learned - "Things Jarvis should know", things he
   remembered himself, and the short replies he has learned - each one editable and deletable. A change is used from his very
   next message, and deleting a note also removes it from Settings so it can't come back on a restart.

@@ -66,7 +66,7 @@ INVOICE_FIELDS = ("id", "invoice_no", "due_at", "outstanding", "status", "site_i
 INVOICE_NEEDS = ("invoice_no", "due_at", "outstanding")   # without these there is no honest answer
 TWO_PLACES = Decimal("0.01")
 
-DEMO_MESSAGE = ("Salts FSM isn't connected - it is showing sample data - so there is no real account to look up. Tell the caller "
+DEMO_MESSAGE = ("Salts FSM isn't connected yet, so there is no real account to look up. Tell the caller "
                 "you can't see their account right now; don't quote any figures.")
 HANDLING = ("Say these figures only to the person you are talking to, about this one customer, in this chat. Never give another "
             "customer's figures, invoice lists, payments or company finances. Payment arrangements, disputes or anything that "

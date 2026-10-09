@@ -80,8 +80,8 @@ SENSITIVE_HANDLING = ("Some of this came from owner-only FSM data: say only what
                       "put it in memory, an email, a Teams message or a document unless the owner explicitly asks.")
 TEAM_NOTE = ("Prices aren't part of the team version: these are similar past jobs and quotes without any values. If someone needs a "
              "price, they should ask the office.")
-DEMO_MESSAGE = ("Salts FSM isn't connected - it is showing sample data - so there is no real past work to compare with. Say so; "
-                "don't describe sample quotes as real ones.")
+DEMO_MESSAGE = ("Salts FSM isn't connected yet, so there is no real past work to compare with. Say so; "
+                "never describe made-up or example quotes as real ones.")
 
 # ------------------------------------------------------------------------------------------------ what a description says
 _SYSTEMS: dict[str, str] = {
@@ -784,8 +784,8 @@ class SimilarWork:
         cands: list[Candidate] = []
         sensitive = False
         if self.client is None or self.client.demo:
-            status["quotes"] = {"status": "demo", "note": "Salts FSM is showing sample data"}
-            status["jobs"] = {"status": "demo", "note": "Salts FSM is showing sample data"}
+            status["quotes"] = {"status": "demo", "note": "Salts FSM isn't connected"}
+            status["jobs"] = {"status": "demo", "note": "Salts FSM isn't connected"}
         else:
             try:
                 cat = await self.client.catalog()

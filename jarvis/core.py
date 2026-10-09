@@ -21,9 +21,9 @@ from .integrations.finance import build_finance
 from .integrations.fsm import FSMRouter
 from .integrations.github import GitHub
 from .integrations.marketing import PresenceSources
-from .integrations.microsoft365 import DemoMail, GraphMail, TeamsNotifier
+from .integrations.microsoft365 import DemoMail, GraphMail, NoMail, TeamsNotifier
 from .integrations.teamsbot import TeamsBot
-from .integrations.ramtracking import DemoRamTracking, RamTracking, missing_credentials
+from .integrations.ramtracking import DemoRamTracking, NoRamTracking, RamTracking, missing_credentials
 from .integrations.stt_chain import SERVER_ENGINES
 from .integrations.voice import SpeechToTextCheck, Voice
 from .knowledge import KnowledgeBase
@@ -113,8 +113,10 @@ class Jarvis:
         self.client = client or llm.make_client(settings)
         self.kb = KnowledgeBase(settings.knowledge_dir)
 
-        # integrations (demo stand-ins where not configured)
-        self.mail = GraphMail(s, self.http) if s.graph_configured else DemoMail(s)
+        # integrations. Where one isn't configured: a "not connected" stand-in (NoMail, NoFSM, NoFinance, NoRamTracking) that
+        # serves nothing - or, only with sample data switched on (JARVIS_SAMPLE_DATA; a bare local run, the tests), a demo one.
+        sample = bool(s.sample_data)
+        self.mail = GraphMail(s, self.http) if s.graph_configured else (DemoMail(s) if sample else NoMail(s))
         self.teams = TeamsNotifier(s.teams_webhook_url, self.http)
         self.teamsbot = TeamsBot(s, self.http)
         self.fsm = FSMRouter(s, self.http)
@@ -123,7 +125,7 @@ class Jarvis:
         self.fsm_documents = FsmDocuments(self)  # fsm_document_read: the text inside FSM documents, scans transcribed (services/fsm_documents.py)
         self.fsm_analyse = FsmAnalyse(self)  # fsm_analyse: totals / averages / groupings over the FSM, with optional charts (services/fsm_analyse.py)
         self.ram = (RamTracking(s, self.http, store=self.db) if s.ram_client_id and s.ram_api_key and s.ram_username and s.ram_password
-                    else DemoRamTracking(self.fsm))
+                    else DemoRamTracking(self.fsm) if sample else NoRamTracking())
         self.finance = build_finance(s, self.http, self.db)
         self.github = GitHub(s.github_token, s.fsm_repo, self.http, s.fsm_default_branch) if s.github_configured else None
         self.self_github = (GitHub(s.jarvis_github_token or s.github_token, s.jarvis_repo, self.http,
@@ -137,7 +139,7 @@ class Jarvis:
         # services
         self.notifier = Notifier(s, self.db, self.bus, self.mail, self.teams)
         self.staff = StaffMonitor(self.fsm)
-        self.register = StaffRegister(s.staff_roles_file)
+        self.register = StaffRegister(s.staff_roles_file, sample=sample)
         self.reviewer = PerformanceReviewer(self.register, self.staff, self.fsm, self.mail, self.notifier)
         self.accountant = Accountant(s, self.finance, self.fsm, self.staff)
         self.fixer = Fixer(s, self.db, self.bus, self.notifier, self.client, self.github, self.kudu, self.http)
@@ -173,7 +175,11 @@ class Jarvis:
                                self.client, self.bus)
         self.accreditations = Accreditations(s, self.db, self.staff, self.fsm, self.notifier, self.client, self.bus,
                                              fsm_data=self.fsm_data, ram=self.ram)
-        self.stores = Stores(self.db, demo_seed=self.fsm.demo, fsm=self.fsm)
+        if not sample:  # production: once, remove the sample rows an earlier demo run seeded (services/sample_cleanup.py)
+            from .services.sample_cleanup import remove_seeded_sample_data
+
+            remove_seeded_sample_data(self.db, self)
+        self.stores = Stores(self.db, demo_seed=self.fsm.demo and sample, fsm=self.fsm, sample=sample)
         self.regwatch = RegulatoryWatch(s, self.db, self.notifier, self.client, self.bus, self.mail)
         self.regwatch.actions = self.actions
         # settings + db: the owner's out-of-hours van-location setting, its look-up log and the on-call roster
@@ -188,6 +194,7 @@ class Jarvis:
         self.route_advisor = RouteAdvisor(self.fsm, self.tracker, self.register)  # read-only route advice
         self.customers = CustomerHealth(self)
         self.advisor.j_customers = self.customers
+        self.advisor.j = self
         self.renewals = Renewals(self)
         self.customer_comms = CustomerComms(self)  # drafts lifecycle emails; each is queued for approval, never sent
         self.meetings = Meetings(self)
@@ -301,6 +308,9 @@ class Jarvis:
         DEMO, so the console counts it as a failing connection, not as sample data."""
         if self.ram.demo:
             missing = missing_credentials(self.settings)
+            if not self.settings.sample_data:  # nothing is shown at all: just what is missing (lower case = not set up)
+                return ("not connected - still missing: " + ", ".join(missing) + " (Settings → Connections > RAM Tracking)"
+                        if missing else "not connected - enter the RAM Tracking details in Settings → Connections")
             return ("DEMO journeys - still missing: " + ", ".join(missing) + " (Connections > RAM Tracking)"
                     if missing else "DEMO journeys - RAM Tracking is not connected")
         health = getattr(self.ram, "health", None) or {}
@@ -311,19 +321,23 @@ class Jarvis:
         return "RAM Tracking"
 
     def connections(self) -> dict[str, str]:
+        """One line per connection for the Connections list and the system prompt. A source that isn't connected says
+        "DEMO data - <what to connect>" with sample data on, and "not connected - <what to connect>" with it off (production):
+        the console counts the DEMO lines as sample data and the "not connected" lines as not connected."""
         s = self.settings
         presence = self.presence.configured()
+        off = "DEMO data" if s.sample_data else "not connected"
         return {
-            "Email (Outlook)": "connected" if not self.mail.demo else "DEMO data - connect Microsoft 365",
+            "Email (Outlook)": "connected" if not self.mail.demo else f"{off} - connect Microsoft 365",
             "Teams updates": "connected" if self.teams.enabled else "not set up",
             "Teams chat": "connected" if self.teamsbot.configured else "not set up",
             "Standing approvals": ", ".join(
                 n for n, on in (("record keeping", s.standing_record_keeping),
                                 ("routine acknowledgements", s.standing_acknowledgements)) if on) or "off",
-            "Salts FSM": "connected" if not self.fsm.demo else "DEMO data - set FSM_BASE_URL",
+            "Salts FSM": "connected" if not self.fsm.demo else f"{off} - set FSM_BASE_URL",
             "FSM data (read-only)": self.fsm_read.connection_line(),
             "Accounts": (f"{self.finance.name}" if not getattr(self.finance, "demo", False)
-                         else "DEMO data - connect Sage or add CSV exports"),
+                         else f"{off} - connect Sage or add CSV exports"),
             "FSM source / auto-fix": f"{s.fsm_repo} ({s.fixer_mode})" if self.github else "not connected",
             "Security watch": (f"reviewing {s.fsm_repo} on a schedule" if self.security_watch.enabled
                                else "not set up (needs the same GitHub connection as auto-fix)"),
@@ -333,7 +347,7 @@ class Jarvis:
                             if self.automations.list_all() else "none set up yet - just ask"),
             "PO intake": (f"scans the inbox every {s.inbox_check_interval_min} min for customer purchase orders, "
                          "matches them to a sent quote and queues the job for your approval" if not self.mail.demo
-                         else "DEMO data - connect Microsoft 365"),
+                         else f"{off} - connect Microsoft 365"),
             "Service inbox (service@)": self.service_inbox_status(),
             "Speaking up in chat": (f"on - quiet {s.proactive_quiet_start} to {s.proactive_quiet_end}, at most "
                                     f"{s.proactive_max_per_hour or 'any number'} an hour"
@@ -346,11 +360,13 @@ class Jarvis:
             "Voice": f"TTS {s.effective_tts}, STT {s.effective_stt}",
             "Image generation": self.images.status(),
             "Socials / Google": ", ".join(k for k, v in presence.items() if v) or
-                                "DEMO data - connect Facebook, Instagram, LinkedIn, TikTok or Google reviews",
-            "Stores / stock": (self.stores.source if not self.stores.demo else
-                               "DEMO stock - connect Salts FSM, or clear the sample items and enter your own"),
-            "Staff register": ("connected" if not self.register.demo else
-                               "DEMO data - tell me each person's role, duties and targets (you approve each one)"),
+                                f"{off} - connect Facebook, Instagram, LinkedIn, TikTok or Google reviews",
+            "Stores / stock": (self.stores.source if not (self.stores.demo or self.stores.unconnected) else
+                               "DEMO stock - connect Salts FSM, or clear the sample items and enter your own"
+                               if self.stores.demo else "not connected - connect Salts FSM, or enter your stock items"),
+            "Staff register": ("connected" if self.register.path.exists() else
+                               f"{'DEMO data' if s.sample_data else 'not set up'} - tell me each person's role, duties and "
+                               "targets (you approve each one)"),
             "Vehicle tracking": self.vehicle_tracking_status(),
             "Web search": "on" if s.web_search_enabled else "off",
             "Plugins": plugins.status_line(s, self.verifier),

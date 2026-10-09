@@ -43,7 +43,12 @@ If a focus area is given, run a consultant-style deep dive on it (the relevant f
 security SMEs where you know them - label them as typical ranges - options with cost, payback and risk, then a
 recommendation) before the general sections.
 Be direct and specific to this business and these numbers - no generic MBA filler. Where figures are estimates or
-demo data, say so. Use markdown headings and bullets. {focus}"""
+demo data, say so. A system that isn't connected is left out of the data: work from what is there. Use markdown headings and bullets. {focus}"""
+
+# The advisor's inputs and the sources each rests on: with sample data off, an input whose source isn't connected is left out.
+ADVISOR_PARTS = {"business_health": ("accounts",), "finance_snapshot": ("accounts",), "cashflow_summary": ("accounts",),
+                 "credit_control": ("accounts",), "team_review_30d": ("fsm",), "engineer_productivity_30d": ("fsm",),
+                 "marketing": ("socials",), "customer_health": ("fsm",)}
 
 
 async def _safe(coro, label: str) -> Any:
@@ -71,7 +76,7 @@ class Advisor:
         health, team, prod, snapshot, cashflow, credit, socials = await asyncio.gather(
             _safe(demo_guard.section(self.accountant.health_check(90)), "health"),
             _safe(demo_guard.section(self.reviewer.review(30)), "team"),
-            _safe(self.staff.productivity(30), "productivity"),
+            _safe(demo_guard.section(self.staff.productivity(30)), "productivity"),
             _safe(demo_guard.section(self.accountant.snapshot()), "snapshot"),
             _safe(demo_guard.section(self.accountant.cashflow(13)), "cashflow"),
             _safe(demo_guard.section(self.accountant.credit_control()), "credit"),
@@ -86,19 +91,26 @@ class Advisor:
             cashflow = {k: v for k, v in cashflow.items() if k != "weeks"}
         if isinstance(credit, dict) and "actions" in credit:
             credit = {"total_overdue": credit.get("total_overdue"), "worst": credit["actions"][:8]}
-        return {"date": date.today().isoformat(), "business_health": health, "finance_snapshot": snapshot,
+        out = {"date": date.today().isoformat(), "business_health": health, "finance_snapshot": snapshot,
                 "cashflow_summary": cashflow, "credit_control": credit, "team_review_30d": team,
                 "engineer_productivity_30d": prod.get("team") if isinstance(prod, dict) else prod,
                 "marketing": socials, "customer_health": customers, "open_issues": len(self.db.list_issues("open", 200)),
                 "failing_routine_tests": [t for t in self.db.latest_test_results() if not t["ok"]],
                 "deadlines": self.accountant.deadlines()}
+        j = getattr(self, "j", None)  # the Jarvis (set in core), to know which sources are connected
+        if j is not None and not demo_guard.sample_on(j):
+            demo_guard.leave_out(j, out, ADVISOR_PARTS)
+        return out
 
     async def report(self, focus: str | None = None, deliver: bool = False) -> str:
         data = await self.gather()
         focus_line = f"Pay particular attention to: {focus}." if focus else ""
         text = await llm.write(self.client, self.s,
                                system=ADVISOR_SYSTEM.format(owner=self.s.owner_name, company=self.s.company_name,
-                                                            focus=focus_line),
+                                                            focus=focus_line)
+                               if demo_guard.sample_on(getattr(self, "j", None) or self.s)
+                               else ADVISOR_SYSTEM.format(owner=self.s.owner_name, company=self.s.company_name,
+                                                          focus=focus_line).replace(" or\ndemo data", ""),
                                prompt="Business data (JSON):\n" + json.dumps(data, default=str)[:80000],
                                effort="high", max_tokens=16000)
         self.bus.publish("display", {"title": "Business advisory report", "markdown": text})

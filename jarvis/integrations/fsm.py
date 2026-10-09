@@ -5,7 +5,8 @@ REST API (read-only) using the paths in ``fsm_endpoints.yaml``. Field names are
 normalised through alias lists so small differences in the API's JSON shape
 don't break staff monitoring or compliance checks.
 
-If FSM_BASE_URL is not set, a deterministic demo dataset is used instead.
+If FSM_BASE_URL is not set, Salts FSM is "not connected" (``NoFSM``: every read is empty, every write refused). Only with
+sample data switched on (``JARVIS_SAMPLE_DATA``, a bare local run, the tests) is a deterministic demo dataset used instead.
 """
 
 from __future__ import annotations
@@ -213,7 +214,8 @@ class FSMRouter:
     def __getattr__(self, name: str) -> Any:
         if self.demo:
             if self._demo is None:
-                self._demo = DemoFSM()
+                # Sample data on: the deterministic demo dataset. Off (production): nothing at all - "not connected".
+                self._demo = DemoFSM() if getattr(self.s, "sample_data", True) else NoFSM()
             return getattr(self._demo, name)
         return getattr(self._real, name)
 
@@ -693,3 +695,75 @@ class DemoFSM:
 
     async def check(self) -> str:
         return "demo FSM"
+
+
+NOT_CONNECTED = "Salts FSM isn't connected yet, so nothing was read or changed. Connect it in Settings → Connections."
+
+
+class NoFSM:
+    """Salts FSM when it isn't connected and sample data is off: nothing to read, nothing to write. ``demo`` stays True (it is
+    not the real FSM, so everything that checks ``fsm.demo`` keeps away from it); a read inside a tool call stops the tool
+    with a plain "not connected" answer (``demo_guard.touch(FSM, sample=False)``), anywhere else it is just empty."""
+
+    demo = True
+    sample = False
+
+    def _none(self) -> list[dict[str, Any]]:
+        from .. import demo_guard
+
+        demo_guard.touch(demo_guard.FSM, sample=False)
+        return []
+
+    async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        return self._none()
+
+    async def customers(self) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def sites(self) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def locations(self, engineer: str | None = None, since: datetime | None = None) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def jobs(self, date_from: date | None = None, date_to: date | None = None,
+                   status: str | None = None, engineer: str | None = None) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def job_detail(self, job_id: str) -> dict[str, Any]:
+        self._none()
+        raise ValueError(NOT_CONNECTED)
+
+    async def staff(self) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def systems(self) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def contracts(self) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def quotes(self, status: str | None = None) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def timesheets(self, date_from: date, date_to: date) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def stock(self) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def stock_movements(self, date_from: date, date_to: date) -> list[dict[str, Any]]:
+        return self._none()
+
+    async def write(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        raise RuntimeError(NOT_CONNECTED)
+
+    async def record_stock_movement(self, movement: dict[str, Any]) -> Any:
+        raise RuntimeError(NOT_CONNECTED)
+
+    async def jarvis_call(self, method: str, path: str, body: dict[str, Any] | None = None, params: dict[str, Any] | None = None,
+                          timeout: float | None = None) -> Any:
+        raise RuntimeError(NOT_CONNECTED)
+
+    async def check(self) -> str:
+        return "Salts FSM not connected"
