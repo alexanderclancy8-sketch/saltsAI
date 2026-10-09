@@ -906,9 +906,37 @@ class RenewalsIn(BaseModel):
     days: int = Field(60, description="Look ahead this many days")
 
 
-class PrepareRenewalIn(BaseModel):
-    contract_id: str
-    uplift_pct: float | None = Field(None, description="Price rise %, default from settings (usually 5)")
+class FsmRenewalsDueIn(BaseModel):
+    within_days: int | None = Field(None, description="Contracts whose agreement ends within this many days (1-365); "
+                                                      "default the renewal notice period from Settings (usually 60)")
+
+
+class RenewalLinePrice(BaseModel):
+    line_id: str = Field(description="The renewal line's id, from fsm_renewal_prepare / fsm_renewals_due")
+    proposed_value: float = Field(ge=0, description="Next year's annual price for that line, ex VAT, in pounds")
+
+
+class FsmRenewalPrepareIn(BaseModel):
+    contract_id: str = Field(description="The Salts FSM contract id (from fsm_renewals_due)")
+    uplift_pct: float | None = Field(None, ge=-50, le=50,
+                                     description="Price rise in percent on this year's prices, e.g. 5. Leave blank for the standard "
+                                                 "uplift from Settings - applied only when the draft is NEW (an existing draft's "
+                                                 "prices are left as they are unless you give an uplift or line prices)")
+    line_prices: list[RenewalLinePrice] | None = Field(None, description="Instead of an uplift: next year's price for named lines")
+    note: str | None = Field(None, max_length=300, description="A short note recorded with the draft in Salts FSM's audit trail")
+
+    @model_validator(mode="after")
+    def _one_way(self):
+        if self.uplift_pct is not None and self.line_prices:
+            raise ValueError("Give an uplift_pct OR line_prices, not both.")
+        return self
+
+
+class FsmRenewalSendIn(BaseModel):
+    renewal_id: str = Field(description="The Salts FSM renewal id (from fsm_renewal_prepare or fsm_renewals_due)")
+    recipients: list[str] | None = Field(None, max_length=5, description="Only if the owner names different addresses; leave "
+                                                                          "blank to use the renewal's own (its billing / Finance "
+                                                                          "contacts in Salts FSM)")
 
 
 class CustomerCommsIn(BaseModel):
@@ -2281,8 +2309,69 @@ async def contract_renewals(j, a: RenewalsIn):
     return await j.renewals.due(max(7, min(a.days, 365)))
 
 
-async def prepare_renewal(j, a: PrepareRenewalIn):
-    return await j.renewals.prepare(a.contract_id, a.uplift_pct)
+# --- renewals THROUGH Salts FSM (services/fsm_renewals.py): the FSM owns the draft, the PDF and the email -----------------------
+def _renewal_asker(j) -> str:
+    caller = access.current_caller.get()
+    if caller is not None and caller.role == access.MANAGER:
+        return f"Jarvis (asked by {caller.name or 'a manager'})"
+    return f"Jarvis (asked by {j.asked_by})" if getattr(j, "asked_by", "") else "Jarvis"
+
+
+def _renewal_team_refusal() -> dict[str, Any] | None:
+    caller = access.current_caller.get()
+    if caller is not None and caller.is_team:   # belt and braces: these tools are not in TEAM_TOOLS, so dispatch refuses first
+        return {"error": "Renewals are for the owner and managers only.", "kind": "refused"}
+    return None
+
+
+async def fsm_renewals_due(j, a: FsmRenewalsDueIn):
+    from ..services.fsm_renewals import RenewalsError
+
+    try:
+        return await j.fsm_renewals.due(a.within_days)
+    except RenewalsError as e:
+        return e.as_dict()
+
+
+async def fsm_renewal_prepare(j, a: FsmRenewalPrepareIn):
+    """Writes a DRAFT in Salts FSM with no approval card - like Jarvis's other FSM draft writes (upsell wording, Action Centre
+    suggestions): the office makes drafts freely, it is visible in the FSM, and nothing is sent. Sending is fsm_renewal_send."""
+    from ..services.fsm_renewals import RenewalsError
+
+    refused = _renewal_team_refusal()
+    if refused:
+        return refused
+    lines = [{"id": lp.line_id, "proposed_value": lp.proposed_value} for lp in (a.line_prices or [])] or None
+    try:
+        out = await j.fsm_renewals.prepare(a.contract_id, a.uplift_pct, lines, a.note or "")
+        standard = j.settings.renewal_uplift_pct
+        if out.get("created") and a.uplift_pct is None and not lines and standard:
+            # a NEW draft gets the owner's standard uplift; an existing draft (maybe edited by the office) is never repriced unasked
+            out = await j.fsm_renewals.prepare(a.contract_id, standard, None, a.note or "")
+            out["created"], out["standard_uplift_applied"] = True, standard
+    except RenewalsError as e:
+        return e.as_dict()
+    r = out.get("renewal") or {}
+    what = (f"{'Prepared' if out.get('created') else 'Updated' if out.get('pricing_applied') else 'Found'} the Salts FSM renewal for "
+            f"{r.get('customer') or 'a customer'} ({r.get('contract_name') or a.contract_id}), renewal {r.get('id') or '?'}")
+    if out.get("created") or out.get("pricing_applied"):
+        j.activity_feed.record("fsm_renewal", _renewal_asker(j), what, f"renewal {r.get('id') or ''}")
+    out["note"] = ("A draft in Salts FSM - nothing has been sent. To send it, use fsm_renewal_send: it shows the owner exactly what "
+                   "goes out and waits for their approval.")
+    return out
+
+
+async def fsm_renewal_send(j, a: FsmRenewalSendIn):
+    """Never sends: previews the renewal in Salts FSM and queues ONE approval card. Salts FSM sends only when a person approves."""
+    from ..services.fsm_renewals import RenewalsError
+
+    refused = _renewal_team_refusal()
+    if refused:
+        return refused
+    try:
+        return await j.fsm_renewals.queue_send(a.renewal_id, a.recipients)
+    except RenewalsError as e:
+        return e.as_dict()
 
 
 async def draft_customer_emails(j, a: CustomerCommsIn):
@@ -3087,12 +3176,27 @@ TOOLS: list[Tool] = [
                             "and lapsed renewals - who is at risk (especially before renewal), why, and what to do. "
                             "Also flags revenue concentration.", CustomerIn, customer_health,
          "Checking customer health"),
-    Tool("contract_renewals", "Maintenance contracts renewing soon, with value, customer health and whether the "
-                              "renewal letter has been prepared.", RenewalsIn, contract_renewals,
+    Tool("contract_renewals", "Maintenance contracts renewing soon, seen through the customer health watch: value, customer "
+                              "health and who to call before a price rise. For the renewal itself - what is prepared or sent in "
+                              "Salts FSM, preparing it and sending it - use fsm_renewals_due, fsm_renewal_prepare and "
+                              "fsm_renewal_send.", RenewalsIn, contract_renewals,
          "Checking contract renewals"),
-    Tool("prepare_renewal", "Write the renewal letter for a contract with the price uplift and queue it for the "
-                            "owner's approval (warns if the customer is at risk).", PrepareRenewalIn, prepare_renewal,
-         "Preparing the renewal"),
+    Tool("fsm_renewals_due", "Renewals in Salts FSM (read-only): the contracts whose agreement ends within N days, each with "
+                             "its value, renewal date, who the renewal would be emailed to and what is missing (not prepared, "
+                             "no billing contact, a legacy agreement to reconcile); and the renewals already drafted or sent. "
+                             "Renewals are done in Salts FSM - this is where to start.", FsmRenewalsDueIn, fsm_renewals_due,
+         "Checking renewals in Salts FSM"),
+    Tool("fsm_renewal_prepare", "Prepare a contract's renewal IN SALTS FSM: the FSM's own draft (its lines this year and next, "
+                                "its PDF and accept link), exactly as Prepare renewal does there - or the one already open. "
+                                "Optionally priced with an uplift % or a price per line. It writes a draft in the FSM without an "
+                                "approval card and sends NOTHING; check the customer's health first (contract_renewals) before "
+                                "a price rise for an at-risk customer. Owner and managers only.", FsmRenewalPrepareIn,
+         fsm_renewal_prepare, "Preparing the renewal in Salts FSM"),
+    Tool("fsm_renewal_send", "Ask to SEND a renewal prepared in Salts FSM: shows the owner exactly what the customer would get "
+                             "(recipients, subject, the email, the price now and next year, the FSM's PDF) as an approval card. "
+                             "Nothing is sent until a person approves it; Salts FSM then sends its own email, only if nothing "
+                             "has changed since the preview, and never twice. Owner and managers only.", FsmRenewalSendIn,
+         fsm_renewal_send, "Queueing the renewal for approval"),
     Tool("draft_customer_emails", "Draft customer emails for job lifecycle events - engineer booked / on the way, job "
                                   "complete with summary, certificate ready, service due, quote follow-up - and queue "
                                   "each for the owner's approval (sent only via the approved email_send path; this "

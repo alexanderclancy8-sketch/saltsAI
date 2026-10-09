@@ -72,6 +72,7 @@ from .services.ppm_planner import PPMPlanner
 from .services.route_advisor import RouteAdvisor
 from .services.recruiter import Recruiter
 from .services.regulatory import RegulatoryWatch
+from .services.fsm_renewals import FsmRenewals
 from .services.renewals import Renewals
 from .services.reply_suggestions import ReplySuggestions
 from .services.company_check import CompanyCheck
@@ -201,6 +202,8 @@ class Jarvis:
         self.suggestions = Suggestions(self)
         self.fsm_suggestions = FsmSuggestions(self)  # suggestions with a Prepare button, shared with the FSM Action Centre
         self.upsell_drafts = UpsellDrafts(self)  # better wording for the FSM's upsell draft emails (never sends or approves)
+        # renewals THROUGH Salts FSM: due / prepare (a draft, no approval) / a send that always waits for a person (services/fsm_renewals.py)
+        self.fsm_renewals = FsmRenewals(self)
         self.wrapup = WrapUp(self)
         self.scheduler = None
         self.activity = ActivityLog(self)  # every scheduled check's runs; the chat shows one quiet line per check

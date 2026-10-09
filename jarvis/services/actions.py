@@ -26,6 +26,7 @@ from ..db import Database
 from ..events import EventBus
 from ..integrations.microsoft365 import text_to_html
 from . import approval_inbox as inbox
+from . import fsm_renewals
 from . import standing_approvals as sa
 from .rulebook import OWNER_APPROVAL_KINDS, RULE_KIND
 
@@ -211,6 +212,9 @@ class ActionExecutor:
                 await self.mail.send_mail([p["ack_to"]], subject, body)
             po_note = f" (PO {p['po_number']})" if p.get("po_number") else ""
             return f"Quote {p['quote_id']} accepted; job booked{po_note}: {str(result)[:250]}"
+        if action["kind"] == fsm_renewals.SEND_KIND:
+            # a renewal a PERSON approved: Salts FSM sends exactly the version on the card, or refuses (services/fsm_renewals.py)
+            return await self.j.fsm_renewals.execute_send(action, sa.APPROVER_PREFIX)
         if action["kind"] == "deploy_fix":
             return await self.fixer.deploy(p["issue_id"], p["pr_number"])
         if action["kind"] == RULE_KIND:

@@ -38,6 +38,8 @@ CHECK_TOOLS = frozenset({
     "staff_today", "staff_productivity", "staff_roles", "staff_review", "office_productivity", "staff_overdue_jobs",
     "staff_certifications", "attendance_check", "lone_worker_check", "unbilled_jobs", "remedial_quotes", "customer_health",
     "contract_renewals", "upsell_opportunities", "false_alarm_analysis", "business_health",
+    # renewals in Salts FSM: the due list is a read; preparing a draft and queueing a send are writes and stay off this list
+    "fsm_renewals_due",
     # accounts, stock, registers (reads; sample data is withheld by demo_guard as usual)
     "finance_snapshot", "finance_aged", "finance_vat", "finance_cashflow", "finance_corporation_tax",
     "finance_profit_and_loss", "finance_deadlines", "finance_credit_control", "stock_levels", "stock_usage",

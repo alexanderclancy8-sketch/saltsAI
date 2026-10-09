@@ -562,6 +562,44 @@ items. Everything is Jarvis -> FSM through `FSMClient.jarvis_call` (the existing
   customer comms (tests grep it; its only FSM verbs are the two GETs and the one draft PATCH). Standing approvals are untouched. A reworded
   draft is still just a draft: a person approves and the FSM sends.
 
+*Renewals through Salts FSM (`services/fsm_renewals.py`, `j.fsm_renewals`; tools `fsm_renewals_due`, `fsm_renewal_prepare`,
+`fsm_renewal_send`; approval kind `fsm_renewal_send`; route `GET /api/fsm/renewals/{renewal_id}/pdf`; tests `tests/test_fsm_renewals.py`).*
+**There is one way of doing renewals: Salts FSM's own.** The FSM owns the renewal draft (its lines this year and next), the branded PDF, the
+customer's accept link and the email. The old `prepare_renewal` tool and its letter template (`services/renewals.py`) are retired; old
+`renewal:<contract>:<date>` kv markers are inert. `contract_renewals` stays as the customer-health lens only (who to call before a price rise)
+and points at the FSM tools. Everything is Jarvis -> FSM through `FSMClient.jarvis_call` (the existing key; `jarvis_call` now also allows POST,
+used only here).
+- **Contract (salts-fsm `docs/jarvis_renewals.md`, absolute `/api/jarvis/renewals...` paths):** `GET /due?within_days=N` (contracts due, each
+  with value, recipients, `needs` codes and `can_prepare` / `ready_to_send`; open renewals by status; `send_enabled`); `POST /prepare`
+  `{contract_id, uplift_percent? | lines?: [{id, proposed_value}], note?}` (the FSM's own Prepare renewal, idempotent: 201 created / 200
+  already open; never sends); `GET /{id}/preview` (recipients, subject, `body_text`, totals, VAT, `pdf`, `version` - a SHA-256 of what the
+  customer would get - `can_send`, `why_not`); `GET /{id}/pdf`; `POST /{id}/send` `{expected_version, approved_by, recipients?}` (the FSM's own
+  send: only a DRAFT - 409 `already_sent`; only that version - 409 `changed`; 403 `send_off` unless the FSM's "Jarvis may send renewals"
+  switch is on, which is OFF by default; 502 `send_failed` changes nothing). All five follow the FSM's Commercial switch (403 `scope_off`).
+- **Prepare runs without approval** - matching Jarvis's other FSM draft writes (upsell wording PATCH, Action Centre suggestion PUT): a draft
+  is visible in the FSM and sends nothing. A NEW draft gets `renewal_uplift_pct` (one extra prepare call with that uplift); an existing draft
+  (maybe edited by the office) is never repriced unless an uplift or line prices are given. Each prepare that creates or reprices leaves an
+  `audit_events` line (kind `fsm_renewal`, "What Jarvis did": fsm_change).
+- **Send ALWAYS queues a card, never sends:** `fsm_renewal_send` previews and queues ONE `fsm_renewal_send` action (a repeat for the same
+  renewal and version returns the waiting card) showing customer, contract, recipients, the annual price now -> next year (+VAT), the subject,
+  the start of the email, the FSM's PDF (a link to Jarvis's own `/api/fsm/renewals/{id}/pdf`, the only `href` a card row may carry -
+  `approval_inbox._CARD_LINK`, mirrored in `hud.js`) and the preview version. Nothing is queued when the FSM says it can't be sent
+  (`why_not`) or its send switch is off. Not editable (the FSM only sends the previewed version). On Approve, `ActionExecutor._execute` ->
+  `FsmRenewals.execute_send`: refuses anything not approved by a person (a `standing approval:` approver), then POSTs send with that version
+  and the approver's name ("the owner" from the console becomes `OWNER_NAME`); 409 changed fails the card with "ask me to send the renewal
+  again" (a new preview, a new card); already sent / send off fail clearly. Never in the standing-approvals allowlist (only `fsm_write` and
+  `po_acknowledgement` are looked at; `tests/test_standing_approvals.py` EXCLUDED lists it). Offered on Teams like `email_send` (the card text
+  is `fsm_renewals.teams_text`).
+- **A FSM without the routes** (404/405 without one of the FSM's own error codes) -> `{"error": "FSM renewals API not available yet: ...",
+  "kind": "unavailable"}` (coverage: "the FSM doesn't expose this yet"); demo FSM -> kind `demo`; an outage -> kind `unreachable`. FSM text is
+  cleaned (`fsm_data.clean_text`, `clean_document_text` for the email), capped and redacted.
+- **Roles and modes:** owner and managers only (none of the three is in `TEAM_TOOLS`; the handlers also refuse a team caller). Check mode:
+  `fsm_renewals_due` is in `CHECK_TOOLS`; prepare and send are not. Both writes are in `NOT_BACKGROUND`. Coverage names "Salts FSM renewals"
+  (`coverage.TOOL_DETAIL`, `trace._TOOL_INFO`). Activity feed: `fsm_renewal_send` is in `EMAIL_KINDS` (a draft until approved, then an email).
+- **Proactive:** the suggestions sweep reads `fsm_renewals.due()`: a due contract with nothing prepared -> "Prepare the renewal for X in Salts
+  FSM?" (prompt: `fsm_renewal_prepare`, then show what it would send); a drafted one ready to send -> "... drafted in Salts FSM - send it?"
+  (prompt: `fsm_renewal_send`). At-risk / watch customers are skipped (they get the "plan a call" suggestion). No FSM routes = no lines.
+
 *Daily rhythm (`services/daily_rhythm.py`).* The morning briefing (09:00) and end-of-day wrap-up (17:30), Monday to Friday, UK
 time, are intentional scheduled posts (not "checks": they always say something). `briefing_enabled` / `briefing_cron` /
 `wrapup_enabled` / `wrapup_cron` are in Settings > Schedules. Each text has a word budget enforced in code

@@ -288,6 +288,8 @@ EXCLUDED = [
     ("email_send", {"to": ["a@b.example.com"], "subject": "Purchase order", "body": "x"}),
     ("email_send", {"to": ["jane@customer.example.co.uk"], "subject": "Purchase order received", "body": "x"}),
     ("deploy_fix", {"issue_id": 1, "pr_number": 2}),
+    # a renewal Salts FSM would email to a customer (services/fsm_renewals.py): always a person's click
+    ("fsm_renewal_send", {"renewal_id": "ren-1", "version": "a" * 64, "recipients": ["accounts@example.invalid"]}),
     ("tool:fsm_change", {"tool": "fsm_change", "args": {"method": "POST", "path": "/customers",
                                                         "body": {"name": "x"}, "summary": "x"}}),
     ("tool:fsm_create_record", {"tool": "fsm_create_record", "args": {"record": "customer", "name": "x"}}),

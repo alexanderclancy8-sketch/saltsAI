@@ -288,12 +288,10 @@ async def test_renewals_fleet_and_lone_worker(tmp_path):
     due = await j.renewals.due(60)
     assert due["renewals"]
     kestrel = next(r for r in due["renewals"] if r["customer"] == "Kestrel Retail")
-    prepared = await j.renewals.prepare(kestrel["contract"])
-    assert prepared["warning"] and prepared["queued_action"]
-    assert prepared["new_price"] == round(kestrel["annual_value"] * 1.05, 2)
-    action = j.db.get_action(prepared["queued_action"])
-    assert action["kind"] == "email_send" and "at-risk" in action["summary"]
-    assert (await j.renewals.due(60))["renewals"][0]["letter_prepared"] in (True, False)
+    assert kestrel["customer_health"] in ("at risk", "watch") and "letter_prepared" not in kestrel
+    # Jarvis's own renewal letter is retired: renewals are prepared and sent in Salts FSM (services/fsm_renewals.py)
+    assert not hasattr(j.renewals, "prepare") and "fsm_renewals_due" in due["note"]
+    assert j.db.pending_actions() == []
     timeline = j.accreditations.status()["timeline"]
     assert any(t["what"].startswith("Van YD71") for t in timeline)
     assert any("Ladders" in t["what"] for t in timeline)

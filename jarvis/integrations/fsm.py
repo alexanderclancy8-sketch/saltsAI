@@ -264,13 +264,15 @@ class FSMClient:
 
     async def jarvis_call(self, method: str, path: str, body: dict[str, Any] | None = None,
                           params: dict[str, Any] | None = None, timeout: float = 15) -> httpx.Response:
-        """One call to the FSM's `/api/jarvis/*` surface, with the same key as every other call. Used only by
-        services/fsm_suggestions.py (push suggestions, poll Prepare requests, report back). The path is absolute under the
-        FSM's base URL - independent of `fsm_api_prefix`, so the contract path is the same whatever the prefix is - and the
-        response is handed back WITHOUT raising for an HTTP error, because the caller decides what a 404 or a 5xx means."""
-        if (method.upper() not in ("GET", "PUT", "PATCH", "DELETE") or ".." in path or "://" in path
+        """One call to the FSM's `/api/jarvis/*` surface, with the same key as every other call. Used by
+        services/fsm_suggestions.py (push suggestions, poll Prepare requests, report back), services/upsell_drafts.py,
+        integrations/fsm_data.py (GET only) and services/fsm_renewals.py (the only POST: prepare a renewal draft, and send one a
+        person approved). The path is absolute under the FSM's base URL - independent of `fsm_api_prefix`, so the contract path is
+        the same whatever the prefix is - and the response is handed back WITHOUT raising for an HTTP error, because the caller
+        decides what a 404 or a 5xx means."""
+        if (method.upper() not in ("GET", "POST", "PUT", "PATCH", "DELETE") or ".." in path or "://" in path
                 or not path.startswith("/api/jarvis/")):
-            raise ValueError("Only GET/PUT/PATCH/DELETE to an /api/jarvis/ path is allowed")
+            raise ValueError("Only GET/POST/PUT/PATCH/DELETE to an /api/jarvis/ path is allowed")
         return await self.http.request(method.upper(), f"{self.s.fsm_base_url.rstrip('/')}{path}", json=body,
                                        params=params, headers=self._headers(), timeout=timeout)
 

@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from ..integrations.redact import REDACTED as _GITHUB_REDACTED, redact as redact_secrets
 from ..redact import REDACTED, redact_text
+from . import fsm_renewals
 
 MAX_TEXT = 20_000          # the longest email body / single text field a card shows or an edit may carry
 MAX_JSON = 20_000          # the longest JSON body an edit may carry
@@ -34,6 +35,8 @@ _CONTROL = re.compile("[" + "".join(re.escape(chr(a)) + "-" + re.escape(chr(b)) 
 
 
 _MARKERS = (REDACTED, _GITHUB_REDACTED)
+# The only link a card row may carry: Jarvis's own owner/manager route that serves the FSM renewal PDF (same origin, no host).
+_CARD_LINK = re.compile(r"/api/fsm/renewals/[A-Za-z0-9._:%\-]{1,120}/pdf")
 
 
 class EditError(ValueError):
@@ -109,6 +112,14 @@ def _rows(kind: str, p: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         return "Accept quote and book job", rows
     if kind == "po_acknowledgement":
         return "Acknowledgement email", [row("Receipt-only email to", p.get("to", ""))]
+    if kind == fsm_renewals.SEND_KIND:   # a renewal Salts FSM will send (services/fsm_renewals.py): never editable - the FSM sends
+        rows = []                       # only the exact previewed version, so a changed card would only ever be refused
+        for label, value, block, href in fsm_renewals.card_rows(p):
+            r = row(label, value, block)
+            if href and _CARD_LINK.fullmatch(href):
+                r["href"] = href
+            rows.append(r)
+        return "Renewal to send (Salts FSM)", rows
     if kind == "deploy_fix":
         rows = [row("Issue", f"#{p.get('issue_id', '?')}"), row("Pull request", f"#{p.get('pr_number', '?')}")]
         if p.get("diff"):
