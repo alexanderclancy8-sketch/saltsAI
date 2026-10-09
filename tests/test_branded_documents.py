@@ -63,7 +63,7 @@ async def test_tool_can_produce_a_pdf_draft_and_never_sends(tmp_path):
     tool = TOOLS_BY_NAME["draft_office_document"]
     assert tool.approval is False and "PDF" in tool.description
     assert "email_send" in tool.description and "never sent" in tool.description
-    assert "DEMO" in tool.description  # demo-data placeholders must be labelled
+    assert "TO CONFIRM" in tool.description  # placeholder or unconfirmed figures must be labelled
     j = _jarvis(tmp_path)
 
     async def boom(*a, **k):

@@ -233,7 +233,7 @@ def test_sample_fsm_data_shows_the_banner(serve, browser):
         page.click("#btn-open-memory")
         page.click("#mem-tab-entities")
         page.wait_for_selector("#ent-demo:not([hidden])", timeout=10000)
-        assert "sample data" in page.inner_text("#ent-demo") and "No notes yet" in page.inner_text("#ent-list")
+        assert "isn't connected" in page.inner_text("#ent-demo") and "No notes yet" in page.inner_text("#ent-list")
         # keyboard: arrows move between the two tabs
         page.focus("#mem-tab-entities")
         page.keyboard.press("ArrowLeft")

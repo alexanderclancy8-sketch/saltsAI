@@ -335,7 +335,7 @@ async def test_demo_fsm_never_makes_a_request(tmp_path):
     data = FsmData(fsm, clock=clock, sleep=clock.sleep)
     with pytest.raises(FsmDataError) as e:
         await data.catalog()
-    assert e.value.kind == "demo" and "sample data" in e.value.message and api.requests == []
+    assert e.value.kind == "demo" and "isn't connected" in e.value.message and api.requests == []
     await fsm.aclose()
 
 

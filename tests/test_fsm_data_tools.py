@@ -287,7 +287,7 @@ async def test_demo_fsm_says_so_and_returns_nothing(settings):
         assert j.fsm.demo
         for name, args in (("fsm_data", {"resource": "jobs"}), ("fsm_catalog", {})):
             out = await call(j, name, args)
-            assert out["kind"] == "demo" and out["demo"] is True and "sample data" in out["error"]
+            assert out["kind"] == "demo" and out["demo"] is True and "isn't connected" in out["error"]
         assert j.fsm_read.prompt_block() == "" and "not available" in j.fsm_read.connection_line()
     finally:
         await j.http.aclose()

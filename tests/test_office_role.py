@@ -536,7 +536,7 @@ async def test_sample_data_is_not_an_answer(settings):
     assert j.fsm_data.demo
     j.customer_balance._today = lambda: TODAY
     out = await ask(j, PAT, customer="KES001")
-    assert out["kind"] == "demo" and "sample data" in out["error"] and "owed" not in out
+    assert out["kind"] == "demo" and "isn't connected" in out["error"] and "owed" not in out
     assert audit(j) == []
 
 

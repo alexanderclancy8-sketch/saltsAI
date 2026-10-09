@@ -25,8 +25,14 @@ Cover, in this order:
 If "jarvis_faults" has a count above zero, add ONE short sentence that Jarvis has that many open fault reports about
 itself, waiting in Faults on the console (no detail). Say nothing about faults when the count is zero.
 Finish with one "Shall I...?" offer for the single most useful next step (you never act without approval).
-Round numbers for speech. No lists, headings or markdown - flowing speech. {budget} If the data is demo
-data, say so once. Only use the data provided; never invent facts."""
+Round numbers for speech. No lists, headings or markdown - flowing speech. {budget} {demo}Only use the data provided;
+never invent facts. A system that isn't connected is simply left out of the data: don't mention it."""
+
+# The parts of the wrap-up data and the sources each rests on: with sample data off, a part whose source isn't connected is
+# left out entirely (no "not connected" nag in the wrap-up; the morning briefing says it once).
+WRAPUP_PARTS = {"today": ("fsm",), "engineers": ("fsm",), "slipped_today": ("fsm",), "overdue_jobs": ("fsm",),
+                "tomorrow": ("fsm",), "unread_email": ("mail",), "engineers_still_out": ("vehicles",), "money": ("accounts",),
+                "customers_at_risk": ("fsm",), "meeting_actions_overdue": ("mail",)}
 
 
 async def _safe(coro, label: str) -> Any:
@@ -48,10 +54,11 @@ class WrapUp:
         while tomorrow.weekday() >= 5:  # Friday's wrap-up looks ahead to Monday
             tomorrow += timedelta(days=1)
 
+        sec = demo_guard.section  # a source that isn't connected drops just its part (never the whole wrap-up)
         board, overdue, jobs_today, jobs_next, inbox, fleet, finance = await asyncio.gather(
-            _safe(j.staff.board(), "board"), _safe(j.staff.overdue_jobs(), "overdue"),
-            _safe(j.fsm.jobs(day, day), "jobs today"), _safe(j.fsm.jobs(tomorrow, tomorrow), "jobs tomorrow"),
-            _safe(j.mail.list_messages(unread_only=True, top=25), "inbox"), _safe(j.tracker.live(), "fleet"),
+            _safe(sec(j.staff.board()), "board"), _safe(sec(j.staff.overdue_jobs()), "overdue"),
+            _safe(sec(j.fsm.jobs(day, day)), "jobs today"), _safe(sec(j.fsm.jobs(tomorrow, tomorrow)), "jobs tomorrow"),
+            _safe(sec(j.mail.list_messages(unread_only=True, top=25)), "inbox"), _safe(sec(j.tracker.live()), "fleet"),
             _safe(demo_guard.section(j.accountant.snapshot()), "finance"))
 
         slipped = []
@@ -76,7 +83,7 @@ class WrapUp:
             still_out = [e["engineer"] for e in fleet.get("engineers", [])
                          if e.get("status") == "driving" or e.get("current_job")]
         unread = inbox if isinstance(inbox, list) else []
-        return {
+        out = {
             "date": today_iso,
             "demo": getattr(j.fsm, "demo", False),
             "today": {k: board.get(k) for k in ("jobs_today", "completed_today", "late_starts", "unassigned_jobs_today")}
@@ -105,6 +112,10 @@ class WrapUp:
             "jarvis_faults": j.faults.wrapup_summary() if getattr(j, "faults", None) is not None else {"count": 0},
             "deadlines_next_14_days": [d for d in j.accountant.deadlines() if 0 <= d["days_left"] <= 14],
         }
+        if not demo_guard.sample_on(j):
+            out.pop("demo")  # nothing is sample data: no "demo" flag at all
+            demo_guard.leave_out(j, out, WRAPUP_PARTS)
+        return out
 
     async def run(self, deliver: bool = True) -> str:
         j = self.j
@@ -121,7 +132,8 @@ class WrapUp:
         text = await daily_rhythm.write_short(
             j.client, j.settings,
             system=WRAPUP_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name,
-                                        budget=daily_rhythm.WORD_BUDGET_RULE),
+                                        budget=daily_rhythm.WORD_BUDGET_RULE,
+                                        demo="If the data is demo data, say so once. " if demo_guard.sample_on(j) else ""),
             prompt=f"It is {datetime.now():%A %d %B %Y, %H:%M}. End-of-day data:\n{json.dumps(data, default=str)[:60000]}",
             effort="medium")
         if deliver:

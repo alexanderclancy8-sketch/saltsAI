@@ -1,7 +1,8 @@
 """Runtime configuration, loaded from environment variables / .env.
 
-Every integration is optional. Anything left unset falls back to demo data
-(clearly labelled as DEMO on the display) so the assistant runs out of the box.
+Every integration is optional. Anything left unset is "not connected". Only when sample data is switched on
+(``JARVIS_SAMPLE_DATA``, see ``default_sample_data``) does an unconnected source show believable demo data instead
+(clearly labelled DEMO on the display), so a bare local checkout runs out of the box.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -41,6 +42,16 @@ def apply_timezone(name: str) -> None:
         return
     os.environ["TZ"] = name
     time.tzset()
+
+def default_sample_data() -> bool:
+    """Whether sample data is on when JARVIS_SAMPLE_DATA isn't set. OFF in production: Azure App Service always sets
+    WEBSITE_SITE_NAME (and WEBSITE_INSTANCE_ID), so there it is off even if every other setting is missing. Off wherever a
+    .env file is in use (a configured install). ON only for a bare local run with no .env - `python -m jarvis` straight
+    from a checkout, the README's "demo data with no .env configured"."""
+    if os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("WEBSITE_INSTANCE_ID"):
+        return False
+    return not Path(".env").exists()
+
 
 # ElevenLabs premade voices with a British accent. "daniel" is the default
 # Jarvis voice: a deep, authoritative British male.
@@ -240,6 +251,13 @@ class Settings(BaseSettings):
     azure_tenant_id: str = ""
     azure_client_id: str = ""
     azure_client_secret: str = ""
+
+    # --- Sample data ------------------------------------------------------
+    # JARVIS_SAMPLE_DATA: on = a source that isn't connected shows believable sample data (DemoFSM, DemoMail, DemoFinance,
+    # the seeded stock, sample social figures, the example staff register and accreditations, DemoRamTracking) so the console
+    # can be tried out; off = it is simply "not connected" everywhere (tools, pop-ups, briefings). Unset = default_sample_data():
+    # off on Azure and wherever a .env is used, on for a bare local run. Read once at start-up (not a hot-reloadable setting).
+    sample_data: bool | None = Field(default=None, validation_alias=AliasChoices("JARVIS_SAMPLE_DATA", "sample_data"))
 
     # --- Finance ----------------------------------------------------------
     finance_provider: str = "auto"  # auto | sage | csv | demo
@@ -552,11 +570,13 @@ class Settings(BaseSettings):
             return "sage"
         if (self.finance_csv_dir / "invoices.csv").exists():
             return "csv"
-        return "demo"
+        return "demo"  # nothing connected: DemoFinance with sample data on, NoFinance ("not connected") with it off
 
     vat_quarter_months: list[int] = Field(default_factory=list, exclude=True)
 
     def model_post_init(self, __context) -> None:  # noqa: D401
+        if self.sample_data is None:
+            self.sample_data = default_sample_data()
         self.vat_quarter_months = sorted(int(m) for m in self.vat_quarter_end_months.split(",") if m.strip())
         self.data_dir.mkdir(parents=True, exist_ok=True)
         # On App Service, fall back to the app's own address (needed for the Sage sign-in callback).

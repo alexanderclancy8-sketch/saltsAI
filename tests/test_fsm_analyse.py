@@ -539,7 +539,7 @@ async def test_demo_fsm_says_so_and_returns_nothing(settings):
     try:
         assert j.fsm.demo
         out = await run(j, {"resource": "jobs", "group_by": ["engineer"], "chart": "bar"})
-        assert out["demo"] is True and out["kind"] == "demo" and "sample data" in out["error"]
+        assert out["demo"] is True and out["kind"] == "demo" and "isn't connected" in out["error"]
         assert "results" not in out and "chart" not in out
     finally:
         await j.http.aclose()

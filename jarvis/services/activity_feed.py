@@ -650,6 +650,8 @@ class ActivityFeed:
     def sample_sources(self) -> set[str]:
         """Which sources are showing sample data right now (so a record built on one is flagged, and left out of what Jarvis says aloud)."""
         out = set(demo_guard.demo_now(self.j))
+        if not demo_guard.sample_on(self.j):
+            return out  # sample data off: nothing is sample (an unconnected FSM / mailbox serves nothing at all)
         for name, attr in (("fsm", "fsm"), ("mail", "mail")):
             try:
                 if getattr(getattr(self.j, attr), "demo", False):

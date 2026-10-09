@@ -124,7 +124,9 @@ class Tracker:
 
     @property
     def demo(self) -> bool:
-        return getattr(self.fsm, "demo", False)
+        """Sample positions from the demo FSM (shown at any hour). Never with sample data off: an unconnected FSM serves no
+        positions, and real vans always follow the out-of-hours privacy rule."""
+        return bool(getattr(self.fsm, "demo", False)) and bool(getattr(self.settings, "sample_data", True))
 
     @staticmethod
     def in_working_hours(now: datetime | None = None) -> bool:
@@ -292,7 +294,7 @@ class Tracker:
         owner's setting allows it for the engineer, and then the look-up is logged under the tool name ``fleet_diagnostics``."""
         now = now or datetime.now()
         if self.ram is None or getattr(self.ram, "demo", True):
-            return {"connected": False, "vans": [], "note": "RAM Tracking isn't connected (sample data only), so there is "
+            return {"connected": False, "vans": [], "note": "RAM Tracking isn't connected, so there is "
                                                             "nothing to check against the portal."}
         out_of_hours = not self.in_working_hours(now) and not self.demo
         mode, on_call = "working_hours", []

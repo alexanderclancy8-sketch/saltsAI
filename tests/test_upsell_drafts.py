@@ -581,7 +581,7 @@ async def test_the_tool_never_answers_from_sample_data(settings):
     j = Jarvis(settings, client=FakeClient(), http=httpx.AsyncClient(transport=httpx.MockTransport(
         lambda r: pytest.fail(f"no request may be made: {r.url}"))))
     text = await dispatch(j, TOOLS_BY_NAME["upsell_opportunities"], TOOLS_BY_NAME["upsell_opportunities"].model())
-    assert "can't see any real upsell data" in text and "sample" in text and "Kestrel" not in text
+    assert "can't see any upsell opportunities" in text and "isn't connected" in text and "Kestrel" not in text
     await j.http.aclose()
 
 

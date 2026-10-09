@@ -1,4 +1,5 @@
-"""Accounting data sources: Sage Accounting (cloud API), CSV exports (e.g. Sage 50), or demo data."""
+"""Accounting data sources: Sage Accounting (cloud API), CSV exports (e.g. Sage 50), or "not connected" (NoFinance) -
+demo data (DemoFinance) only with sample data switched on."""
 
 from __future__ import annotations
 
@@ -355,10 +356,39 @@ class DemoFinance:
         return "demo finance"
 
 
+class NoFinance:
+    """The accounts when neither Sage nor CSV exports are connected and sample data is off: no invoices, no balances.
+    ``demo`` stays True (not a real ledger); a read inside a tool call stops the tool with a plain "not connected" answer."""
+
+    name = "not connected"
+    demo = True
+    sample = False
+
+    @staticmethod
+    def _none() -> None:
+        demo_guard.touch(demo_guard.ACCOUNTS, sample=False)
+
+    async def invoices(self, kind: str, outstanding_only: bool = True, since: date | None = None) -> list[Invoice]:
+        self._none()
+        return []
+
+    async def bank_balances(self) -> list[BankAccount]:
+        self._none()
+        return []
+
+    async def profit_and_loss(self, date_from: date, date_to: date) -> dict[str, Any] | None:
+        self._none()
+        return None
+
+    async def check(self) -> str:
+        return "accounts not connected"
+
+
 def build_finance(settings: Settings, http: httpx.AsyncClient, db: Database):
     provider = settings.effective_finance
     if provider == "sage":
         return SageFinance(settings, http, db)
     if provider == "csv":
         return CsvFinance(settings.finance_csv_dir)
-    return DemoFinance()
+    # Nothing connected: believable sample accounts only when sample data is switched on (a bare local run, the tests).
+    return DemoFinance() if getattr(settings, "sample_data", True) else NoFinance()

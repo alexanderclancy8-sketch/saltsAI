@@ -161,6 +161,12 @@ class Accreditations:
         self._clock = time.monotonic
 
     def load(self) -> dict[str, Any]:
+        if not self.path.exists() and not getattr(self.s, "sample_data", True):
+            # Sample data off: no register yet means no dates - never the example file's placeholder vans and schemes.
+            example = yaml.safe_load(EXAMPLE_FILE.read_text(encoding="utf-8")) or {}
+            data = {k: [] if isinstance(v, list) else v for k, v in example.items()}
+            data["_source"] = "not set up yet - tell Jarvis a date, or add data/accreditations.yaml"
+            return data
         src = self.path if self.path.exists() else EXAMPLE_FILE
         data = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
         for section in SECTIONS:  # an empty `vehicles:` line in a hand-edited file loads as None

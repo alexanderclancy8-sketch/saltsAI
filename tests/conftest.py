@@ -1,6 +1,13 @@
+import os
+
 import pytest
 
-from jarvis.config import Settings
+# Sample data ON for the whole suite (JARVIS_SAMPLE_DATA): the demo FSM, mailbox, accounts, stock, staff register, socials and
+# vans are every test's stand-ins. Production runs with it off (see config.default_sample_data); tests of that mode pass
+# sample_data=False to Settings themselves. Set before any Settings is built, and inherited by live-server subprocesses.
+os.environ["JARVIS_SAMPLE_DATA"] = "1"
+
+from jarvis.config import Settings  # noqa: E402
 
 
 @pytest.fixture

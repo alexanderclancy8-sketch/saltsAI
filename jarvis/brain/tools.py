@@ -90,15 +90,22 @@ async def _dispatch(j, tool: Tool, args: BaseModel) -> Any:
     # A read tool whose answer was built on sample data (accounts, socials, stock, staff register or vehicles that are
     # not connected yet) never hands it to the model: the result is replaced by "not connected - here is what to
     # connect" (jarvis/demo_guard.py). The console's own pop-ups don't come through here and keep their demo labels.
+    # With sample data OFF (production) the same mechanism carries "not connected": a source that isn't connected serves
+    # nothing and the tool returns a plain not_connected result (what to connect, in Settings -> Connections) instead.
     token = demo_guard.begin()
     try:
         result = await tool.handler(j, args)
     except demo_guard.DemoDataBlocked:
         result = None
     finally:
-        demo_sources = demo_guard.end(token)
+        demo_sources, sampled = demo_guard.finish(token)
     if demo_sources:
-        return demo_guard.refusal(tool.name, demo_sources, j.settings.owner_name or "the owner")
+        return demo_guard.refusal(tool.name, demo_sources, j.settings.owner_name or "the owner", sample=sampled)
+    if not demo_guard.sample_on(j) and demo_guard.says_demo(result):
+        # Sample data off, yet the result still flags "demo" (a check of `fsm.demo` / `mail.demo` that answered before
+        # reading anything): it can only mean "not connected", so the model gets exactly that - never "demo" wording.
+        return demo_guard.not_connected_result(tool.name, demo_guard.keys_for_tool(j, tool.name),
+                                               j.settings.owner_name or "the owner")
     # Customer / site notes (services/entity_memory.py): a live console turn (owner or manager) gets the notes of the customers and
     # sites this result names by FSM id, fenced and labelled as notes. Never a team caller, a scheduled turn or a Teams turn.
     memory = getattr(j, "entity_memory", None)
@@ -1037,7 +1044,7 @@ class OfficeDocumentIn(BaseModel):
     content: str = Field(description="The full content as markdown, using only real data. For Excel put each "
                                      "sheet under a '## Sheet name' heading as a markdown table (first row = column "
                                      "headings); for PDF and Word use headings, paragraphs, lists and tables. Label "
-                                     "any placeholder or demo figures clearly as DEMO DATA / TO CONFIRM.")
+                                     "any placeholder or unconfirmed figures clearly as TO CONFIRM.")
     kind: Literal["report", "schedule", "tender", "stock_export", "finance_export"] = "report"
 
 
@@ -1562,6 +1569,8 @@ async def staff_productivity(j, a: ProductivityIn):
 
 
 async def staff_roles(j, a: PersonIn):
+    if not demo_guard.sample_on(j) and not j.register.path.exists():
+        demo_guard.touch(demo_guard.STAFF, sample=False)  # no register yet: "not set up", not "nobody works here"
     if a.name:
         return j.register.find(a.name) or f"{a.name} isn't in the staff register yet."
     return {"source": j.register.load()["_source"], "staff": j.register.people()}
@@ -2263,8 +2272,8 @@ async def upsell_opportunities(j, a: NoInput):
     from ..services.upsell_drafts import spoken_answer
 
     items, why = await j.upsell_drafts.list_open()
-    if why == "demo":  # sample data is never an answer (demo_guard): without a real FSM there is nothing to look at
-        return "I can't see any real upsell data yet: Salts FSM isn't connected to me, so I won't guess from sample figures."
+    if why == "demo":  # without a real FSM there is nothing to look at (sample data is never an answer: demo_guard)
+        return "I can't see any upsell opportunities yet: Salts FSM isn't connected to me, so there is nothing real to look at."
     if why == "missing":
         return "The FSM doesn't have the upsell opportunities feature yet, so I can't see any."
     if why:
@@ -2691,8 +2700,8 @@ TOOLS: list[Tool] = [
     Tool("draft_office_document", "Create a PDF, Word (.docx) or Excel (.xlsx) deliverable - report, schedule, tender "
                                   "document, stock or finance export - from real data you have gathered. PDF and Word "
                                   "are branded with Salts navy, the company name and address and (once supplied) the "
-                                  "logo; if the result says no logo is set, tell the owner. Anything from demo data "
-                                  "must be labelled DEMO DATA in the content. Saved as a "
+                                  "logo; if the result says no logo is set, tell the owner. Anything unconfirmed "
+                                  "must be labelled TO CONFIRM in the content. Saved as a "
                                   "draft on the display with a download link for the owner to review; never sent by "
                                   "this tool - sending goes through email_send, which needs his approval.",
          OfficeDocumentIn, draft_office_document, "Building the document"),
@@ -2780,7 +2789,7 @@ TOOLS: list[Tool] = [
                         "metrics (count, sum, avg, min, max, median, distinct, pct_of_total) and optionally a chart. It returns the "
                         "groups, the overall totals, the period and filters used, and says plainly if it could only scan part of the "
                         "data (truncated) - always pass that on. Same privacy as fsm_data: finance, staff pay/HR and customer contact "
-                        "data are owner-only; sample data returns nothing. Never returns raw rows beyond a tiny optional sample. Read-only.",
+                        "data are owner-only; a source that isn't connected returns nothing. Never returns raw rows beyond a tiny optional sample. Read-only.",
          FsmAnalyseIn, fsm_analyse, "Crunching the numbers"),
     Tool("show_chart", "Draw a chart on the owner's display from numbers you ALREADY have (from fsm_analyse, calculate or other tools): "
                        "bar, line, pie, donut or stacked_bar, with a title, axis labels and series of {label, value}. Limits: 24 bars, "
@@ -2896,7 +2905,7 @@ TOOLS: list[Tool] = [
          AgentRunsIn, agent_runs, "Checking on the engineering agents"),
     Tool("doctor", "Read-only self-diagnostics: what in Jarvis is quietly broken. One line per item with a status "
                    "(ok / amber / red) and a suggested next step, shown on the display: plugins switched on but "
-                   "inert, data sources still on demo data, which keys are set (names only, never values), "
+                   "inert, data sources that aren't connected, which keys are set (names only, never values), "
                    "automations (last run, endless NOTHING_TO_REPORT, running too often out of hours), stalled or "
                    "failed engineering-agent runs, requests untouched for 24h, pull requests red or conflicted, "
                    "failing routine tests and issues needing a human. A check that can't run says so and the rest "
@@ -2984,8 +2993,8 @@ TOOLS: list[Tool] = [
                            "2 November\". Adds the van if it isn't in the register, otherwise changes only the fields "
                            "given. These feed the Alerts reminders. FALLBACK ONLY: when the Salts FSM supplies vehicle "
                            "dates (Company Assets) accreditations_status says so and this is refused - the FSM is the source. "
-                           "Otherwise check accreditations_status first: if its source says example/demo, those vans are "
-                           "placeholders, not real.",
+                           "Otherwise check accreditations_status first: if it says the register is an example or not set up, "
+                           "there are no real vans or dates yet.",
          VehicleUpdateIn, vehicle_update, "Updating the vehicle register",
          precheck=_fsm_manages("vehicles"),
          approval=True, describe=lambda a: f"Record van {a.registration.strip().upper()}: " + (

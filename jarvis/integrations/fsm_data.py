@@ -412,7 +412,7 @@ class FsmData:
     def _gate(self, doc: bool = False) -> None:
         self._sync_base()
         if self.demo:
-            raise FsmDataError("demo", "Salts FSM isn't connected (it is showing sample data), so there is nothing real to read. "
+            raise FsmDataError("demo", "Salts FSM isn't connected yet, so there is nothing real to read. "
                                        "Set FSM_BASE_URL and the API key under Connections.")
         now = self._clock()
         if now < self._rate_until:

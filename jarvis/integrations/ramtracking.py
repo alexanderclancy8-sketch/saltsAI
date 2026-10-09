@@ -557,3 +557,30 @@ class DemoRamTracking:
 
     async def check(self) -> str:
         return "demo RAM Tracking"
+
+
+class NoRamTracking:
+    """RAM Tracking when it isn't connected and sample data is off: no vans, no positions, no journeys. ``demo`` stays True (it
+    is not the real fleet); a read inside a tool call stops the tool with a plain "not connected" answer."""
+
+    demo = True
+    sample = False
+
+    @staticmethod
+    def _none() -> None:
+        demo_guard.touch(demo_guard.VEHICLES, sample=False)
+
+    async def vehicles(self) -> list[dict[str, Any]]:
+        self._none()
+        return []
+
+    async def positions(self) -> list[dict[str, Any]]:
+        self._none()
+        return []
+
+    async def journeys(self, vehicle_id: str, day: date) -> list[dict[str, Any]]:
+        self._none()
+        return []
+
+    async def check(self) -> str:
+        return "RAM Tracking not connected"

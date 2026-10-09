@@ -20,6 +20,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from .. import demo_guard
 from . import coverage as cov_mod
 
 # The pop-ups a reply may point at: the rail sections of the console (hud.js POPS, minus Settings/Connections/Demo).
@@ -232,12 +233,14 @@ class TurnTrace:
             return {}
         self.active = False
         sources = []
+        sample = demo_guard.sample_on(self.j)
         for s in self.sources:
             try:
                 demo = _DEMO[s](self.j) if s in _DEMO else False
             except Exception:  # noqa: BLE001
                 demo = False
-            sources.append(f"{s} (demo data)" if demo else s)
+            # sample data on: the stand-in showed sample data; off (production): it is simply not connected
+            sources.append(f"{s} ({'demo data' if sample else 'not connected'})" if demo else s)
         # Something waiting for the owner's click beats everything else; then what the model asked for; then the
         # pop-up of the tool used most (the last one on a tie, i.e. what he looked at most recently).
         if "approvals" in self.allowed and self._queued_something():
@@ -265,7 +268,7 @@ class TurnTrace:
             facts += cov_mod.web_facts(self.web)
         try:
             cov = cov_mod.summarise(facts, self.user_text, demo=cov_mod.demo_map(self.j), team=self.team,
-                                    notes=self.entity_notes, reply=reply)
+                                    notes=self.entity_notes, reply=reply, sample=sample)
         except Exception:  # noqa: BLE001 - describing a turn must never break it
             cov = None
         if cov:

@@ -294,10 +294,10 @@
     const nfaults = Number(d.faults?.open) || 0;
     setRail("faults", nfaults, nfaults ? "warn" : "", nfaults ? `${plural(nfaults, "open fault", "open faults")} in Jarvis` : "no open faults");
 
-    const staff = d.staff && !d.staff.error ? d.staff : null;
+    const staff = d.staff && !d.staff.error && !ncMsg(d.staff) ? d.staff : null;
     const late = staff ? staff.late_starts.length : 0;
     const overdue = Array.isArray(d.overdue_jobs) ? d.overdue_jobs.length : 0;
-    setRail("ops", late + overdue, late + overdue ? "warn" : "", staff ? `${plural(late, "late start", "late starts")}, ${overdue} overdue` : "unavailable");
+    setRail("ops", late + overdue, late + overdue ? "warn" : "", staff ? `${plural(late, "late start", "late starts")}, ${overdue} overdue` : ncMsg(d.staff) ? "Salts FSM is not connected" : "unavailable");
     if (overdue) add(70, "warn", `${plural(overdue, "job", "jobs")} overdue`, "ops");
     if (late) add(60, "warn", `${plural(late, "late start", "late starts")} today`, "ops");
 
@@ -308,7 +308,7 @@
       tracked ? `${plural(vans, "vehicle", "vehicles")} reporting` : fleet.failing ? `vehicle tracking is not connected: ${fleet.why}` : "vehicle tracking is not connected");
     if (fleet.failing) add(55, "bad", "RAM Tracking isn't connected", "fleet");
 
-    const f = d.finance && !d.finance.error ? d.finance : null;
+    const f = d.finance && !d.finance.error && !ncMsg(d.finance) ? d.finance : null;
     const watch = d.customer_watch || [];
     const atRisk = watch.filter((c) => c.status === "at risk").length;
     setRail("finance", watch.length, watch.length ? "warn" : "", `${plural(watch.length, "customer", "customers")} to watch`);
@@ -1684,8 +1684,24 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // The top-bar pill: how many sources are still samples. Opens the Demo data pop-up.
+  // With sample data off (production: S.status.sample_data === false) nothing is a sample: the pill counts the sources that are
+  // not connected yet, and the same pop-up lists them (titled "Not connected") with what to connect.
   const isDemo = (v) => String(v).includes("DEMO");
+  function sampleOff() { return S.status?.sample_data === false; }
+  // A pop-up's tidy empty state when its source isn't connected (sample data off): the server's own sentence, never sample rows.
+  function ncMsg(x) { return (x && typeof x === "object" && !Array.isArray(x) && typeof x.not_connected === "string") ? x.not_connected : ""; }
+  function ncHtml(msg, tag = "li") {
+    return `<${tag} class="empty nc-empty">${esc(msg)}${TEAM ? "" : ` <button class="btn small" type="button" data-pop="connections">Open Connections</button>`}</${tag}>`;
+  }
   function renderPills(conns = {}) {
+    if (sampleOff()) {
+      const off = S.status?.not_connected_sources || [];
+      $("#pop-demo").dataset.title = "Not connected";
+      $("#pills").innerHTML = off.length
+        ? `<button type="button" class="pill demo" data-pop="demo" title="${esc(off.map((s) => s.name).join(", "))}">Not connected: ${off.length}</button>`
+        : `<button type="button" class="pill live" data-pop="demo">All systems live</button>`;
+      return;
+    }
     const demo = Object.entries(conns).filter(([, v]) => isDemo(v)).map(([k]) => k);
     $("#pills").innerHTML = demo.length
       ? `<button type="button" class="pill demo" data-pop="demo" title="${esc(demo.join(", "))}">Demo data: ${demo.length} source${demo.length > 1 ? "s" : ""}</button>`
@@ -1696,6 +1712,15 @@ function send(text, mode = "typed", opts = {}) {
     const conns = S.status?.connections;
     $("#demo-intro").hidden = !conns;
     if (!conns) { $("#demo-list").innerHTML = `<p class="empty">Loading…</p>`; return; }
+    if (sampleOff()) {
+      const off = S.status?.not_connected_sources || [];
+      $("#demo-heading").textContent = "Not connected yet";
+      $("#demo-intro").textContent = "Jarvis says so instead of answering from these. Connect each one in Settings → Connections.";
+      $("#demo-list").innerHTML = off.length ? off.map((s) => `<div class="demo-row"><b>${esc(s.name)}</b><span>${esc(s.how)}</span></div>`).join("")
+        : `<p class="empty">Everything is connected.</p>`;
+      $("#demo-intro").hidden = !off.length;
+      return;
+    }
     const rows = Object.entries(conns).filter(([, v]) => isDemo(v));
     $("#demo-list").innerHTML = rows.length ? rows.map(([k, v]) => {
       const how = (String(v).match(/DEMO[^-:)]*[-:]\s*(.+)$/) || [])[1] || "";
@@ -1710,6 +1735,7 @@ function send(text, mode = "typed", opts = {}) {
     // With a second inbox shown, say which one this is; with only the one, the heading stays as it always was.
     $("#inbox-title").textContent = svc ? "Unread in your inbox" : "Unread messages";
     $("#inbox-count").textContent = Array.isArray(list) ? `${list.length} unread${inbox.demo ? " · demo" : ""}` : "";
+    if (ncMsg(list)) { $("#inbox").innerHTML = ncHtml(ncMsg(list)); renderServiceInbox(svc); return; }
     if (!Array.isArray(list)) { $("#inbox").innerHTML = `<li class="empty">${esc(list?.error || "Unavailable")}</li>`; renderServiceInbox(svc); return; }
     $("#inbox").innerHTML = list.length ? list.map((m) => `<li class="${m.importance === "high" ? "hot" : ""}">${esc(m.subject)}<span class="sub">${esc(m.from_name || m.from_email)} · ${time(m.received)}</span></li>`).join("")
       : `<li class="empty">Inbox clear.</li>`;
@@ -1785,6 +1811,7 @@ function send(text, mode = "typed", opts = {}) {
   function kpi(label, value, cls = "") { return `<div class="kpi ${cls}"><div class="v">${value}</div><div class="l">${esc(label)}</div></div>`; }
 
   function renderOps(staff, overdue) {
+    if (ncMsg(staff)) { $("#ops-date").textContent = ""; $("#ops-kpis").innerHTML = ""; $("#ops").innerHTML = ncHtml(ncMsg(staff)); return; }
     if (!staff || staff.error) { $("#ops").innerHTML = `<li class="empty">${esc(staff?.error || "FSM unavailable")}</li>`; return; }
     $("#ops-date").textContent = staff.demo ? "demo" : "";
     const onJob = staff.engineers.filter((e) => e.status === "on job").length;
@@ -1795,6 +1822,7 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   function renderFinance(f) {
+    if (ncMsg(f)) { $("#finance-source").textContent = ""; $("#finance").innerHTML = ncHtml(ncMsg(f), "div"); return; }
     if (!f || f.error) { $("#finance").innerHTML = `<div class="empty">${esc(f?.error || "Accounts unavailable")}</div>`; return; }
     $("#finance-source").textContent = f.demo ? "demo" : f.source;
     $("#finance").innerHTML = kpi("Cash at bank", money(f.cash_at_bank)) + kpi("Owed to us", money(f.debtors_total)) +
@@ -1805,6 +1833,7 @@ function send(text, mode = "typed", opts = {}) {
 
   function renderPresence(p) {
     if (!p) return;
+    if (ncMsg(p)) { $("#presence").innerHTML = ncHtml(ncMsg(p)); return; }
     const names = { facebook: "Facebook", instagram: "Instagram", linkedin: "LinkedIn", tiktok: "TikTok", google_reviews: "Google reviews" };
     const rows = Object.entries(p.platforms || {}).map(([k, v]) => {
       const m = v.followers || v.reviews; const r = v.rating;
@@ -1815,6 +1844,8 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   function renderCustomers(list = []) {
+    const nc = S.status?.not_connected?.customer_watch;
+    if (nc) { $("#customers-count").textContent = ""; $("#customers").innerHTML = ncHtml(nc); return; }
     $("#customers-count").textContent = list.length ? `${list.length} to watch` : "all healthy";
     $("#customers").innerHTML = list.length ? list.map((c) => `<li class="${c.status === "at risk" ? "bad" : "warn"}">${esc(c.customer)} · <b>${c.score}</b>
       <span class="sub">${esc(c.reasons.slice(0, 2).join("; "))}${c.renewal_in_days !== null && c.renewal_in_days <= 90 ? ` · renewal ${c.renewal_in_days < 0 ? "passed" : "in " + c.renewal_in_days + " days"}` : ""}</span></li>`).join("")
@@ -2180,9 +2211,10 @@ function send(text, mode = "typed", opts = {}) {
     }
     const conn = S.status?.connections?.["Vehicle tracking"] || "";
     const failing = /^NOT CONNECTED/.test(conn) || !!S.tracking?.ram_error;
-    const live = !!conn && !isDemo(conn) && !failing;
+    const unset = /^not connected/.test(conn);   // sample data off: not set up yet (lower case; "NOT CONNECTED" = set up but failing)
+    const live = !!conn && !isDemo(conn) && !failing && !unset;
     const detail = (String(conn).match(/^NOT CONNECTED\s*-\s*(?:RAM Tracking is failing:\s*)?(.+)$/) || [])[1] || S.tracking?.ram_error || "";
-    const missing = (String(conn).match(/DEMO[^-:)]*[-:]\s*(.+)$/) || [])[1] || "";
+    const missing = (String(conn).match(/(?:DEMO[^-:)]*|^not connected\s*)[-:]\s*(.+)$/) || [])[1] || "";
     return { live, failing, why: failing ? detail : missing };
   }
   function renderFleetStatus() {

@@ -18,7 +18,7 @@ check runs - never a hard-coded number:
   claim it is missing; if it doesn't, the reply must say it isn't available (never invent a policy).
 
 ``needs: [fsm, sage, ram, mail, stock]`` = the check needs real data from that source; while it is sample (demo) data the check
-is ``skipped - demo data``. ``only_when_not_connected: [...]`` = a gap check that only means something while that source is
+is ``skipped - demo data`` (with sample data off, JARVIS_SAMPLE_DATA, it is ``skipped - not connected``). ``only_when_not_connected: [...]`` = a gap check that only means something while that source is
 NOT connected. ``as: owner | manager | team`` = who is asking (default owner). ``sensitive: true`` (default for the money and
 people areas) = the expected/given detail is the owner's alone.
 
@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from .. import access
+from .. import access, demo_guard
 from ..brain import checkmode
 from ..brain import coverage as cov
 from ..db import now_iso
@@ -355,6 +355,8 @@ def _items(result: Any, spec: dict[str, Any]) -> list[Any] | None:
 def unusable(result: Any) -> str:
     """Why a ground-truth result can't be used ('' = usable): sample data withheld, the FSM on demo, an error."""
     if isinstance(result, dict):
+        if result.get("connected") is False and isinstance(result.get("not_connected"), list):
+            return "not connected"   # sample data off: demo_guard.not_connected_result
         if result.get("demo_data_withheld"):
             return "demo data"
         if result.get("demo") is True:
@@ -548,6 +550,11 @@ class QuestionChecks:
         return {r["check_id"]: r for r in self.j.db.query("SELECT * FROM question_check_flags")}
 
     # -- demo / skip rules
+    def _not_real(self) -> str:
+        """The skip reason for a source that isn't connected: "demo data" while it shows sample data, "not connected" with
+        sample data off (production)."""
+        return "demo data" if demo_guard.sample_on(self.j) else "not connected"
+
     def _demo(self) -> dict[str, bool]:
         j = self.j
 
@@ -565,7 +572,7 @@ class QuestionChecks:
         if flag:
             return f"marked {flag['state']} by the owner"
         if any(demo.get(n) for n in check.needs):
-            return "demo data"
+            return self._not_real()
         if check.only_when_not_connected and not all(demo.get(n) for n in check.only_when_not_connected):
             return "only checked while " + ", ".join(check.only_when_not_connected) + " is not connected"
         return ""
@@ -607,7 +614,8 @@ class QuestionChecks:
                 access.current_caller.reset(token)
         except Exception as e:  # noqa: BLE001
             return None, f"ground truth unavailable ({type(e).__name__})"
-        return result, unusable(result)
+        why = unusable(result)
+        return result, (self._not_real() if why == "demo data" else why)
 
     def policy_exists(self, topic: str) -> bool:
         """True when the knowledge base holds a document or section about this policy (all its words, and 'policy')."""

@@ -41,10 +41,13 @@ def working_days(start: date, end: date) -> int:
 
 
 class StaffRegister:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, sample: bool = True):
         self.path = path
+        self.sample = sample  # sample data on: the example people stand in until the real register exists; off: nobody
 
     def load(self) -> dict[str, Any]:
+        if not self.path.exists() and not self.sample:
+            return {"defaults": {}, "staff": [], "_source": "not set up"}
         src = self.path if self.path.exists() else EXAMPLE_FILE
         data = yaml.safe_load(src.read_text()) if src.exists() else {}
         data = data or {}
@@ -57,8 +60,8 @@ class StaffRegister:
 
     @property
     def demo(self) -> bool:
-        """True while there is no real register yet and the example people are what the console shows."""
-        return not self.path.exists()
+        """True while there is no real register yet and the example people are what the console shows (sample data on)."""
+        return self.sample and not self.path.exists()
 
     def save(self, data: dict[str, Any]) -> None:
         data = {k: v for k, v in data.items() if not k.startswith("_")}

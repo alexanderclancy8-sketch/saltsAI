@@ -439,6 +439,41 @@ VAN_POLICY = {
 }
 
 
+# Sample data OFF (production, JARVIS_SAMPLE_DATA): nothing is ever sample data, so the persona's sample-data wording is swapped
+# for plain "not connected" wording (applied to the formatted text; with sample data on the prompt is exactly as before).
+NOT_CONNECTED_SECTION = """# Systems that aren't connected
+Some systems may not be connected yet; the connected-systems list below says "not connected" for each one. Nothing from them
+exists for you: there are no figures, names or dates to use, and an empty list from them never means "none".
+- A tool that needs one returns `not_connected` with what to connect and where (Settings → Connections). Say so plainly in
+  one sentence ("I can't give you the cash position yet, {salutation} - the accounts aren't connected. Connect Sage in
+  Settings → Connections and I can."), then offer what you can do from what is connected.
+- Say it once. Don't repeat that something isn't connected in every reply, and don't bring it up unless the question
+  needs that system.
+"""
+
+SAMPLE_OFF_SWAPS = (
+    ("If a system is still on sample data because it isn't connected yet, don't use it and don't present it\n  as real - see "
+     "\"Sample data is never an answer\" below.",
+     "If a system isn't connected yet, say so rather than answer from it - see \"Systems that aren't connected\"\n  below."),
+    (" and say which\n  figures are demo or sample data.", "."),
+    ("; label any demo figures DEMO DATA)", ")"),
+    ("If `accreditations_status` says its source is the example/demo data, those vans and dates are\nplaceholders - say so, "
+     "never present them as real.", "If `accreditations_status` says the register is not set up yet, there are no\ndates - "
+     "say so, never guess them."),
+)
+
+
+def sample_off_persona(persona: str, salutation: str) -> str:
+    """The persona with every sample-data rule replaced by the "not connected" one (sample data off)."""
+    start = persona.find("# Sample data is never an answer")
+    end = persona.find("\n# ", start + 1)
+    if start >= 0 and end > start:
+        persona = persona[:start] + NOT_CONNECTED_SECTION.format(salutation=salutation) + persona[end + 1:]
+    for old, new in SAMPLE_OFF_SWAPS:
+        persona = persona.replace(old, new)
+    return persona
+
+
 def van_policy(settings) -> str:
     """The tracking wording for the owner's out-of-hours setting; anything unexpected reads as 'off'."""
     mode = str(getattr(settings, "van_locations_out_of_hours", "off") or "off").strip().lower()
@@ -455,6 +490,8 @@ def build_system(settings, kb, db, connections: dict[str, str], staff_summary: s
     persona = PERSONA.format(owner=settings.owner_name, company=settings.company_name,
                              salutation=address, issue_tag=settings.issue_email_tag, core_docs=core)
     persona += (TALK_FORMAL if is_formal(settings) else TALK_NATURAL).format(owner=settings.owner_name, address=address)
+    if not getattr(settings, "sample_data", True):
+        persona = sample_off_persona(persona, address)
     memories = "\n".join(f"- (#{m['id']}) {m['fact']}" for m in db.memories()) or "- nothing yet"
     open_requests = history.open_requests_text(db, settings.timezone)
     recent = history.recent_context(db, owner=settings.owner_name, tz=settings.timezone, before_id=history_before_id)
@@ -519,7 +556,7 @@ overdue, amount outstanding). Only for the customer being discussed, one custome
   the office console.
 - Payment arrangements, disputes, write-offs, discounts or anything that needs a decision: suggest {name} passes it to the
   owner. You can't agree any of that and nothing you say commits the company.
-- If it says the data is sample data, or that finance is switched off in the FSM, say so plainly and give no figures.
+- If it says Salts FSM isn't connected, or that finance is switched off in the FSM, say so plainly and give no figures.
 """
 
 ENGINEER_BALANCE = """
@@ -576,6 +613,9 @@ def build_team_system(settings, kb, caller, rules: str = "") -> list[dict[str, A
     office = bool(getattr(caller, "is_office", False))
     role = "office staff" if office else "engineer"
     text = TEAM_PERSONA.format(company=settings.company_name, name=name, role=role)
+    if not getattr(settings, "sample_data", True):   # production: nothing is sample data, a system is just not connected
+        text = text.replace('If a source still shows sample data (the tool says "demo"), say it is sample data and don\'t treat '
+                            'it as real.', "If a tool says a system isn't connected, say so plainly in one sentence.")
     text += (OFFICE_BALANCE if office else ENGINEER_BALANCE).format(name=name)
     text += (OFFICE_SCHEMATICS if office else ENGINEER_SCHEMATICS).format(name=name)
     text += TEAM_RULES_NOTE.format(name=name)
