@@ -112,7 +112,7 @@ class Briefings:
         text = await daily_rhythm.write_short(
             self.client, self.s,
             system=BRIEFING_SYSTEM.format(company=self.s.company_name, owner=self.s.owner_name,
-                                          budget=daily_rhythm.WORD_BUDGET_RULE,
+                                          budget=daily_rhythm.BUDGET_RULES,
                                           sources=SAMPLE_RULE if sample else NOT_CONNECTED_RULE),
             prompt=f"Today is {datetime.now():%A %d %B %Y}. Current data:\n{json.dumps(data, default=str)[:60000]}",
             effort="medium")

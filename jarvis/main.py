@@ -38,6 +38,7 @@ from .services import plan_drawings
 from .services.plan_drawings import PlanSourceError, StaleDrawing
 from .services.actions import ActionRefused
 from .services.memory_book import MemoryBook, MemoryEditError
+from .services.nothing_new import visible_conversation
 from .services import entity_memory as entity_mem
 from .services.entity_memory import EntityNoteError
 from .services.engineer_homes import DEFAULT_RADIUS_M, MAX_RADIUS_M, MIN_RADIUS_M, HomeError
@@ -540,7 +541,11 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         from .brain.coverage import loads
 
         # each reply's coverage line comes back as the stored summary (labels and counts only - brain/coverage.py)
-        return [{**r, "coverage": loads(r.get("coverage"))} for r in J(request).db.recent_transcript(40)]
+        # Background turns (an automation run, the nightly self-reflection) and their replies are not part of the conversation
+        # the owner reads: a "NOTHING_TO_REPORT" reply never shows up when the console opens. A finding they reported is its
+        # own message and stays (services/nothing_new.py).
+        rows = visible_conversation(J(request).db.recent_transcript(200))[-40:]
+        return [{**r, "coverage": loads(r.get("coverage"))} for r in rows]
 
     # ------------------------------------------------------------------ question checks (the accuracy scorecard)
     # Read: owner or manager (finance / people detail is the owner's alone, inside scorecard()). Run / mark / promote: the principal
@@ -619,7 +624,10 @@ def create_app(settings: Settings | None = None, jarvis: Jarvis | None = None) -
         data["inbox"] = {**data.get("inbox", {}), "service": await _safe(j.service_inbox.unread(), "service inbox")}
         data.update(connections=j.connections(), voice=j.voice.client_config(), presence=presence,
                     approvals=approval_inbox.pending_for_display(j.db),
-                    activity=j.activity.summary(owner=caller.role == access.OWNER),
+                    # the "Scheduled checks" row: only checks that found something or failed, unless the owner asked to
+                    # hear about the ones that found nothing too (Settings > Jarvis speaking up)
+                    activity=j.activity.summary(owner=caller.role == access.OWNER,
+                                                quiet=bool(getattr(settings, "tell_when_nothing_new", False))),
                     faults={"open": j.faults.open_count()},   # the Faults rail count (owner / manager; never in the team status)
                     customer_watch=[c for c in customers.get("customers", []) if c["status"] != "healthy"][:6],
                     owner=settings.owner_name, company=settings.company_name, address=address_for(settings),

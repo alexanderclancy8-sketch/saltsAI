@@ -16,13 +16,15 @@ from __future__ import annotations
 import logging
 
 from .. import access
+from ..events import quiet_turn
+from .nothing_new import REFLECTION_PROMPT_TAG, is_nothing_new
 
 log = logging.getLogger(__name__)
 LAST_ID_KEY = "self_learning:last_transcript_id"
 BATCH_LIMIT = 400  # generous - a busy day's worth of turns, kept bounded so the prompt doesn't balloon
 PROMPT_CHAR_BUDGET = 120_000  # transcript text per reflection; anything beyond waits for the next one
 MAX_ROW_CHARS = 4_000  # one enormous turn (a pasted document) must not crowd out everything else
-SELF_PROMPT_TAG = "[Scheduled self-reflection"  # start of the prompt this service sends (and so of its transcript row)
+SELF_PROMPT_TAG = REFLECTION_PROMPT_TAG  # "[Scheduled self-reflection": start of the prompt this service sends (and of its transcript row)
 
 
 class SelfLearning:
@@ -85,10 +87,14 @@ class SelfLearning:
         )
         # The transcript it reads holds what a manager typed too, so the reflection runs with a manager's access, never the owner's: text
         # in a chat message can't make it read the owner-only FSM data (finance, pay, HR) or use an owner-only tool.
+        # It runs as a quiet (headless) turn: nothing of it - the prompt or "nothing durable stood out" - is ever typed into
+        # the open chat. What it remembers is in Memory; what it proposes waits for a person (rulebook, entity notes).
         who = access.current_caller.set(access.REFLECTION_CALLER)
+        quiet = quiet_turn.set(True)
         try:
             reply = await j.brain.ask(prompt, "typed")
         finally:
+            quiet_turn.reset(quiet)
             access.current_caller.reset(who)
         if newest_turn is not None:
             try:
@@ -106,7 +112,8 @@ class SelfLearning:
         else:
             cursor = j.db.query_one("SELECT MAX(id) AS latest FROM transcript")["latest"]
         j.db.set_kv(LAST_ID_KEY, str(cursor))
-        if j.settings.weekly_digest_enabled:  # a routine summary: stored for the weekly digest, never sent
+        if j.settings.weekly_digest_enabled and not is_nothing_new(reply):  # stored for the weekly digest, never sent; a
+            # reflection that found nothing durable is not even that (if there's nothing new, Jarvis says nothing)
             j.db.add_digest_item("self_learning_summary", "Self-reflection on recent conversations",
                                  (reply or "")[:500], status="reflected")
         return reply

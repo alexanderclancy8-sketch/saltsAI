@@ -6,6 +6,10 @@ them to the `digest_items` table, and once a week (WEEKLY_DIGEST_CRON, default M
 compiles everything stored into ONE message: Teams only (never email), also shown on the display, and kept in the
 `digests` table so it can be read again later. Stored items are marked as digested so nothing goes out twice.
 
+If there's nothing new, Jarvis says nothing: "clean" / "nothing new" notices (NOTHING_NEW_KINDS) are never listed, and a
+digest whose only items are minor ones (MINOR_KINDS: a reflection, a recovered test, an automation slowed down for finding
+nothing) is not sent - those are listed only in a digest that has real news in it.
+
 What is digested and what is sent immediately is decided by NOTIFICATION_ROUTES below:
 
 * a kind that is not in the map, or has no kind at all, is sent immediately ("when unsure, send immediately");
@@ -76,6 +80,12 @@ ALWAYS_IMMEDIATE = frozenset({
 
 LOW_SEVERITIES = ("low", "medium")
 
+# If there's nothing new, Jarvis says nothing - in the digest too (services/nothing_new.py):
+# * NOTHING_NEW_KINDS are "clean" / "nothing new" notices: never listed in a digest at all (older stored ones are skipped);
+# * MINOR_KINDS are listed, but only in a digest that has other news - a digest made up only of them is not sent.
+NOTHING_NEW_KINDS = frozenset({"security_review_clean", "self_improve_nothing"})
+MINOR_KINDS = frozenset({"routine_test_recovered", "self_learning_summary", "automation_slowed"})
+
 
 def parse_route_overrides(text: str) -> dict[str, str]:
     """'ci_passed=immediate, issue_triaged=digest' -> {...}. Malformed entries are ignored."""
@@ -125,6 +135,7 @@ SECTION_OF_KIND = {
     "fix_ci_passed": "checks", "fix_ci_failed": "checks", "self_improve_ci_passed": "checks",
     "self_improve_ci_failed": "checks", "fix_sent_to_claude": "checks", "self_improve_nothing": "checks",
     "self_learning_summary": "learning",
+    "automation_slowed": "slowed",
     "fix_needs_you": "decide", "fix_failed": "decide", "self_improve_failed": "decide",
     "security_review_failed": "decide",
 }
@@ -139,6 +150,7 @@ SECTION_TITLES = [
     ("security", "Security"),
     ("checks", "Checks and hand-offs"),
     ("learning", "Self-learning"),
+    ("slowed", "Automations slowed down (nothing new for a while)"),
     ("other", "Other"),
 ]
 
@@ -222,8 +234,16 @@ class WeeklyDigest:
             local = now
         pending = db.pending_digest_items()
         sections: dict[str, list[dict]] = defaultdict(list)
-        for it in pending:
-            sections[SECTION_OF_KIND.get(it["kind"], "other")].append(it)
+        slowed_seen: set[str] = set()
+        for it in reversed(pending):  # newest first, so one automation noted twice is listed once, with its latest note
+            if it["kind"] in NOTHING_NEW_KINDS:
+                continue  # "clean" / "nothing new": not news, never listed (still marked digested below)
+            if it["kind"] == "automation_slowed":
+                if it["ref"] in slowed_seen:
+                    continue
+                slowed_seen.add(it["ref"])
+            sections[SECTION_OF_KIND.get(it["kind"], "other")].insert(0, it)
+        news = [it for it in pending if it["kind"] not in NOTHING_NEW_KINDS and it["kind"] not in MINOR_KINDS]
         states = {p["item"]["id"]: p for p in self.pr_states(now)}
         open_prs = [p for p in states.values() if p["state"] == "open"]
         approvals = db.pending_actions()
@@ -266,7 +286,9 @@ class WeeklyDigest:
         if decide:
             blocks.insert(0, ("Needs your decision", _capped(decide)))
 
-        has_content = bool(pending or open_prs or approvals or open_issues or failing)
+        # Only real news makes a digest worth sending: one made up of nothing-new / minor items (a clean security review, a
+        # reflection, a recovered test, a slowed automation) is not sent, and the minor items wait for one that is.
+        has_content = bool(news or open_prs or approvals or open_issues or failing)
         head = f"Weekly digest - {local:%A %d %B %Y}"
         body = "\n\n".join(f"{title}\n" + "\n".join(lines) for title, lines in blocks)
         text = f"{head}\n\n{body}".strip() if has_content else ALL_CLEAR

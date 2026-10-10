@@ -32,6 +32,14 @@ MAX_SPOKEN_SECONDS = 60.0
 WORD_BUDGET_RULE = (f"LENGTH IS A HARD LIMIT: {TARGET_WORDS} words, never more than {MAX_WORDS}. It is read aloud and "
                     "must take under a minute, so pick the few things that matter most and leave the rest out.")
 
+# If there's nothing new, Jarvis says nothing - in the briefing and wrap-up too: an area with nothing in it is simply left
+# out (no "nothing new in the inbox, no overdue jobs, nothing due..." roll-call), and a day with nothing at all to say gets one
+# short line instead of a list of empties.
+QUIET_PARTS_RULE = ("Leave out any area that has nothing in it - never say 'nothing new', 'nothing to report', 'no change' or "
+                    "'no X today' about an empty area. If every area is empty, say in one short sentence that it is a quiet "
+                    "day and stop.")
+BUDGET_RULES = f"{WORD_BUDGET_RULE} {QUIET_PARTS_RULE}"
+
 _WORD = re.compile(r"\S+")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 

@@ -270,18 +270,22 @@ async def test_an_automation_is_just_as_quiet_when_proactive_is_off(settings):
     # complained about (a check that found nothing posting into the conversation every run), so a scheduled check is now
     # silent whether or not speaking up is on: nothing is typed into the chat, the NOTHING instruction is always sent,
     # a finding is posted as one message, and every run is in the activity log (tests/test_activity_log.py).
+    # Since "if there's nothing new, Jarvis says nothing": a short "All clear." is nothing new too, not a finding.
     j = Jarvis(settings, client=FakeClient([message([text_block("All clear.")]),
+                                            message([text_block("Job 42 at Kestrel Retail is now overdue.")]),
                                             message([text_block(f"{NOTHING}: all clear.")])]))
     q = j.bus.subscribe()
     created = j.automations.create("Check", "0 8 * * 1-5", "Check something.")
     await j.automations.run(created["id"])
     first = types(drain(q))
     assert not {"user_message", "thinking", "delta", "tool", "reply"} & set(first)  # never the turn itself
-    assert first.count("proactive") == 1  # "All clear." is a finding like any other: one message, once
+    assert "proactive" not in first  # "All clear." says nothing
     assert NOTHING in j.brain.messages[0]["content"][-1]["text"]
     await j.automations.run(created["id"])
+    assert types(drain(q)).count("proactive") == 1  # a real finding: one message, once
+    await j.automations.run(created["id"])
     assert "proactive" not in types(drain(q))  # the NOTHING reply posts nothing
-    assert j.activity.summary()["jobs"][0]["checks"] == 2
+    assert j.activity.summary()["jobs"][0]["checks"] == 3
     await j.http.aclose()
 
 

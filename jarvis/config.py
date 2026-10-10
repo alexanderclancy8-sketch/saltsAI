@@ -441,6 +441,10 @@ class Settings(BaseSettings):
     proactive_quiet_end: str = "07:30"
     proactive_max_per_hour: int = 6  # at most this many proactive messages an hour; 0 = no limit
     proactive_pr_watch_min: int = 15  # how often the pull request watch looks, in minutes
+    # If there's nothing new, Jarvis says nothing (services/nothing_new.py): a check that finds nothing is only a row in "What
+    # Jarvis did". True = also show the checks that found nothing on the console's "Scheduled checks" row, and leave a quiet
+    # line in Alerts when a scheduled security review is clean. Never brings back a Teams, push or spoken "nothing new".
+    tell_when_nothing_new: bool = False
 
     # --- Derived ------------------------------------------------------------
     @property

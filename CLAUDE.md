@@ -489,7 +489,7 @@ jobs with no report sent, ...). A suggestion row (`suggestions` table, new `kind
 - **Schedule (`scheduler.py`):** `fsm_suggestions` (interval `suggestions_fsm_interval_min`, 15) detects, keeps the drawer true and
   publishes; in working hours (`suggestions_fsm_hours_start`/`_end`, Mon-Fri, `TIMEZONE`) every run, outside them hourly and quiet - no NEW
   push off-hours (the next working-hours run does it), only resolutions. A first run pushes at most 20 new ones. It is a quiet `_check`
-  (one collapsed activity line, never a chat message or notification). `fsm_suggestion_requests` (every `suggestions_fsm_poll_s`, 60)
+  (a row in the activity log, never a chat message or notification; a run with nothing new leaves no line in the chat at all). `fsm_suggestion_requests` (every `suggestions_fsm_poll_s`, 60)
   is one cheap GET and, for each request, runs the kind's prepare handler and PATCHes `prepared` (with `approval_ref`) or `failed` (with
   a plain note, no stack trace or secret). The older `suggestions` sweep (3x a day) is untouched, except that it leaves rows with a kind
   alone (`fsm_suggestions.sync` keeps them true).
@@ -526,7 +526,7 @@ items. Everything is Jarvis -> FSM through `FSMClient.jarvis_call` (the existing
   contact_first_name, office_phone}` (no finance fields, no email addresses). `PATCH /api/jarvis/upsells/{id}/draft` with `{subject, body}`
   -> 200 `{ok: true}`; **409** = the item is no longer open or a person has edited the draft (Jarvis never retries that item); **422** = the
   text was rejected (it must still contain the opt-out line and the office phone number, plain text, length caps) - Jarvis leaves the template.
-- **Draft improver (scheduler job `upsell_drafts`, a quiet `_check`: one collapsed activity line per run, never chat or a notification):**
+- **Draft improver (scheduler job `upsell_drafts`, a quiet `_check`: a row in the activity log per run, never chat or a notification):**
   every `upsell_drafts_interval_min` (10) minutes in working hours (the suggestions' `suggestions_fsm_hours_*`, Mon-Fri, `TIMEZONE`), hourly
   outside them, and once at start-up (`Jarvis._first_run`). It GETs the open `template` drafts and, for each (at most 10 a run), makes one
   tool-less `llm.structured` call (schema `UpsellEmail{subject, body}`; same call as `po_intake`) and PATCHes the result. The FSM text is
@@ -607,7 +607,9 @@ time, are intentional scheduled posts (not "checks": they always say something).
 a minute spoken. `daily_rhythm.deliver` posts the same text to the console (`Proactive.scheduled`: into the conversation record
 always, pushed as a `proactive` event so a muted session never gets it, held as a notification in quiet hours, read aloud only
 when "Jarvis speaking up" is on) and to Teams/email (`Notifier.send_owner_update`). A failed run is logged as failed and leaves a
-warning, never silence. Tests: `tests/test_daily_rhythm.py`.
+warning, never silence. Both prompts get `daily_rhythm.BUDGET_RULES` (= `WORD_BUDGET_RULE` + `QUIET_PARTS_RULE`): an area with nothing
+in it is left out (never "nothing new in the inbox, no overdue jobs..."), and a day with nothing at all is one short "quiet day"
+sentence. Tests: `tests/test_daily_rhythm.py`, `tests/test_quiet_when_nothing_new.py`.
 
 *Team mode (`jarvis/access.py`, `services/team_access.py`, `services/team_sessions.py`; tests `tests/test_team_mode.py`,
 `tests/test_team_console_browser.py`).* Three roles: owner (the principal owner), manager (anyone `auth.is_owner` lets in today,
@@ -1235,7 +1237,7 @@ approval path), and every message is run through `history.redact_history` (the s
   "Held back (...)" notification (no toast), and `announce()` does not remember it as seen, so the next run says it.
 - **`post(text)`** = one message. **`announce(key, title, body)`** = a recurring finding: posted to the chat *and* Teams
   (`notifier.send_owner_update`, Teams only) only when its fingerprint differs from the last one (kv `proactive:seen:<key>`); an
-  automation's reply starting `NOTHING_TO_REPORT` counts as nothing. Automations (`services/automations.py`) run silently
+  automation's reply that `nothing_new.is_nothing_new()` reads as nothing new (the `NOTHING_TO_REPORT` marker, or a short "Nothing new.") counts as nothing. Automations (`services/automations.py`) run silently
   when proactive is on - `events.quiet_turn` (a ContextVar, carried through `MaxBrain`'s worker explicitly) drops the
   `user_message`/`thinking`/`delta`/`tool`/`reply`/`error` events of that headless turn - and then `announce()` the result;
   with it off they behave exactly as before.
@@ -1243,28 +1245,57 @@ approval path), and every message is run through `history.redact_history` (the s
   `Jarvis.stop()`) and posts the result or the failure; `poller(...)` builds a `work` that polls a `check()` and posts status
   changes; the tools `watch_ci` (GitHub Actions on a branch of Jarvis's repo) and `watch_action` (a queued action's outcome - it
   only reads its status) use it. Both are read-only, are in `recruiter.NO_RECURSE`, and say so if proactive messages are off.
+- **If there's nothing new, Jarvis says nothing** (`services/nothing_new.py`; tests `tests/test_quiet_when_nothing_new.py`). A run
+  that found nothing new posts NOTHING on any channel - not the console chat, not Alerts/notifications, not Teams, push or voice. It
+  is only a `no_change` row in `check_runs`, counted under "checks with nothing to report" in "What Jarvis did" for anyone who goes
+  looking. `is_nothing_new(text)` is the one detector: the `NOTHING_TO_REPORT` marker at the start (after whitespace/markdown), or a
+  SHORT reply made only of nothing-new phrasing ("Nothing new.", "No changes since last time.", "All quiet - I'll check again
+  later.", "Everything is as before."). Anything else in it - a second clause that says something, "but"/"however"/"except", a
+  figure (times aside), over 280 chars - is news and still goes out (when in doubt it is news). Used by `Proactive.announce/tell`,
+  automations, the self-reflection, the weekly watches and the FSM engineer job. Where each source stands:
+  scheduler `_check` (lone-worker, inbox / PO / voicemail / council scans, upsell drafts, suggestions sync, entity summaries, and now
+  the security review, the two weekly watches and the FSM engineer bot) records `no_change` and says nothing; the console's
+  "Scheduled checks" row (`ActivityLog.summary(quiet=...)` via `/api/status`) lists only checks that found something or failed today,
+  so an all-quiet day has NO row; a clean scheduled security review notifies nothing (an on-demand `start()` review still answers with
+  one quiet Alerts line, no push); `regwatch.weekly` / `technical_weekly` are told to leave unchanged items out and answer
+  `NOTHING_TO_REPORT` when nothing changed - then nothing is displayed, notified or queued for the partner and `*_last` is kept;
+  the nightly self-reflection runs as a `quiet_turn` (never typed into the open chat) and a nothing-new reflection is not stored for
+  the digest; `/api/transcript` (the history the console opens with) leaves out background turns' prompts and replies
+  (`visible_conversation`: rows starting `[Scheduled check you set up` / `[Scheduled self-reflection` and the reply after each - a
+  finding is its own `Proactive` row and stays); the weekly digest drops `NOTHING_NEW_KINDS` (`security_review_clean`,
+  `self_improve_nothing`) and is not sent when it only has `MINOR_KINDS` (`routine_test_recovered`, `self_learning_summary`,
+  `automation_slowed`), which are listed only alongside real news. Unchanged: real findings, failures (fault reports from
+  `services/faults.py`), approvals, the morning briefing and wrap-up. Owner setting `tell_when_nothing_new` ("Tell me when checks
+  find nothing", Settings > Jarvis speaking up, default OFF): ON shows the quiet checks on the "Scheduled checks" row again and leaves
+  a quiet Alerts line for a clean scheduled security review - it never brings back a Teams, push or spoken "nothing new".
 - **Quiet scheduled checks and the activity log** (`services/activity.py`, `j.activity`; console redesign phase 3): a scheduled
-  check that finds nothing new posts NOTHING into the conversation. Every run is a row in `check_runs` (`ActivityLog.record(key, name,
+  check that finds nothing new posts NOTHING anywhere. Every run is a row in `check_runs` (`ActivityLog.record(key, name,
   outcome, detail)`; outcomes `no_change`/`changed`/`failed`/`baseline`, kept 7 days) and `/api/status` -> `activity` (read every minute and after
-  each reply; recording a run publishes nothing on the bus) gives today's runs per check; hud.js `renderActivity()` draws ONE collapsed `details.auto` line per check
-  ("Pull request watch · 7 checks since 09:30, no change", opening to list each run with its time), above the conversation and never a
-  chat message. Recorded by `pr_watch()`, by `AutomationService.run()` and by the scheduler's `_check()` wrapper (lone-worker and inbox
-  sweeps). Automations now ALWAYS run as a `quiet_turn` and are always told to start with `NOTHING_TO_REPORT` when there is nothing new;
-  a finding goes through `Proactive.tell()` (= `announce()` when speaking up is on; otherwise one message in the open chat, once, or a
-  quiet notification if no chat is open). A check that DOES find a change still posts normally and is logged as `changed`.
+  each reply; recording a run publishes nothing on the bus) gives today's runs per check - only the checks that found something or
+  failed, unless `tell_when_nothing_new` is on; hud.js `renderActivity()` draws ONE summary row ("Scheduled checks - 1 needs a look:
+  ...") that opens to one `details.auto` line per check ("Pull request watch · 7 checks since 09:30, 1 change", opening to list each
+  run with its time), above the conversation and never a chat message; no jobs = no row. Recorded by `pr_watch()`, by
+  `AutomationService.run()` and by the scheduler's `_check()` wrapper. Automations ALWAYS run as a `quiet_turn` and are always told to
+  reply `NOTHING_TO_REPORT` and nothing else when there is nothing new (`nothing_new.is_nothing_new` also catches a short "Nothing
+  new." without the marker); a finding goes through `Proactive.tell()` (= `announce()` when speaking up is on; otherwise one message
+  in the open chat, once, or a quiet notification if no chat is open). A check that DOES find a change still posts normally and is
+  logged as `changed`.
 - **Heartbeat stop rules** (`services/heartbeat.py`, applied by `AutomationService`): an automation that keeps returning
   `NOTHING_TO_REPORT` backs off instead of running forever. `automations` columns `nochange_streak` / `nochange_since` /
   `last_asked_at` / `never_slow` (migrated in `Database._migrate`). Every 6 consecutive no-change runs slows the *effective*
   interval one step up 10 min -> 30 min -> hourly -> 3 h -> daily (only steps above the owner's cron interval, which is the shortest
   gap between its next fires); it is done by `_run_guarded` skipping cron fires that come too soon after `last_run_at`, never by
-  rewriting the schedule, so it can't go faster than configured. Any real change resets the streak. After 12 h with no change, ONE
-  Teams-only message (subject `[Jarvis] ...`, via `notifier.send_owner_update(..., channels=("teams",))`) asks keep / slow down /
-  delete, not repeated for 24 h, not overnight, and only for automations configured to run more often than every 12 h. Overnight
+  rewriting the schedule, so it can't go faster than configured. Any real change resets the streak. After 12 h with no change it is
+  NOT messaged about (the old Teams "keep / slow down / delete?" question is gone): it is noted ONCE per quiet spell
+  (`heartbeat.first_note_this_spell`: `last_asked_at` older than `nochange_since`) as a weekly-digest item (`heartbeat.DIGEST_KIND`
+  = `automation_slowed`, only with the digest on), which the digest lists only alongside other news; not overnight, and only for
+  automations configured to run more often than every 12 h. Overnight
   (22:00-06:00 `TIMEZONE`) a non-urgent automation runs at most hourly. Exempt from all of it: a description/prompt mentioning
   life-safety, lone worker, out-of-hours alarms or keyholder (`EXEMPT_RE`), or the owner's `never_slow` flag (`create_automation`
   `never_slow_down`, or the `set_automation_options` tool - the answer to "keep it"). `list_automations` shows `effective_interval`,
-  `no_change_streak`, `slowed_because`. The clock is `AutomationService.clock` so tests use a fake one. This covers owner-created
-  automations only; the built-in pull request watch (`proactive_pr_watch_min`) is a separate interval job and is not slowed.
+  `no_change_streak`, `slowed_because` (with the keep / delete options when slowed). The clock is `AutomationService.clock` so tests
+  use a fake one. This covers owner-created automations only; the built-in pull request watch (`proactive_pr_watch_min`) is a
+  separate interval job and is not slowed.
 - **`HEARTBEAT.md`** (optional): house rules read at the start of every automation run (`heartbeat.read_checklist`: `<data_dir>/HEARTBEAT.md`,
   else the repo-root one; first 2000 chars) and appended to the run's prompt as guidance that never overrides the approval rules.
   Edit it to change rules like "only message on change" without a deploy.

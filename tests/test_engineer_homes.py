@@ -785,7 +785,7 @@ def test_the_audit_lines_are_shown_only_to_the_principal_owner_never_to_a_manage
     manager = {"x-ms-client-principal-idp": "aad", "x-ms-client-principal-name": MANAGER}
     owner = app.owner()
     owner.post("/api/engineer-homes", json={"engineer": "Dan Harper", "postcode": POSTCODE})
-    app.j.activity.record("pr_watch", "Pull request watch", "no_change", "No change.")   # an ordinary check still shows to all
+    app.j.activity.record("pr_watch", "Pull request watch", "changed", "PR #3 opened.")   # an ordinary check still shows to all
 
     def lines(client, **kw):
         r = client.get("/api/status", **kw)

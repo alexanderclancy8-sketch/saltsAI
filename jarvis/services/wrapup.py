@@ -132,7 +132,7 @@ class WrapUp:
         text = await daily_rhythm.write_short(
             j.client, j.settings,
             system=WRAPUP_SYSTEM.format(company=j.settings.company_name, owner=j.settings.owner_name,
-                                        budget=daily_rhythm.WORD_BUDGET_RULE,
+                                        budget=daily_rhythm.BUDGET_RULES,
                                         demo="If the data is demo data, say so once. " if demo_guard.sample_on(j) else ""),
             prompt=f"It is {datetime.now():%A %d %B %Y, %H:%M}. End-of-day data:\n{json.dumps(data, default=str)[:60000]}",
             effort="medium")

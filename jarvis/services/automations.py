@@ -31,7 +31,7 @@ from ..events import quiet_turn
 from ..humanize import cron_to_english, human_datetime
 from . import heartbeat
 from .activity import CHANGED, NO_CHANGE
-from .proactive import NOTHING
+from .nothing_new import AUTOMATION_PROMPT_TAG, NOTHING, is_nothing_new, quiet_note
 
 log = logging.getLogger(__name__)
 MAX_AUTOMATIONS = 25  # generous, but stops a runaway conversation from scheduling hundreds of jobs
@@ -260,10 +260,11 @@ class AutomationService:
                   "\n\nThis check was set up by a manager, so it runs with a manager's access, not the owner's: the owner-only FSM data "
                   "(finance, staff pay, HR, customer contact details) and owner-only tools refuse it. If it needs those, say so plainly "
                   "in your reply instead of trying another way to them.")
-        prompt = (f"[Scheduled check you set up: \"{automation['description']}\"]\n{automation['prompt']}{limits}\n\n"
-                 "This is an automation running on its own schedule, not something typed live - if there's "
-                 "nothing worth mentioning, say so briefly rather than manufacturing a finding. "
-                 f"If there is nothing new to report, start your reply with {NOTHING}.")
+        prompt = (f"{AUTOMATION_PROMPT_TAG}: \"{automation['description']}\"]\n{automation['prompt']}{limits}\n\n"
+                 "This is an automation running on its own schedule, not something typed live - never manufacture a "
+                 f"finding. If there is nothing new to report, reply with {NOTHING} and nothing else (a short note after it "
+                 "is fine): it is not posted anywhere, only recorded. Don't write 'nothing new', 'no changes' or 'all quiet' "
+                 "in a reply that does have news - just give the news.")
         checklist = heartbeat.read_checklist(self.j.settings.data_dir)
         if checklist:  # the owner's optional HEARTBEAT.md: house rules for scheduled runs (never overrides approvals)
             prompt += ("\n\nHouse rules for scheduled runs (from HEARTBEAT.md; they never override the approval rules):\n"
@@ -277,8 +278,8 @@ class AutomationService:
             quiet_turn.reset(token)
         self.j.db.update_automation(automation_id, last_run_at=heartbeat.iso(self.clock()), last_result=reply[:2000])
         title, key = automation["description"], f"automation:{automation_id}"
-        if not reply.strip() or reply.strip().upper().startswith(NOTHING):
-            outcome, detail = NO_CHANGE, reply.strip()[len(NOTHING):].lstrip(" :-.") or "Nothing to report."
+        if is_nothing_new(reply):  # the marker, or a short "Nothing new." / "No changes" / "All quiet": never posted anywhere
+            outcome, detail = NO_CHANGE, quiet_note(reply, "Nothing to report.")
         else:
             # What a manager's check finds is told in the console only (never pushed on to Teams): its audience is the console's, which
             # is where its creator reads it, and it holds nothing above their own access.
@@ -295,18 +296,22 @@ class AutomationService:
         return reply
 
     async def _track(self, automation: dict, no_change: bool) -> None:
-        """Heartbeat stop rules after a run: count the no-change streak (or reset it), and ask the owner once if it has been
-        quiet for 12 hours. Never raises - bookkeeping must not turn a good run into a failed one."""
+        """Heartbeat stop rules after a run: count the no-change streak (or reset it). After 12 hours of nothing new it is noted
+        ONCE per quiet spell for the weekly digest - never a message of its own (if there's nothing new, Jarvis says nothing);
+        the slowed state and the keep / delete options are in list_automations. Never raises - bookkeeping must not turn a
+        good run into a failed one."""
         try:
             now = self.clock()
             fields = heartbeat.next_state(automation, no_change, now)
             self.j.db.update_automation(automation["id"], **fields)
             updated = {**automation, **fields}
             configured = self._configured(updated, now)
-            if heartbeat.should_ask(updated, configured, now, self._tz()):
-                effective = heartbeat.effective_minutes(configured, fields["nochange_streak"])
-                subject, body = heartbeat.ask_message(updated, effective, now)
-                await self.j.notifier.send_owner_update(subject, body, channels=("teams",))  # Teams only, one short message
+            if heartbeat.should_ask(updated, configured, now, self._tz()) and heartbeat.first_note_this_spell(updated):
+                if self.j.settings.weekly_digest_enabled:  # listed only in a digest that has other news (services/digest.py)
+                    effective = heartbeat.effective_minutes(configured, fields["nochange_streak"])
+                    title, body = heartbeat.digest_note(updated, effective, now)
+                    self.j.db.add_digest_item(heartbeat.DIGEST_KIND, title, body, status="slowed down",
+                                              ref=f"automation:{automation['id']}")
                 self.j.db.update_automation(automation["id"], last_asked_at=heartbeat.iso(now))
         except Exception:  # noqa: BLE001
             log.exception("Heartbeat bookkeeping for automation %s failed", automation.get("id"))

@@ -57,6 +57,10 @@ def serve(tmp_path_factory):
     made = []
 
     def build(configure=None, http=None, client=None, **settings_kw):
+        # These tests draw the "Scheduled checks" row with many checks that found nothing, which the console only lists when
+        # the owner asked to hear about them ("Tell me when checks find nothing"); by default if there's nothing new, Jarvis
+        # says nothing and the row is not there at all (test_quiet_checks_leave_no_row_by_default).
+        settings_kw.setdefault("tell_when_nothing_new", True)
         settings = _settings(tmp_path_factory, **settings_kw)
         if configure:
             configure(settings)
@@ -104,6 +108,33 @@ def _text_is(page, selector, text):
 def _log_state(page):
     return page.evaluate("""() => { const l = document.getElementById('conversation'), r = l.getBoundingClientRect();
       return { top: l.scrollTop, gap: l.scrollHeight - l.scrollTop - l.clientHeight, h: r.height, bottom: r.bottom }; }""")
+
+
+def test_quiet_checks_leave_no_row_by_default(browser, serve):
+    """If there's nothing new, Jarvis says nothing: with the owner's "Tell me when checks find nothing" off (the default), checks
+    that found nothing all day leave no "Scheduled checks" row in the chat at all; one that found something brings it back."""
+    srv, j, _ = serve(tell_when_nothing_new=False)
+    _seven_quiet_runs(j)
+    _quiet_jobs(j, 4)
+    ctx, page = _page(browser, srv.url)
+    try:
+        page.wait_for_function("() => window.fetch !== undefined")
+        page.wait_for_timeout(1500)   # the first /api/status has been read and drawn
+        assert page.locator("#activity-toggle").is_hidden() and page.locator("details.auto").count() == 0
+        assert "nothing to report" not in page.inner_text("#transcript-wrap")
+        assert not page.errors, page.errors
+    finally:
+        ctx.close()
+    j.activity.record("job_1", "Voicemail job intake", "changed", "1 new.")
+    ctx, page = _page(browser, srv.url)
+    try:
+        page.wait_for_selector("#activity-toggle:not([hidden])")
+        summary = page.text_content("#activity-toggle .auto-all-text")
+        assert summary == "Scheduled checks - 1 needs a look: Voicemail job intake", summary
+        _open_checks(page)
+        assert page.locator("details.auto").count() == 1   # only the check that found something
+    finally:
+        ctx.close()
 
 
 @pytest.mark.parametrize("scheme", THEMES)

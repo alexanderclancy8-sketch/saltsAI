@@ -101,7 +101,7 @@ async def test_start_runs_in_the_background(settings):
     sw = SecurityWatch(settings, j.db, j.bus, j.notifier, j.client, FakeGitHub({}), FakeIssues(j.db))
     ran = asyncio.Event()
 
-    async def fake_run():
+    async def fake_run(**kw):
         ran.set()
         return {}
 

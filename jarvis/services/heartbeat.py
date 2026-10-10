@@ -8,8 +8,10 @@ that ``services/automations.py`` applies to each run:
   (the ladder only holds steps above it), and any run that reports a real change resets the streak - back to the configured
   interval at once. Slowing is done by skipping cron fires that come too soon after the last real run; the schedule itself
   is never rewritten.
-- after ``ASK_AFTER`` (12 h) with no change, one short Teams-only message asks whether to keep, slow down or delete it, and
-  is not repeated for ``ASK_COOLDOWN`` (24 h). Only automations that run more often than every 12 h are asked about.
+- after ``ASK_AFTER`` (12 h) with no change it is NOT messaged about (if there's nothing new, Jarvis says nothing): it is
+  noted once per quiet spell for the weekly digest (``DIGEST_KIND``), which lists it only when the digest has other news, and
+  ``describe`` (list_automations) shows the slowed state with the keep / delete options. Only automations that run more
+  often than every 12 h are noted.
 - overnight (22:00-06:00 UK) a non-urgent automation runs at most hourly.
 - an automation whose prompt mentions life-safety, lone workers, out-of-hours alarms or keyholders, or that the owner has
   flagged "never slow down", is exempt from all of the above: never slowed, never skipped overnight, never asked about.
@@ -29,9 +31,12 @@ from ..cron import cron_trigger
 
 STEPS_MIN = (10, 30, 60, 180, 1440)       # the ladder, in minutes; only steps above the configured interval are used
 STREAK_PER_STEP = 6                       # consecutive no-change runs per step up
-ASK_AFTER = timedelta(hours=12)           # no change for this long -> ask the owner once
+ASK_AFTER = timedelta(hours=12)           # no change for this long -> noted once for the weekly digest (never a message)
 ASK_COOLDOWN = timedelta(hours=24)        # ...and not again for this long
-ASK_MAX_INTERVAL_MIN = 12 * 60            # only automations running more often than this are asked about
+ASK_MAX_INTERVAL_MIN = 12 * 60            # only automations running more often than this are noted
+DIGEST_KIND = "automation_slowed"         # the digest item (services/digest.py lists it only alongside other news)
+KEEP_OR_DELETE = ("Say 'keep it' to run it at its full schedule again and stop it slowing down (never slow down), "
+                  "or ask me to delete it.")
 NIGHT_START_HOUR, NIGHT_END_HOUR = 22, 6  # overnight window, local (UK) time
 NIGHT_GAP_MIN = 60                        # at most hourly overnight
 FIRE_TOLERANCE_S = 300                    # a cron fire this much early (a run takes time) still counts as due
@@ -137,8 +142,8 @@ def next_state(automation: dict, no_change: bool, now: datetime) -> dict:
 
 
 def should_ask(automation: dict, configured: int, now: datetime, tz: ZoneInfo) -> bool:
-    """Time for the one "keep, slow down or delete?" question? Never overnight, never for an exempt automation, and not
-    again within ASK_COOLDOWN of the last time."""
+    """Time for the one digest note about a quiet automation (never a message)? Never overnight, never for an exempt
+    automation, and not again within ASK_COOLDOWN of the last time."""
     if exemption(automation) or configured >= ASK_MAX_INTERVAL_MIN:
         return False
     if int(automation.get("nochange_streak") or 0) < 1:
@@ -159,24 +164,29 @@ def describe(automation: dict, configured: int) -> dict:
         note = f"Not slowed: {why_exempt}."
     elif effective > configured:
         note = (f"{streak} checks in a row found nothing new, so it now runs about {human_interval(effective)} "
-                f"instead of {human_interval(configured)}. Any change puts it back.")
+                f"instead of {human_interval(configured)}. Any change puts it back. {KEEP_OR_DELETE}")
     else:
         note = ""
     return {"configured_interval": human_interval(configured), "effective_interval": human_interval(effective),
             "no_change_streak": streak, "slowed_because": note, "never_slow_down": bool(automation.get("never_slow"))}
 
 
-def ask_message(automation: dict, effective: int, now: datetime) -> tuple[str, str]:
-    """(subject, body) of the one Teams question. Subject always starts with '[Jarvis]'."""
+def first_note_this_spell(automation: dict) -> bool:
+    """Not yet noted since this run of no-change checks began: a quiet automation is mentioned once per quiet spell, not
+    every day it stays quiet. A change ends the spell, so a later quiet spell is noted again."""
+    since = parse_iso(automation.get("nochange_since"))
+    noted = parse_iso(automation.get("last_asked_at"))
+    return noted is None or since is None or noted < since
+
+
+def digest_note(automation: dict, effective: int, now: datetime) -> tuple[str, str]:
+    """(title, body) of the one weekly-digest line about an automation that has found nothing new for a while. Never sent
+    on its own: the digest lists it only when it has other news."""
     name = " ".join(str(automation.get("description") or f"Automation {automation['id']}").split())[:80]
     since = parse_iso(automation.get("nochange_since")) or now
     hours = max(1, int((now - since).total_seconds() // 3600))
-    streak = int(automation.get("nochange_streak") or 0)
-    body = (f"\"{name}\" (automation #{automation['id']}) has found nothing new for about {hours} hours "
-            f"({streak} checks in a row) and now runs {human_interval(effective)}. "
-            "Shall I keep it as it is (never slow down), let it keep slowing down, or delete it? "
-            "I won't ask again for 24 hours.")
-    return f"[Jarvis] Keep, slow down or delete \"{name}\"?", body
+    title = f"\"{name}\" (automation #{automation['id']}) found nothing new for {hours}+ hours - now runs {human_interval(effective)}"
+    return title, KEEP_OR_DELETE
 
 
 # --------------------------------------------------------------------------- the optional checklist file

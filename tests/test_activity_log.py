@@ -235,10 +235,12 @@ async def test_a_failing_sweep_is_logged_and_does_not_raise(settings):
 def test_the_status_endpoint_carries_the_activity_and_the_pages_have_somewhere_to_show_it(settings):
     j = make(settings)
     j.activity.record("pr_watch", "Pull request watch", "no_change", "No change.")
+    j.activity.record("inbox_scan", "Issue email scan", "changed", "1 new.")
     with TestClient(create_app(settings, j)) as c:
         status = c.get("/api/status").json()
+    # if there's nothing new, Jarvis says nothing: the check that found nothing all day is not on the chat's row at all
     [job] = status["activity"]["jobs"]
-    assert job["name"] == "Pull request watch" and job["checks"] == 1
+    assert job["name"] == "Issue email scan" and job["checks"] == 1 and job["changed"] == 1
     from pathlib import Path
 
     web = Path(__file__).resolve().parent.parent / "jarvis" / "web"
