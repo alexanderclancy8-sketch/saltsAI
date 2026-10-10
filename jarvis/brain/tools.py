@@ -3385,8 +3385,8 @@ TOOLS: list[Tool] = [
          "Checking your automations"),
     Tool("set_automation_options", "Set the owner's 'never slow down' override on one automation (by its number): "
                                    "it then always runs at its full schedule, is not skipped overnight and is not "
-                                   "asked about. Use it when the owner answers 'keep it' to a keep/slow down/delete "
-                                   "question.", AutomationOptionsIn, set_automation_options,
+                                   "noted in the digest as quiet. Use it when the owner says 'keep it' about an automation "
+                                   "that list_automations shows as slowed down.", AutomationOptionsIn, set_automation_options,
          "Updating that automation"),
     Tool("edit_automation", "Change an automation's wording, schedule or label (by its number). Editing never raises what it "
                             "runs with: one a manager set up stays a manager's, and a manager can't edit one the owner set "

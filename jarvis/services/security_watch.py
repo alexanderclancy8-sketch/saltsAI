@@ -122,17 +122,17 @@ class SecurityWatch:
         """Kick off a review in the background - it can take a few minutes, so chat doesn't wait on it."""
         if not self.enabled:
             return "Not set up - the security review needs the same GitHub connection as auto-fix."
-        task = asyncio.create_task(self.run())
+        task = asyncio.create_task(self.run(scheduled=False))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return "Started - I'll let you know what I find."
 
     # ------------------------------------------------------------------ entry point
-    async def run(self) -> dict[str, Any]:
+    async def run(self, *, scheduled: bool = True) -> dict[str, Any]:
         if not self.enabled:
             return {"error": "Not configured (needs GITHUB_TOKEN and FSM_REPO)."}
         with self.runs.track("security_watch", "Security review of the Salts FSM codebase"):  # progress record only
-            result = await self._run()
+            result = await self._run(scheduled)
             if "error" in result:
                 self.runs.finish("failed", result["error"])
             else:
@@ -140,7 +140,7 @@ class SecurityWatch:
                                               f"{result.get('summary', '')}")
         return result
 
-    async def _run(self) -> dict[str, Any]:
+    async def _run(self, scheduled: bool = True) -> dict[str, Any]:
         if not self.enabled:
             return {"error": "Not configured (needs GITHUB_TOKEN and FSM_REPO)."}
         sha = await self.gh.branch_sha()
@@ -180,9 +180,12 @@ class SecurityWatch:
                                        level="warning", push=True, speak=True, engineering=True,
                                        kind="security_finding_urgent" if urgent else "security_finding_minor",
                                        status="new findings")
-        else:
-            await self.notifier.notify("Security review: nothing new", result.summary, level="info",
-                                       importance="info", engineering=True, kind="security_review_clean")
+        elif not scheduled or getattr(self.s, "tell_when_nothing_new", False):
+            # Someone asked for this review (or the owner wants to hear about clean checks): one quiet line in Alerts -
+            # no push, no Teams, no digest entry.
+            await self.notifier.notify("Security review: no new findings", result.summary, level="info",
+                                       importance="info", push=False)
+        # A scheduled review that found nothing new says nothing: the scheduler records the run in the activity log.
         return {"reviewed_sha": sha, "new_issues": new_issue_ids, "summary": result.summary,
                 "findings": [f.model_dump() for f in result.findings]}
 

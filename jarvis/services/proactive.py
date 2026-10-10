@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 
 from ..history import redact_history
 from ..integrations.redact import truncate
+from .nothing_new import NOTHING, is_nothing_new  # noqa: F401 - NOTHING is re-exported for older imports
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,6 @@ TURN_STALE_S = 300        # a turn with no reply after this long is treated as a
 WAIT_BUSY_S = 120         # how long a message waits for the owner to finish talking before it is held back
 BUSY_POLL_S = 5
 MAX_BACKGROUND = 5        # background jobs at once
-NOTHING = "NOTHING_TO_REPORT"  # what an automation starts its reply with when there is nothing worth saying
 OFF_MESSAGE = ("Proactive messages are switched off, so I couldn't promise to follow up in the chat. "
                "They can be switched on under Settings > Jarvis speaking up.")
 SEEN_KEY = "proactive:seen:"
@@ -205,7 +205,7 @@ class Proactive:
             return {"delivered": False, "reason": self.held_reason()}
         clean = self._clean(body)
         stored = self.j.db.get_kv(SEEN_KEY + key)
-        if not clean or clean.upper().startswith(NOTHING):
+        if is_nothing_new(clean):  # empty, the marker or a short "Nothing new.": nothing is said
             self.j.db.set_kv(SEEN_KEY + key, "")  # so the same finding turning up again later is news again
             return {"delivered": False, "reason": "nothing to report"}
         fingerprint = _fingerprint(clean)
@@ -235,7 +235,7 @@ class Proactive:
         if self.enabled:
             return await self.announce(key, title, body, teams=teams)
         clean = self._clean(body)
-        if not clean or clean.upper().startswith(NOTHING):
+        if is_nothing_new(clean):  # empty, the marker or a short "Nothing new.": nothing is said
             self.j.db.set_kv(SEEN_KEY + key, "")
             return {"delivered": False, "reason": "nothing to report"}
         fingerprint = _fingerprint(clean)

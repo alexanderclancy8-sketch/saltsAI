@@ -1,4 +1,4 @@
-"""Heartbeat stop rules for automations: no-change streaks, stepping the interval up and resetting it, the ask-once rule,
+"""Heartbeat stop rules for automations: no-change streaks, stepping the interval up and resetting it, the noted-once rule (never a message),
 the overnight rule, the safety exemptions, and the optional HEARTBEAT.md. Everything runs on a fake clock."""
 
 from __future__ import annotations
@@ -59,7 +59,8 @@ def setup(settings, monkeypatch, *, cron=EVERY_10, description="Pull request wat
     aid = j.automations.create(description, cron, prompt, never_slow_down=never_slow)["id"]
 
     def asks():
-        return [m for m in sent if m[0].startswith("[Jarvis]")]
+        """Every owner update sent (Teams): a quiet automation must never cause one."""
+        return list(sent)
 
     def row():
         return j.db.get_automation(aid)
@@ -190,56 +191,83 @@ async def test_a_daily_automation_is_never_slowed(settings, monkeypatch):
     await t.j.http.aclose()
 
 
-# --------------------------------------------------------------------------- the 12-hour ask-once rule
-async def test_asks_once_after_12_hours_then_not_for_24(settings, monkeypatch):
+# --------------------------------------------------------------------------- the 12-hour rule: noted, never asked
+# If there's nothing new, Jarvis says nothing: an automation quiet for 12 hours is no longer a Teams question. It is noted ONCE
+# per quiet spell for the weekly digest (listed only alongside other news), and list_automations shows the keep / delete options.
+def notes(t):
+    return [i for i in t.j.db.pending_digest_items() if i["kind"] == heartbeat.DIGEST_KIND]
+
+
+async def test_never_messages_and_notes_it_once_per_quiet_spell(settings, monkeypatch):
     t = setup(settings, monkeypatch)
     t.j.db.update_automation(t.aid, nochange_streak=3, nochange_since=iso(DAY - timedelta(hours=13)))
     await t.j.automations.run(t.aid)
-    assert len(t.asks()) == 1
-    subject, body, channels = t.asks()[0]
-    assert subject.startswith("[Jarvis]") and channels == ("teams",)  # Teams only
-    assert "Pull request watch" in subject and "keep" in body.lower() and "delete" in body.lower()
-    assert t.row()["last_asked_at"] == iso(DAY)
+    assert t.asks() == []  # no "[Jarvis] Keep, slow down or delete?" message - not on Teams, not anywhere
+    [note] = notes(t)
+    assert "Pull request watch" in note["title"] and "keep it" in note["body"].lower() and "delete" in note["body"].lower()
+    assert note["ref"] == f"automation:{t.aid}" and t.row()["last_asked_at"] == iso(DAY)
 
-    t.clock.advance(hours=1)
+    for hours in (1, 23, 24, 48):  # still the same quiet spell: never noted again, never messaged
+        t.clock.advance(hours=hours)
+        await t.j.automations.run(t.aid)
+    assert len(notes(t)) == 1 and t.asks() == []
+
+    t.state["reply"] = "PR #3 now has merge conflicts."  # a change ends the spell...
     await t.j.automations.run(t.aid)
-    t.clock.advance(hours=22, minutes=58)  # 23h58m after the question
+    t.state["reply"] = QUIET
     await t.j.automations.run(t.aid)
-    assert len(t.asks()) == 1
-    t.clock.advance(minutes=2)  # 24h
+    t.clock.advance(hours=24)  # ...and a new quiet spell of 12+ hours is noted again (once; 10:00 UK, not overnight)
     await t.j.automations.run(t.aid)
-    assert len(t.asks()) == 2
+    assert len(notes(t)) == 2 and t.asks() == []
     await t.j.http.aclose()
 
 
-async def test_no_question_before_12_hours_or_after_a_change(settings, monkeypatch):
+async def test_nothing_is_noted_with_the_weekly_digest_off(settings, monkeypatch):
+    settings.weekly_digest_enabled = False
+    t = setup(settings, monkeypatch)
+    t.j.db.update_automation(t.aid, nochange_streak=3, nochange_since=iso(DAY - timedelta(hours=13)))
+    await t.j.automations.run(t.aid)
+    assert notes(t) == [] and t.asks() == []
+    await t.j.http.aclose()
+
+
+async def test_the_slowed_state_and_the_keep_or_delete_options_are_in_the_automations_list(settings, monkeypatch):
+    t = setup(settings, monkeypatch)
+    t.j.db.update_automation(t.aid, nochange_streak=12, nochange_since=iso(DAY - timedelta(hours=13)))
+    listed = t.listed()
+    assert listed["effective_interval"] != listed["configured_interval"]
+    assert "keep it" in listed["slowed_because"].lower() and "delete" in listed["slowed_because"].lower()
+    await t.j.http.aclose()
+
+
+async def test_not_noted_before_12_hours_or_after_a_change(settings, monkeypatch):
     t = setup(settings, monkeypatch)
     t.j.db.update_automation(t.aid, nochange_streak=3, nochange_since=iso(DAY - timedelta(hours=11)))
     await t.j.automations.run(t.aid)
-    assert t.asks() == []
+    assert notes(t) == []
     t.j.db.update_automation(t.aid, nochange_streak=3, nochange_since=iso(DAY - timedelta(hours=20)))
-    t.state["reply"] = "PR #3 now has merge conflicts."  # a change resets the streak first: nothing to ask about
+    t.state["reply"] = "PR #3 now has merge conflicts."  # a change resets the streak first: nothing to note
     await t.j.automations.run(t.aid)
-    assert t.asks() == [] and t.row()["nochange_streak"] == 0
+    assert notes(t) == [] and t.row()["nochange_streak"] == 0
     await t.j.http.aclose()
 
 
-async def test_no_question_for_a_check_that_only_runs_daily(settings, monkeypatch):
+async def test_not_noted_for_a_check_that_only_runs_daily(settings, monkeypatch):
     t = setup(settings, monkeypatch, cron="0 8 * * *")
     t.j.db.update_automation(t.aid, nochange_streak=3, nochange_since=iso(DAY - timedelta(days=3)))
     await t.j.automations.run(t.aid)
-    assert t.asks() == []
+    assert notes(t) == []
     await t.j.http.aclose()
 
 
-async def test_the_question_waits_until_morning(settings, monkeypatch):
+async def test_the_note_waits_until_morning(settings, monkeypatch):
     t = setup(settings, monkeypatch, start=NIGHT)
     t.j.db.update_automation(t.aid, nochange_streak=3, nochange_since=iso(NIGHT - timedelta(hours=14)))
     await t.j.automations.run(t.aid)
-    assert t.asks() == []
+    assert notes(t) == []
     t.clock.advance(hours=7)  # 07:30 UK
     await t.j.automations.run(t.aid)
-    assert len(t.asks()) == 1
+    assert len(notes(t)) == 1 and t.asks() == []
     await t.j.http.aclose()
 
 

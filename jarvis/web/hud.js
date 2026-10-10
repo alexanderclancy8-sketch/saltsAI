@@ -1533,8 +1533,10 @@ function send(text, mode = "typed", opts = {}) {
   }
 
   // ------------------------------------------------------------------ scheduled checks (activity log)
-  // A scheduled check that found nothing posts nothing into the chat. Every run is in the activity log, and the console shows
-  // them as ONE slim summary row at the top of the conversation ("Scheduled checks - 9 jobs, 560 runs since 00:06, nothing to
+  // A scheduled check that found nothing posts nothing into the chat. Every run is in the activity log ("What Jarvis did"); the
+  // server only sends the checks that found something or failed today (if there's nothing new, Jarvis says nothing - so with
+  // all quiet there is no row at all), or every check when the owner switched on "Tell me when checks find nothing". They
+  // show as ONE slim summary row at the top of the conversation ("Scheduled checks - 9 jobs, 560 runs since 00:06, nothing to
   // report"). Opening it lists one line per check ("Pull request watch · 7 checks since 09:30, no change"), each of which opens
   // to list its runs, inside a bounded panel that scrolls on its own - it never pushes the conversation off screen. A check
   // that did find something has also posted its message in the chat as usual; the summary then says which one needs a look.

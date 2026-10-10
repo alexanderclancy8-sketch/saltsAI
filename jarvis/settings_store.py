@@ -512,6 +512,10 @@ SECTIONS: tuple[Section, ...] = (
             Field("proactive_max_per_hour", "Most messages an hour", "number",
                   "Anything over this waits for the next check. 0 means no limit.", advanced=True),
             Field("proactive_pr_watch_min", "Check pull requests every (minutes)", "number", advanced=True),
+            Field("tell_when_nothing_new", "Tell me when checks find nothing", "bool",
+                  "Off by default: if there's nothing new, Jarvis says nothing - a check that finds nothing is only listed "
+                  "in What Jarvis did. On: the chat's Scheduled checks line also lists the checks that found nothing, and a "
+                  "clean security review leaves a line in Alerts."),
         ),
     ),
     Section(

@@ -8,6 +8,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from ..cron import cron_trigger
+from .nothing_new import is_nothing_new
 
 log = logging.getLogger(__name__)
 
@@ -31,9 +32,12 @@ def _guard(name: str, fn, j=None):
 
 def _check(j, key: str, name: str, fn):
     """A scheduled *check*: like ``_guard``, and every run goes in the activity log (services/activity.py). It posts
-    nothing itself - a check that finds something already tells the owner through its own notification - so a run that
-    finds nothing leaves no trace in the chat except the one collapsed line. ``fn`` returns how many new things it found
-    (None = it does not say, and the run is not logged as a no-change)."""
+    nothing itself - a check that finds something already tells the owner through its own notification - and a run that
+    finds nothing says NOTHING anywhere: no chat line, no alert, no Teams post. It is only a ``no_change`` row in the
+    activity log ("What Jarvis did"), for anyone who goes looking (the console's "Scheduled checks" row leaves it out unless
+    the owner switched on "Tell me when checks find nothing"). A failure still goes in as ``failed`` and opens a fault
+    report (services/faults.py). ``fn`` returns how many new things it found (None = it does not say, and the run is not
+    logged as a no-change)."""
     async def run():
         try:
             found = await fn()
@@ -45,6 +49,18 @@ def _check(j, key: str, name: str, fn):
             j.activity.record(key, name, "changed" if found else "no_change",
                               f"{found} new." if found else "Nothing new.")
     return run
+
+
+async def _security_review(j) -> int | None:
+    """The scheduled security review: how many new findings (they alert through their own notification). None when it is not
+    set up or the review itself failed (that already raised its own "Security review failed" alert)."""
+    result = await j.security_watch.run(scheduled=True)
+    return None if "error" in result else len(result.get("new_issues") or [])
+
+
+async def _fsm_engineer(j) -> int:
+    """The FSM engineer bot's scheduled audit: 1 when it reported new or changed failures (on Teams, itself), else 0."""
+    return 0 if is_nothing_new(await j.fsm_engineer.run()) else 1
 
 
 def _daily(j, key: str, name: str, fn):
@@ -74,7 +90,7 @@ def build_scheduler(j) -> AsyncIOScheduler:
                   cron_trigger(s.compliance_check_cron, timezone=s.timezone), id="compliance",
                   max_instances=1, coalesce=True)
     if s.fsm_engineer_enabled:  # read-only audit; says something only when a failure is new or changed
-        sched.add_job(guard("FSM engineer bot", j.fsm_engineer.run),
+        sched.add_job(_check(j, "fsm_engineer", "FSM engineer bot", lambda: _fsm_engineer(j)),
                       cron_trigger(s.fsm_engineer_cron, timezone=s.timezone), id="fsm_engineer",
                       max_instances=1, coalesce=True)
     if s.briefing_enabled:  # the daily rhythm: on by default, switched off / re-timed in Settings > Schedules
@@ -98,13 +114,14 @@ def build_scheduler(j) -> AsyncIOScheduler:
     sched.add_job(guard("accreditation reminders", j.accreditations.daily_reminders),
                   cron_trigger("5 8 * * *", timezone=s.timezone), id="accreditations",
                   max_instances=1, coalesce=True)
-    sched.add_job(guard("regulatory watch", j.regwatch.weekly),
+    # The weekly watches post only when something changed; a week with nothing new is just a row in the activity log.
+    sched.add_job(_check(j, "regwatch", "Tax & employment law watch", j.regwatch.weekly),
                   cron_trigger(s.regulatory_watch_cron, timezone=s.timezone), id="regwatch",
                   max_instances=1, coalesce=True)
-    sched.add_job(guard("technical watch", j.regwatch.technical_weekly),
+    sched.add_job(_check(j, "technical_watch", "Fire & security technical watch", j.regwatch.technical_weekly),
                   cron_trigger(s.technical_watch_cron, timezone=s.timezone), id="technical_watch",
                   max_instances=1, coalesce=True)
-    sched.add_job(guard("security watch", j.security_watch.run),
+    sched.add_job(_check(j, "security_watch", "Security review", lambda: _security_review(j)),  # clean = says nothing
                   cron_trigger(s.security_watch_cron, timezone=s.timezone), id="security_watch",
                   max_instances=1, coalesce=True)
     sched.add_job(guard("billing check", j.daily_billing),

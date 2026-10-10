@@ -1,9 +1,13 @@
-"""The activity log of scheduled checks: every run is recorded here, and the chat shows one collapsed line per check.
+"""The activity log of scheduled checks: every run is recorded here ("What Jarvis did"), and nothing more.
 
-A scheduled check (the pull request watch, an automation the owner set up, the lone-worker and inbox sweeps) that finds
-nothing new posts nothing into the conversation. It is still recorded, so the owner can see that it ran: the console
-shows "Pull request watch · 7 checks since 09:30, no change" as one quiet line that opens to list each run with its time.
-A check that DOES find something is recorded too, and still posts its message through ``Proactive`` as it always did.
+If there's nothing new, Jarvis says nothing. A scheduled check (the pull request watch, an automation the owner set up, the
+lone-worker and inbox sweeps, the security review, the weekly watches) that finds nothing new posts nothing anywhere - not
+into the conversation, not as an alert, not to Teams. It is still recorded here, so anyone who goes looking can see that it
+ran: "What Jarvis did" counts it under "checks with nothing to report". The console's "Scheduled checks" row above the
+conversation lists only the checks that found something or failed today ("Pull request watch · 7 checks since 09:30,
+1 change"); checks that found nothing all day are left out of it unless the owner switched on "Tell me when checks find
+nothing" (Settings > Jarvis speaking up). A check that DOES find something is recorded too, and still posts its message
+through ``Proactive`` / its own notification as it always did.
 Recording a run publishes nothing on the event bus (a quiet check is quiet all the way down); the console picks the log up
 from /api/status, which it reads every minute and after every reply.
 
@@ -72,9 +76,12 @@ class ActivityLog:
         except Exception:  # noqa: BLE001
             log.exception("Could not record the activity of %s", key)
 
-    def summary(self, now: datetime | None = None, owner: bool = False) -> dict[str, Any]:
+    def summary(self, now: datetime | None = None, owner: bool = False, quiet: bool = True) -> dict[str, Any]:
         """Today's runs (since local midnight) grouped per check, most recently run first. The owner-only jobs
-        (OWNER_ONLY_JOBS) are left out unless ``owner`` is True, which only the principal owner's request passes."""
+        (OWNER_ONLY_JOBS) are left out unless ``owner`` is True, which only the principal owner's request passes.
+        ``quiet=False`` leaves out the checks that found nothing new all day (no change, no failure): what the console's
+        "Scheduled checks" row is given unless the owner switched on "Tell me when checks find nothing" - if there's nothing
+        new, Jarvis says nothing. The runs are still in "What Jarvis did"."""
         tz = self._tz()
         local_now = (now or datetime.now(timezone.utc)).astimezone(tz)
         midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -96,7 +103,8 @@ class ActivityLog:
             job["last"] = at.strftime("%H:%M")
             job["runs"].append({"at": at.isoformat(timespec="seconds"), "time": at.strftime("%H:%M"),
                                 "outcome": r["outcome"], "detail": r["detail"] or ""})
-        out = sorted(jobs.values(), key=lambda j: j["runs"][-1]["at"], reverse=True)
+        out = sorted((job for job in jobs.values() if quiet or job["changed"] or job["failed"]),
+                     key=lambda j: j["runs"][-1]["at"], reverse=True)
         for job in out:
             job["runs"] = job["runs"][-MAX_RUNS_SHOWN:]
         return {"jobs": out}

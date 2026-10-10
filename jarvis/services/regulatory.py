@@ -7,6 +7,7 @@ import logging
 from datetime import date
 
 from ..brain import llm
+from .nothing_new import NOTHING, is_nothing_new
 
 log = logging.getLogger(__name__)
 
@@ -50,8 +51,16 @@ causes of failed inspections/audits and false alarms; and anything genuinely new
 
 Check what's already known before repeating it (below). For each finding: what it is, why it matters
 practically for installation/maintenance work, and the source. Say plainly when something is guidance/opinion
-rather than a normative requirement. If nothing genuinely new turned up, say so briefly rather than padding.
+rather than a normative requirement. Don't pad: if nothing genuinely new turned up on request, say so in one line.
 {focus}"""
+
+
+# What the model is told about last time's report. On request it may say an item is unchanged; the weekly run leaves unchanged
+# items out and answers NOTHING_TO_REPORT when nothing at all changed - a week with nothing new posts nothing (it is only a row
+# in the activity log; services/nothing_new.py).
+UNCHANGED_ON_REQUEST = "don't repeat unchanged items, just say 'no change' briefly"
+UNCHANGED_WEEKLY = (f"leave unchanged items out entirely - never write 'no change'. If nothing at all is new or changed, reply "
+                    f"with exactly {NOTHING} and nothing else")
 
 
 class RegulatoryWatch:
@@ -69,14 +78,17 @@ class RegulatoryWatch:
 
     async def briefing(self, focus: str | None = None, window: str = "month", deliver: bool = False) -> str:
         previous = self.db.get_kv("regwatch_last", "")
+        unchanged = UNCHANGED_WEEKLY if deliver else UNCHANGED_ON_REQUEST
         focus_line = (f"Focus especially on: {focus}." if focus else "") + (
-            f"\nLast time you reported (don't repeat unchanged items, just say 'no change' briefly):\n{previous[:6000]}"
+            f"\nLast time you reported ({unchanged}):\n{previous[:6000]}"
             if previous and not focus else "")
         text = await llm.research(self.client, self.s,
                                   system=WATCH_SYSTEM.format(company=self.s.company_name, window=window,
                                                              owner=self.s.owner_name, partner=self._names(),
                                                              focus=focus_line),
                                   prompt=f"Today is {date.today():%d %B %Y}. Prepare the regulatory update.")
+        if deliver and is_nothing_new(text):
+            return text  # nothing new this week: nothing is shown, sent or queued (the scheduler logs the run)
         self.bus.publish("display", {"title": "Tax, employment & regulation watch", "markdown": text})
         if not focus:
             self.db.set_kv("regwatch_last", text)
@@ -89,18 +101,23 @@ class RegulatoryWatch:
                                     "body": text})
         return text
 
-    async def weekly(self) -> None:
-        await self.briefing(window="week", deliver=True)
+    async def weekly(self) -> int:
+        """The scheduled weekly watch: 1 when it had something to report (and posted it), 0 when nothing was new."""
+        return 0 if is_nothing_new(await self.briefing(window="week", deliver=True)) else 1
 
     async def technical(self, focus: str | None = None, window: str = "month", deliver: bool = False) -> str:
         previous = self.db.get_kv("technical_watch_last", "")
+        unchanged = UNCHANGED_WEEKLY if deliver else UNCHANGED_ON_REQUEST
         focus_line = (f"Focus especially on: {focus}." if focus else "") + (
-            f"\nAlready known from last time (don't repeat unchanged items, just say 'no change' briefly):\n"
-            f"{previous[:6000]}" if previous and not focus else "")
+            f"\nAlready known from last time ({unchanged}):\n"
+            f"{previous[:6000]}" if previous and not focus else "") + (
+            f"\nIf nothing genuinely new turned up, reply with exactly {NOTHING}." if deliver and not focus else "")
         text = await llm.research(self.client, self.s,
                                   system=TECHNICAL_WATCH_SYSTEM.format(company=self.s.company_name, window=window,
                                                                        focus=focus_line),
                                   prompt=f"Today is {date.today():%d %B %Y}. Prepare the technical/standards update.")
+        if deliver and is_nothing_new(text):
+            return text  # nothing new this week: nothing is shown or sent (the scheduler logs the run)
         self.bus.publish("display", {"title": "Fire & security technical watch", "markdown": text})
         if not focus:
             self.db.set_kv("technical_watch_last", text)
@@ -109,5 +126,6 @@ class RegulatoryWatch:
                                        importance="info")
         return text
 
-    async def technical_weekly(self) -> None:
-        await self.technical(window="week", deliver=True)
+    async def technical_weekly(self) -> int:
+        """The scheduled weekly technical watch: 1 when it posted something, 0 when nothing was new."""
+        return 0 if is_nothing_new(await self.technical(window="week", deliver=True)) else 1
