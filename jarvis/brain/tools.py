@@ -1613,8 +1613,11 @@ async def self_improve(j, a: SelfImproveIn):
 async def agent_runs(j, a: AgentRunsIn):
     from ..services.agent_runs import STALL_AFTER, AgentRuns
 
+    from ..services import agent_runs as agent_runs_service
+
     runs = AgentRuns(j.db).recent(a.limit, a.run_id)
-    return {"runs": runs, "stalled_after_minutes": int(STALL_AFTER.total_seconds() // 60)}
+    return {"runs": runs, "stalled_after_minutes": int(STALL_AFTER.total_seconds() // 60),
+            "run_cap_minutes": int(agent_runs_service.RUN_CAP.total_seconds() // 60)}
 
 
 class CompanyCheckIn(BaseModel):
@@ -2898,9 +2901,13 @@ TOOLS: list[Tool] = [
                         "few minutes.", SelfImproveIn, self_improve, "Working on myself"),
     Tool("agent_runs", "Read-only progress report on the background engineering agents (self_improve changes to "
                        "Jarvis's own code, issue auto-fixes, security reviews): current and recent runs with "
-                       "status (running / submitted / gave_up / failed / interrupted / stalled), when each started, when it "
-                       "last did anything, and the trail of what it has done so far. 'stalled' means it's "
-                       "still marked running but has been silent for 30+ minutes. Use it when the owner asks "
+                       "status (running / submitted / gave_up / failed / interrupted / stalled / timed_out / looping), when "
+                       "each started, when it last did anything (and what), and the trail of what it has done so far. "
+                       "'stalled' means it's still marked running but has been silent for 30+ minutes; 'timed_out' means "
+                       "it ran past the wall-clock cap (run_cap_minutes) and was stopped; 'looping' means it repeated the "
+                       "same call or kept editing one file with no change in the failing output. A run that gave up, "
+                       "failed or timed out carries a 'lesson': the likely cause and what would have let it succeed. "
+                       "Use it when the owner asks "
                        "what an agent is up to, whether it's stuck, or why nothing has come back yet.",
          AgentRunsIn, agent_runs, "Checking on the engineering agents"),
     Tool("doctor", "Read-only self-diagnostics: what in Jarvis is quietly broken. One line per item with a status "
