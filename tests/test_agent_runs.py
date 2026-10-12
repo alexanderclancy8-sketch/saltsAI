@@ -3,14 +3,18 @@ its outcome, and a long-silent run is reported as stalled."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from jarvis.brain.tools import TOOLS_BY_NAME, AgentRunsIn
 from jarvis.core import Jarvis
-from jarvis.services.agent_runs import MAX_TRAIL, NO_RESULT_NOTE, STALL_AFTER, AgentRuns, describe_call
+from jarvis.services import agent_runs as agent_runs_mod
+from jarvis.services.agent_runs import (MAX_TRAIL, NO_RESULT_NOTE, RUN_CAP, STALL_AFTER, AgentRuns, RunTimedOut,
+                                        describe_call, short_hash)
 from jarvis.services.security_watch import SecurityWatch
 from jarvis.services.self_improve import SelfImprove
 from tests.fakes import FakeClient, message, tool_block
@@ -268,4 +272,222 @@ async def test_agent_runs_tool_is_read_only_and_reports_status(settings):
     one = await tool.handler(j, AgentRunsIn(run_id=stuck))
     assert one["runs"][0]["trail"][0]["step"] == "grep 'x' in *"
     assert (await tool.handler(j, AgentRunsIn(run_id=9999)))["runs"] == []
+    await j.http.aclose()
+
+
+async def test_agent_runs_tool_shows_the_lesson_and_the_cap(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("fixer", "Issue #4: crash")
+    runs.finish("gave_up", "Could not reproduce the crash.", rid)
+    out = await TOOLS_BY_NAME["agent_runs"].handler(j, AgentRunsIn(run_id=rid))
+    assert out["run_cap_minutes"] == int(RUN_CAP.total_seconds() // 60)
+    assert out["runs"][0]["lesson"] and "Could not reproduce" in out["runs"][0]["lesson"]
+    await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- trail hashes and stuck-loop detection
+def test_short_hash_is_stable_short_and_hides_the_value():
+    a = short_hash({"path": "/x.py", "pattern": "SECRET_PASSWORD"})
+    assert a == short_hash({"pattern": "SECRET_PASSWORD", "path": "/x.py"})  # key order does not matter
+    assert a != short_hash({"path": "/x.py", "pattern": "other"})
+    assert len(a) == 8 and "SECRET" not in a
+
+
+async def test_trail_records_tool_name_and_argument_hash_but_never_the_arguments(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "x")
+    args = {"command": "create", "path": "/repo/a.py", "file_text": "API_KEY = 'sk-very-secret'"}
+    runs.step("str_replace_based_edit_tool", args, run_id=rid)
+    step = runs.recent(run_id=rid)[0]["trail"][0]
+    assert step["tool"] == "str_replace_based_edit_tool" and step["h"] == short_hash(args)
+    assert step["file"] == "/repo/a.py"
+    assert "sk-very-secret" not in json.dumps(runs.recent(run_id=rid))
+    await j.http.aclose()
+
+
+async def test_same_tool_and_arguments_three_times_in_a_row_flags_the_run_looping(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "x")
+    assert runs.step("grep", {"pattern": "a"}, run_id=rid) is None
+    assert runs.step("grep", {"pattern": "a"}, run_id=rid) is None
+    assert runs.recent(run_id=rid)[0]["status"] == "running"
+    nudge = runs.step("grep", {"pattern": "a"}, run_id=rid)  # the third
+    assert nudge and "grep" in nudge
+    r = runs.recent(run_id=rid)[0]
+    assert r["status"] == "looping" and "grep" in r["looping"]
+    assert runs.step("grep", {"pattern": "a"}, run_id=rid) is None  # the nudge is only given once
+    # the flag stays on the record when the run ends
+    runs.finish("gave_up", "stuck", rid)
+    done = runs.recent(run_id=rid)[0]
+    assert done["status"] == "gave_up" and done["looping"] and "stuck repeating" in done["lesson"]
+    await j.http.aclose()
+
+
+async def test_varied_or_interleaved_calls_are_not_a_loop(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "x")
+    for pattern in ("a", "a", "b", "a", "a", "c"):
+        runs.step("grep", {"pattern": pattern}, run_id=rid)
+    runs.step("find_files", {"glob": "a"}, run_id=rid)
+    runs.step("grep", {"pattern": "a"}, run_id=rid)
+    assert runs.recent(run_id=rid)[0]["looping"] is None
+    await j.http.aclose()
+
+
+def _edit(runs, rid, n, path="/repo/a.py", **kw):
+    return runs.step("str_replace_based_edit_tool",
+                     {"command": "str_replace", "path": path, "old_str": f"v{n}", "new_str": f"v{n + 1}"},
+                     run_id=rid, **kw)
+
+
+async def test_a_file_edited_more_than_five_times_with_unchanged_test_output_is_looping(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "x")
+    for n in range(5):
+        _edit(runs, rid, n, test_output="FAILED test_a - assert 1 == 2")
+    assert runs.recent(run_id=rid)[0]["looping"] is None  # five is allowed
+    nudge = _edit(runs, rid, 5, test_output="FAILED test_a - assert 1 == 2")
+    assert nudge
+    r = runs.recent(run_id=rid)[0]
+    assert r["status"] == "looping" and "/repo/a.py edited 6 times" in r["looping"]
+    await j.http.aclose()
+
+
+async def test_edits_that_change_the_failing_output_are_progress_not_a_loop(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "x")
+    for n in range(8):
+        _edit(runs, rid, n, test_output=f"FAILED test_{n}")  # a different failure each time
+    assert runs.recent(run_id=rid)[0]["looping"] is None
+    # six edits to different files are not one file edited again and again either
+    other = runs.start("self_improve", "y")
+    for n in range(6):
+        _edit(runs, other, n, path=f"/repo/f{n}.py")
+    assert runs.recent(run_id=other)[0]["looping"] is None
+    await j.http.aclose()
+
+
+async def test_record_message_turns_streamed_tool_calls_into_trail_steps(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "x")
+    msg = SimpleNamespace(content=[
+        SimpleNamespace(text="thinking out loud"),  # a text block: ignored
+        SimpleNamespace(type="tool_use", name="Edit", input={"file_path": "/r/a.py", "new_string": "S3CRET"}),
+        SimpleNamespace(type="tool_use", name="Grep", input={"pattern": "x"}),
+    ])
+    assert runs.record_message(msg, run_id=rid) is None
+    assert runs.record_message(SimpleNamespace(content="just text"), run_id=rid) is None
+    r = runs.recent(run_id=rid)[0]
+    assert [(s["tool"], s.get("file")) for s in r["trail"]] == [("Edit", "/r/a.py"), ("Grep", None)]
+    assert "S3CRET" not in json.dumps(r)
+    await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- the wall-clock cap
+async def test_a_step_after_the_cap_marks_the_run_timed_out_and_stops_it(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("self_improve", "slow one")
+    runs.step("grep", {"pattern": "a"}, run_id=rid)
+    past = (datetime.now(timezone.utc) - RUN_CAP - timedelta(minutes=5)).isoformat(timespec="seconds")
+    j.db.execute("UPDATE agent_runs SET started_at = ? WHERE id = ?", (past, rid))
+    with pytest.raises(RunTimedOut):
+        runs.step("grep", {"pattern": "b"}, run_id=rid)
+    r = runs.recent(run_id=rid)[0]
+    assert r["status"] == "timed_out" and "wall-clock cap" in r["outcome"]
+    assert "grep 'b' in *" in r["outcome"]  # the last-known activity
+    assert r["last_step"] == "grep 'b' in *" and r["lesson"] and "cap" in r["lesson"]
+    # the error the hard stop causes must not turn it into a plain failure
+    runs.finish("failed", "RunTimedOut: ...", rid)
+    assert runs.recent(run_id=rid)[0]["status"] == "timed_out"
+    await j.http.aclose()
+
+
+async def test_a_run_past_the_cap_that_nothing_stopped_reads_as_timed_out_but_is_not_rewritten(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    rid = runs.start("security_watch", "Claude Code run, no steps")
+    past = (datetime.now(timezone.utc) - RUN_CAP - timedelta(minutes=5)).isoformat(timespec="seconds")
+    j.db.execute("UPDATE agent_runs SET started_at = ? WHERE id = ?", (past, rid))
+    r = runs.recent(run_id=rid)[0]
+    assert r["status"] == "timed_out" and r["elapsed_minutes"] >= RUN_CAP.total_seconds() // 60
+    assert j.db.query_one("SELECT status FROM agent_runs WHERE id = ?", (rid,))["status"] == "running"
+    runs.finish("submitted", "https://github.com/o/r/pull/5", rid)  # it was alive after all
+    assert runs.recent(run_id=rid)[0]["status"] == "submitted"
+    await j.http.aclose()
+
+
+async def test_track_cancels_a_task_that_runs_past_the_cap(settings, monkeypatch):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    monkeypatch.setattr(agent_runs_mod, "RUN_CAP", timedelta(milliseconds=50))
+
+    async def body():
+        with runs.track("self_improve", "never finishes"):
+            runs.note("grep 'a' in *")  # (note, not step: started_at has one-second resolution, so a step could trip the cap itself)
+            await asyncio.sleep(10)
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.create_task(body())
+    r = runs.recent()[0]
+    assert r["status"] == "timed_out" and "wall-clock cap" in r["outcome"] and "grep 'a' in *" in r["outcome"]
+    assert r["lesson"]
+    await j.http.aclose()
+
+
+async def test_a_run_that_finishes_inside_the_cap_is_untouched_by_the_timer(settings, monkeypatch):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    monkeypatch.setattr(agent_runs_mod, "RUN_CAP", timedelta(milliseconds=100))
+    with runs.track("fixer", "quick"):
+        runs.finish("submitted", "https://github.com/o/r/pull/6")
+    await asyncio.sleep(0.2)  # the timer would have fired by now had it not been cancelled
+    assert runs.recent()[0]["status"] == "submitted"
+    await j.http.aclose()
+
+
+# --------------------------------------------------------------------------- the lesson
+async def test_gave_up_and_failed_runs_store_a_one_paragraph_lesson(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    a = runs.start("self_improve", "remove the approval step")
+    runs.finish("gave_up", "Would remove the approval gate.", a)
+    b = runs.start("fixer", "Issue #1")
+    runs.finish("failed", "404 Not Found: no such branch", b)
+    c = runs.start("fixer", "Issue #2")
+    runs.finish("gave_up", "Cannot tell which screen is meant.", c)
+    d = runs.start("fixer", "Issue #3")
+    runs.finish("failed", "ValueError: odd", d, lesson="Needed the full traceback.\nPlease add it.")
+    by_id = {r["id"]: r for r in runs.recent(10)}
+    assert "protected" in by_id[a]["lesson"]
+    assert "GitHub" in by_id[b]["lesson"] and "token" in by_id[b]["lesson"]
+    assert "Cannot tell which screen" in by_id[c]["lesson"] and "would have let it" in by_id[c]["lesson"]
+    assert by_id[d]["lesson"] == "Needed the full traceback. Please add it."  # an explicit lesson wins; one paragraph
+    for r in by_id.values():
+        assert "\n" not in r["lesson"] and len(r["lesson"]) <= agent_runs_mod.LESSON_CHARS
+    await j.http.aclose()
+
+
+async def test_a_submitted_run_has_no_lesson_and_a_quiet_end_gets_one(settings):
+    j = make(settings)
+    runs = AgentRuns(j.db)
+    with runs.track("fixer", "ok"):
+        runs.finish("submitted", "https://github.com/o/r/pull/7")
+    assert runs.recent()[0]["lesson"] is None
+    with runs.track("fixer", "quiet"):
+        pass
+    r = runs.recent()[0]
+    assert r["status"] == "gave_up" and "without submitting" in r["lesson"]
+    with pytest.raises(RuntimeError):
+        with runs.track("fixer", "boom"):
+            raise RuntimeError("github fell over")
+    r = runs.recent()[0]
+    assert r["status"] == "failed" and "github fell over" in r["lesson"]
     await j.http.aclose()

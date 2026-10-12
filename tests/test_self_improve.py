@@ -414,7 +414,8 @@ async def test_start_up_leaves_a_live_peers_run_alone_during_a_rolling_deploy(se
     _age_run(j.db, young_silent, started_minutes_ago=45, last_step_minutes_ago=45)  # silent but well inside 2h
     j2 = make(settings)
     status = {r["id"]: r["status"] for r in AgentRuns(j2.db).recent(10)}
-    assert status[fresh] == "running" and status[old_but_beating] == "running"
+    # started past the wall-clock cap, so it reads as timed_out - but it is still stored as running (not swept as dead)
+    assert status[fresh] == "running" and status[old_but_beating] == "timed_out"
     assert status[young_silent] == "stalled"  # reported stalled when read - but NOT stored as interrupted
     stored = {r["id"]: r["status"] for r in j2.db.query("SELECT id, status FROM agent_runs")}
     assert set(stored.values()) == {"running"}
