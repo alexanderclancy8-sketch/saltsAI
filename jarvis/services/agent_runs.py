@@ -57,6 +57,40 @@ EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")  # Claude Code's own
 _current: ContextVar[int | None] = ContextVar("agent_run_id", default=None)
 
 
+# The Claude Agent SDK refuses a single JSON message from the CLI larger than max_buffer_size (1 MB by default) and raises
+# CLIJSONDecodeError("... JSON message exceeded maximum buffer size of N bytes"). A tool result that big comes from reading a
+# huge file whole (FSM's app/main.py, app/static/index.html). Such a run is recorded with this outcome, not the raw traceback.
+BUFFER_EXCEEDED = "buffer_exceeded"
+BUFFER_EXCEEDED_OUTCOME = (f"{BUFFER_EXCEEDED}: the agent read something too large for the Claude Agent SDK's message buffer "
+                           "(a huge file read whole), even after one retry with a larger limit.")
+_BUFFER_MARKER = "exceeded maximum buffer size"
+
+
+def is_buffer_exceeded(error: BaseException | str | None) -> bool:
+    """True if `error` (or anything it was raised from) is the SDK's 'JSON message exceeded maximum buffer size' failure,
+    or a run already recorded as buffer_exceeded. Looks at the message text, the SDK error's `original_error` and the
+    __cause__ / __context__ chain, so it still matches once the error has been wrapped. Never raises."""
+    try:
+        if error is None:
+            return False
+        if isinstance(error, str):
+            low = error.lower()
+            return low.startswith(BUFFER_EXCEEDED) or _BUFFER_MARKER in low
+        seen: set[int] = set()
+        pending: list[BaseException | None] = [error]
+        while pending and len(seen) < 10:
+            e = pending.pop()
+            if e is None or id(e) in seen:
+                continue
+            seen.add(id(e))
+            if is_buffer_exceeded(str(e)):
+                return True
+            pending += [getattr(e, "original_error", None), e.__cause__, e.__context__]
+    except Exception:  # noqa: BLE001 - classification must never break a run
+        pass
+    return False
+
+
 def _clip(text: Any, limit: int) -> str:
     one_line = " ".join(str(text).split())
     return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
@@ -154,6 +188,10 @@ def derive_lesson(status: str, outcome: str, trail: list[dict[str, Any]] | None 
             cause = f"The run hit the wall-clock cap before finishing (last known activity: {last})."
             need = ("A narrower request naming the files and the behaviour wanted, or a smaller first step, would let "
                     "it finish inside the cap.")
+        elif is_buffer_exceeded(outcome):
+            cause = "The run read a file or result too large for the Claude Agent SDK's message buffer."
+            need = ("Reading big files (FSM's app/main.py, app/static/index.html) in line ranges or finding the part with "
+                    "grep, never whole, would have let it finish.")
         elif looping:
             cause = f"The run got stuck repeating itself: {looping}."
             need = ("The exact failing test or CI output (the CI log tool) and the file that should change, and a tool "
@@ -379,6 +417,8 @@ class AgentRuns:
         except BaseException as e:
             what = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
             if isinstance(e, Exception):
+                if is_buffer_exceeded(e):  # a clear outcome instead of the raw SDK traceback text
+                    what = BUFFER_EXCEEDED_OUTCOME
                 self.finish("failed", what, run_id, only_if_running=True)
             else:  # cancelled (CancelledError) or the process is being stopped: not an error in the run itself
                 self.finish("interrupted", f"Cancelled before it finished ({what}).", run_id, only_if_running=True)

@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from . import checkmode, coverage, plugins
 from .. import access
 from ..redact import redact_text
+from ..services.agent_runs import BUFFER_EXCEEDED_OUTCOME, is_buffer_exceeded
 from ..events import quiet_turn
 from .trace import attachment as trace_attachment
 from ..services.conversation_quality import TurnRecord
@@ -48,6 +49,17 @@ WEB_MATCHER = "WebSearch|WebFetch"   # Claude Code's own web tools: the per-turn
 # For the engineer-loop callers of run_once() (self_improve.py, fixer.py) that request Write/Edit on purpose,
 # confined to a throwaway Workspace checkout - everything BLOCKED disallows except those two.
 ENGINEER_BLOCKED = ["Bash", "NotebookEdit", "KillShell", "Task"]
+# The SDK refuses one JSON message from the CLI over max_buffer_size (default 1 MB) - hit when an engineer loop reads a huge
+# file whole (the FSM's app/main.py is ~87,000 lines, app/static/index.html ~1.5 MB). The engineer loops get 10 MB, and one
+# retry with 40 MB if a message is still too big.
+ENGINEER_BUFFER_BYTES = 10 * 1024 * 1024
+RETRY_BUFFER_BYTES = 40 * 1024 * 1024
+BUFFER_RETRY_NOTE = ("\n\n(A previous attempt failed because a file was read whole and was too large. Read big files in "
+                     "line ranges or find the part you need with Grep, and never read app/static/index.html.)")
+
+
+class BufferExceeded(RuntimeError):
+    """An engineer run kept hitting the SDK's message buffer limit, even after the retry with a larger one."""
 
 
 def sdk_env(settings) -> dict[str, str]:
@@ -539,8 +551,10 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
                    output_schema: dict[str, Any] | None = None,
                    max_turns: int = 10, cwd: str | None = None,
                    mcp_servers: dict[str, Any] | None = None, extra_allowed: list[str] | None = None,
-                   model: str | None = None):
-    """Single headless Claude Code run; returns the ResultMessage. `model` defaults to `settings.jarvis_model` (the
+                   model: str | None = None, buffer_guard: bool = False):
+    """Single headless Claude Code run; returns the ResultMessage. `buffer_guard` (the engineer loops: self_improve, fixer,
+    security_watch) raises the SDK's max_buffer_size to ENGINEER_BUFFER_BYTES and retries once with RETRY_BUFFER_BYTES if a
+    message from the CLI still exceeds it, then raises BufferExceeded. `model` defaults to `settings.jarvis_model` (the
     engineer loops pass `settings.engineer_model_or_default()`). `disallowed_tools` defaults to `BLOCKED`
     (no shell, no file writes) - pass `ENGINEER_BLOCKED` for a caller that puts Write/Edit in `tools` on
     purpose (an engineer loop confined to a throwaway Workspace checkout), otherwise those get silently
@@ -580,9 +594,28 @@ async def run_once(settings, *, system: str, prompt: str | list[dict[str, Any]],
         kw["cwd"] = cwd
     result = None
     try:
-        async for msg in query(prompt=text, options=base_options(settings, model=model, **kw)):
-            if isinstance(msg, ResultMessage):
-                result = msg
+        if not buffer_guard:
+            async for msg in query(prompt=text, options=base_options(settings, model=model, **kw)):
+                if isinstance(msg, ResultMessage):
+                    result = msg
+        else:
+            # The SDK's default 1 MB cap on one CLI message is hit when the agent reads a huge file whole. Raise it, and if
+            # a run still hits it, run once more with a larger one (and a reminder) before recording buffer_exceeded.
+            for attempt, limit in enumerate((ENGINEER_BUFFER_BYTES, RETRY_BUFFER_BYTES)):
+                try:
+                    async for msg in query(prompt=text + (BUFFER_RETRY_NOTE if attempt else ""),
+                                           options=base_options(settings, model=model, max_buffer_size=limit, **kw)):
+                        if isinstance(msg, ResultMessage):
+                            result = msg
+                    break
+                except Exception as e:  # noqa: BLE001
+                    if not is_buffer_exceeded(e):
+                        raise
+                    log.warning("Claude run hit the SDK message buffer limit (%s bytes)%s", limit,
+                                "; retrying once with a larger limit" if not attempt else "")
+                    result = None
+                    if attempt:
+                        raise BufferExceeded(BUFFER_EXCEEDED_OUTCOME) from e
     finally:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
