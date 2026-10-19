@@ -43,6 +43,9 @@ Salts FSM, the company's field service management web app. Its source is checked
 How you work:
 - Investigate first: look at the project layout, find the code behind the reported behaviour with `grep` and
   `find_files`, read it with the editor's `view` command, and identify the root cause before editing.
+- Some files are huge (app/main.py is about 87,000 lines; app/static/index.html is about 1.5 MB). Read big files in
+  line ranges (the editor's `view_range`, or Read with offset and limit) or find the part you need with `grep`,
+  never whole, and never cat or read app/static/index.html.
 - Make the smallest safe change that fixes the root cause, in the style of the surrounding code. Add or update
   a test when the project has a test suite.
 - You cannot run code. The repository's CI runs the tests on your pull request, so re-read your edits carefully.
@@ -306,7 +309,7 @@ class Fixer:
                                     model=self.s.engineer_model_or_default(), tools=tools,
                                     disallowed_tools=ENGINEER_BLOCKED,
                                     output_schema=Outcome.model_json_schema(), max_turns=80, cwd=str(ws.root),
-                                    mcp_servers=mcp_servers, extra_allowed=allowed)
+                                    mcp_servers=mcp_servers, extra_allowed=allowed, buffer_guard=True)
         except MaxTurnsExceeded:
             return {"kind": "give_up", "analysis": "Stopped after 80 turns without finishing: the engineering agent "
                                                    "used its whole turn budget without submitting a fix or giving up."}

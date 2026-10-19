@@ -44,6 +44,9 @@ How you work:
   touches authentication or access control, anywhere a database query, file path or shell command is built
   from user input, and anywhere a secret or credential might be hardcoded. Use `grep` and `find_files`, and
   read files with the editor's `view` command.
+- Some files are huge (app/main.py is about 87,000 lines; app/static/index.html is about 1.5 MB). Read big files in
+  line ranges (the editor's `view_range`, or Read with offset and limit) or find the part you need with `grep`,
+  never whole, and never cat or read app/static/index.html.
 - Only report something you can point at a specific file and explain how it could actually be exploited and
   what someone could do with it. Skip generic advice ("use HTTPS", "validate input" in the abstract) unless
   you found a concrete instance of it missing.
@@ -273,5 +276,5 @@ class SecurityWatch:
                                 effort=self.s.engineer_effort, model=self.s.engineer_model_or_default(),
                                 tools=["Read", "Glob", "Grep"],
                                 output_schema=SubmitFindings.model_json_schema(), max_turns=80, cwd=str(ws.root),
-                                **extra)
+                                buffer_guard=True, **extra)
         return parse_structured(result, SubmitFindings)
